@@ -1,9 +1,6 @@
 # shellcheck shell=sh
-# Helpers for image/tests/t-*.sh (TAP output). POSIX sh; sourced, never executed.
-#
-# Each test file: `. "$(dirname -- "$0")/lib.sh"`, then assertions, then `done_testing`.
-# Checks run against fake roots under $T (removed on exit) with the fakes in
-# image/tests/fake on PATH; nothing outside $T is written.
+# Sourced by image/tests/t-*.sh, which end with done_testing; output is TAP. Everything a
+# test writes stays under $T, removed on exit.
 
 set -eu
 
@@ -30,8 +27,7 @@ not_ok() {
     _failed=$((_failed + 1))
     printf 'not ok %d - %s\n' "$_tests" "$*"
 }
-# skip_all REASON: skip the whole file, or fail it when APEX_IMAGE_TESTS_NO_SKIP=1 (CI
-# provides every tool, so a skip there means a test silently stopped running).
+# CI has every tool, so there a skip means a test silently stopped running.
 skip_all() {
     if [ "${APEX_IMAGE_TESTS_NO_SKIP:-0}" = 1 ]; then
         printf 'not ok 1 - would skip (%s), but APEX_IMAGE_TESTS_NO_SKIP=1\n1..1\n' "$*"
@@ -41,7 +37,7 @@ skip_all() {
     exit 0
 }
 
-# run CMD...: run CMD, keep its output in $T/out and its exit status in RC.
+# Leaves the output in $T/out and the exit status in RC for the expect_* assertions.
 run() {
     RC=0
     "$@" </dev/null >"$T/out" 2>&1 || RC=$?
@@ -49,23 +45,18 @@ run() {
 
 _show() { sed 's/^/#   /' "$T/out"; }
 
-# expect_rc NAME CODE: the last `run` exited with CODE.
 expect_rc() {
     if [ "$RC" -eq "$2" ]; then ok "$1"; else not_ok "$1 (exit $RC, expected $2)" && _show; fi
 }
-# expect_out NAME ERE: the last `run` printed a line matching ERE.
 expect_out() {
     if grep -Eq -- "$2" "$T/out"; then ok "$1"; else not_ok "$1 (no line matches /$2/)" && _show; fi
 }
-# expect_no_out NAME ERE: the last `run` printed no line matching ERE.
 expect_no_out() {
     if grep -Eq -- "$2" "$T/out"; then not_ok "$1 (a line matches /$2/)" && _show; else ok "$1"; fi
 }
-# expect_file NAME ERE FILE: FILE has a line matching ERE.
 expect_file() {
     if [ -f "$3" ] && grep -Eq -- "$2" "$3"; then ok "$1"; else not_ok "$1 ($3 has no line matching /$2/)"; fi
 }
-# expect_true NAME CMD...: CMD succeeds.
 expect_true() {
     name=$1
     shift
@@ -77,12 +68,10 @@ done_testing() {
     [ "$_failed" -eq 0 ]
 }
 
-# The shell the checks run under: run.sh sets it to the shell of the current pass, so
-# the checks are exercised with dash and bash alike (Fedora's /bin/sh is bash).
+# The shell of run.sh's current pass: the checks run under dash and bash alike.
 # shellcheck disable=SC2034 # used by the t-*.sh files that source this
 SH=${TEST_SHELL:-sh}
 
-# fake_path: a PATH that finds image/tests/fake first.
 fake_path() {
     printf '%s:%s\n' "$FAKE" "$PATH"
 }

@@ -1,15 +1,14 @@
 #!/bin/sh
-# image/checks/overlay.sh: the overlay's units, drop-ins, udev rules and tmpfiles.d
-# validate, and a broken line in any of them fails (review finding: nothing checked
-# them). Uses the host's systemd-analyze, udevadm and systemd-tmpfiles on a staged root.
+# image/checks/overlay.sh with the host's systemd-analyze, udevadm and systemd-tmpfiles
+# on a staged root: the committed overlay validates, and a broken line fails.
 . "$(dirname -- "$0")/lib.sh"
 
 for tool in systemd-analyze udevadm systemd-tmpfiles; do
     command -v "$tool" >/dev/null 2>&1 || skip_all "$tool not found"
 done
 
-# stage NAME: copy the overlay to $T/NAME-src and install it into the root $T/NAME with
-# stub binaries for what the units execute and a stub upower.service.
+# stage NAME: the overlay as $T/NAME-src, installed into $T/NAME with stubs of what the
+# units run and of upower.service.
 stage() {
     src=$T/$1-src
     r=$T/$1
@@ -28,7 +27,7 @@ overlay() {
     run env ROOT="$T/$1" OVERLAY_DIR="$T/$1-src" "$SH" "$CHECKS/overlay.sh"
 }
 
-# break NAME RELPATH SED: stage NAME, apply SED to RELPATH in both copies.
+# break_file NAME RELPATH SED: stage NAME, then edit RELPATH in both copies.
 break_file() {
     stage "$1"
     sed -i -e "$3" "$T/$1-src/$2" "$T/$1/$2"

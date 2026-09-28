@@ -1,30 +1,10 @@
-# Install the Flatpak apps listed in /usr/share/flatpak/preinstall.d
-# (ARCHITECTURE §7.1). Enabled by 80-apex.preset.
-#
 # Apps cannot be baked into the image: bootc never updates /var after the install.
-# This runs on every boot and is idempotent: once every listed app is installed (or
-# was removed by the user) `flatpak preinstall` makes no network request and exits.
-#
-# Without network it installs nothing and still exits 0: flatpak 1.18 only logs a
-# warning per remote it cannot reach (flatpak_transaction_add_sync_preinstalled). A
-# first boot usually starts that way, because the M7400QC has no Ethernet port and Wi-Fi
-# is joined later, in GNOME Initial Setup. apex-flatpak-preinstall.timer therefore
-# starts this service again during the first hours after every boot, and
-# apex-flatpak-update.service runs the same preinstall step every 6 hours on AC power.
-#
-# Not on a metered connection: the ExecCondition skips the run when NetworkManager
-# reports Metered as yes (1) or guess-yes (3), the same network gate as OS updates
-# (ARCHITECTURE §5.2); the first download is about 1 GB. A skipped run is not a failure.
-#
-# DefaultDependencies=no: a unit pulled in by multi-user.target through WantedBy= is
-# otherwise ordered before that target, so the first-boot download would hold back
-# multi-user.target, graphical.target and every unit ordered after them, such as a
-# health check that waits for graphical.target. The lines below restate the default
-# dependencies of a service, minus that ordering.
 
 [Unit]
 Description=Install the Flatpak apps that ship with Apex
 Documentation=man:flatpak-preinstall(1)
+# The default dependencies minus Before=multi-user.target: the first-boot download must
+# not hold back graphical.target and the health check that waits for it.
 DefaultDependencies=no
 Requires=sysinit.target
 Wants=network-online.target
@@ -36,6 +16,7 @@ ConditionDirectoryNotEmpty=/usr/share/flatpak/preinstall.d
 
 [Service]
 Type=oneshot
+# NetworkManager's Metered: 1 is yes, 3 guess-yes.
 ExecCondition=/usr/bin/sh -c '\
     case "$$(/usr/bin/busctl get-property org.freedesktop.NetworkManager \
         /org/freedesktop/NetworkManager org.freedesktop.NetworkManager Metered \
@@ -44,7 +25,6 @@ ExecCondition=/usr/bin/sh -c '\
     *) exit 0 ;; \
     esac'
 ExecStart=/usr/bin/flatpak preinstall --system --noninteractive
-# Bounded, so a stalled download cannot run forever; the next timer run or boot retries.
 TimeoutStartSec=2h
 Nice=19
 IOSchedulingClass=idle

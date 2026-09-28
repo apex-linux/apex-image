@@ -1,7 +1,5 @@
 #!/bin/sh
-# image/checks/power.sh: /etc/tuned/ppd.conf maps GNOME's power modes to the Apex TuneD
-# profiles and passes tuned-ppd's own validation, and apex-performance merges to the
-# CPU/platform performance settings without server tunables.
+# image/checks/power.sh on roots with the overlay's tuned files.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
@@ -9,25 +7,24 @@ command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
 PPD=etc/tuned/ppd.conf
 PERF=usr/lib/tuned/profiles/apex-performance/tuned.conf
 
-# mkroot NAME: a root with the overlay's tuned files, stand-ins for the stock profiles
-# the mapping names (their shape, not their full content) and a tuned-ppd; prints it.
+# mkroot NAME: prints the path of a root with the overlay's tuned files, a tuned-ppd and
+# stand-ins for the stock profiles the mapping names (their shape, not their content).
 mkroot() {
     r=$T/$1
     mkdir -p "$r/usr/bin" "$r/usr/lib/tuned/profiles" "$r/etc/tuned"
     cp -R "$IMAGE_DIR/system_files/etc/tuned/." "$r/etc/tuned/"
     cp -R "$IMAGE_DIR/system_files/usr/lib/tuned/profiles/." "$r/usr/lib/tuned/profiles/"
-    stock "$r" balanced '[main]\nsummary=stock\n\n[cpu]\npriority=10\ngovernor=schedutil|ondemand|powersave\nenergy_perf_bias=normal\nenergy_performance_preference=balance_performance\nboost=1\n\n[acpi]\nplatform_profile=balanced\n\n[audio]\ntimeout=10\n\n[disk]\n# devices=sda\n\n[scsi_host]\nalpm=med_power_with_dipm\n'
-    stock "$r" balanced-battery '[main]\nsummary=stock\ninclude=balanced\n\n[cpu]\nenergy_performance_preference=balance_power\n'
+    stock_profile "$r" balanced '[main]\nsummary=stock\n\n[cpu]\npriority=10\ngovernor=schedutil|ondemand|powersave\nenergy_perf_bias=normal\nenergy_performance_preference=balance_performance\nboost=1\n\n[acpi]\nplatform_profile=balanced\n\n[audio]\ntimeout=10\n\n[disk]\n# devices=sda\n\n[scsi_host]\nalpm=med_power_with_dipm\n'
+    stock_profile "$r" balanced-battery '[main]\nsummary=stock\ninclude=balanced\n\n[cpu]\nenergy_performance_preference=balance_power\n'
     # shellcheck disable=SC2016 # ${i:PROFILE_DIR} is TuneD's variable, written literally
-    stock "$r" powersave '[main]\nsummary=stock\n\n[cpu]\ngovernor=schedutil|conservative|powersave\nboost=0\n\n[acpi]\nplatform_profile=low-power|quiet\n\n[sysctl]\nvm.laptop_mode=5\n\n[script]\nscript=${i:PROFILE_DIR}/script.sh\n'
-    stock "$r" throughput-performance '[main]\nsummary=stock\n\n[cpu]\ngovernor=performance\nenergy_performance_preference=performance\nboost=1\n\n[acpi]\nplatform_profile=performance\n\n[vm]\ndirty_bytes = 40%%\n\n[disk]\nreadahead=>4096\n\n[sysctl]\nvm.swappiness=10\nnet.core.somaxconn=>2048\n'
+    stock_profile "$r" powersave '[main]\nsummary=stock\n\n[cpu]\ngovernor=schedutil|conservative|powersave\nboost=0\n\n[acpi]\nplatform_profile=low-power|quiet\n\n[sysctl]\nvm.laptop_mode=5\n\n[script]\nscript=${i:PROFILE_DIR}/script.sh\n'
+    stock_profile "$r" throughput-performance '[main]\nsummary=stock\n\n[cpu]\ngovernor=performance\nenergy_performance_preference=performance\nboost=1\n\n[acpi]\nplatform_profile=performance\n\n[vm]\ndirty_bytes = 40%%\n\n[disk]\nreadahead=>4096\n\n[sysctl]\nvm.swappiness=10\nnet.core.somaxconn=>2048\n'
     printf '#!/bin/sh\nexit 0\n' >"$r/usr/bin/tuned-ppd"
     chmod 0755 "$r/usr/bin/tuned-ppd"
     printf '%s\n' "$r"
 }
 
-# stock ROOT NAME PRINTF-FORMAT: a stand-in profile under ROOT's /usr/lib/tuned/profiles.
-stock() {
+stock_profile() {
     mkdir -p "$1/usr/lib/tuned/profiles/$2"
     # shellcheck disable=SC2059 # the format is the fixture
     printf "$3" >"$1/usr/lib/tuned/profiles/$2/tuned.conf"
@@ -62,11 +59,9 @@ done
 expect_out "no server tunables" '^PASS power: apex-performance has no vm unit'
 expect_no_out "nothing fails" '^FAIL'
 
-# The committed files: plain ppd.conf keys, one include.
 expect_file "ppd.conf maps Performance to apex-performance" '^performance=apex-performance$' "$IMAGE_DIR/system_files/$PPD"
 expect_file "apex-performance includes balanced" '^include=balanced$' "$IMAGE_DIR/system_files/$PERF"
 
-# tuned-ppd's own start-up checks.
 bad no-file "^FAIL power: /etc/tuned/ppd\\.conf is missing" "rm $PPD"
 bad no-profiles 'has no \[profiles\] section' "sed -i 's/^\\[profiles\\]\$/[modes]/' $PPD"
 bad missing-mode 'no power-saver mode in \[profiles\]' "sed -i '/^power-saver=/d' $PPD"
@@ -80,12 +75,10 @@ bad bad-default "the default mode 'turbo' is not in \\[profiles\\]" "sed -i 's/^
 bad not-boolean 'a \[main\] option is not a boolean' "sed -i 's/^sysfs_acpi_monitor=.*/sysfs_acpi_monitor=maybe/' $PPD"
 bad unparsable 'does not parse \(While reading from' "printf '[profiles]\\nbalanced=balanced\\n' >>$PPD"
 
-# Valid for tuned-ppd, but not the Apex mapping.
 bad stock-performance 'expected exactly' "sed -i 's/^performance=.*/performance=throughput-performance/' $PPD"
 bad no-battery-detection 'battery_detection off' "sed -i 's/^battery_detection=.*/battery_detection=false/' $PPD"
 bad default-performance 'default mode is performance, expected balanced' "sed -i 's/^default=.*/default=performance/' $PPD"
 
-# apex-performance itself.
 bad governor 'cpu governor is powersave, expected performance' "sed -i 's/^governor=.*/governor=powersave/' $PERF"
 bad no-boost 'cpu boost is 0, expected 1' "sed -i 's/^boost=.*/boost=0/' $PERF"
 bad epp 'cpu energy_performance_preference is balance_performance, expected performance' \
@@ -103,14 +96,12 @@ bad etc-override 'carries server tunables: sysctl vm\.dirty_ratio' \
     "mkdir -p etc/tuned/profiles/balanced && printf '[main]\\nsummary=local\\n\\n[sysctl]\\nvm.dirty_ratio=40\\n' >etc/tuned/profiles/balanced/tuned.conf"
 bad no-tuned-ppd '^FAIL power: tuned-ppd is not installed' "rm usr/bin/tuned-ppd"
 
-# Options a later profile drops, or a replaced unit, follow TuneD's merge.
 r=$(mkroot replace)
 printf '[main]\ninclude=balanced\n\n[cpu]\nreplace=1\ngovernor=performance\nenergy_performance_preference=performance\nboost=1\n\n[acpi]\nplatform_profile=performance\n' \
     >"$r/$PERF"
 power "$r"
 expect_rc "a replaced [cpu] unit with the same values passes" 0
 
-# Without python3 the mapping cannot be checked: that is a failure, not a warning.
 mkdir -p "$T/nopy"
 # "$SH" too: the shell under test may be dash, which run.sh uses on Fedora.
 for tool in "$SH" sh bash dirname mktemp rm cat; do

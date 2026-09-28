@@ -1,16 +1,6 @@
-# Apex image: the curated GNOME 51 desktop (ARCHITECTURE 7.1, ADR 0007).
-#
-# Format: one binary package name per line; everything after '#' is a comment.
-# Installed with weak dependencies OFF, so useful weak dependencies of GNOME
-# (fonts, thumbnailers, gvfs back ends, portals, Bluetooth UI) are listed explicitly.
-# GTK3 is allowed only through image/audit/legacy-allowlist.txt; image/checks/legacy.sh
-# fails the build on any other GTK3 or X server consumer.
-#
-# Every name was checked against the Fedora 45 x86_64 repodata (development/45
-# Everything plus updates-testing) on 2026-09-24. Until F45 GA, the GNOME 51.0 builds
-# come from updates-testing through updates-testing-allowlist.txt.
+# One package per line; '#' starts a comment. Weak dependencies are off, so useful weak
+# dependencies of GNOME are listed. GTK3 packages need a legacy allowlist entry.
 
-# --- Session, shell and settings --------------------------------------------------
 gdm
 gnome-shell
 gnome-session-wayland-session
@@ -25,24 +15,22 @@ tecla
 gnome-backgrounds
 adwaita-icon-theme
 adwaita-cursor-theme
-# Bluetooth quick setting and Settings panel (a gnome-shell weak dependency).
+# A weak dependency of gnome-shell: the Bluetooth quick setting and panel.
 gnome-bluetooth
-# Online Accounts panel, and the backend for gvfs-goa and Calendar/Contacts sync.
+# The backend of gvfs-goa and of Calendar and Contacts sync.
 gnome-online-accounts
 
-# --- Portals ----------------------------------------------------------------------
 xdg-desktop-portal
 xdg-desktop-portal-gnome
-# GTK3, allowlisted: still the only Inhibit and Email portal backend on GNOME 51.
+# GTK3, but still the only Inhibit and Email portal backend.
 xdg-desktop-portal-gtk
 xdg-user-dirs
 
-# --- Secrets (oo7 replaces gnome-keyring, F45 change) -----------------------------
+# oo7 replaces gnome-keyring on F45.
 oo7-daemon
 pam_oo7
 oo7-portal
 
-# --- Core apps (all GTK4/libadwaita unless noted) ---------------------------------
 nautilus
 sushi
 ptyxis
@@ -66,14 +54,12 @@ gnome-weather
 gnome-font-viewer
 gnome-logs
 yelp
-# Content for the Help app (the GNOME desktop user guide).
 gnome-user-docs
 epiphany
-# GTK3, allowlisted until GNOME Disks 51 ships as GTK4 (ADR 0007).
+# GTK3 until GNOME Disks ships its GTK4 port.
 gnome-disk-utility
 gnome-firmware
 
-# --- Files integration ------------------------------------------------------------
 localsearch
 tinysparql
 glycin-thumbnailer
@@ -86,30 +72,24 @@ gvfs-smb
 gvfs-afc
 gvfs-goa
 
-# --- Fonts ------------------------------------------------------------------------
-# gsettings-desktop-schemas only weakly requires the Adwaita fonts; without these
-# lines GNOME would silently fall back to other families.
+# gsettings-desktop-schemas only weakly requires the Adwaita fonts.
 adwaita-sans-fonts
 adwaita-mono-fonts
-# fontconfig's generic sans-serif/serif/monospace (web content, non-GTK4 clients).
+# fontconfig's generic families, for web content and non-GTK4 clients.
 default-fonts-core-sans
 default-fonts-core-serif
 default-fonts-core-mono
 default-fonts-core-emoji
-# Avoids tofu for Chinese/Japanese/Korean text on the web.
 default-fonts-cjk-sans
 
-# --- Input methods (ARCHITECTURE 7.2) ---------------------------------------------
-# ibus is allowlisted (GTK3 extension, X11 helper); ibus hard-requires ibus-gtk3
-# whenever gtk3 is installed, so ibus-gtk3 arrives as a dependency.
+# ibus-gtk3 comes as a hard dependency of ibus while gtk3 is installed.
 ibus
 ibus-gtk4
-# m17n:vi:telex (vi-telex.mim is in m17n-db).
 ibus-m17n
+# vi-telex.mim, for m17n:vi:telex.
 m17n-db
 
-# --- Graphics and media -----------------------------------------------------------
-# mesa-dri-drivers also provides the VA-API drivers (radeonsi) on F45.
+# Also provides the VA-API drivers (radeonsi) on F45.
 mesa-dri-drivers
 mesa-vulkan-drivers
 gstreamer1-plugins-base
@@ -118,5 +98,4 @@ gstreamer1-plugins-bad-free
 gstreamer1-plugins-ugly-free
 gstreamer1-plugin-libav
 gstreamer1-plugin-dav1d
-# gtk4paintablesink (hard dependency of Showtime and Snapshot; listed for clarity).
 gstreamer1-plugin-gtk4

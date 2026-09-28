@@ -1,12 +1,2 @@
-# `bootc container lint --fatal-warnings` skips (ARCHITECTURE 11, ADR 0013).
-#
-# The final image stage runs the linter with --fatal-warnings and one `--skip <lint>`
-# per entry here. This file may only shrink.
-#
-# Format: one entry per line, lint-name<TAB>justification. The justification is
-# mandatory (the build fails on an entry without one) and must say why the lint cannot
-# pass and what removes the skip. '#' starts a comment. Lint names are those printed
-# by `bootc container lint --list` (e.g. var-log, var-tmpfiles, sysusers,
-# nonempty-boot, nonempty-run-tmp, runtime-deps, buildah-injected, baseimage-composefs).
-#
-# Currently empty: the image must pass every lint.
+# lint-name<TAB>why the lint cannot pass and what removes the skip: each entry becomes a
+# `bootc container lint --skip`. The build refuses an entry without a reason.

@@ -1,12 +1,12 @@
 #!/bin/sh
-# image/checks/keys.sh: policy.json must hold exactly the ADR 0012 trust mapping.
+# image/checks/keys.sh: policy.json must hold exactly the trust mapping.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
 
 POLICY_SRC=$IMAGE_DIR/system_files/usr/share/apex/containers/policy.json
 
-# mkroot NAME: a root with the committed keys and policy; prints its path.
+# mkroot NAME: prints the path of a root with the committed keys and policy.
 mkroot() {
     r=$T/$1
     mkdir -p "$r/usr/share/apex/containers" "$r/usr/share/apex/keys"
@@ -15,7 +15,7 @@ mkroot() {
     printf '%s\n' "$r"
 }
 
-# edit ROOT PYTHON: rewrite ROOT's policy.json with PYTHON (the policy is `p`).
+# edit ROOT PYTHON: runs PYTHON on ROOT's policy.json, loaded as `p`.
 edit() {
     python3 - "$1/usr/share/apex/containers/policy.json" "$2" <<'PY'
 import json, sys
@@ -40,7 +40,6 @@ keys "$r"
 expect_rc "the committed policy passes" 0
 expect_out "and is reported as the exact mapping" '^PASS keys: policy.json has exactly the ADR 0012 trust mapping'
 
-# Each of these edits must fail (review finding: only default/keys-exist were checked).
 n=0
 while IFS='|' read -r name code; do
     n=$((n + 1))
@@ -68,19 +67,16 @@ duplicate key path|p["transports"]["docker"]["$APEX"][0]["keyPaths"].append("/us
 extra top-level field|p["specificPolicies"] = {}
 EOF
 
-# The mapping failure names what differs.
 r=$(mkroot named)
 edit "$r" "p['transports']['docker']['$APEX'][0]['keyPaths'].append('/usr/share/apex/keys/ci.pub')"
 keys "$r"
 expect_out "the failure names the wrong trust" "^FAIL keys: policy.json: docker\\[$APEX\\] trusts .*ci\\.pub"
 
-# Key order inside keyPaths does not matter.
 r=$(mkroot order)
 edit "$r" "p['transports']['docker']['$APEX'][0]['keyPaths'].reverse()"
 keys "$r"
 expect_rc "keyPaths order is free" 0
 
-# Without python3 the mapping cannot be checked: that is a failure, not a warning.
 mkdir -p "$T/nopy"
 # "$SH" too: the shell under test may be dash, which run.sh uses on Fedora.
 for tool in "$SH" sh bash dirname mktemp rm cat grep sed tr od wc basename head tail paste; do

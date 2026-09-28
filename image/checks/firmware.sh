@@ -1,13 +1,6 @@
 #!/bin/sh
-# Firmware presence (ARCHITECTURE 6.1).
-#
-# Weak dependencies are off, so the firmware packages are listed explicitly in
-# image/packages/base.txt. This check proves the specific files the M7400QC loads are
-# in the image: every glob in image/checks/firmware-files.txt (which mirrors
-# hardware/m7400qc/profile.toml [firmware].required_files) must match at least one
-# existing file under /usr/lib/firmware. Dangling symlinks do not count.
-#
-# Environment: ROOT (see lib/common.sh); FIRMWARE_FILES overrides the list path.
+# Every glob of firmware-files.txt matches a file under /usr/lib/firmware; a dangling
+# symlink does not count.
 set -eu
 CHECK_NAME=firmware
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -33,7 +26,6 @@ if [ ! -s "$TMPD/globs" ]; then
 fi
 
 while IFS= read -r glob; do
-    # Reject anything that could escape the firmware directory.
     case $glob in
         /* | *..*)
             fail "invalid glob (absolute or contains ..): $glob"
@@ -41,7 +33,7 @@ while IFS= read -r glob; do
             ;;
     esac
     found=0
-    # Unquoted on purpose: let the shell expand the glob.
+    # Unquoted: the shell expands the glob.
     for f in $FWDIR/$glob; do
         if [ -e "$f" ]; then
             found=$((found + 1))

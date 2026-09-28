@@ -1,31 +1,14 @@
-# Apex vendor defaults (ADR 0014; ARCHITECTURE §7.2 and §7.3; design/SPEC.md §6.3).
-#
-# Only keys whose Apex value differs from the GNOME 51 or Fedora default are listed.
-# There are no dconf locks: the user can change every key in Settings, and "reset"
-# returns to the value here. Override files apply in lexical order, so 90_ wins over
-# Fedora's 00_ files. The image build compiles the schemas; the image checks run
-# glib-compile-schemas --strict so a renamed key fails the build (ARCHITECTURE §11).
-
-# color-scheme keeps GNOME's 'default': the rebuilt gnome-shell draws it light, and Dark
-# Style still gives 'prefer-dark' (ADR 0014; ARCHITECTURE §7.4; design/SPEC.md §6.3).
+# Override files apply in lexical order, so 90_ wins over Fedora's 00_ files.
+# No color-scheme: the rebuilt gnome-shell draws GNOME's 'default' light.
 
 [org.gnome.desktop.input-sources]
-# English plus Vietnamese Telex through ibus-m17n (vi-telex.mim from m17n-db);
-# Super+Space switches (GNOME's default binding). Per-window sources let a terminal
-# stay in English while a chat window stays in Vietnamese. A layout picked on
-# gnome-initial-setup's Typing page is saved for the user and wins over this default.
 sources=[('xkb', 'us'), ('ibus', 'm17n:vi:telex')]
 per-window=true
 
 [org.gnome.shell]
-# Browser, files, terminal, editor and app store. Epiphany is the GTK4 browser in the
-# image and is there on first login; Firefox (Flatpak) stays in the app grid. Bazaar
-# replaces GNOME Software, which Apex does not ship. The shell hides an entry until
-# its app is installed, so the Bazaar Flatpak appears once the preinstall has run.
+# The shell hides the Bazaar Flatpak's entry until the preinstall has installed it.
 favorite-apps=['org.gnome.Epiphany.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'org.gnome.TextEditor.desktop', 'io.github.kolunmi.Bazaar.desktop']
 
 [org.gnome.settings-daemon.plugins.power]
-# The fingerprint sensor is the power key. 'interactive' does nothing on the lock
-# screen, so touching the sensor cannot suspend the laptop, and elsewhere it opens
-# the cancellable power-off dialog (ADR 0006).
+# The fingerprint sensor is the power key: 'interactive' does nothing on the lock screen.
 power-button-action='interactive'

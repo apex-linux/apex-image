@@ -1,36 +1,9 @@
-# Kernel arguments every Apex deployment boots with (bootc kargs.d format).
-# bootc applies changes to this file on upgrade and keeps machine-local arguments.
-#
-# Boot counting (ADR 0009): an armed update is rolled back only if failed boots reach
-# GRUB again, so a kernel panic must reboot instead of hanging.
-#   panic=10             reboot 10 s after a kernel panic
-# The dracut rescue shell stays: on the only machine it is worth more than a faster
-# fallback. An initramfs failure on a counted boot waits there, and a forced power-off
-# moves the counter (ARCHITECTURE §5.3).
-#
-# dGPU (ARCHITECTURE §6.4): no driver binds the GA107 at M1, so it can idle in D3cold
-# (see /usr/lib/udev/rules.d/61-apex-dgpu-pm.rules). dracut copies
-# /usr/lib/modprobe.d/apex-dgpu.conf into the initramfs only when it runs after this
-# overlay is in place; the command line blocks the drivers there either way.
-#   modprobe.blacklist=  read by libkmod (udev and modprobe), initramfs and real root.
-#                        Names are not normalised here, so nova_core must use '_'.
-#   rd.driver.blacklist= dracut's own spelling of the same block, kept as a second guard.
-#
-# sshd: openssh-server is in the image for the KVM qualification only, and presets keep
-# sshd.service and sshd.socket disabled (80-apex.preset). systemd's ssh generator would
-# still socket-activate sshd on AF_UNIX /run/ssh-unix-local/socket (and on AF_VSOCK
-# port 22 inside a VM) whenever sshd is installed, whatever the presets say.
-#   systemd.ssh_auto=no  no automatic SSH sockets; sshd runs only when a unit asks for
-#                        it (qualify.sh adds systemd.wants=sshd.service to its guest)
-#
-# Boot splash, as on Fedora Workstation: Plymouth (image/packages/base.txt) shows its
-# graphical splash, and the graphical LUKS passphrase prompt (ADR 0010), only when
-# `rhgb` or `splash` is on the command line; otherwise it stays in text mode with kernel
-# and systemd messages around the prompt.
-#   rhgb                 Plymouth's graphical splash
-#   quiet                kernel and systemd status messages only for errors on the
-#                        console; the journal still has everything. Remove both for
-#                        one boot from the GRUB menu ("e") to watch a boot in text mode.
+# rhgb: Plymouth's graphical splash and LUKS prompt need it.
+# panic=10: boot counting rolls an update back only if a panicked boot reaches GRUB.
+# No rd.shell=0: on the only machine the dracut rescue shell beats a faster fallback.
+# The blacklists keep nouveau off the dGPU in the initramfs too; libkmod does not
+# normalise names here, so nova_core needs its '_'.
+# systemd.ssh_auto=no: systemd's ssh generator would socket-activate the installed sshd.
 kargs = [
   "rhgb",
   "quiet",
@@ -39,5 +12,5 @@ kargs = [
   "rd.driver.blacklist=nouveau,nova_core",
   "systemd.ssh_auto=no",
 ]
-# Apex targets one x86_64 laptop. The value is Rust's std::env::consts::ARCH.
+# Rust's std::env::consts::ARCH names.
 match-architectures = ["x86_64"]

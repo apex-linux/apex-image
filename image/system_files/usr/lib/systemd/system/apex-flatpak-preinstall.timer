@@ -1,16 +1,5 @@
-# Retry apex-flatpak-preinstall.service during the first hours after boot
-# (ARCHITECTURE §7.1). Enabled by 80-apex.preset.
-#
-# The service also runs once at boot, right after network-online.target, which on a
-# first boot is usually before any network exists (no Ethernet port, and Wi-Fi is joined
-# in GNOME Initial Setup). `flatpak preinstall` then installs nothing and exits 0, so
-# without these retries Bazaar and Firefox would only arrive at the next boot or at the
-# next apex-flatpak-update.service run on AC power.
-#
-# Each retry is cheap: once every listed app is installed (or was removed by the user),
-# `flatpak preinstall` makes no network request. A retry that fires while a run is still
-# going (the first-boot download) joins that run instead of starting a second one. The
-# boot times are monotonic, so time spent suspended does not count.
+# A first boot usually has no network until Wi-Fi is joined in Initial Setup, and then
+# `flatpak preinstall` installs nothing and still exits 0. Time suspended does not count.
 
 [Unit]
 Description=Retry the Flatpak preinstall after boot

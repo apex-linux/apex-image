@@ -1,27 +1,13 @@
-# Apex image: packages built by Apex itself.
-#
-# Format: one binary package name per line; everything after '#' is a comment.
-# These come from the local repository the Containerfile's `repos` stage generates
-# from the build-context directory rpms/ (`image.sh context` fills it from the builder
-# VM's _build/rpms and _build/libfprint). That repository has priority 1, so it wins
-# over the Fedora repositories inside the single build-rootfs depsolve.
-#
-# The Fedora packages Apex rebuilds (gnome-shell, and the Fedora-signed mutter it is
-# pinned to) are not listed here: the rebuild lane's lock admits them to that
-# repository at their locked builds (packaging/README.md), and gnome.txt installs them.
+# Apex's own packages, one per line ('#' starts a comment), from the priority-1 local
+# repository the repos stage makes of rpms/. The Fedora packages the rebuild lane
+# rebuilds (gnome-shell, and the mutter it is pinned to) come through its lock instead.
 
-# apexctl, apex-updated, apex-boot-assess and their units, D-Bus and polkit files
-# (docs/specs/M1-IMPLEMENTATION.md section 2). Not in Fedora: the local repo must
-# provide it, or the compose fails.
 apex
 
-# The Apex desktop data (packaging/apex-desktop.spec): the Apex GSettings schema, which
-# the layer in the rebuilt gnome-shell needs (without it the shell runs in safe mode),
-# and the shell's crash guard (ADR 0014).
+# The layer's GSettings schema (without it the shell runs in safe mode) and the shell's
+# crash guard.
 apex-desktop
 
-# The ELAN 04f3:0c6e fix (ADR 0006): Fedora's SRPM rebuilt with packaging/libfprint
-# patches and a `.apex1` release suffix. When the rebuild degrades (exit 3), rpms/ has
-# no libfprint, Fedora's stock build is installed instead and the final stage records
-# `fingerprint` in the manifest's degraded list.
+# The ELAN 04f3:0c6e fix. When its rebuild degrades, rpms/ has none and Fedora's build
+# is installed (degraded=fingerprint).
 libfprint

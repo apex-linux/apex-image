@@ -1,26 +1,9 @@
-# Apex image: compose-time exclude guards (ADR 0007).
-#
-# Format: one binary package name per line (exact names, no globs: rpm-ostree matches
-# exclude-packages by name); everything after '#' is a comment. image/Containerfile
-# passes each line as `--exclude <name>` to build-rootfs (and as dnf5 excludepkgs in
-# the COMPOSE=dnf fallback). An excluded package can then not enter the image by any
-# path: if something we install hard-requires it, the depsolve fails loudly.
-#
-# RULE: never list a hard requirement (including a satisfied conditional
-# requirement) of something we install. Such packages go into
-# image/audit/legacy-allowlist.txt instead. Known cases on F45:
-#   - gdm hard-requires xorg-x11-xinit, which requires setxkbmap, xhost, xmodmap,
-#     xorg-x11-xauth and xrdb;
-#   - gnome-session-wayland-session hard-requires xorg-x11-server-Xwayland;
-#   - ibus requires `(ibus-gtk3 if gtk3)`, and gtk3 is present, so ibus-gtk3 is required;
-#   - gnome-shell hard-requires xdg-desktop-portal-gtk and xdg-user-dirs-gtk.
-# The list was checked with an approximate depsolve of base.txt + gnome.txt +
-# apex.txt against the F45 repodata on 2026-09-24.
-#
-# Names that no longer exist in F45 (cheese, retired) are not listed: an exclude on a
-# missing name guards nothing. image/checks/legacy.sh still bans them by name.
+# Exact names, one per line ('#' starts a comment): rpm-ostree matches exclude-packages
+# by name. Never list a hard requirement, conditional ones included, of anything
+# installed: the depsolve would fail. Such packages go into the legacy allowlist.
+# Names F45 no longer has (cheese) guard nothing; image/checks/legacy.sh bans them.
 
-# --- X11 server and drivers (Xwayland stays; the Xorg server never ships) ----------
+# Xwayland stays; the Xorg server never ships.
 xorg-x11-server-Xorg
 xorg-x11-drv-libinput
 xorg-x11-drv-amdgpu
@@ -31,25 +14,24 @@ xorg-x11-drv-wacom
 xorg-x11-drv-qxl
 xorg-x11-drv-vmware
 
-# --- GNOME Classic session --------------------------------------------------------
 gnome-classic-session
 
-# --- Package managers that do not belong on an image-based OS ---------------------
+# Package managers do not belong on an image-based OS.
 PackageKit
 PackageKit-gtk3-module
 PackageKit-command-not-found
 gnome-software
 gnome-software-rpm-ostree
 
-# --- Secrets: oo7 replaces gnome-keyring ------------------------------------------
+# oo7 replaces gnome-keyring.
 gnome-keyring
 gnome-keyring-pam
 
-# --- Boot assessment is apex-boot-assess (ADR 0009) -------------------------------
+# apex-boot-assess replaces greenboot.
 greenboot
 greenboot-default-health-checks
 
-# --- Legacy GTK3 applications with GTK4 replacements (ADR 0007) -------------------
+# GTK3 applications with GTK4 replacements.
 gnome-terminal
 gnome-terminal-nautilus
 gedit
@@ -63,11 +45,8 @@ gnome-boxes
 gnome-connections
 gnome-color-manager
 
-# --- Legacy toolkits and X11 input-method plumbing --------------------------------
 qt5-qtbase
-# GTK2 has no Wayland backend: every consumer would run under Xwayland. Nothing we
-# install requires it (ibus has only `(ibus-gtk2 if gtk2)`); image/checks/legacy.sh
-# also flags any GTK2 consumer, with no allowlist entries.
+# GTK2 has no Wayland backend; ibus only has (ibus-gtk2 if gtk2).
 gtk2
 ibus-gtk2
 ibus-xinit
@@ -75,13 +54,9 @@ ibus-setup
 imsettings
 im-chooser
 
-# UEFI only: grub2-pc cannot be excluded (the minimal manifest installs `grub2`, which
-# only grub2-pc provides). The image drops bootupd's BIOS component instead (the
-# Containerfile removes /usr/lib/bootupd/updates/BIOS.json; image/checks/system.sh).
+# grub2-pc cannot be excluded: the minimal manifest's grub2 is only in it. The image
+# removes bootupd's BIOS component instead.
 
-# --- Other legacy guards ----------------------------------------------------------
-# tuned-ppd is the ppd-service provider; keep the choice deterministic.
+# tuned-ppd provides ppd-service; this keeps the choice deterministic.
 power-profiles-daemon
-# Legacy iptables (same guard as base-images; NetworkManager-initscripts-ifcfg-rh no
-# longer exists in F45).
 iptables-legacy

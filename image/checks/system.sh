@@ -1,39 +1,20 @@
 #!/bin/sh
-# System defaults that INSTALL.md and RECOVERY.md rely on on the installed laptop.
-#
-#   - journald keeps the journal across reboots: the effective Storage= of journald.conf
-#     and its drop-ins is "persistent". With the default, auto, logs live only in /run
-#     unless /var/log/journal exists, and nothing in the image creates it, so
-#     `journalctl -b -1` and reading /var/log/journal from a live USB (RECOVERY.md)
-#     would find nothing;
-#   - exactly one NTP client is enabled, out of the units listed in ntp-units.d (the
-#     same lists timedated uses for Settings' "Automatic Date & Time"): none leaves the
-#     clock wrong after every Windows session (local-time RTC, ADR 0010) and after a
-#     CMOS reset, two fight over the clock;
-#   - the commands the runbooks run on the installed system exist;
-#   - the image is UEFI-only: bootupd has no BIOS component, which would otherwise run
-#     grub2-install --target i386-pc onto the laptop's disk (grub2-pc itself stays
-#     installed: the minimal manifest requires `grub2`, which only it provides).
-#
-# Environment: ROOT (see lib/common.sh).
+# What the install and recovery runbooks rely on: a persistent journal, exactly one NTP
+# client, a UEFI-only bootupd and the commands they run.
 set -eu
 CHECK_NAME=system
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$APEX_CHECKS_DIR/lib/common.sh"
 
-# Commands INSTALL.md §9 and RECOVERY.md run on the installed system.
 RUNBOOK_COMMANDS='tar passwd journalctl busctl bootc cryptsetup grub2-editenv efibootmgr findmnt lsblk mount'
 
-# systemd configuration directories in priority order (systemd.syntax(7)). /run is left
-# out: during the image build it holds only the build's own mounts.
+# In priority order (systemd.syntax(7)). Not /run: during the build it holds only mounts.
 CONF_DIRS='/etc/systemd /usr/local/lib/systemd /usr/lib/systemd'
 
 make_tmpdir
 
-# --- journald Storage= -----------------------------------------------------------
-# The main file is the first journald.conf found in CONF_DIRS; then the drop-ins of
-# every journald.conf.d, sorted by file name, where a name in a higher-priority
-# directory hides the same name in a lower one. The last Storage= in [Journal] wins.
+# The first journald.conf, then every journald.conf.d drop-in by file name; a name in a
+# higher-priority directory hides the same name in a lower one.
 : >"$TMPD/journald-files"
 for d in $CONF_DIRS; do
     f=$(rootpath "$d/journald.conf")
@@ -80,8 +61,6 @@ else
     fail "journald Storage=${storage:-auto (the default)}, not persistent: the journal is lost at every reboot (files: ${files:-none})"
 fi
 
-# --- NTP -------------------------------------------------------------------------
-# is_enabled UNIT: prints the enablement state (systemctl works offline on ROOT).
 is_enabled() {
     if [ "$ROOT" = / ]; then
         systemctl is-enabled "$1" </dev/null 2>/dev/null || true
@@ -113,14 +92,12 @@ else
     esac
 fi
 
-# --- UEFI only --------------------------------------------------------------------
 if [ -e "$(rootpath /usr/lib/bootupd/updates/BIOS.json)" ]; then
     fail "bootupd has a BIOS component (/usr/lib/bootupd/updates/BIOS.json): bootc install would run grub2-install --target i386-pc"
 else
     pass "bootupd has no BIOS component"
 fi
 
-# --- Runbook commands ------------------------------------------------------------
 for c in $RUNBOOK_COMMANDS; do
     if [ -x "$(rootpath "/usr/bin/$c")" ] || [ -x "$(rootpath "/usr/sbin/$c")" ]; then
         pass "command present: $c"

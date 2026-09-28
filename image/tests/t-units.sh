@@ -26,7 +26,7 @@ printf '%s\n' "$*" >>"$FAKE_FLATPAK_LOG"
 EOF
 chmod 0755 "$BIN"/*
 
-# unit_run UNIT KEY INDEX: run that command line with /usr/bin/{busctl,getent,flatpak}
+# unit_run UNIT KEY INDEX: runs that Exec line with /usr/bin/{busctl,getent,flatpak}
 # pointed at the fakes.
 unit_run() {
     run env FAKE_FLATPAK_LOG="$T/flatpak.log" FAKE_PASSWD="$T/passwd" \
@@ -35,11 +35,9 @@ unit_run() {
         /usr/bin/flatpak="$BIN/flatpak" /usr/bin/sh="$(command -v "$SH")"
 }
 
-# The fakes read these from the environment.
 FAKE_METERED='' FAKE_GETENT_FAIL=''
 export FAKE_METERED FAKE_GETENT_FAIL
 
-# --- Metered gate: same in both services (review finding: missing on the preinstall) --
 for unit in apex-flatpak-preinstall.service apex-flatpak-update.service; do
     for m in 1 3; do
         FAKE_METERED=$m
@@ -56,7 +54,6 @@ for unit in apex-flatpak-preinstall.service apex-flatpak-update.service; do
     expect_rc "$unit: runs when NetworkManager cannot be asked" 0
 done
 
-# --- Unused-runtime cleanup (review finding: it removed per-user apps' runtimes) ------
 mkdir -p "$T/home/alice" "$T/home/bob" "$T/root"
 cat >"$T/passwd" <<EOF
 root:x:0:0:root:$T/root:/bin/bash
@@ -97,7 +94,6 @@ FAKE_GETENT_FAIL=''
 expect_rc "getent failing: the step succeeds" 0
 if [ -e "$T/flatpak.log" ]; then not_ok "getent failing: nothing is uninstalled"; else ok "getent failing: nothing is uninstalled"; fi
 
-# --- Timers ------------------------------------------------------------------------
 expect_file "the preinstall is retried after boot" '^OnBootSec=5min$' "$U/apex-flatpak-preinstall.timer"
 expect_file "the last retry is 4 h after boot" '^OnBootSec=4h$' "$U/apex-flatpak-preinstall.timer"
 if command -v systemd-analyze >/dev/null 2>&1; then

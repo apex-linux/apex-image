@@ -1,7 +1,5 @@
 #!/bin/sh
-# image/checks/desktop.sh: the rebuilt shell as the lane locked it, the Apex theme, the
-# mutter pin, rpm -V, no extensions, no dev-loop or fault-injection setting, the Apex
-# schema and the crash guard. The schema and the units are the committed ones.
+# image/checks/desktop.sh on fake roots with the committed schema and crash guard units.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found (the fake rpm)"
@@ -13,9 +11,7 @@ DESKTOP=$REPO_ROOT/desktop
 SHA=$(printf '%064d' 0 | tr 0 a)
 KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
 
-# lock FILE STATE: an rpms.lock with the gnome-shell family in STATE; built and held
-# families have the four locked RPMs.
-lock() {
+write_lane_lock() {
     {
         printf '# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")\n'
         printf 'family gnome-shell %s gnome-shell-51.0-1.fc45-s0123456789ab\n' "$2"
@@ -30,9 +26,8 @@ lock() {
     } >"$1"
 }
 
-# rpmdb FILE [NAME.FIELD=VALUE...]: the fake rpm database of an image with the Apex
-# gnome-shell .apex1 and Fedora's signed mutter; each edit sets one field (a JSON value
-# when it starts with [ or ").
+# rpmdb FILE [NAME.FIELD=VALUE...]: each edit sets one field, as JSON when it starts
+# with [ or ".
 rpmdb() {
     python3 - "$@" <<'PY'
 import json, sys
@@ -54,14 +49,13 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
 PY
 }
 
-# mkroot NAME [STATE]: a root as the image build leaves it (the lock in STATE, default
-# built), with the committed schema and crash guard units; prints its path.
+# mkroot NAME [LOCK_STATE]: prints the path of a root as the image build leaves it.
 mkroot() {
     r=$T/$1
     mkdir -p "$r/usr/share/apex" "$r/usr/share/gnome-shell/extensions" \
         "$r/usr/share/glib-2.0/schemas" "$r/usr/lib/systemd/user" "$r/usr/share/doc/glib2" \
         "$r/usr/lib64" "$r/etc/environment.d"
-    lock "$r/usr/share/apex/rpms.lock" "${2:-built}"
+    write_lane_lock "$r/usr/share/apex/rpms.lock" "${2:-built}"
     # A resource stores each sheet uncompressed between binary headers.
     printf 'GVariant\000\000\000\000/*! apex-shell-theme light */\n.apex-theme-marker {\n  color: #16161a; }\n\000\000/*! apex-shell-theme dark */\n\000/*! apex-shell-structure */\n\000' \
         >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
@@ -105,7 +99,6 @@ desktop held
 expect_rc "a held family (the last good build) passes" 0
 expect_out "and says so" '^PASS desktop: gnome-shell 51\.0-1\.fc45\.apex1 is an Apex build \(the family is held\)$'
 
-# The lock.
 r=$(mkroot nolock)
 rm "$r/usr/share/apex/rpms.lock"
 desktop nolock
@@ -122,8 +115,6 @@ desktop unknownstate
 expect_rc "a gnome-shell family in an unknown state fails (no shell check is skipped silently)" 1
 expect_out "and names the state" "^FAIL desktop: the lane's gnome-shell family is in the unknown state 'pending'"
 
-# The compose took another build than the lane locked (Fedora's, through a missing
-# exclude): the NEVRA and the release checks catch it.
 r=$(mkroot fedorashell)
 rpmdb "$T/fedorashell.db" gnome-shell.evr=51.0-1.fc45 'gnome-shell.requires=["mutter(x86-64) >= 51.0"]'
 desktop fedorashell
@@ -132,14 +123,12 @@ expect_out "names the locked NEVRA" '^FAIL desktop: gnome-shell: installed gnome
 expect_out "and the release" '^FAIL desktop: gnome-shell 51\.0-1\.fc45 is not an \.apexN build'
 expect_out "and the missing pin" '^FAIL desktop: gnome-shell has no Requires: mutter\(x86-64\) = EVR'
 
-# A .apexN.M build (a pin-only rebuild) is an Apex build too.
 r=$(mkroot pinonly)
 sed -i 's/51\.0-1\.fc45\.apex1/51.0-1.fc45.apex1.2/g' "$r/usr/share/apex/rpms.lock"
 rpmdb "$T/pinonly.db" gnome-shell.evr=51.0-1.fc45.apex1.2 gnome-shell-common.evr=51.0-1.fc45.apex1.2
 desktop pinonly
 expect_rc "an .apexN.M build passes" 0
 
-# mutter moved without the shell (it is not the pinned build), or lost Fedora's signature.
 r=$(mkroot mutter)
 sed -i 's/mutter-0:51\.0-1\.fc45/mutter-0:51.0-2.fc45/; s/mutter-51\.0-1\.fc45/mutter-51.0-2.fc45/' "$r/usr/share/apex/rpms.lock"
 rpmdb "$T/mutter.db" mutter.evr=51.0-2.fc45
@@ -153,28 +142,24 @@ expect_rc "a mutter without Fedora's signature fails" 1
 expect_out "unsigned" '^FAIL desktop: mutter is not signed by Fedora.s key'
 expect_out "another key" '^FAIL desktop: mutter-common is not signed by Fedora.s key'
 
-# The theme.
 r=$(mkroot nodark)
 printf 'GVariant\000/*! apex-shell-theme light */\n\000/*! apex-shell-structure */\n' >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
 desktop nodark
 expect_rc "a theme without the dark marker fails" 1
 expect_out "and names it" '^FAIL desktop: .*lacks /\*! apex-shell-theme dark \*/'
 
-# rpm -V: a theme resource replaced after the compose.
 r=$(mkroot modified)
 rpmdb "$T/modified.db" 'gnome-shell.modified=["/usr/share/gnome-shell/gnome-shell-theme.gresource"]'
 desktop modified
 expect_rc "a modified gnome-shell file fails" 1
 expect_out "rpm -V shows it" '^FAIL desktop: rpm -V gnome-shell gnome-shell-common \(exit 1\): S\.5\.\.\.\.\.\. +/usr/share/gnome-shell/gnome-shell-theme\.gresource'
 
-# Extensions.
 r=$(mkroot extension)
 mkdir "$r/usr/share/gnome-shell/extensions/dash-to-dock@micxgx.gmail.com"
 desktop extension
 expect_rc "a shell extension fails" 1
 expect_out "and names it" '^FAIL desktop: shell extensions ship .*dash-to-dock@micxgx\.gmail\.com'
 
-# The dev loop and the fault injection in configuration.
 bad_setting() {
     r=$(mkroot "$1")
     mkdir -p "$(dirname -- "$r/$2")"
@@ -190,7 +175,7 @@ bad_setting unsafe 'usr/lib/systemd/user/org.gnome.Shell@.service.d/60-dev.conf'
 bad_setting fault usr/lib/environment.d/50-test.conf 'APEX_SHELL_TEST_FAULT=abort-after-enable' \
     "APEX_SHELL_TEST_FAULT in the user environment"
 bad_setting profile etc/profile.d/test.sh 'export APEX_SHELL_TEST_FAULT=enable' "APEX_SHELL_TEST_FAULT in a profile script"
-# A tree grep cannot search is not a pass (here /etc is missing, whoever runs the test).
+# Without /etc, grep exits 2 whoever runs the test.
 r=$(mkroot unsearched)
 rm -rf "${r:?}/etc"
 desktop unsearched
@@ -198,7 +183,6 @@ expect_rc "a scan with grep errors fails" 1
 expect_out "and says so" '^FAIL desktop: grep could not search every file under /usr and /etc \(exit 2\)'
 expect_no_out "with no pass line for the scan" '^PASS desktop: no text file under /usr or /etc'
 
-# The Apex schema.
 r=$(mkroot noschema)
 rm "$r"/usr/share/glib-2.0/schemas/*.gschema.xml
 desktop noschema
@@ -210,7 +194,6 @@ desktop badschema
 expect_rc "a schema that fails --strict fails" 1
 expect_out "and says so" '^FAIL desktop: the Apex schema fails --strict'
 
-# The crash guard.
 r=$(mkroot noguard)
 rm "$r/usr/lib/systemd/user/org.gnome.Shell@.service.d/50-apex.conf"
 desktop noguard
@@ -236,7 +219,6 @@ desktop badunit
 expect_rc "a guard unit that does not verify fails" 1
 expect_out "systemd-analyze names it" '^FAIL desktop: systemd-analyze --user verify'
 
-# Stock: the owner shipped Fedora's shell at a hold limit (degraded=shell).
 r=$(mkroot stock stock)
 printf 'GVariant\000stage { color: #fff; }\n' >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
 fedora='RSA/SHA256, Mon Sep 14 2026, Key ID 655a4b02f577861e'

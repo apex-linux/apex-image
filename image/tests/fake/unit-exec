@@ -1,17 +1,12 @@
 #!/usr/bin/python3
-"""Print the command line of one Exec*= setting of a unit file, as systemd runs it.
+"""Print, NUL-terminated, or with --run execute one Exec*= line of a unit file.
 
     unit-exec [--run] UNIT_FILE KEY INDEX [FROM=TO ...]
 
-KEY is ExecStart, ExecCondition, ...; INDEX counts that key's lines from 0. The
-arguments are printed NUL-terminated, or with --run executed (keeping the exit status).
-Each FROM=TO replaces a path prefix in the result (to point /usr/bin/x at a test fake).
-
-Parsing follows systemd.syntax(7) and systemd.service(5) as far as the Apex units need:
-a line ending in a backslash continues on the next one (the backslash becomes a space),
-"%%" is a literal "%", words are split on whitespace with single and double quotes, and
-"$$" is a literal "$". Other specifiers and variable references are rejected, so a test
-never runs something systemd would expand differently.
+INDEX counts KEY's lines from 0; each FROM=TO replaces a path prefix in the words.
+Parsing follows systemd.syntax(7) and systemd.service(5) as far as the Apex units need;
+other specifiers and variable references are rejected, so a test never runs something
+systemd would expand differently.
 """
 
 import os

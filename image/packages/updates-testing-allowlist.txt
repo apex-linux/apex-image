@@ -1,50 +1,13 @@
-# Apex image: packages admitted from Fedora 45 updates-testing before GA.
-#
-# Source: Bodhi update FEDORA-2026-48a7996f9c (GNOME 51.0; 45 builds, status
-# "testing", critpath, submitted 2026-09-21), fetched 2026-09-24 from
-# https://bodhi.fedoraproject.org/updates/FEDORA-2026-48a7996f9c, with the binary
-# RPMs of each build listed from Koji and checked against the updates-testing repodata.
-#
-# Format: one binary package per line, pinned as name-version-release (the epoch is
-# left out: a Koji NVR names exactly one build); everything after '#' is a comment.
-# The Containerfile's repos stage rejects any other form, writes the list into
-# `includepkgs=` of the dedicated repo stanza `apex-gnome51` (updates-testing's
-# metalink; `updates-testing` itself stays disabled) and checks that updates-testing
-# offers exactly these builds. Any other build of these packages, whether the update
-# was edited or another update superseded one of them, fails the build until this list
-# is reviewed and changed (ARCHITECTURE 3: an NEVRA allowlist).
-#
-# Only runtime subpackages we install (directly or as hard dependencies) are listed;
-# -devel, -debuginfo, -tests and -doc subpackages are left out on purpose. All
-# subpackages of one build that we install must be listed together, or the depsolve
-# mixes 51.0 and 51~rc subpackages and fails on their exact-version requirements.
-#
-# Lifecycle (image/Containerfile, repos stage):
-# - GA_REACHED=1: the stanza is not generated.
-# - Once F45 GA + 7 days has passed while this list still has entries, the build fails
-#   (ARCHITECTURE 3): empty the list.
-# - When none of these builds is in updates-testing any more, the stanza is dropped
-#   with a warning only if the stable repositories (fedora, updates) carry every one of
-#   these packages at the same or a newer version-release. Otherwise the build fails:
-#   the update was unpushed or withdrawn, or it went stable but the stable repodata has
-#   not caught up yet, and building would downgrade GNOME to the 51~rc builds.
-# - A failed query of the repositories fails the build.
-#
-# Builds of the update that are NOT admitted (we do not ship them):
-#   gnome-chess, gnome-connections (GTK3), gnome-console (Ptyxis is the terminal),
-#   gnome-keyring (replaced by oo7), gnome-kiosk, gnome-maps, gnome-remote-desktop
-#   (only a Settings weak dependency), gnome-shell-extensions (GNOME Classic), gnote,
-#   quadrapassel, rygel, shotwell, sysprof; and libdex and libshumate, which nothing we
-#   install requires (an approximate depsolve on 2026-09-24 did not pull them in).
-#
-# Epochs, for reference: epiphany, epiphany-runtime and gdm are epoch 1, the rest 0, in
-# both updates-testing and the stable repositories (2026-09-24).
+# Builds admitted from updates-testing before F45 GA, as name-version-release, one per
+# line ('#' starts a comment): Bodhi FEDORA-2026-48a7996f9c, GNOME 51.0. The repos stage
+# fails unless updates-testing offers exactly these builds. List every installed
+# subpackage of a build, or the depsolve mixes 51.0 with 51~rc and fails.
 
 # adwaita-icon-theme-51.0-1.fc45
 adwaita-icon-theme-51.0-1.fc45
 adwaita-cursor-theme-51.0-1.fc45
 dconf-51.0-1.fc45
-# epiphany-51.0-2.fc45 (security rebuild, FEDORA-2026-91259c13b9, checked 2026-09-29)
+# epiphany-51.0-2.fc45, a security rebuild from FEDORA-2026-91259c13b9
 epiphany-51.0-2.fc45
 epiphany-runtime-51.0-2.fc45
 # gcr-4.4.1-1.fc45
@@ -59,7 +22,7 @@ gnome-calendar-51.0-1.fc45
 gnome-characters-51.0-1.fc45
 gnome-clocks-51.0-1.fc45
 gnome-contacts-51.0-1.fc45
-# gnome-control-center-51.0-2.fc45 (security rebuild, FEDORA-2026-91259c13b9, checked 2026-09-29)
+# gnome-control-center-51.0-2.fc45, a security rebuild from FEDORA-2026-91259c13b9
 gnome-control-center-51.0-2.fc45
 gnome-control-center-filesystem-51.0-2.fc45
 # gnome-desktop3-51.0-1.fc45 (gnome-desktop4 hard-requires gnome-desktop3)

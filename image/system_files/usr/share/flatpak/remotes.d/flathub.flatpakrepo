@@ -1,13 +1,6 @@
-# Flathub, the app channel for Apex (ARCHITECTURE §7.1).
-#
-# Content below this header is the official file from
-# https://dl.flathub.org/repo/flathub.flatpakrepo, unchanged (fetched 2026-09-24,
-# sha256 3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a).
-# flatpak adds every remotes.d file as a system remote, named after the file, the
-# first time it opens the system installation; a remote the user later deletes is
-# not re-added. The file lives in /usr/share/flatpak/remotes.d, which flatpak 1.18
-# reads next to /etc/flatpak/remotes.d, because Apex keeps /etc free of vendor files
-# (ARCHITECTURE §7.3). No CollectionID is set, so preinstall.d entries must not set one.
+# https://dl.flathub.org/repo/flathub.flatpakrepo unchanged below this header (sha256
+# 3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a). flatpak names the
+# remote after this file.
 [Flatpak Repo]
 Title=Flathub
 Url=https://dl.flathub.org/repo/

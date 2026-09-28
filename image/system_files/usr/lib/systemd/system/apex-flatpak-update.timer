@@ -1,16 +1,5 @@
-# Trigger for apex-flatpak-update.service (ARCHITECTURE §7.1). Enabled by
-# 80-apex.preset.
-#
-# Every 6 hours rather than once a day: systemd records a timer run when the timer
-# fires, before the service's conditions are checked, so a run skipped on battery
-# (ConditionACPower) or on a metered network would otherwise use up the whole day. With
-# four slots a day a skipped run is retried a few hours later. A run with nothing to do
-# only fetches the Flathub summary.
-#
-# Persistent= runs a missed slot at the next boot or resume (the first boot has no
-# record yet and waits for the next slot), and RandomizedDelaySec= spreads the start so
-# it does not fire at the same moment as other jobs. The service itself checks AC power
-# and metered networks.
+# Every 6 hours, not daily: systemd records a run before the service's conditions are
+# checked, so one run skipped on battery or a metered network would use up the day.
 
 [Unit]
 Description=Update system Flatpak apps every 6 hours

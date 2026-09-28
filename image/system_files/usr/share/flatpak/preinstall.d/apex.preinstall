@@ -1,20 +1,9 @@
-# Flatpak apps that ship with Apex (ARCHITECTURE §7.1; flatpak-preinstall(1),
-# flatpak 1.18).
-#
-# apex-flatpak-preinstall.service runs `flatpak preinstall` on every boot. It installs
-# what is listed here and not yet installed, and removes apps that it installed
-# earlier and that were later dropped from this file. An app the user uninstalls is
-# never installed again.
-#
-# Branch must be given: flatpak assumes "master", and Flathub publishes apps on
-# "stable". There is no CollectionID, because the Flathub remote has none; flatpak
-# takes the app from the first enabled remote that has it, so the image must not add
-# other remotes (see flatpak-add-fedora-repos.service in 80-apex.preset).
+# Branch: flatpak assumes "master", Flathub publishes "stable". No CollectionID, as the
+# Flathub remote has none: the app comes from the first remote that has it.
 
-# Bazaar: Flathub app store, GNOME Circle, GTK4/libadwaita. It replaces GNOME Software.
+# The app store, instead of GNOME Software.
 [Flatpak Preinstall io.github.kolunmi.Bazaar]
 Branch=stable
 
-# Firefox: the second browser, for web development (Epiphany is in the image).
 [Flatpak Preinstall org.mozilla.firefox]
 Branch=stable

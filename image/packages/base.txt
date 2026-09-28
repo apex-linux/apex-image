@@ -1,149 +1,94 @@
-# Apex image: base system packages.
-#
-# Format: one binary package name per line; everything after '#' is a comment.
-# image/Containerfile turns each line into `--install <name>` for
-# `bootc-base-imagectl build-rootfs --manifest=minimal` (and into the dnf5 install
-# set of the COMPOSE=dnf fallback). Weak dependencies are OFF (the minimal manifest
-# sets `recommends: false`), so anything we rely on must be listed here or be a hard
-# dependency of something listed. The minimal manifest already provides the kernel,
-# systemd, bootc, ostree, bootupd, dnf, SELinux, tpm2-tools and dracut.
-#
-# Every name was checked against the Fedora 45 x86_64 repodata (development/45
-# Everything plus updates-testing) on 2026-09-24.
+# One package per line; '#' starts a comment. Weak dependencies are off: what the image
+# relies on is listed here or hard-required by something listed. The minimal manifest
+# already has the kernel, systemd, bootc, ostree, bootupd, dnf, SELinux and dracut.
 
-# --- Hardware firmware ------------------------------------------------------------
-# Must include every hardware/m7400qc/profile.toml [firmware].packages entry
-# (enforced by crates/apexctl/tests/profile_repo.rs). iwlwifi-mvm-firmware hard-requires
-# iwlbluetooth-firmware (AX200 Bluetooth, intel/ibt-20-1-3.*).
+# Must include hardware/m7400qc/profile.toml [firmware].packages (crates/apexctl tests).
 linux-firmware
 amd-gpu-firmware
 amd-ucode-firmware
+# Hard-requires iwlbluetooth-firmware (AX200 Bluetooth).
 iwlwifi-mvm-firmware
-# No alsa-sof-firmware: the internal mic is the ALC294 DMIC on pin 0x12, not the
-# Cezanne ACP (research F-ALC-13), so nothing on this machine loads SOF firmware.
+# No alsa-sof-firmware: the internal mic is the ALC294 DMIC, not the Cezanne ACP.
 
-# --- Boot, storage and recovery ---------------------------------------------------
-# ADR 0010: root is btrfs inside LUKS2, unlocked in the initramfs by systemd-cryptsetup.
-# The Containerfile's dracut call adds the crypt and systemd-cryptsetup modules (and
-# fails if either cannot be installed); image/checks/kernel.sh verifies the result.
-# cryptsetup is the admin and recovery tool and brings cryptsetup-libs, which
-# systemd-cryptsetup loads at run time. On F45, /usr/bin/systemd-cryptsetup ships in
-# systemd-udev (repodata, 2026-09-24); dracut hard-requires it too, but it is named
-# here because the LUKS2 root depends on it.
+# The admin and recovery tool for the LUKS2 root; its cryptsetup-libs is what
+# systemd-cryptsetup loads at run time.
 cryptsetup
+# Ships /usr/bin/systemd-cryptsetup on F45.
 systemd-udev
 btrfs-progs
 plymouth
 # Resolves to plymouth-theme-spinner, which also carries the bgrt (firmware logo) theme.
-# The splash (and Plymouth's graphical LUKS prompt) needs `rhgb` on the kernel command
-# line; /usr/lib/bootc/kargs.d/10-apex.toml sets it.
 plymouth-system-theme
 zram-generator-defaults
-# Formatting USB drives as exFAT from Disks/Files (udisks2 only recommends it).
+# exFAT formatting from Disks and Files: udisks2 only recommends it.
 exfatprogs
 
-# --- Networking and Bluetooth -----------------------------------------------------
 NetworkManager
 NetworkManager-wifi
-# Bluetooth PAN/DUN tethering to a phone; no GTK.
 NetworkManager-bluetooth
-# NetworkManager-wifi accepts wpa_supplicant or iwd; name the one we test.
+# NetworkManager-wifi accepts wpa_supplicant or iwd; name the one that is tested.
 wpa_supplicant
 bluez
 
-# --- Time ----------------------------------------------------------------------------
-# The minimal manifest has no NTP client, and systemd-timesyncd (in systemd-udev) is
-# disabled by Fedora's 90-default.preset. chrony is Fedora's default: its preset line
-# enables chronyd.service, 80-apex.preset repeats that, and image/checks/system.sh fails
-# unless exactly one NTP unit is enabled. It also backs Settings' "Automatic Date &
-# Time" (ntp-units.d/50-chronyd.list), and its NetworkManager dispatcher hooks switch
-# sources on and off with the network.
+# The minimal manifest has no NTP client.
 chrony
 
-# --- Audio ------------------------------------------------------------------------
 pipewire
 pipewire-pulseaudio
 pipewire-alsa
-# pipewiresrc/pipewiresink for GStreamer: Snapshot's camera and screen casting.
+# pipewiresrc and pipewiresink: Snapshot's camera and screen casting.
 pipewire-gstreamer
 wireplumber
 alsa-ucm
-# amixer/alsactl/alsamixer: needed by the ALC294 procedures in docs/hardware.
+# The ALC294 procedures in docs/hardware use amixer, alsactl and alsamixer.
 alsa-utils
 
-# --- Power, sensors, firmware updates, biometrics ---------------------------------
-# tuned-ppd provides ppd-service (the power-profiles D-Bus API GNOME uses).
+# Provides ppd-service, the power-profiles D-Bus API GNOME uses.
 tuned-ppd
 switcheroo-control
 upower
 iio-sensor-proxy
 fwupd
-# Signed EFI helper for UEFI capsule updates through shim (BIOS/EC firmware on LVFS).
+# Signed EFI helper for capsule updates through shim.
 fwupd-efi
-# fprintd only; fprintd-pam is deliberately NOT installed (ARCHITECTURE 6.3: no
-# fingerprint in PAM at M1).
+# Deliberately not fprintd-pam: no fingerprint in PAM yet.
 fprintd
 
-# --- Applications platform and developer loop -------------------------------------
 flatpak
 podman
 toolbox
-# Toolbox weak dependencies worth keeping: host CA trust inside toolboxes, and image
-# inspection (also used when debugging signed Apex images on the laptop).
+# Weak dependencies of toolbox worth keeping: host CA trust and image inspection.
 p11-kit-server
 skopeo
 
-# --- Locale and spelling ----------------------------------------------------------
 glibc-langpack-en
 glibc-langpack-vi
 hunspell-en-US
 hunspell-vi
-# libpwquality only recommends the cracklib dictionaries; without them its dictionary
-# check errors out when a password is set (Initial Setup, Settings, passwd).
+# libpwquality only recommends it, and its dictionary check fails without it.
 cracklib-dicts
 
-# --- Event sounds -----------------------------------------------------------------
-# libcanberra (used through GSound by GNOME Shell) only recommends a backend; without
-# one, alert and volume-feedback sounds are silent. pipewire-pulseaudio serves it.
+# libcanberra only recommends a backend: without one, event sounds are silent.
 libcanberra-backend-pulse
 
-# --- Accessibility ----------------------------------------------------------------
 orca
 
-# --- Identity and branding -------------------------------------------------------
-# fedora-release only recommends an identity; name it so the compose is deterministic.
-# The image overlay replaces its /usr/lib/os-release: NAME="Apex" (and PRETTY_NAME,
-# VARIANT_ID=apex) carry the brand, while ID=fedora and VERSION_ID stay, which keeps
-# $releasever, toolbox and bootc tooling working.
+# fedora-release only recommends an identity; this keeps the compose deterministic.
 fedora-release-identity-basic
-# Satisfies system-logos (required by gdm) without Fedora trademarks; Apex images are
-# published, so they must not carry fedora-logos (Fedora trademark guidelines for
-# remixes). generic-logos-httpd is not needed: no web server ships.
+# system-logos without Fedora trademarks, which published images must not carry.
 generic-logos
 
-# --- Administration on the host ---------------------------------------------------
 sudo
 bash-completion
 man-db
 less
 vim-minimal
-# The minimal manifest has no tar, and nothing installed requires it; INSTALL.md §9
-# takes the post-install ESP backup with it (RECOVERY.md §5 restores from that backup).
-# passwd is not listed: F45 ships /usr/bin/passwd in shadow-utils, which accountsservice
-# requires. image/checks/system.sh verifies the commands the runbooks use.
+# Not in the minimal manifest; the install runbook backs up the ESP with it. passwd
+# needs no entry: shadow-utils ships it.
 tar
-# ping and tracepath for network diagnostics.
 iputils
-# Fedora Workstation's systemd-oomd policy (drop-ins for user slices). systemd-oomd
-# itself is in systemd-udev and enabled by Fedora's preset, but without these drop-ins
-# it manages nothing, and a runaway build can drive the desktop into swap on zram
-# until it stalls.
+# Without these drop-ins systemd-oomd manages nothing.
 systemd-oomd-defaults
 openssh-clients
-# sshd exists for the KVM qualification only, and stays off on the laptop:
-# 80-apex.preset disables sshd.service and sshd.socket (the final stage verifies it),
-# and the kernel argument systemd.ssh_auto=no (kargs.d) stops systemd's ssh generator
-# from socket-activating sshd on its AF_UNIX/AF_VSOCK sockets.
-# .github/scripts/qualify.sh turns it on in the guest only, with the install-time
-# kernel argument systemd.wants=sshd.service.
+# For the KVM qualification only: presets and systemd.ssh_auto=no keep sshd off.
 openssh-server

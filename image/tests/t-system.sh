@@ -7,8 +7,8 @@ command -v systemctl >/dev/null 2>&1 || skip_all "systemctl not found (needed fo
 OVERLAY=$IMAGE_DIR/system_files
 COMMANDS='tar passwd journalctl busctl bootc cryptsetup grub2-editenv efibootmgr findmnt lsblk mount'
 
-# mkroot NAME: a root with the overlay's journald drop-in, the NTP units of chrony and
-# systemd-timesyncd with chronyd enabled, and every runbook command; prints its path.
+# mkroot NAME: prints the path of a root with the overlay's journald drop-in, chronyd
+# enabled and systemd-timesyncd not, and every runbook command.
 mkroot() {
     r=$T/$1
     u=$r/usr/lib/systemd/system
@@ -41,14 +41,12 @@ expect_out "journal is persistent through the overlay drop-in" \
     '^PASS system: journald Storage=persistent .*10-apex-persistent\.conf'
 expect_out "chronyd is the one NTP client" '^PASS system: exactly one NTP client is enabled:.*chronyd\.service=enabled'
 
-# Review finding: minimal compose, no drop-in: Storage=auto.
 r=$(mkroot nodropin)
 rm "$r/usr/lib/systemd/journald.conf.d/10-apex-persistent.conf"
 sys_check "$r"
 expect_rc "without the drop-in the check fails" 1
 expect_out "and names the default" '^FAIL system: journald Storage=auto \(the default\)'
 
-# An /etc drop-in with the same name masks the /usr one; a later name overrides it.
 r=$(mkroot masked)
 mkdir -p "$r/etc/systemd/journald.conf.d"
 ln -s /dev/null "$r/etc/systemd/journald.conf.d/10-apex-persistent.conf"
@@ -67,7 +65,6 @@ rm "$r/usr/lib/systemd/journald.conf.d/10-apex-persistent.conf"
 sys_check "$r"
 expect_rc "Storage= outside [Journal] does not count" 1
 
-# Review finding: no NTP client enabled (chrony missing, timesyncd preset off).
 r=$(mkroot nontp)
 rm "$r/etc/systemd/system/multi-user.target.wants/chronyd.service"
 sys_check "$r"
@@ -85,15 +82,12 @@ rm "$r"/usr/lib/systemd/ntp-units.d/*.list
 sys_check "$r"
 expect_rc "no ntp-units.d list fails" 1
 
-# Review finding: tar missing from the image (INSTALL.md §9 ESP backup).
 r=$(mkroot notar)
 rm "$r/usr/bin/tar"
 sys_check "$r"
 expect_rc "a missing runbook command fails" 1
 expect_out "and names it" '^FAIL system: command missing: tar'
 
-# First local install (qualify.sh local): bootupd ran grub2-install --target i386-pc
-# because the image carried BIOS GRUB. The image must be UEFI-only.
 r=$(mkroot bios)
 mkdir -p "$r/usr/lib/bootupd/updates"
 printf '{}\n' >"$r/usr/lib/bootupd/updates/BIOS.json"

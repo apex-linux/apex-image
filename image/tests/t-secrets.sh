@@ -7,7 +7,7 @@ command -v python3 >/dev/null 2>&1 || skip_all "python3 not found (fake rpm)"
 BEGIN='-----BEGIN'
 PEM="$BEGIN PRIVATE KEY-----"
 
-# mkroot NAME: an empty root and a fake rpmdb; prints the root.
+# mkroot NAME: prints the path of an empty root with an empty fake rpmdb.
 mkroot() {
     r=$T/$1
     mkdir -p "$r/usr/share" "$r/etc"
@@ -44,7 +44,6 @@ secrets clean
 expect_rc "a root without keys passes" 0
 expect_out "and finds nothing" '^PASS secrets: no private key blocks found'
 
-# Review finding: keys embedded in text formats were missed.
 r=$(mkroot yaml)
 printf 'tls:\n  key: |\n    %s\n    MIIE\n' "$PEM" >"$r/etc/service.yaml"
 secrets yaml
@@ -70,7 +69,6 @@ printf '%s ENCRYPTED SIGSTORE PRIVATE KEY-----\nabc\n' "$BEGIN" >"$r/etc/cosign.
 secrets cosign
 expect_rc "a cosign key at the start of a line fails" 1
 
-# Review finding: an Apex-built package never excuses a key.
 r=$(mkroot apexpkg)
 mkdir -p "$r/usr/share/apex/tests"
 printf '%s\nMIIE\n' "$PEM" >"$r/usr/share/apex/tests/fixture.key"
@@ -85,7 +83,6 @@ own fprint libfprint /usr/share/fp.pem
 secrets fprint
 expect_rc "a key in a file of the Apex libfprint fails" 1
 
-# A Fedora package's unmodified sample key is accepted; a modified one is not.
 r=$(mkroot fedora)
 mkdir -p "$r/usr/share/doc/openvpn"
 printf '%s\nMIIE\n' "$PEM" >"$r/usr/share/doc/openvpn/client.key"

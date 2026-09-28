@@ -1,18 +1,6 @@
-# Make UPower see the ASUS charge-limit attribute (ARCHITECTURE §6.4).
-#
-# The ACPI battery driver registers BAT0 at boot. asus-nb-wmi loads seconds later and
-# adds charge_control_end_threshold to BAT0 with device_create_file(), which sends no
-# uevent. UPower's 60-upower-battery.rules imports CHARGE_LIMIT from its hwdb only when
-# that attribute exists while a BAT0 event is processed, so without a new event UPower
-# reports ChargeThresholdSupported=false and the battery charges to 100 %.
-#
-# asus-wmi registers its battery hook during probe, so the attribute exists by the
-# time the driver's "bind" event arrives. This rule then asks the kernel for a "change"
-# event on BAT0, and 60-upower-battery.rules runs again with the attribute present.
-# `udevadm trigger` only writes to BAT0's uevent file and returns; it waits for
-# nothing, so it is safe as a short RUN program. It cannot trigger itself: the new
-# event is for power_supply, not platform.
-# upower.service waits for the result (upower.service.d/10-apex-wait-threshold.conf).
+# asus-nb-wmi adds BAT0's charge_control_end_threshold without a uevent, so UPower's
+# 60-upower-battery.rules never sees it: a "change" event on BAT0 after the driver's
+# "bind" runs it again. udevadm trigger returns at once, and the event is not platform's.
 
 ACTION=="bind", SUBSYSTEM=="platform", DRIVER=="asus-nb-wmi", \
   TEST=="/sys/class/power_supply/BAT0", \

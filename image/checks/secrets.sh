@@ -1,25 +1,6 @@
 #!/bin/sh
-# No private keys in the image (ARCHITECTURE 11, THREAT-MODEL: CI secrets must never
-# reach a layer).
-#
-# Scans the whole rootfs for PEM/OpenSSH/PGP/cosign private key blocks:
-# "-----BEGIN <...>PRIVATE KEY" (this covers RSA, EC, PKCS#8, ENCRYPTED, OPENSSH,
-# SIGSTORE/COSIGN and "PGP PRIVATE KEY BLOCK") at the start of a line, after
-# whitespace (an indented YAML block scalar), after a quote or '=' (a JSON, YAML or env
-# string), or after a literal "\n" (a PEM inside a JSON string). A hit is accepted
-# only when
-#   - the file belongs to an installed RPM that is not one of Apex's own packages
-#     (image/packages/apex.txt: they come from the unsigned local repository, and Apex
-#     never ships a private key) and its content is unmodified (rpm -V shows no digest
-#     change): a test fixture or sample shipped by Fedora; or
-#   - its path matches an entry of image/checks/secrets-fixtures.txt (reviewed,
-#     should stay empty).
-# Anything else (a file no package owns, a file of an Apex package, or a package file
-# whose content changed) fails the build. Because CI rechunks the final merged
-# filesystem, what this sees is exactly what the published layers contain.
-#
-# Environment: ROOT, APEX_IMAGE_DIR (see lib/common.sh); SECRETS_FIXTURES overrides the
-# fixture list, APEX_PACKAGES_LIST the list of Apex-built packages.
+# No private key block in the image, except in an unmodified file of a non-Apex package
+# or a reviewed fixture.
 set -eu
 CHECK_NAME=secrets
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -27,15 +8,13 @@ APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 FIXTURES=${SECRETS_FIXTURES:-$APEX_CHECKS_DIR/secrets-fixtures.txt}
 APEX_PACKAGES=${APEX_PACKAGES_LIST:-$APEX_IMAGE_DIR/packages/apex.txt}
-# The marker must follow the start of a line, whitespace, a quote, '=' or a literal
-# "\n": binaries that merely contain the string (ssh-keygen, crypto libraries) keep it
-# after a NUL byte and do not match, while keys embedded in text formats do.
+# Keys embedded in YAML, JSON or env text follow whitespace, a quote, '=' or a literal
+# "\n"; binaries that merely contain the string (ssh-keygen) have a NUL byte there.
 PATTERN='(^|["'"'"'[:space:]=]|\\n)-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----'
 
 make_tmpdir
 
-# Apex's own packages (the unsigned local repository): an RPM owner among them never
-# excuses a key.
+# Apex packages come from the unsigned local repository: owning a file never excuses it.
 if [ -r "$APEX_PACKAGES" ]; then
     read_list "$APEX_PACKAGES" | cut -f1 >"$TMPD/apex-packages"
 else
@@ -43,10 +22,8 @@ else
     : >"$TMPD/apex-packages"
 fi
 
-# Directories to scan: the whole ROOT, minus API/runtime file systems of a running
-# container (/proc, /sys, /dev, /run: not part of the image; /run also holds the build
-# context mounts). Top-level symlinks (/bin, /lib, /home, /ostree...) are skipped
-# because their targets are scanned anyway.
+# /proc, /sys, /dev and /run are not part of the image (/run holds the build context);
+# the targets of top-level symlinks are scanned anyway.
 : >"$TMPD/dirs"
 if [ "$ROOT" = / ]; then
     for d in /* /.[!.]*; do
@@ -67,7 +44,6 @@ case $rc in
     *) warn "grep reported errors (first lines): $(head -n 3 "$TMPD/grep.err" | paste -sd ' ' -)" ;;
 esac
 
-# Fixture globs (path patterns inside ROOT), one per line.
 : >"$TMPD/fixtures"
 if [ -r "$FIXTURES" ]; then
     read_list "$FIXTURES" | cut -f1 >"$TMPD/fixtures"
@@ -90,7 +66,7 @@ while IFS= read -r hit; do
         pass "reviewed fixture: $path"
         continue
     fi
-    rpmq -qf --qf '%{NAME}\n' "$path" 2>/dev/null | grep -v ' ' | sort -u >"$TMPD/owners" || true
+    root_rpm -qf --qf '%{NAME}\n' "$path" 2>/dev/null | grep -v ' ' | sort -u >"$TMPD/owners" || true
     owner=$(paste -sd ',' "$TMPD/owners")
     if [ -z "$owner" ]; then
         fail "private key in a file no package owns: $path"
@@ -101,9 +77,8 @@ while IFS= read -r hit; do
         fail "private key in a file of an Apex-built package ($apex_owner): $path"
         continue
     fi
-    # rpm -V prints "<flags> <attr> <path>" for files that differ; '5' in the third
-    # column of the flags means the content digest changed.
-    changed=$(rpmq -Vf "$path" 2>/dev/null | awk -v p="$path" '
+    # rpm -V prints "<flags> <attr> <path>"; a '5' as the third flag is a changed digest.
+    changed=$(root_rpm -Vf "$path" 2>/dev/null | awk -v p="$path" '
         { f = $NF }
         f == p && ($1 == "missing" || substr($1, 3, 1) == "5") { print "yes" }' || true)
     if [ -n "$changed" ]; then

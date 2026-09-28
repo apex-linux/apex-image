@@ -1,21 +1,13 @@
 #!/usr/bin/python3
-"""A fake dnf5 for the repos-stage test (image/tests/t-repos.sh).
+"""The dnf5 calls of the Containerfile's repos stage, answered from FAKE_DNF_DIR:
 
-It runs inside the test's sandbox, where /etc/yum.repos.d holds the stage's repository
-files, and answers only the calls the Containerfile's repos stage makes. The scenario
-lives in FAKE_DNF_DIR:
-
-  testing.txt   packages of updates-testing: "name epoch version release arch" lines
-  stable.txt    packages of fedora + updates, same format
+  testing.txt   updates-testing: "name epoch version release arch" lines
+  stable.txt    fedora + updates, same format
   fail-testing, fail-stable, fail-repolist, fail-apexprobe
-                when present, that query exits 1 as dnf5 does on a metadata error
+                that query exits 1, as dnf5 does on a metadata error
   ignore-includes
-                when present, an includepkgs list is ignored (libdnf's behaviour when
-                the list matches nothing), to exercise the "extra" guard
-  log           every invocation is appended here, one line each
-
-includepkgs of [apex-gnome51] is read from /etc/yum.repos.d/apex-gnome51.repo; a spec
-matches a package by name or by name-version-release (any epoch), as dnf5 does.
+                an includepkgs list is ignored, as libdnf does when it matches nothing
+  log           every invocation, one line each
 """
 
 import configparser

@@ -1,30 +1,8 @@
-# Apex legacy allowlist (ADR 0007). Read by image/checks/legacy.sh.
-#
-# Format: one entry per line, three TAB-separated fields:
-#   name<TAB>milestone<TAB>reason
-# - name: an installed binary package that legacy.sh flags (it requires or provides
-#   GTK3 or GTK2, requires or provides the Xorg server, belongs to the X11 session
-#   userland, or is banned by name).
-# - milestone: when the entry is expected to go away. A ROADMAP milestone (M1, M1.1,
-#   M2, M3) when Apex work removes it, or F46 when removal depends on upstream or
-#   Fedora and is re-checked at the Fedora 46 rebase at the latest.
-# - reason: why it is here and what removes it.
-# Lines starting with '#' and blank lines are ignored.
-#
-# This list may only shrink. legacy.sh prints a WARN line for entries that are no
-# longer installed or no longer flagged; delete them in the next change.
-#
-# Verified 2026-09-24 against the F45 repodata (development/45 + the GNOME 51.0
-# builds admitted from updates-testing) with an approximate depsolve of
-# image/packages/{base,gnome,apex}.txt: these are exactly the GTK3 consumers and the
-# X11 session userland it pulls in. Package names were checked in the same repodata.
+# name<TAB>milestone<TAB>reason, for the packages image/checks/legacy.sh flags. The
+# milestone is when the entry goes: M<n>[.<n>] when Apex work removes it, F46 when it
+# waits for upstream (re-checked at the F46 rebase). The list only shrinks.
 
-# The GTK3 toolkit itself. Flagged as the provider of libgtk-3/libgdk-3 (its rpm header
-# also lists them as requirements of its own binaries; createrepo drops those, which is
-# why the depsolve above did not show it). It goes when the last consumer below goes.
 gtk3	F46	The GTK3 toolkit, a hard dependency of every GTK3 consumer below (xdg-desktop-portal-gtk, ibus, evolution-data-server, ...). Removed with the last of them.
-
-# GTK3 consumers of the GNOME 51 core and our app set
 xdg-desktop-portal-gtk	F46	gnome-shell hard-requires it; still the only Inhibit and Email portal backend (xdg-desktop-portal-gnome 51 lacks both). Removed when GNOME drops the requirement or an Apex Rust portal backend replaces it.
 xdg-user-dirs-gtk	F46	gnome-shell 51 hard-requires it (plain xdg-user-dirs would do). Removed when the Fedora spec drops the requirement.
 evolution-data-server	F46	gnome-shell links libecal/libedataserver; Fedora builds the main package with GTK3 and webkit2gtk-4.1 OAuth2 support. No private fork (ADR 0007).
@@ -39,8 +17,6 @@ libhandy	F46	Hard dependency of gnome-disk-utility 46 (GTK3). Goes with the GTK4
 gstreamer1-plugins-bad-free	F46	Its gtkwaylandsink element links GTK3; Snapshot hard-requires the package (and Decibels its -libs). Removed if Fedora splits the GTK3 element into a subpackage.
 libdecor	F46	xorg-x11-server-Xwayland hard-requires libdecor, whose GTK plugin links GTK3. Xwayland itself is kept for X11 applications.
 vte291	F46	Ptyxis uses vte291-gtk4, which hard-requires vte291 (shared files), and vte291 carries the GTK3 libvte. Removed if Fedora splits the common files.
-
-# X11 session userland required by gdm (not the Xorg server)
 xorg-x11-xinit	F46	gdm 51 in Fedora is built with %bcond x11 1 and hard-requires it (per-user X server for other desktops' X11 sessions). No Xorg server is installed.
 setxkbmap	F46	Required by xorg-x11-xinit (gdm chain).
 xhost	F46	Required by xorg-x11-xinit (gdm chain).

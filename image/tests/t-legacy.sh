@@ -1,13 +1,11 @@
 #!/bin/sh
-# image/checks/legacy.sh against a fake rpmdb that models rpm headers: gtk3's own
-# binaries require libgtk-3/libgdk-3, which gtk3 provides (createrepo drops such
-# self-requirements from the repodata, rpm keeps them).
+# image/checks/legacy.sh against a fake rpmdb that, like rpm headers, keeps gtk3's
+# requirements of the libgtk-3 it provides itself.
 . "$(dirname -- "$0")/lib.sh"
 
 GTK3_LIBS='"libgtk-3.so.0()(64bit)", "libgdk-3.so.0()(64bit)"'
 
-# write_db FILE EXTRA_JSON: the GNOME 51 set of the approximate depsolve (every
-# allowlisted GTK3 consumer, the xinit chain, Xwayland), plus EXTRA_JSON entries.
+# write_db FILE EXTRA_JSON: every allowlisted package, Xwayland, plus EXTRA_JSON entries.
 write_db() {
     cat >"$1" <<EOF
 {
@@ -46,7 +44,6 @@ legacy() {
 
 mkdir -p "$T/root"
 
-# 1. The committed allowlist covers the modelled image, gtk3 included.
 write_db "$T/db.json" ''
 legacy "$T/db.json"
 expect_rc "committed allowlist passes on the GNOME 51 set" 0
@@ -59,13 +56,11 @@ expect_out "ibus-gtk3 is flagged for requiring gtk3(x86-64)" \
 expect_no_out "Xwayland is not flagged" 'xorg-x11-server-Xwayland'
 expect_no_out "no stale entries" '^WARN'
 
-# 2. Regression (review finding: gtk3 fails every build): without its entry, gtk3 fails.
 grep -v '^gtk3	' "$IMAGE_DIR/audit/legacy-allowlist.txt" >"$T/allow-no-gtk3"
 legacy "$T/db.json" "$T/allow-no-gtk3"
 expect_rc "an allowlist without gtk3 fails" 1
 expect_out "and names gtk3 as the provider" '^FAIL legacy: not allowlisted: gtk3 \(provides '
 
-# 3. GTK2: a consumer and the toolkit are flagged, nothing is allowlisted for them.
 write_db "$T/db-gtk2.json" ',
   "gtk2": {"provides": ["gtk2(x86-64)", "libgtk-x11-2.0.so.0()(64bit)", "libgdk-x11-2.0.so.0()(64bit)"],
            "requires": ["libgtk-x11-2.0.so.0()(64bit)"]},
@@ -76,14 +71,12 @@ expect_out "the consumer is named" '^FAIL legacy: not allowlisted: leafpad \(req
 expect_out "gtk2 is named as the provider" '^FAIL legacy: not allowlisted: gtk2 \(provides '
 expect_no_out "gtk2's self-requirement is not counted" ': gtk2 \(.*requires libgtk-x11'
 
-# 4. Another package that provides libgtk-3 (a bundled GTK3) is flagged.
 write_db "$T/db-fork.json" ',
   "gtk3-fork": {"provides": ["libgtk-3.so.0()(64bit)"], "requires": ["libgtk-3.so.0()(64bit)"]}'
 legacy "$T/db-fork.json"
 expect_rc "a second GTK3 provider fails" 1
 expect_out "and is named" '^FAIL legacy: not allowlisted: gtk3-fork \(provides libgtk-3'
 
-# 5. The Xorg server is flagged as a provider and by name, a driver by its ABI.
 write_db "$T/db-xorg.json" ',
   "xorg-x11-server-Xorg": {"provides": ["Xorg", "xserver-abi(videodrv-28)"],
                            "files": ["/usr/libexec/Xorg"], "requires": ["/usr/libexec/Xorg"]},
@@ -95,9 +88,6 @@ expect_out "Xorg is named as provider and banned" \
 expect_no_out "Xorg's own file requirement is not a consumer" 'requires /usr/libexec/Xorg'
 expect_out "an X driver is flagged" '^FAIL legacy: not allowlisted: xorg-x11-drv-libinput '
 
-# 6. Regression (found by the first real image build): an X server module that is not
-#    named xorg-x11-drv-* and has several requirements is found by its ABI requirement.
-#    rpm needs %{=NAME} in the array query; a bare %{NAME} made rpm skip such packages.
 write_db "$T/db-module.json" ',
   "tigervnc-server-module": {"requires": ["libc.so.6()(64bit)", "xserver-abi(videodrv-28)"]}'
 legacy "$T/db-module.json"

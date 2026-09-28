@@ -1,10 +1,6 @@
 #!/bin/sh
-# The Containerfile's repos stage, run as written: its RUN script is taken from
-# image/Containerfile and executed in a bubblewrap sandbox whose /etc/yum.repos.d,
-# /apex and /run/apex-packages are test fixtures, with fake dnf5, rpm and createrepo_c
-# (image/tests/fake). /apex holds what image.sh context puts into rpms/: the apex and
-# apex-desktop RPMs, libfprint, and the rebuild lane's RPMs with its lock, rpms.lock.
-# Needs bwrap with unprivileged user namespaces and overlayfs.
+# The Containerfile's repos stage, its RUN script as written, in a bubblewrap sandbox
+# whose /etc, /apex (rpms/) and /run/apex-packages are fixtures, with the fakes on PATH.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v bwrap >/dev/null 2>&1 || skip_all "bwrap not found"
@@ -14,7 +10,6 @@ if ! bwrap --overlay-src /usr --tmp-overlay /usr --symlink usr/bin /bin --symlin
     skip_all "bwrap cannot create a sandbox here (user namespaces or overlayfs disabled)"
 fi
 
-# --- The stage's RUN script --------------------------------------------------------
 awk '
     /^FROM .* AS repos$/ { stage = 1; next }
     stage && /^FROM / { exit }
@@ -35,8 +30,8 @@ expect_file "the RUN script starts with set -eu" '^set -eu;' "$T/run.sh"
 
 list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }
 
-# nvr_rows ALLOWLIST RELEASE_OVERRIDE: "name epoch version release arch" rows for its
-# entries (epoch 1 where Fedora has it), optionally with another release.
+# nvr_rows ALLOWLIST [RELEASE]: fake dnf5 rows "name epoch version release arch" of its
+# entries, with Fedora's epochs.
 nvr_rows() {
     list "$1" | while read -r s; do
         n=${s%-*-*} vr=${s#"${s%-*-*}"-}
@@ -46,13 +41,12 @@ nvr_rows() {
     done
 }
 
-# setup NAME: a fresh scenario: repo files, rpms/, packages/ and fake dnf5 data.
+# setup NAME: the repo files, rpms/, packages/ and fake dnf5 data of a fresh scenario.
 setup() {
     S=$T/$1
     mkdir -p "$S/etc/yum.repos.d" "$S/etc/alternatives" "$S/apex" "$S/dnf" "$S/packages"
     cp "$IMAGE_DIR"/packages/*.txt "$S/packages/"
-    # $releasever and $basearch are dnf's variables, written literally.
-    # shellcheck disable=SC2016
+    # shellcheck disable=SC2016 # $releasever and $basearch are dnf's, written literally
     for p in fedora updates; do
         {
             printf '[%s]\nname=Fedora $releasever - %s\nmetalink=https://mirrors.fedoraproject.org/metalink?repo=%s-f$releasever&arch=$basearch\nenabled=1\ncountme=1\ngpgcheck=1\nskip_if_unavailable=False\n\n' "$p" "$p" "$p"
@@ -72,7 +66,6 @@ setup() {
     : >"$S/apex/apex-desktop-0.1.0-1.fc45.noarch.rpm"
     : >"$S/apex/libfprint-1.94.10-1.fc45.apex1.x86_64.rpm"
     : >"$S/apex/libfprint-devel-1.94.10-1.fc45.apex1.x86_64.rpm"
-    # The lane: gnome-shell .apex1 and the Fedora-signed mutter it was built against.
     for f in gnome-shell-51.0-1.fc45.apex1.x86_64 gnome-shell-common-51.0-1.fc45.apex1.noarch \
         mutter-51.0-1.fc45.x86_64 mutter-common-51.0-1.fc45.noarch; do
         : >"$S/apex/$f.rpm"
@@ -82,13 +75,13 @@ setup() {
     # Unrelated updates-testing content and an i686 build, none of it admitted.
     printf 'systemd 0 262 1.fc45 x86_64\ngnome-maps 0 51.0 1.fc45 x86_64\nglib2 0 2.90.0 1.fc45 i686\n' \
         >>"$S/dnf/testing.txt"
-    # The stable repositories as on 2026-09-24: the 51~rc builds.
+    # The stable repositories still carry the 51~rc builds.
     nvr_rows "$S/packages/updates-testing-allowlist.txt" |
         awk '{ $3 = ($1 == "gtk4" ? "4.23.4" : "51~rc"); $4 = "2.fc45"; print }' >"$S/dnf/stable.txt"
 }
 
-# lane_lock STATE: rpms.lock with the gnome-shell family in STATE (packaging/README.md);
-# built and held families lock the four RPMs setup puts into /apex.
+# lane_lock STATE: prints an rpms.lock whose gnome-shell family is in STATE; built and
+# held families lock the four RPMs setup puts into /apex.
 lane_lock() {
     sha=$(printf '%064d' 0 | tr 0 a)
     printf '# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")\n'
@@ -128,7 +121,6 @@ stage() {
 
 REPOS=etc/yum.repos.d
 
-# A. The committed allowlist, the update still in testing.
 setup a
 stage a
 expect_rc "A: the committed allowlist builds" 0
@@ -152,7 +144,6 @@ expect_out "A: [apex] offers the locked builds" '^\[apex\] offers exactly the 4 
 expect_out "A: the lane's families are printed" '^  family gnome-shell built gnome-shell-51\.0-1\.fc45-s0123456789ab$'
 expect_out "A: libfprint-devel from rpms/ is reported as not admitted" '^NOTE: rpms/ also has packages that are not in apex.txt or rpms.lock; \[apex\] does not admit them: libfprint-devel$'
 
-# B. Review finding: a failed updates-testing query must not read as "went stable".
 setup b
 : >"$T/b/dnf/fail-testing"
 stage b
@@ -160,8 +151,6 @@ expect_rc "B: a failed updates-testing query fails the build" 1
 expect_out "B: and says so" '^ERROR: cannot query apex-gnome51'
 if [ -e "$T/b/$REPOS/apex-gnome51.repo" ]; then ok "B: the stanza is not silently dropped"; else not_ok "B: the stanza is not silently dropped"; fi
 
-# C. Review finding: the update left testing but stable still has 51~rc (unpushed, or
-#    the stable compose has not caught up): composing would downgrade GNOME.
 setup c
 : >"$T/c/dnf/testing.txt"
 stage c
@@ -169,7 +158,6 @@ expect_rc "C: gone from testing, older in stable: fails" 1
 expect_out "C: names the downgrade" '^ERROR: no pinned build is in updates-testing any more.*gtk4 \(4\.23\.4-2\.fc45 < 4\.24\.0-1\.fc45\)'
 expect_out "C: compares an epoch-1 package with its stable epoch" ' gdm \(51~rc-2\.fc45 < 51\.0-1\.fc45\)'
 
-# D. The update went stable: the same builds are in fedora/updates.
 setup d
 : >"$T/d/dnf/testing.txt"
 nvr_rows "$T/d/packages/updates-testing-allowlist.txt" >"$T/d/dnf/stable.txt"
@@ -178,14 +166,12 @@ expect_rc "D: went stable: builds" 0
 expect_out "D: with a warning to empty the list" '^WARNING: FEDORA-2026-48a7996f9c left updates-testing.*38 pinned packages'
 if [ -e "$T/d/$REPOS/apex-gnome51.repo" ]; then not_ok "D: the stanza is dropped"; else ok "D: the stanza is dropped"; fi
 
-# E. Stable has newer builds of everything.
 setup e
 : >"$T/e/dnf/testing.txt"
 nvr_rows "$T/e/packages/updates-testing-allowlist.txt" 9.fc45 >"$T/e/dnf/stable.txt"
 stage e
 expect_rc "E: newer in stable: builds" 0
 
-# F. One package still older in stable, one missing from stable, stable query failing.
 setup f
 : >"$T/f/dnf/testing.txt"
 nvr_rows "$T/f/packages/updates-testing-allowlist.txt" |
@@ -201,14 +187,12 @@ stage f2
 expect_rc "F: a failed stable query fails" 1
 expect_out "F: and says so" '^ERROR: cannot query the stable repositories'
 
-# G. Review finding: an edited update (mutter rebuilt) is not admitted unreviewed.
 setup g
 sed -i 's/^mutter 0 51\.0 1\.fc45/mutter 0 51.0 2.fc45/' "$T/g/dnf/testing.txt"
 stage g
 expect_rc "G: a replaced build fails" 1
 expect_out "G: names the pinned build" '^ERROR: allowlisted builds not in updates-testing.*: mutter-51\.0-1\.fc45$'
 
-# H. includepkgs ignored (libdnf's behaviour for a list that matches nothing).
 setup h
 : >"$T/h/dnf/ignore-includes"
 sed -i 's/ [0-9][0-9]*\.fc45 \([a-z0-9_]*\)$/ 7.fc45 \1/' "$T/h/dnf/testing.txt"
@@ -216,31 +200,26 @@ stage h
 expect_rc "H: an unrestricted stanza fails" 1
 expect_out "H: and says so" '^ERROR: includepkgs did not restrict apex-gnome51'
 
-# I. Review finding: bare names are refused.
 setup i
 printf 'glib2\n' >>"$T/i/packages/updates-testing-allowlist.txt"
 stage i
 expect_rc "I: a bare package name fails" 1
 expect_out "I: and says why" "^ERROR: updates-testing-allowlist.txt entry 'glib2' is not a pinned name-version-release"
 
-# J. GA reached: no stanza, nothing queried in updates-testing.
 setup j
 stage j GA_REACHED=1
 expect_rc "J: GA_REACHED=1 builds" 0
 if [ -e "$T/j/$REPOS/apex-gnome51.repo" ]; then not_ok "J: no apex-gnome51"; else ok "J: no apex-gnome51"; fi
 
-# K. The dated check.
 setup k
 stage k FEDORA_GA_DATE=2026-01-01
 expect_rc "K: allowlist entries past GA + 7 days fail" 1
 
-# L. The final check that updates-testing is off may not be skipped when dnf5 fails.
 setup l
 : >"$T/l/dnf/fail-repolist"
 stage l
 expect_rc "L: a failed repo list fails" 1
 
-# M. Degraded libfprint: no Apex build in rpms/, stock libfprint stays visible.
 setup m
 rm "$T/m/apex"/libfprint*
 stage m
@@ -248,7 +227,6 @@ expect_rc "M: without the Apex libfprint it builds" 0
 expect_file "M: Fedora's libfprint is not excluded, the lane's names are" \
     '^excludepkgs=gnome-shell,gnome-shell-common,mutter,mutter-common$' "$T/m/$REPOS/fedora-fedora.repo"
 
-# N. rpms/ without the apex RPM, and apex.txt without apex.
 setup n
 rm "$T/n/apex/apex-0.1.0-1.fc45.x86_64.rpm"
 stage n
@@ -258,7 +236,6 @@ sed -i 's/^apex$/# apex/' "$T/n2/packages/apex.txt"
 stage n2
 expect_rc "N: an apex.txt without apex fails" 1
 
-# O. No lane lock: the image build stops (nothing degrades a design package on its own).
 setup o
 rm "$T/o/apex/rpms.lock"
 stage o
@@ -269,21 +246,18 @@ printf 'family gnome-shell built k\n' >"$T/o2/apex/rpms.lock"
 stage o2
 expect_rc "O: a lock without its format line fails" 1
 
-# P. A locked NEVRA that rpms/ does not carry.
 setup p
 rm "$T/p/apex/mutter-51.0-1.fc45.x86_64.rpm"
 stage p
 expect_rc "P: a missing locked build fails" 1
 expect_out "P: and names it" '^  < mutter mutter-0:51\.0-1\.fc45\.x86_64$'
 
-# Q. Another build of a locked name next to the locked one: [apex] would offer both.
 setup q
 : >"$T/q/apex/mutter-51.0-2.fc45.x86_64.rpm"
 stage q
 expect_rc "Q: a second build of a locked name fails" 1
 expect_out "Q: and names it" '^  > mutter mutter-0:51\.0-2\.fc45\.x86_64$'
 
-# R. The owner chose stock: no lane RPMs, Fedora's shell and mutter stay visible.
 setup r
 rm "$T/r/apex"/gnome-shell* "$T/r/apex"/mutter*
 lane_lock stock >"$T/r/apex/rpms.lock"
@@ -298,13 +272,11 @@ stage r2
 expect_rc "R: stock and degraded libfprint build" 0
 if grep -q '^excludepkgs=' "$T/r2/$REPOS/fedora-fedora.repo"; then not_ok "R: nothing is excluded"; else ok "R: nothing is excluded"; fi
 
-# S. rpm lines of a family that is not built or held.
 setup s
 lane_lock built | sed 's/^family gnome-shell built/family gnome-shell stock/' >"$T/s/apex/rpms.lock"
 stage s
 expect_rc "S: rpm lines of a stock family fail" 1
 
-# T. Held: the last good build keeps winning, exactly like a built one.
 setup t
 lane_lock held >"$T/t/apex/rpms.lock"
 stage t

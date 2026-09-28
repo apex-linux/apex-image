@@ -1,40 +1,17 @@
 #!/bin/sh
-# Power modes (ARCHITECTURE §6.4 and §7.3): tuned-ppd serves GNOME's three power modes
-# (the power-profiles-daemon D-Bus API) and maps each one to a TuneD profile through
-# /etc/tuned/ppd.conf, the one place tuned-ppd reads that mapping from.
-#
-#   - /etc/tuned/ppd.conf holds exactly the Apex mapping (PPD_AC, PPD_BATTERY and
-#     PPD_DEFAULT below), with battery detection on;
-#   - it passes every check tuned-ppd 2.27/2.28 makes when it starts
-#     (tuned/ppd/config.py): the file parses, all three modes are mapped, the default
-#     mode is mapped, battery detection has a [battery] section, [battery] names no
-#     other mode, every TuneD profile exists, and no two modes share a profile, on AC or
-#     on battery. tuned-ppd does not start with a file that fails one of them, and GNOME
-#     then offers no power modes;
-#   - every TuneD profile of the mapping loads as TuneD loads it: found in
-#     /etc/tuned/profiles or /usr/lib/tuned/profiles (in that order), parsed, and its
-#     include= chain resolved;
-#   - apex-performance, merged with what it includes the way TuneD merges profiles,
-#     sets cpu governor=performance, energy_performance_preference=performance and
-#     boost=1 and acpi platform_profile=performance, and carries none of
-#     throughput-performance's server tunables: no vm unit, no vm.* or net.* sysctl
-#     and no disk readahead;
-#   - tuned-ppd itself is installed.
-# python3 is required (the image has it: tuned and tuned-ppd are Python programs).
-#
-# Environment: ROOT (see lib/common.sh).
+# /etc/tuned/ppd.conf passes tuned-ppd's start-up checks (without them GNOME offers no
+# power modes) and maps the modes to the Apex TuneD profiles; apex-performance merges to
+# full CPU and platform performance without throughput-performance's server tunables.
 set -eu
 CHECK_NAME=power
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$APEX_CHECKS_DIR/lib/common.sh"
 
-# The Apex mapping: PPD mode=TuneD profile, one per line.
 PPD_AC='power-saver=powersave
 balanced=balanced
 performance=apex-performance'
 PPD_BATTERY='balanced=balanced-battery'
 PPD_DEFAULT=balanced
-# The profile that replaces tuned-ppd's stock throughput-performance.
 PERFORMANCE_PROFILE=apex-performance
 
 if [ -x "$(rootpath /usr/bin/tuned-ppd)" ] || [ -x "$(rootpath /usr/sbin/tuned-ppd)" ]; then
@@ -49,7 +26,6 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 make_tmpdir
-# One line per result: "ok MESSAGE" or "bad MESSAGE".
 if ! python3 - "$ROOT" "$PPD_AC" "$PPD_BATTERY" "$PPD_DEFAULT" "$PERFORMANCE_PROFILE" \
     >"$TMPD/results" 2>"$TMPD/python.err" <<'PY'; then
 import collections
@@ -81,9 +57,7 @@ def mapping(text):
     return dict(line.split("=", 1) for line in text.splitlines() if line.strip())
 
 
-# --- /etc/tuned/ppd.conf, read as tuned-ppd reads it ----------------------------------
 def known_profiles():
-    """tuned's profile list: every directory of LOAD_DIRS with a tuned.conf."""
     names = set()
     for d in LOAD_DIRS:
         try:
@@ -96,8 +70,9 @@ def known_profiles():
 
 
 def check_ppd():
-    """The checks of tuned/ppd/config.py PPDConfig.load_from_file, then the Apex values.
-    Returns the TuneD profiles the file names (empty when tuned-ppd would refuse it)."""
+    """The checks of tuned/ppd/config.py PPDConfig.load_from_file (tuned 2.27, 2.28),
+    then the Apex values. Returns the TuneD profiles the file names (empty when
+    tuned-ppd would refuse it)."""
     path = rooted(PPD_CONF)
     if not os.path.isfile(path):
         bad("%s is missing: tuned-ppd does not start without it" % PPD_CONF)
@@ -145,7 +120,6 @@ def check_ppd():
         return set()
     ok("%s passes tuned-ppd's own validation" % PPD_CONF)
 
-    # The Apex values, exactly.
     want_ac, want_dc = mapping(ppd_ac), mapping(ppd_battery)
     battery = dict(cfg["battery"]) if "battery" in cfg else {}
     for what, have, want in (("[profiles]", ac, want_ac), ("[battery]", battery, want_dc)):
@@ -166,7 +140,7 @@ def check_ppd():
     return set(ac.values()) | set(dc.values())
 
 
-# --- TuneD profiles, loaded and merged as tuned/profiles/{loader,merger}.py do ---------
+# Profiles are loaded and merged as TuneD's profiles/{loader,merger}.py do.
 class Unit:
     def __init__(self, name, options):
         options = collections.OrderedDict(options)

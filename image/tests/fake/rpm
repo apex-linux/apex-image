@@ -1,8 +1,6 @@
 #!/usr/bin/python3
-"""A fake rpm for the image check tests (image/tests).
-
-It answers the queries image/checks/*.sh and the Containerfile's repos stage make,
-from a JSON package database named by FAKE_RPMDB:
+"""The rpm queries of image/checks and the repos stage, answered from the JSON
+database FAKE_RPMDB:
 
     {"gtk3": {"evr": "3.24.52-6.fc45",
               "arch": "x86_64",
@@ -12,15 +10,9 @@ from a JSON package database named by FAKE_RPMDB:
               "modified": [],
               "signature": "RSA/SHA256, Mon Sep 14 2026, Key ID 655a4b02f577861e"}, ...}
 
-"requires" models the rpm header, not the repodata: like real rpm (and unlike
-createrepo's primary.xml) it keeps requirements a package satisfies itself. Every
-package provides its own name implicitly. "modified" lists files whose digest changed
-(rpm -V prints them with a '5'). "arch" defaults to x86_64 and "signature" to
-"(none)"; rpm -qi prints it as rpm 6.1 does, on an indented line after "Signature :".
---root and --dbpath are accepted and ignored.
-
-`rpm -E` knows %fedora (FAKE_FEDORA, default 45), %_arch (x86_64) and
-%{lua: print(rpm.vercmp('A', 'B'))}, with rpm's own EVR comparison.
+"requires" is the rpm header's: unlike the repodata it keeps requirements a package
+satisfies itself. "modified" lists files whose digest changed. --root and --dbpath are
+ignored. `rpm -E` knows %fedora (FAKE_FEDORA), %_arch and rpm.vercmp.
 """
 
 import json
@@ -161,9 +153,8 @@ def fmt_pkg(fmt, name, pkg):
     if m:
         inner = m.group(1)
         requires = pkg["requires"]
-        # Like rpm: inside an array iterator a scalar tag must be written %{=TAG} to be
-        # repeated; a bare %{NAME} next to an array of another size is an error and the
-        # package prints nothing.
+        # As in rpm: a bare %{NAME} next to an array of another size is an error and the
+        # package prints nothing; %{=NAME} repeats it.
         if "%{NAME}" in inner and len(requires) != 1:
             sys.stderr.write("error: incorrect format: array iterator used with different sized arrays\n")
             return ""

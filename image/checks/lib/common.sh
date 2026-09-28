@@ -1,22 +1,8 @@
 # shellcheck shell=sh
-# Shared helpers for image/checks/*.sh. POSIX sh; sourced, never executed.
-#
-# Contract for every check script:
-#   - `set -eu`, then set CHECK_NAME and source this file;
-#   - print one line per assertion, starting with PASS, FAIL, WARN or SKIP;
-#   - call `finish` at the end: it exits 1 when any FAIL was printed.
-#
-# Environment understood by all checks:
-#   ROOT            root of the filesystem to inspect (default /: the running image).
-#                   Set it to an extracted rootfs to check that instead.
-#   APEX_IMAGE_DIR  the repository's image/ directory (default: the parent of the
-#                   checks directory), for lists such as image/audit/*.
-#
-# rpm queries against ROOT use `rpm --root ROOT --dbpath /usr/lib/sysimage/rpm`, the
-# F45 rpmdb location, so they also work from a host whose rpm defaults differ.
+# Sourced by image/checks/*.sh after `set -eu` and CHECK_NAME. Each check prints one PASS,
+# FAIL, WARN or SKIP line per assertion and ends with `finish`, which exits 1 on a FAIL.
 
 ROOT=${ROOT:-/}
-# Normalise: strip trailing slashes but keep "/" itself.
 while [ "$ROOT" != / ] && [ "${ROOT%/}" != "$ROOT" ]; do
     ROOT=${ROOT%/}
 done
@@ -25,6 +11,9 @@ done
 : "${CHECK_NAME:=check}"
 : "${APEX_CHECKS_DIR:?APEX_CHECKS_DIR must be set before sourcing lib/common.sh}"
 APEX_IMAGE_DIR=${APEX_IMAGE_DIR:-$APEX_CHECKS_DIR/..}
+
+# Named explicitly so that a host rpm with other defaults reads ROOT's database.
+FEDORA_RPMDB=/usr/lib/sysimage/rpm
 
 _apex_failures=0
 
@@ -36,7 +25,6 @@ fail() {
     _apex_failures=$((_apex_failures + 1))
 }
 
-# finish: print the summary line and exit with the check's status.
 finish() {
     if [ "$_apex_failures" -gt 0 ]; then
         printf 'FAIL %s: %d failure(s)\n' "$CHECK_NAME" "$_apex_failures"
@@ -46,7 +34,6 @@ finish() {
     exit 0
 }
 
-# rootpath ABSPATH: the path of ABSPATH inside ROOT.
 rootpath() {
     if [ "$ROOT" = / ]; then
         printf '%s\n' "$1"
@@ -55,7 +42,6 @@ rootpath() {
     fi
 }
 
-# unroot PATH: a path under ROOT as it is seen inside ROOT (absolute).
 unroot() {
     if [ "$ROOT" = / ]; then
         printf '%s\n' "$1"
@@ -64,22 +50,19 @@ unroot() {
     fi
 }
 
-# rpmq ARGS...: rpm against the rpmdb of ROOT.
-rpmq() {
+root_rpm() {
     if [ "$ROOT" = / ]; then
         rpm "$@"
     else
-        rpm --root "$ROOT" --dbpath /usr/lib/sysimage/rpm "$@"
+        rpm --root "$ROOT" --dbpath "$FEDORA_RPMDB" "$@"
     fi
 }
 
-# read_list FILE: the entries of a list file, one per line, with '#' comments,
-# surrounding whitespace and blank lines removed.
 read_list() {
     sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$1"
 }
 
-# make_tmpdir: create a private scratch directory, removed on exit. Sets TMPD.
+# Sets TMPD to a private scratch directory, removed on exit.
 make_tmpdir() {
     TMPD=$(mktemp -d "${TMPDIR:-/tmp}/apex-check.XXXXXX")
     # shellcheck disable=SC2064 # expand now: the path is fixed
