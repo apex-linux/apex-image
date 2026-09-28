@@ -1,0 +1,10 @@
+# apex rpms.lock 1: written by packaging/rebuild.sh (packaging/README.md, "rpms.lock")
+#   family NAME STATE KEY [since=UTC] [limit=UTC] [newer=NVR,...] [security=0|1|?] [reason=TEXT]
+#   rpm FAMILY KIND NAME NEVRA SHA256 PATH   (PATH relative to APEX_STORE)
+# STATE: built | held (KEY: the last good build) | stock (the owner) | degraded (on_fail=degrade)
+# KIND:  built (Apex-built) | mirror (Fedora-signed, unmodified)
+family gnome-shell built gnome-shell-51.0-1.fc45-s22726911a8d4
+rpm gnome-shell built gnome-shell-common gnome-shell-common-0:51.0-1.fc45.apex2.noarch a109263cc3cb093b04533ee0d3f82201f83484ac9d53ee6574bc31e58a942d01 pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s22726911a8d4/gnome-shell-common-51.0-1.fc45.apex2.noarch.rpm
+rpm gnome-shell built gnome-shell gnome-shell-0:51.0-1.fc45.apex2.x86_64 a273c180ecd7805a82c2a5eb5c16ab2ee637bbf0ba3f1f115a8af6558db2ecf7 pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s22726911a8d4/gnome-shell-51.0-1.fc45.apex2.x86_64.rpm
+rpm gnome-shell mirror mutter mutter-0:51.0-1.fc45.x86_64 cb2f501e512a2f10e3b059e3d9fc57457f5b6dd02d8849bc4eeedc008b4bb390 pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s22726911a8d4/mutter-51.0-1.fc45.x86_64.rpm
+rpm gnome-shell mirror mutter-common mutter-common-0:51.0-1.fc45.noarch c8f5e8fe6cff38b54f0a75db7b6ae0d86e8c58b976b491b953f2698a822dbd2c pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s22726911a8d4/mutter-common-51.0-1.fc45.noarch.rpm

@@ -1,0 +1,1 @@
+error: gnome-shell: 0002-loader.patch does not apply to gnome-shell-51.1-1.fc45. rpms.lock has no last good build of the gnome-shell family to hold, so the image build stops. Fix the series, or ship Fedora's build: just pkg-stock gnome-shell

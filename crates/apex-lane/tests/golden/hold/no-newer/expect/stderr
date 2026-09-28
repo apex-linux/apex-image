@@ -1,0 +1,5 @@
+### gnome-shell: held
+
+0002-loader.patch does not apply to gnome-shell-51.1-1.fc45
+
+The next image keeps the last good build, gnome-shell-51.0-1.fc45-s1111111111aa, held since 2026-10-12T04:10:00Z. No newer Fedora build is waiting: the Apex inputs themselves fail, so there is no limit.

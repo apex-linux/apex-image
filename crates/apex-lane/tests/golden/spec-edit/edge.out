@@ -1,0 +1,11 @@
+Name:           x
+Release:        %{autorelease}.apex1
+
+Source0:        x.tar.xz
+Source1:        apex-x-0.tar
+BuildRequires:  meson
+%autosetup -S git
+%changelog
+* Mon Jan 01 2026 Jérôme <j@x> - 1
+- café
+- apex

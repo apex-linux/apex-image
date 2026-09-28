@@ -1,0 +1,2 @@
+Name: y
+BuildRequires: c

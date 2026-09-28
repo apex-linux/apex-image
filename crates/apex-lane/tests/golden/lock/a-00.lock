@@ -1,0 +1,9 @@
+# apex rpms.lock 1: written by packaging/rebuild.sh (packaging/README.md, "rpms.lock")
+# an old comment
+
+family nautilus built kn   
+rpm nautilus built nautilus nautilus-0:51.0-1.fc45.apex1.x86_64 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee pkgs/nautilus/kn/nautilus-51.0-1.fc45.apex1.x86_64.rpm
+pin nautilus 51.0
+	
+family gnome-shell built k0
+rpm	gnome-shell	built	gnome-shell	gnome-shell-0:51.0-1.fc45.apex0.x86_64	ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff	pkgs/gnome-shell/k0/gnome-shell-51.0-1.fc45.apex0.x86_64.rpm

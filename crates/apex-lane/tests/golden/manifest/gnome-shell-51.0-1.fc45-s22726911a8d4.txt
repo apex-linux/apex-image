@@ -1,0 +1,13 @@
+# apex-lane manifest 1: kind nevra sha256 file
+# pkg=gnome-shell family=gnome-shell key=gnome-shell-51.0-1.fc45-s22726911a8d4 release=1.fc45.apex2 n=2 stock=gnome-shell-51.0-1.fc45 pin=mutter-51.0-1.fc45 fedora=45 ga_reached=0 base=registry.fedoraproject.org/fedora@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
+fedora-srpm gnome-shell-0:51.0-1.fc45.src 5548255e09ceb1a1ca381b70a5ba1e9fc4231b9936179a2f33643cba5e7e0339 gnome-shell-51.0-1.fc45.src.rpm
+source1 9c3eeccdf015d3c9c3706aabec1c5bd7c5e26cdb fec942b9b26b0361818a20bdc8c6582ecf0eb42567d81efc54cbc19a6e8292c2 apex-shell-9c3eeccdf015.tar
+patch 0001-build 136976a28df383973c2658f2d31eb6f1415e851b9f1eb116fd63c4820bcdfbfd 0001-build.patch
+patch 0002-loader 9816c59b9eb897a4a5354650655850450932b5ac5039f0723bc1fd650bd643c9 0002-loader.patch
+built gnome-shell-common-0:51.0-1.fc45.apex2.noarch a109263cc3cb093b04533ee0d3f82201f83484ac9d53ee6574bc31e58a942d01 gnome-shell-common-51.0-1.fc45.apex2.noarch.rpm
+built gnome-shell-0:51.0-1.fc45.apex2.x86_64 a273c180ecd7805a82c2a5eb5c16ab2ee637bbf0ba3f1f115a8af6558db2ecf7 gnome-shell-51.0-1.fc45.apex2.x86_64.rpm
+mirror mutter-0:51.0-1.fc45.x86_64 cb2f501e512a2f10e3b059e3d9fc57457f5b6dd02d8849bc4eeedc008b4bb390 mutter-51.0-1.fc45.x86_64.rpm
+mirror mutter-common-0:51.0-1.fc45.noarch c8f5e8fe6cff38b54f0a75db7b6ae0d86e8c58b976b491b953f2698a822dbd2c mutter-common-51.0-1.fc45.noarch.rpm
+dev mutter-devkit-0:51.0-1.fc45.x86_64 a5090eece6d6919001d78bb1c7f0e5836c87a7757d25eec4f2d5635e7bb96951 mutter-devkit-51.0-1.fc45.x86_64.rpm
+apex-srpm gnome-shell-0:51.0-1.fc45.apex2.src e55f2d9b9e84e1f5d39da47098c3c1077918d4de65ea9403f896f8ac404412b8 gnome-shell-51.0-1.fc45.apex2.src.rpm
+# sig=none

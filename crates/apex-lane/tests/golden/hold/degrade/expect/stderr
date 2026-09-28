@@ -1,0 +1,5 @@
+### gnome-shell: degraded
+
+0002-loader.patch does not apply to gnome-shell-51.1-1.fc45
+
+The next image takes Fedora's gnome-shell.

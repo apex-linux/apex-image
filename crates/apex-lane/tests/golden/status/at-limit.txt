@@ -1,0 +1,12 @@
+rpms.lock.next (the next image build takes it):
+  libfprint              degraded  -
+      since=2026-10-12T04:10:00Z reason=0001 does not apply
+  gnome-shell            held      k1
+      since=2026-10-12T04:10:00Z limit=2026-10-26T04:10:00Z newer=gnome-shell-51.1-1.fc45,mutter-51.1-1.fc45 security=0 reason=0002-loader.patch does not apply to gnome-shell-51.1-1.fc45
+      LIMIT REACHED: rebase the series, or ship Fedora's build (just pkg-stock)
+      built   gnome-shell-0:51.0-1.fc45.apex1.x86_64
+      mirror  mutter-0:51.0-1.fc45.x86_64
+rpms.lock (the last image that passed its gates):
+  gnome-shell            built     k1
+      built   gnome-shell-0:51.0-1.fc45.apex1.x86_64
+      mirror  mutter-0:51.0-1.fc45.x86_64

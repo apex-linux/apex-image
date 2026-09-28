@@ -1,0 +1,10 @@
+replace ^Release:[[:space:]]+%autorelease 
+	Release:        %{autorelease}@APEX_RELEASE@
+	
+end
+after  x\.tar
+	Source1:        @SOURCE1@
+end
+after ^- caf
+	- apex
+end

@@ -1,0 +1,2 @@
+stock gnome-shell-51.1-1.fc45
+pin mutter-51.0-1.fc45

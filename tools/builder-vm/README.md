@@ -59,13 +59,18 @@ the VM.
 
 ## Rebuild lane
 
-The `just pkg-*` recipes run `packaging/rebuild.sh` in the VM: Fedora SRPMs rebuilt
-with the Apex series, such as gnome-shell with the Apex layer
-([packaging/README.md](../../packaging/README.md#the-rebuild-lane)). Its state lives in
-`~/apex-store/` in the VM, outside the synced checkout: the built sets by content key,
-`rpms.lock` and `rpms.lock.next`. dnf's metadata for the lane's containers is kept in
-the podman volume `apex-lane-dnf-cache`. A cold gnome-shell build takes about 10
-minutes.
+The `just pkg-*` recipes run `apex-lane` in the VM through `lane.sh`: Fedora SRPMs
+rebuilt with the Apex series, such as gnome-shell with the Apex layer
+([packaging/README.md](../../packaging/README.md#the-rebuild-lane)). `lane.sh` builds
+`apex-lane` from the checkout's HEAD with Fedora's rust, in a container of
+`image/Containerfile`'s `REPOS_BASE` (the image `localhost/apex-lane-builder`, made once
+per digest by `rpms.sh toolchain`, and the podman volume `apex-lane-cargo` for cargo's
+registry and target), and keeps the last three builds in `~/.cache/apex-lane/`. The
+lane's state lives in `~/apex-store/` in the VM, outside the synced checkout: the built
+sets by content key, `rpms.lock` and `rpms.lock.next`. dnf's metadata for the lane's
+containers is kept in the podman volume `apex-lane-dnf-cache`. A cold gnome-shell build
+takes about 10 minutes; the first run of `lane.sh` adds a few minutes for the builder
+image and a cold `cargo build`.
 
 ## Resources
 

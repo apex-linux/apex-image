@@ -1,0 +1,38 @@
+[package]
+name = "apex-lane"
+description = "The rebuild lane: Fedora SRPMs rebuilt with the Apex inputs of packaging/pkgs, stored by content key and recorded in rpms.lock; a dev tool for the builder VM, never shipped"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "apex_lane"
+path = "src/lib.rs"
+
+[[bin]]
+name = "apex-lane"
+path = "src/main.rs"
+
+# No workspace crate here: the content key's tool id counts only registry crates, so a
+# path dependency would change the binary without changing the id.
+[dependencies]
+clap.workspace = true
+nix = { workspace = true, features = ["user"] }
+# spec-edit's EREs, matched on bytes; no Unicode tables.
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf"] }
+serde_json.workspace = true
+sha2 = "0.10.9"
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

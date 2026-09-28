@@ -1,0 +1,3 @@
+# apex rpms.lock 1: x
+family libfprint degraded - since=2026-10-01T00:00:00Z reason=y
+family gnome-shell built gnome-shell-51.0-1.fc45-s1111111111aa

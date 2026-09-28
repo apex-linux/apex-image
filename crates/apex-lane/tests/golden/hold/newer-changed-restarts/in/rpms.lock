@@ -1,0 +1,4 @@
+# apex rpms.lock 1: x
+family gnome-shell built gnome-shell-51.0-1.fc45-s1111111111aa
+rpm gnome-shell built gnome-shell gnome-shell-0:51.0-1.fc45.apex1.x86_64 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s1111111111aa/gnome-shell-51.0-1.fc45.apex1.x86_64.rpm
+rpm gnome-shell mirror mutter mutter-0:51.0-1.fc45.x86_64 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s1111111111aa/mutter-51.0-1.fc45.x86_64.rpm

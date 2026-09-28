@@ -1,0 +1,2 @@
+# apex-lane manifest 1: kind nevra sha256 file
+# pkg=gnome-shell family=gnome-shell key=gnome-shell-51.0-1.fc45-s1111111111aa release=1.fc45.apex1 n=1 stock=gnome-shell-51.0-1.fc45 pin=mutter-51.0-1.fc45 fedora=45 ga_reached=0 base=?

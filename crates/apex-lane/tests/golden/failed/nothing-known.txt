@@ -1,0 +1,2 @@
+rpmbuild produced no binary RPM
+pkg=gnome-shell stock=? key=?

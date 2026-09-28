@@ -44,7 +44,7 @@ THEME=/usr/share/gnome-shell/gnome-shell-theme.gresource
 SCHEMA=/usr/share/glib-2.0/schemas/io.github.sekirokenjii.Apex.Desktop.gschema.xml
 USERUNITS=/usr/lib/systemd/user
 # Fedora 45's package signing key: its long key ID ends its fingerprint
-# (4F50 A611 4CD5 C697 6A7F 1179 655A 4B02 F577 861E; packaging/rebuild.sh).
+# (4F50 A611 4CD5 C697 6A7F 1179 655A 4B02 F577 861E; apex-lane checks it too).
 FEDORA_KEYID=655a4b02f577861e
 MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */

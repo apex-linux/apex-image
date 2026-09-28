@@ -1,0 +1,4 @@
+rpms.lock.next (the next image build takes it):
+  (no family)
+rpms.lock (the last image that passed its gates):
+  (no family)

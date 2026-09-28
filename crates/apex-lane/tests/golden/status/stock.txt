@@ -1,0 +1,17 @@
+rpms.lock.next (the next image build takes it):
+  libfprint              degraded  -
+      since=2026-10-12T04:10:00Z reason=0001 does not apply
+  mutter                 stock     -
+      since=2026-10-13T00:00:00Z reason=the owner chose Fedora's build
+  gnome-shell            built     k2
+      built   gnome-shell-0:51.0-1.fc45.apex2.x86_64
+      built   gnome-shell-common-0:51.0-1.fc45.apex2.noarch
+rpms.lock (the last image that passed its gates):
+  libfprint              degraded  -
+      since=2026-10-12T04:10:00Z reason=0001 does not apply
+  gnome-shell            held      k1
+      since=2026-10-12T04:10:00Z reason=the Apex inputs themselves fail
+      built   gnome-shell-0:51.0-1.fc45.apex1.x86_64
+      mirror  mutter-0:51.0-1.fc45.x86_64
+  mutter                 stock     -
+      since=2026-10-13T00:00:00Z reason=the owner chose Fedora's build

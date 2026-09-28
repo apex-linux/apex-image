@@ -3,13 +3,13 @@
 #
 # Guest side, in the builder VM's checkout (~/apex-fedora): commit a dirty checkout as a
 # throwaway snapshot, so that the tools that build from git HEAD (rpms.sh, image.sh,
-# packaging/rebuild.sh) see the host's working tree. The checkout is an rsync copy whose
-# .git is independent of the host repository, so the snapshot never leaves the VM: the
-# next `builder-vm.sh sync` replaces this .git with the host's.
+# apex-lane, and lane.sh, which builds it) see the host's working tree. The checkout is
+# an rsync copy whose .git is independent of the host repository, so the snapshot never
+# leaves the VM: the next `builder-vm.sh sync` replaces this .git with the host's.
 #
 #   snapshot.sh [CMD [ARGS...]]   snapshot when needed, then run CMD in the checkout
 #
-# build-image.sh runs it first; the Justfile's pkg-* recipes run the lane through it.
+# build-image.sh runs it first; the Justfile's pkg-* recipes run lane.sh through it.
 # It refuses to run anywhere but the builder VM's checkout, as the builder user.
 set -euo pipefail
 

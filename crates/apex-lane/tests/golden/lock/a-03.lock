@@ -1,0 +1,12 @@
+# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")
+#   family NAME STATE KEY [since=UTC] [limit=UTC] [newer=NVR,...] [security=0|1|?] [reason=TEXT]
+#   rpm FAMILY KIND NAME NEVRA SHA256 PATH   (PATH relative to APEX_STORE)
+# STATE: built | held (KEY: the last good build) | stock (the owner) | degraded (on_fail=degrade)
+# KIND:  built (Apex-built) | mirror (Fedora-signed, unmodified)
+family nautilus built kn   
+rpm nautilus built nautilus nautilus-0:51.0-1.fc45.apex1.x86_64 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee pkgs/nautilus/kn/nautilus-51.0-1.fc45.apex1.x86_64.rpm
+pin nautilus 51.0
+family libfprint degraded - since=2026-10-12T04:10:00Z reason=0001 does not apply
+family gnome-shell held k1 since=2026-10-12T04:10:00Z limit=2026-10-26T04:10:00Z newer=gnome-shell-51.1-1.fc45,mutter-51.1-1.fc45 security=0 reason=0002-loader.patch does not apply to gnome-shell-51.1-1.fc45
+rpm gnome-shell built gnome-shell gnome-shell-0:51.0-1.fc45.apex1.x86_64 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa pkgs/gnome-shell/k1/gnome-shell-51.0-1.fc45.apex1.x86_64.rpm
+rpm gnome-shell mirror mutter mutter-0:51.0-1.fc45.x86_64 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc pkgs/gnome-shell/k1/mutter-51.0-1.fc45.x86_64.rpm

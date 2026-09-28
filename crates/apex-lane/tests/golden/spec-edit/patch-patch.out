@@ -1,0 +1,6 @@
+Name: y
+Patch0:   fedora.patch
+Source0: a
+Patch12 :  other.patch
+Patch1001:      apex-0001-build.patch
+BuildRequires: c

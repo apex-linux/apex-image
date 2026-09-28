@@ -1,0 +1,6 @@
+gnome-shell|built k1|rpms-k1
+libfprint|degraded - since=2026-10-12T04:10:00Z reason=0001 does not apply|-
+gnome-shell|held k1 since=2026-10-12T04:10:00Z limit=2026-10-26T04:10:00Z newer=gnome-shell-51.1-1.fc45,mutter-51.1-1.fc45 security=0 reason=0002-loader.patch does not apply to gnome-shell-51.1-1.fc45|rpms-k1
+gnome-shell|held k1 since=2026-10-12T04:10:00Z reason=the Apex inputs themselves fail|rpms-k1
+mutter|stock - since=2026-10-13T00:00:00Z reason=the owner chose Fedora's build|-
+gnome-shell|built k2|rpms-k2

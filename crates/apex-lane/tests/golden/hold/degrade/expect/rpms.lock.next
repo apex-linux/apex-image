@@ -1,0 +1,7 @@
+# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")
+#   family NAME STATE KEY [since=UTC] [limit=UTC] [newer=NVR,...] [security=0|1|?] [reason=TEXT]
+#   rpm FAMILY KIND NAME NEVRA SHA256 PATH   (PATH relative to APEX_STORE)
+# STATE: built | held (KEY: the last good build) | stock (the owner) | degraded (on_fail=degrade)
+# KIND:  built (Apex-built) | mirror (Fedora-signed, unmodified)
+family libfprint degraded - since=2026-10-01T00:00:00Z reason=y
+family gnome-shell degraded - since=2026-10-12T04:10:00Z reason=0002-loader.patch does not apply to gnome-shell-51.1-1.fc45

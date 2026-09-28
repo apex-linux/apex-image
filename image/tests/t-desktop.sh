@@ -17,7 +17,7 @@ KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
 # families have the four locked RPMs.
 lock() {
     {
-        printf '# apex rpms.lock 1: written by packaging/rebuild.sh (packaging/README.md, "rpms.lock")\n'
+        printf '# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")\n'
         printf 'family gnome-shell %s gnome-shell-51.0-1.fc45-s0123456789ab\n' "$2"
         case $2 in
             built | held)

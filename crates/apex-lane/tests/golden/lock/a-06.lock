@@ -1,0 +1,13 @@
+# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")
+#   family NAME STATE KEY [since=UTC] [limit=UTC] [newer=NVR,...] [security=0|1|?] [reason=TEXT]
+#   rpm FAMILY KIND NAME NEVRA SHA256 PATH   (PATH relative to APEX_STORE)
+# STATE: built | held (KEY: the last good build) | stock (the owner) | degraded (on_fail=degrade)
+# KIND:  built (Apex-built) | mirror (Fedora-signed, unmodified)
+family nautilus built kn   
+rpm nautilus built nautilus nautilus-0:51.0-1.fc45.apex1.x86_64 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee pkgs/nautilus/kn/nautilus-51.0-1.fc45.apex1.x86_64.rpm
+pin nautilus 51.0
+family libfprint degraded - since=2026-10-12T04:10:00Z reason=0001 does not apply
+family mutter stock - since=2026-10-13T00:00:00Z reason=the owner chose Fedora's build
+family gnome-shell built k2
+rpm gnome-shell built gnome-shell gnome-shell-0:51.0-1.fc45.apex2.x86_64 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb pkgs/gnome-shell/k2/gnome-shell-51.0-1.fc45.apex2.x86_64.rpm
+rpm gnome-shell built gnome-shell-common gnome-shell-common-0:51.0-1.fc45.apex2.noarch bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb pkgs/gnome-shell/k2/gnome-shell-common-51.0-1.fc45.apex2.noarch.rpm

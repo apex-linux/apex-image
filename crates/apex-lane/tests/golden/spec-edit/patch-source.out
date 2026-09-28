@@ -1,0 +1,5 @@
+Name: y
+Source0: a
+Source1: b
+Patch1001:      apex-0001-build.patch
+BuildRequires: c

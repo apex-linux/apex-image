@@ -1,0 +1,15 @@
+replace ^Release:[[:space:]]+%autorelease$
+	Release:        %{autorelease}@APEX_RELEASE@
+end
+
+# c
+after ^Source0:
+	Source1:        @SOURCE1@
+end
+after ^Requires:[[:space:]]+mutter%\{\?_isa\}[[:space:]]
+	Requires:       mutter%{?_isa} = @PIN_EVR@
+end
+after ^%autosetup[[:space:]]
+	tar -xkf %{SOURCE1}
+	mkdir data/stock
+end

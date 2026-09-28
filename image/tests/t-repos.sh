@@ -91,7 +91,7 @@ setup() {
 # built and held families lock the four RPMs setup puts into /apex.
 lane_lock() {
     sha=$(printf '%064d' 0 | tr 0 a)
-    printf '# apex rpms.lock 1: written by packaging/rebuild.sh (packaging/README.md, "rpms.lock")\n'
+    printf '# apex rpms.lock 1: written by apex-lane (packaging/README.md, "rpms.lock")\n'
     printf 'family gnome-shell %s gnome-shell-51.0-1.fc45-s0123456789ab\n' "$1"
     case $1 in
         built | held)

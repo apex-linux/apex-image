@@ -6,8 +6,9 @@
 #
 #   1. apex and apex-desktop .github/scripts/rpms.sh build       (in fedora:45, as root)
 #   2. the patched libfprint .github/scripts/libfprint.sh build  (exit 3 = degraded)
-#   3. the rebuild lane      packaging/rebuild.sh build all      (exit 3 = a family held,
-#                            degraded or kept stock; rpms.lock.next says which)
+#   3. the rebuild lane      tools/builder-vm/lane.sh build all  (apex-lane; exit 3 = a
+#                            family held, degraded or kept stock; rpms.lock.next says
+#                            which)
 #   4. the image             .github/scripts/image.sh context --lane-lock
 #                            ~/apex-store/rpms.lock.next, build, inspect
 #
@@ -42,7 +43,7 @@ mkdir -p _build
 
 in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
 
-# rpms.sh, the lane and image.sh build from git HEAD: uncommitted host changes become a
+# rpms.sh, apex-lane and image.sh build from git HEAD: uncommitted host changes become a
 # throwaway snapshot commit in this VM copy of the checkout (snapshot.sh).
 tools/builder-vm/snapshot.sh
 
@@ -66,7 +67,7 @@ else
 
     echo "== 3/4 rebuild lane"
     rc=0
-    packaging/rebuild.sh build all || rc=$?
+    tools/builder-vm/lane.sh build all || rc=$?
     case $rc in
         0) ;;
         3) echo "lane: a family is held, degraded or kept stock; the image takes what $LANE_LOCK records" ;;
@@ -78,6 +79,6 @@ echo "== 4/4 image"
 .github/scripts/image.sh context --rpms-dir _build/rpms "${libfprint_args[@]}" --lane-lock "$LANE_LOCK"
 .github/scripts/image.sh build
 .github/scripts/image.sh inspect
-packaging/rebuild.sh status
+tools/builder-vm/lane.sh status
 echo "build-image: done; state in ~/apex-fedora/_build/image"
 echo "After the image passed its gates (G2, and G4 for a new gnome-shell, mutter or gdm NVR): just pkg-promote"

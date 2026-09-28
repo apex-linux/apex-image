@@ -1,0 +1,5 @@
+### gnome-shell: failed, stays stock
+
+0002-loader.patch does not apply to gnome-shell-51.1-1.fc45
+
+The owner chose Fedora's build of the gnome-shell family; the next image keeps it.
