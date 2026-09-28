@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Guest-side image build for `builder-vm.sh image` (`just vm-image`), run in
-# ~/apex-fedora inside the builder VM (see `just image`). Nothing is pushed or signed.
+# Guest-side image build for `builder-vm.sh image`, run in ~/apex-fedora inside the
+# builder VM. Nothing is pushed or signed, and nothing promotes the lane's lock.
 #
-#   1. apex and apex-desktop .github/scripts/rpms.sh build       (in fedora:45, as root)
-#   2. the patched libfprint .github/scripts/libfprint.sh build  (exit 3 = degraded)
-#   3. the rebuild lane      tools/builder-vm/lane.sh build all  (apex-lane; exit 3 = a
-#                            family held, degraded or kept stock; rpms.lock.next says
-#                            which)
-#   4. the image             .github/scripts/image.sh context --lane-lock
-#                            ~/apex-store/rpms.lock.next, build, inspect
+#   build-image.sh [--image-only]
 #
-# With --image-only, steps 1 to 3 are skipped: the RPMs of the previous run in
-# _build/rpms and _build/libfprint, and the lane's current rpms.lock.next, are reused
-# (for Containerfile or image/ changes). Nothing promotes the lane's lock: after the
-# image passed its gates, `just pkg-promote` makes rpms.lock.next the last good lock.
+# --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
+# or image/ changes).
 set -euo pipefail
 
 image_only=0

@@ -3,11 +3,6 @@
 #
 # Guest-side provisioning of the Apex builder VM. builder-vm.sh pipes this script into
 # `ssh builder@vm bash -s`; it is idempotent and safe to re-run (`builder-vm.sh provision`).
-#
-# Installs what the image pipeline needs inside the VM: rootful podman, buildah and
-# skopeo for image.sh; jq, git and rsync for its helpers; qemu-kvm and OVMF so the
-# qualification (qualify.sh) can boot candidates with nested KVM; zram swap for the
-# memory peaks of the compose and rechunk steps.
 set -euo pipefail
 
 # shellcheck source=/dev/null

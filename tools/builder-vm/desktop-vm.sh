@@ -170,7 +170,6 @@ install() {
 
     if ! "$BUILDER" running; then
         log "starting the builder VM for the install"
-        # Stop the builder VM again when done, also when the install fails.
         trap '"$BUILDER" stop' EXIT
         "$BUILDER" start
     fi

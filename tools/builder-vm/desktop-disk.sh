@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Guest-side disk build for `desktop-vm.sh install`, run in ~/apex-fedora inside the
-# builder VM. It installs a local image onto a disk laid out like the laptop (ESP + ext4
-# /boot + btrfs root, ADR 0010 minus LUKS) with the qualification's own code
-# (install_disk of .github/scripts/qualify.sh), then converts the disk to qcow2 for the
-# host.
+# builder VM. It installs a local image with the qualification's install_disk onto a
+# disk laid out like the laptop minus LUKS (ESP + ext4 /boot + btrfs root), then
+# converts the disk to qcow2 for the host.
 #
 #   desktop-disk.sh IMAGE AUTHORIZED_KEY
 #
