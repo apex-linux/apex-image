@@ -112,8 +112,9 @@ expect_rc "a replaced [cpu] unit with the same values passes" 0
 
 # Without python3 the mapping cannot be checked: that is a failure, not a warning.
 mkdir -p "$T/nopy"
-for tool in sh bash dirname mktemp rm cat; do
-    if p=$(command -v "$tool"); then ln -s "$p" "$T/nopy/$tool"; fi
+# "$SH" too: the shell under test may be dash, which run.sh uses on Fedora.
+for tool in "$SH" sh bash dirname mktemp rm cat; do
+    if p=$(command -v "$tool"); then ln -sf "$p" "$T/nopy/$tool"; fi
 done
 r=$(mkroot nopython)
 run env PATH="$T/nopy" ROOT="$r" "$SH" "$CHECKS/power.sh"

@@ -82,8 +82,9 @@ expect_rc "keyPaths order is free" 0
 
 # Without python3 the mapping cannot be checked: that is a failure, not a warning.
 mkdir -p "$T/nopy"
-for tool in sh bash dirname mktemp rm cat grep sed tr od wc basename head tail paste; do
-    if p=$(command -v "$tool"); then ln -s "$p" "$T/nopy/$tool"; fi
+# "$SH" too: the shell under test may be dash, which run.sh uses on Fedora.
+for tool in "$SH" sh bash dirname mktemp rm cat grep sed tr od wc basename head tail paste; do
+    if p=$(command -v "$tool"); then ln -sf "$p" "$T/nopy/$tool"; fi
 done
 r=$(mkroot nopython)
 run env PATH="$T/nopy" ROOT="$r" RELEASE_BUILD=0 "$SH" "$CHECKS/keys.sh"
