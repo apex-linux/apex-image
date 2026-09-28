@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Content-addressed RPM artifacts on ghcr.io (ADR 0013): a FROM scratch image whose
-# only layer holds /rpms/*.rpm and /rpms/SHA256SUMS.
+# only layer holds /rpms/*.rpm and /rpms/SHA256SUMS. The workflows that pushed and
+# attested them are gone (ci.yml builds nothing); image.sh context still pulls one by
+# digest. This script goes with lock replay in S2c.
 #
 #   oci-artifact.sh digest REF          print the digest of REF; exit 3 when it is absent,
 #                                       4 when access is denied (a cache miss to callers)
 #   oci-artifact.sh lookup REPO KEY WORKFLOW
 #                                       the cache lookup: print the digest of REPO:KEY only
-#                                       when WORKFLOW (rpms.yml, libfprint.yml) on main
+#                                       when WORKFLOW (a workflow file name) on main
 #                                       attested it and it carries content-key=KEY; exit 3
 #                                       absent, 4 access denied, 5 not attested (all three
 #                                       are cache misses: rebuild and publish again)
@@ -21,10 +23,10 @@
 #
 # Why lookup checks provenance: the tags are mutable and anyone holding a packages:
 # write token for the repository could point apex-rpms:<key> at other RPMs, which the
-# image build would install and the CI key would then sign. Every publish job attests
-# the digest it pushed (actions/attest-build-provenance), and a cached artifact is
-# reused only when that attestation verifies for this repository, the given workflow
-# at refs/heads/main, a GitHub-hosted runner, and the key in the artifact's own label.
+# image build would install and the CI key would then sign. A publish job attested the
+# digest it pushed (actions/attest-build-provenance), and a cached artifact is reused
+# only when that attestation verifies for this repository, the given workflow at
+# refs/heads/main, a GitHub-hosted runner, and the key in the artifact's own label.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

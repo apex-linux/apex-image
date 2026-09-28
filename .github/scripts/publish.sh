@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Sign, tag and promote Apex images (ADR 0012, ADR 0013). Only digests move; nothing is
-# rebuilt, so what qualify.yml booted is exactly what the channel tag points at.
+# rebuilt, so what qualification booted is exactly what the channel tag points at.
 #
 #   publish.sh sign REPO DIGEST             cosign-sign REPO@DIGEST (legacy .sig format)
 #   publish.sh tag-testing DIGEST VERSION   move apex-testing:45 to DIGEST

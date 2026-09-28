@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Assemble, inspect, rechunk and push the Apex image (ADR 0013, image.yml). Every step
-# is a subcommand so that CI can record disk usage between them; the builder VM runs
-# the same steps (`just image`). Rootful podman throughout (sudo when not root).
+# Assemble, inspect, rechunk and push the Apex image (ADR 0013). Every step is a
+# subcommand, so a caller can record disk usage between them. The builder VM runs
+# context, build and inspect (`just vm-image`, `just image`). Rootful podman throughout
+# (sudo when not root).
 #
 #   image.sh context [--rpms-ref REF|--rpms-dir DIR] [--libfprint-ref REF|--libfprint-dir DIR]
 #                    [--lock FILE]    put the RPM inputs into the context; FILE (a lock.txt
@@ -24,11 +25,12 @@
 #   APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
 #   APEX_RPMS_KEY, APEX_LIBFPRINT_KEY   input keys for the content key (the context
 #                     step records them from the artifacts when unset)
-#   APEX_COMPOSE      passed as --build-arg COMPOSE (spike.yml: build-rootfs or dnf)
-#   APEX_TARGET       podman build --target (spike.yml builds only the builder stage)
-#   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0). image-build.yml sets 1 for
-#                     images it pushes: the Containerfile then requires real public keys
-#                     (image/checks/keys.sh), since the pushed digest is what gets promoted.
+#   APEX_COMPOSE      passed as --build-arg COMPOSE (build-rootfs or dnf)
+#   APEX_TARGET       podman build --target (a stage of image/Containerfile)
+#   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0). Set it to 1 for an image
+#                     that will be pushed: the Containerfile then requires real public
+#                     keys (image/checks/keys.sh), since the pushed digest is what gets
+#                     promoted.
 #
 # Fedora bases: ARG BASE and ARG REPOS_BASE must be digest pins on
 # registry.fedoraproject.org (lib.sh is_fedora_pin). quay.io stops serving a Fedora
