@@ -1,0 +1,260 @@
+#!/usr/bin/python3
+"""A fake rpm for the image check tests (image/tests).
+
+It answers the queries image/checks/*.sh and the Containerfile's repos stage make,
+from a JSON package database named by FAKE_RPMDB:
+
+    {"gtk3": {"evr": "3.24.52-6.fc45",
+              "requires": ["libgtk-3.so.0()(64bit)", ...],
+              "provides": ["gtk3", "libgtk-3.so.0()(64bit)", ...],
+              "files": ["/usr/lib64/libgtk-3.so.0"],
+              "modified": []}, ...}
+
+"requires" models the rpm header, not the repodata: like real rpm (and unlike
+createrepo's primary.xml) it keeps requirements a package satisfies itself. Every
+package provides its own name implicitly. "modified" lists files whose digest changed
+(rpm -V prints them with a '5'). --root and --dbpath are accepted and ignored.
+
+`rpm -E` knows %fedora (FAKE_FEDORA, default 45), %_arch (x86_64) and
+%{lua: print(rpm.vercmp('A', 'B'))}, with rpm's own EVR comparison.
+"""
+
+import json
+import os
+import re
+import sys
+
+
+def rpmvercmp(a, b):
+    """rpmvercmp() from rpm (rpmio/rpmvercmp.cc), including '~' and '^'."""
+    if a == b:
+        return 0
+    i = j = 0
+    while i < len(a) or j < len(b):
+        while i < len(a) and not a[i].isalnum() and a[i] not in "~^":
+            i += 1
+        while j < len(b) and not b[j].isalnum() and b[j] not in "~^":
+            j += 1
+        ca = a[i] if i < len(a) else ""
+        cb = b[j] if j < len(b) else ""
+        if ca == "~" or cb == "~":
+            if ca != "~":
+                return 1
+            if cb != "~":
+                return -1
+            i += 1
+            j += 1
+            continue
+        if ca == "^" or cb == "^":
+            if not ca:
+                return -1
+            if not cb:
+                return 1
+            if ca != "^":
+                return 1
+            if cb != "^":
+                return -1
+            i += 1
+            j += 1
+            continue
+        if not (ca and cb):
+            break
+        if ca.isdigit():
+            m1 = re.match(r"[0-9]*", a[i:]).group()
+            m2 = re.match(r"[0-9]*", b[j:]).group()
+            isnum = True
+        else:
+            m1 = re.match(r"[A-Za-z]*", a[i:]).group()
+            m2 = re.match(r"[A-Za-z]*", b[j:]).group()
+            isnum = False
+        if not m2:
+            return 1 if isnum else -1
+        i += len(m1)
+        j += len(m2)
+        if isnum:
+            m1 = m1.lstrip("0")
+            m2 = m2.lstrip("0")
+            if len(m1) != len(m2):
+                return 1 if len(m1) > len(m2) else -1
+        if m1 != m2:
+            return 1 if m1 > m2 else -1
+    rest_a = i < len(a)
+    rest_b = j < len(b)
+    if not rest_a and not rest_b:
+        return 0
+    return -1 if not rest_a else 1
+
+
+def parse_evr(evr):
+    """parseEVR() from rpm: (epoch or None, version, release or None)."""
+    m = re.match(r"[0-9]*", evr)
+    rest = evr[m.end():]
+    if rest.startswith(":"):
+        epoch = m.group() or "0"
+        vr = rest[1:]
+    else:
+        epoch = None
+        vr = evr
+    version, sep, release = vr.rpartition("-")
+    if not sep:
+        return epoch, vr, None
+    return epoch, version, release
+
+
+def evrcmp(a, b):
+    """rpmverCmp(): a missing epoch counts as 0."""
+    ea, va, ra = parse_evr(a)
+    eb, vb, rb = parse_evr(b)
+    for x, y in ((ea or "0", eb or "0"), (va, vb), (ra, rb)):
+        if x is None and y is None:
+            continue
+        if x is not None and y is None:
+            return 1
+        if x is None:
+            return -1
+        rc = rpmvercmp(x, y)
+        if rc:
+            return rc
+    return 0
+
+
+def load_db():
+    path = os.environ.get("FAKE_RPMDB")
+    if not path:
+        sys.exit("fake rpm: FAKE_RPMDB is not set")
+    with open(path, encoding="utf-8") as f:
+        db = json.load(f)
+    for name, pkg in db.items():
+        pkg.setdefault("evr", "1.0-1.fc45")
+        pkg.setdefault("requires", [])
+        pkg.setdefault("files", [])
+        pkg.setdefault("modified", [])
+        provides = pkg.setdefault("provides", [])
+        if name not in provides:
+            provides.append(name)
+    return db
+
+
+def expand(expr):
+    fedora = os.environ.get("FAKE_FEDORA", "45")
+    out = expr.replace("%{fedora}", fedora).replace("%fedora", fedora)
+    out = out.replace("%{_arch}", "x86_64").replace("%_arch", "x86_64")
+    m = re.fullmatch(r"%\{lua: print\(rpm\.vercmp\('([^']*)', '([^']*)'\)\)\}", out)
+    if m:
+        return str(evrcmp(m.group(1), m.group(2)))
+    return out
+
+
+def unescape(fmt):
+    return fmt.replace("\\n", "\n").replace("\\t", "\t")
+
+
+def fmt_pkg(fmt, name, pkg):
+    fmt = unescape(fmt)
+    m = re.fullmatch(r"\[(.*)\]", fmt, re.S)
+    if m:
+        inner = m.group(1)
+        requires = pkg["requires"]
+        # Like rpm: inside an array iterator a scalar tag must be written %{=TAG} to be
+        # repeated; a bare %{NAME} next to an array of another size is an error and the
+        # package prints nothing.
+        if "%{NAME}" in inner and len(requires) != 1:
+            sys.stderr.write("error: incorrect format: array iterator used with different sized arrays\n")
+            return ""
+        return "".join(inner.replace("%{=NAME}", name).replace("%{NAME}", name)
+                       .replace("%{REQUIRENAME}", r) for r in requires)
+    epoch, version, release = parse_evr(pkg["evr"])
+    return (fmt.replace("%{NAME}", name).replace("%{name}", name)
+            .replace("%{VERSION}", version).replace("%{RELEASE}", release or "")
+            .replace("%{release}", release or ""))
+
+
+def main(argv):
+    args = []
+    qf = None
+    it = iter(argv)
+    for a in it:
+        if a in ("--root", "--dbpath"):
+            next(it, None)
+        elif a.startswith(("--root=", "--dbpath=")):
+            pass
+        elif a in ("--qf", "--queryformat"):
+            qf = next(it, "")
+        elif a.startswith(("--qf=", "--queryformat=")):
+            qf = a.split("=", 1)[1]
+        else:
+            args.append(a)
+
+    if args and args[0] == "-E":
+        print(expand(args[1]))
+        return 0
+
+    db = load_db()
+    flags = [a for a in args if a.startswith("-")]
+    rest = [a for a in args if not a.startswith("-")]
+
+    def owners(path):
+        return sorted(n for n, p in db.items() if path in p["files"])
+
+    if "-qa" in flags:
+        out = "".join(fmt_pkg(qf or "%{NAME}\n", n, db[n]) for n in sorted(db))
+        sys.stdout.write(out)
+        return 0
+    if "--whatrequires" in flags or "--whatprovides" in flags:
+        cap = rest[0]
+        if "--whatrequires" in flags:
+            hits = sorted(n for n, p in db.items() if cap in p["requires"])
+            word = "requires"
+        else:
+            hits = sorted(set(n for n, p in db.items() if cap in p["provides"])
+                          | set(owners(cap)))
+            word = "provides"
+        if not hits:
+            print("no package %s %s" % (word, cap))
+            return 1
+        sys.stdout.write("".join(fmt_pkg(qf or "%{NAME}-%{VERSION}-%{RELEASE}\n", n, db[n])
+                                 for n in hits))
+        return 0
+    if "--provides" in flags:
+        rc = 0
+        for n in rest:
+            if n not in db:
+                print("package %s is not installed" % n)
+                rc = 1
+                continue
+            for p in db[n]["provides"]:
+                print(p if p != n else "%s = %s" % (n, db[n]["evr"]))
+        return rc
+    if "-qf" in flags:
+        rc = 0
+        for path in rest:
+            found = owners(path)
+            if not found:
+                print("file %s is not owned by any package" % path)
+                rc = 1
+            for n in found:
+                sys.stdout.write(fmt_pkg(qf or "%{NAME}-%{VERSION}-%{RELEASE}\n", n, db[n]))
+        return rc
+    if "-Vf" in flags:
+        rc = 0
+        for path in rest:
+            for n in owners(path):
+                for f in db[n]["files"]:
+                    if f in db[n]["modified"]:
+                        print("S.5....T.    %s" % f)
+                        rc = 1
+        return rc
+    if "-q" in flags:
+        rc = 0
+        for n in rest:
+            if n in db:
+                sys.stdout.write(fmt_pkg(qf or "%{NAME}-%{VERSION}-%{RELEASE}\n", n, db[n]))
+            else:
+                print("package %s is not installed" % n)
+                rc = 1
+        return rc
+    sys.exit("fake rpm: unsupported arguments %r" % argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

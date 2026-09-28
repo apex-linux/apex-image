@@ -1,0 +1,45 @@
+// Refuse rpm-ostree actions that break bootc updates (ADR 0001, ADR 0008, ADR 0009).
+//
+// Package layering and base overrides turn the deployment into a local rpm-ostree
+// derivation. bootc then refuses to upgrade it ("contains local rpm-ostree
+// modifications"), bootc status reports it as incompatible, and Apex updates stop
+// until `rpm-ostree reset`. Software is added as Flatpaks or in toolbox instead.
+//
+// Deployment changes through rpm-ostree bypass apex-updated, the single writer
+// (ADR 0008): rebase, deploy and upgrade would pull with the default container policy
+// rather than Apex's strict one, rollback skips the denylist, and
+// finalize-deployment would apply a download-only update without arming the boot
+// counter (ADR 0009). Apex's own polkit actions cover those operations.
+//
+// polkit rules cannot send a message to the client; the caller sees "Not authorized"
+// and the journal of polkit.service has the line logged below. rpm-ostreed authorizes
+// uid 0 itself, without polkit, so `sudo rpm-ostree ...` is not blocked here; the
+// daemon then reports the "incompatible" state. rpm-ostree may not even be in the
+// image; the rule costs nothing when it is absent. Action ids are from
+// org.projectatomic.rpmostree1.policy (rpm-ostree 2026.2). ES5 only: polkit's engine.
+
+(function () {
+    "use strict";
+
+    var denied = [
+        // Layering and overrides.
+        "org.projectatomic.rpmostree1.install-uninstall-packages",
+        "org.projectatomic.rpmostree1.install-local-packages",
+        "org.projectatomic.rpmostree1.override",
+        // Deployment changes owned by apex-updated.
+        "org.projectatomic.rpmostree1.rebase",
+        "org.projectatomic.rpmostree1.deploy",
+        "org.projectatomic.rpmostree1.upgrade",
+        "org.projectatomic.rpmostree1.rollback",
+        "org.projectatomic.rpmostree1.finalize-deployment"
+    ];
+
+    polkit.addRule(function (action, subject) {
+        if (denied.indexOf(action.id) < 0) {
+            return polkit.Result.NOT_HANDLED;
+        }
+        polkit.log("apex: refusing " + action.id + " for " + subject.user +
+                   ": rpm-ostree changes break bootc updates; use Flatpak, toolbox or apexctl");
+        return polkit.Result.NO;
+    });
+}());

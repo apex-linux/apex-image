@@ -1,0 +1,447 @@
+# Apex OS image: Fedora 45 + GNOME 51 for the ASUS Vivobook Pro 14X OLED M7400QC.
+#
+# Design: docs/ARCHITECTURE.md sections 3, 6, 7, 8; ADRs 0001, 0006, 0007, 0010, 0012,
+# 0013.
+# Names, paths and formats: docs/specs/M1-IMPLEMENTATION.md.
+#
+# Build context: the repository root. Inputs taken from it:
+#   image/packages/                 install, exclude and updates-testing lists
+#   image/system_files/             rootfs overlay (policy.json, keys, units, drop-ins,
+#                                   the tuned-ppd mapping and apex-performance profile)
+#   image/checks/, image/audit/     image checks run in the final stage
+#   hardware/m7400qc/generated/     `apexctl profile render` output: monitors.xml always;
+#                                   alc294-m7400qc.fw + apex-audio.conf once measured
+#   rpms/                           Apex-built RPMs; CI fills it from the apex-rpms and
+#                                   apex-libfprint OCI artifacts. It must contain the apex
+#                                   RPM; libfprint may be missing (degraded build).
+# The repository's .containerignore keeps target/, .git/, _build/ and other bulky or
+# generated trees out of the context; podman and buildah read it from the context root.
+#
+# Build (rootful podman; flags from ADR 0013, proven on Ubuntu runners). The builder
+# stage runs rpm-ostree, which needs mount namespaces, FUSE and bubblewrap:
+#   sudo podman build \
+#     --cap-add=SYS_ADMIN,NET_ADMIN --device /dev/fuse \
+#     --security-opt seccomp=unconfined --security-opt label=disable \
+#     --build-arg APEX_VERSION=45.20260924.117 \
+#     --build-arg APEX_REVISION="$(git rev-parse HEAD)" \
+#     -f image/Containerfile -t localhost/apex:45 .
+# (On an SELinux host the Fedora docs use --cap-add=all
+#  --security-opt=label=type:container_runtime_t --device /dev/fuse instead.)
+# Never reuse a cached compose: the build-rootfs RUN line does not change when the
+# repositories do. The builder stage declares APEX_VERSION so every new version misses
+# the layer cache; CI must not use --cache-from/--cache-to for this file.
+#
+# Dynamic labels (org.opencontainers.image.{version,revision,created},
+# io.github.sekirokenjii.apex.{degraded,content-key,fedora}) are added by CI at rechunk
+# time from /usr/share/apex/manifest.json; this file sets static labels only.
+#
+# Every RUN is a plain `sh -c` line (no heredocs), so it also builds with buildah
+# older than 1.33.
+
+# Fedora release. The version string follows it; BASE and REPOS_BASE below are digests
+# of this release's tags (the repos stage fails if its %fedora differs).
+ARG FEDORA=45
+# Both Fedora bases are pinned by OCI index digest on registry.fedoraproject.org, which
+# keeps old digests. quay.io/fedora serves the same digests only while tag 45 points at
+# them, about a day, so a quay.io pin breaks the build almost at once; CI refuses one
+# (.github/scripts/image.sh). Renovate bumps both digests together (renovate.json group
+# "fedora 45 images") through regex managers that need this exact one-line form,
+# ARG <NAME>=registry.fedoraproject.org/<repo>@sha256:<digest>. Never build from a
+# floating tag.
+# Builder (and COMPOSE=dnf base): fedora-bootc:45. Observed 2026-09-23 (version
+# 45.20260923.0, kernel 7.2.7-300.fc45).
+ARG BASE=registry.fedoraproject.org/fedora-bootc@sha256:5225b8afb65136bcf6131eb2b02ef7923a64e37264e5e0fdda47dfeef51851c1
+# repos stage base: fedora:45 (amd64 image created 2026-09-23). Its repo files, GPG keys
+# and $releasever are what the compose resolves against, so it moves with BASE.
+ARG REPOS_BASE=registry.fedoraproject.org/fedora@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
+# <fedora>.<yyyymmdd>.<run> and the full git commit. Required when RELEASE_BUILD=1;
+# a development build falls back to <fedora>.<today>.0 and 40 zeros.
+ARG APEX_VERSION=
+ARG APEX_REVISION=
+# 1 once Fedora 45 is GA: the apex-gnome51 updates-testing stanza is not generated.
+ARG GA_REACHED=0
+# Fedora 45 GA target and grace period for the dated allowlist check (ARCHITECTURE 3).
+# Bump FEDORA_GA_DATE if GA slips (fallback targets 2026-10-27, 2026-11-03).
+ARG FEDORA_GA_DATE=2026-10-20
+ARG ALLOWLIST_GRACE_DAYS=7
+# 1 for images headed to a registry: version/revision are mandatory and
+# image/checks/keys.sh requires real public keys.
+ARG RELEASE_BUILD=0
+# build-rootfs (default, ADR 0001) or dnf (the ADR 0013 fallback). Only these two
+# values name a stage below.
+ARG COMPOSE=build-rootfs
+# Optional replay (ADR 0013): space-separated NEVRAs (or NEVRs) from an earlier build's
+# manifest, passed to build-rootfs as --lock. Empty: newest packages.
+ARG LOCK=
+
+# ==================================================================================
+# repos: the package configuration that build-rootfs composes from (its "source
+# root"). rpm-ostree reads the .repo files of this root (/etc/yum.repos.d and, on F45,
+# /usr/share/dnf5/repos.d), its GPG keys and its $releasever. It rewrites
+# gpgkey=file:// paths into this root but NOT baseurl= paths, so the local repository
+# below uses the path it has inside the builder, where this stage is mounted at /repos.
+# ==================================================================================
+FROM ${REPOS_BASE} AS repos
+ARG FEDORA
+ARG GA_REACHED
+ARG FEDORA_GA_DATE
+ARG ALLOWLIST_GRACE_DAYS
+COPY rpms/ /apex/
+# 0. REPOS_BASE must be Fedora ${FEDORA} (its digest does not show the release).
+# 1. Dated check: the updates-testing allowlist must be empty after GA + 7 days.
+# 2. updates-testing and its -debuginfo/-source siblings: enabled=0 in every repo file
+#    (edited in place because rpm-ostree's libdnf does not read dnf5's
+#    repos.override.d). The compose also names its repositories explicitly (--repo).
+# 3. createrepo_c turns rpms/ into the local repository "apex".
+# 4. Fedora's libfprint is hidden (excludepkgs on fedora and updates) only when rpms/
+#    carries the Apex .apex<N> build; otherwise the stock one is used and the final
+#    stage records degraded=fingerprint.
+# 5. [apex] has priority=1 and gpgcheck=0, and includepkgs= exactly the names in
+#    apex.txt (ADR 0012: a non-Fedora repository names what it may provide). Priority
+#    beats version, so without that list any stray RPM in rpms/ (a -devel subpackage,
+#    a test build of a Fedora package) would replace the signed Fedora package of the
+#    same name; other names in rpms/ are listed and ignored. gpgcheck=0 is scoped to
+#    this local repository of RPMs built by this pipeline; %_pkgverify_level is NOT
+#    touched.
+#    SPIKE: confirm that F45's signature enforcement accepts these unsigned RPMs in
+#    the rpm-ostree compose (and in dnf5 for COMPOSE=dnf). If it does not, sign them
+#    with an ephemeral per-build key (rpm-setup-autosign) and import that public key
+#    in this stage only; never lower %_pkgverify_level or pass --nosignature.
+# 6. Until GA, [apex-gnome51] clones [updates-testing] (same metalink and Fedora GPG
+#    key, skip_if_unavailable=False) with includepkgs= the pinned name-version-release
+#    entries of updates-testing-allowlist.txt (Bodhi FEDORA-2026-48a7996f9c). Checked
+#    here, and every dnf5 query's own exit status is checked (POSIX sh has no pipefail):
+#    - updates-testing must offer exactly the pinned builds: anything more means
+#      includepkgs did not restrict (libdnf, in rpm-ostree, ignores an includepkgs list
+#      that matches nothing and would open the whole of updates-testing); anything less
+#      means the update was edited or a build was superseded, and the list needs a
+#      reviewed change;
+#    - when none of the pinned builds is in updates-testing any more, the stanza is
+#      dropped only if fedora + updates carry every pinned package at the same or a
+#      newer version-release (rpm.vercmp; the stable build's epoch is used on both
+#      sides, because an NVR carries none and Fedora never lowers an epoch). Otherwise
+#      the build fails: the update was unpushed, or went stable before the stable
+#      repodata caught up, and composing now would downgrade GNOME 51.0 to 51~rc.
+RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
+    set -eu; \
+    rel=$(rpm -E %fedora); \
+    if [ "$rel" != "${FEDORA}" ]; then echo "ERROR: REPOS_BASE is Fedora $rel, not ${FEDORA}" >&2; exit 1; fi; \
+    arch=$(rpm -E %_arch); \
+    reposfiles() { for f in /etc/yum.repos.d/*.repo /usr/share/dnf5/repos.d/*.repo; do if [ -f "$f" ]; then printf '%s\n' "$f"; fi; done; }; \
+    list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }; \
+    list /run/apex-packages/updates-testing-allowlist.txt >/tmp/ut-list; \
+    allow=$(paste -sd, /tmp/ut-list); \
+    echo "updates-testing allowlist: ${allow:-<empty>}"; \
+    now=$(date -u +%s); \
+    deadline=$(( $(date -u -d "${FEDORA_GA_DATE}" +%s) + ALLOWLIST_GRACE_DAYS * 86400 )); \
+    if [ -n "$allow" ] && [ "$now" -gt "$deadline" ]; then \
+        echo "ERROR: Fedora ${FEDORA} GA (${FEDORA_GA_DATE}) + ${ALLOWLIST_GRACE_DAYS} days has passed but image/packages/updates-testing-allowlist.txt still has entries. Empty it and build with GA_REACHED=1 (or move FEDORA_GA_DATE if GA slipped)." >&2; \
+        exit 1; \
+    fi; \
+    for f in $(reposfiles); do \
+        sed -i -e '/^\[/h' -e '/^enabled[[:space:]]*=/{' -e 'x' -e '/^\[updates-testing/{' -e 'x' -e 's/.*/enabled=0/' -e 'b' -e '}' -e 'x' -e '}' "$f"; \
+    done; \
+    dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install createrepo_c; \
+    if ! find /apex -name '*.rpm' | grep -q .; then echo "ERROR: rpms/ in the build context has no RPMs (the apex RPM is required)" >&2; exit 1; fi; \
+    createrepo_c /apex; \
+    dnf5 -q --repofrompath=apex-probe,/apex --repo=apex-probe repoquery --available --queryformat '%{name} %{release}\n' >/tmp/apex-pkgs; \
+    echo "Local Apex repository:"; sed 's/^/  /' /tmp/apex-pkgs; \
+    if ! grep -q '^apex ' /tmp/apex-pkgs; then echo "ERROR: rpms/ does not contain the apex RPM" >&2; exit 1; fi; \
+    list /run/apex-packages/apex.txt >/tmp/apex-names.raw; \
+    sort -u /tmp/apex-names.raw >/tmp/apex-names; \
+    if ! grep -Fxq apex /tmp/apex-names; then echo "ERROR: image/packages/apex.txt does not list apex" >&2; exit 1; fi; \
+    apexnames=$(paste -sd, /tmp/apex-names); \
+    ignored=$(cut -d' ' -f1 /tmp/apex-pkgs | sort -u | while read -r n; do grep -Fxq "$n" /tmp/apex-names || printf ' %s' "$n"; done); \
+    if [ -n "$ignored" ]; then echo "NOTE: rpms/ also has packages that are not in apex.txt; [apex] does not admit them:$ignored"; fi; \
+    if grep -Eq '^libfprint [^ ]*\.apex[0-9]+' /tmp/apex-pkgs; then \
+        for f in $(reposfiles); do sed -i -e '/^\[\(fedora\|updates\)\]$/a excludepkgs=libfprint' "$f"; done; \
+        echo "Apex libfprint present: Fedora's libfprint is excluded"; \
+    else \
+        echo "NOTE: no Apex libfprint in rpms/: Fedora's stock libfprint will be used (degraded=fingerprint)"; \
+    fi; \
+    printf '%s\n' '[apex]' 'name=Apex packages built by this pipeline (build context rpms/)' 'baseurl=file:///repos/apex' 'enabled=1' 'priority=1' "includepkgs=$apexnames" 'gpgcheck=0' 'repo_gpgcheck=0' 'skip_if_unavailable=False' >/etc/yum.repos.d/apex.repo; \
+    if [ "${GA_REACHED}" != 1 ] && [ -n "$allow" ]; then \
+        vercmp() { rpm -E "%{lua: print(rpm.vercmp('$1', '$2'))}"; }; \
+        if [ "$(vercmp 1:51~rc-2.fc45 1:51.0-1.fc45)" != -1 ] || [ "$(vercmp 51.0.1-1.fc45 51.0-1.fc45)" != 1 ]; then echo "ERROR: rpm.vercmp does not order versions as expected" >&2; exit 1; fi; \
+        : >/tmp/ut-specs; \
+        for s in $(printf '%s' "$allow" | tr ',' ' '); do \
+            if ! printf '%s\n' "$s" | grep -Eqx "[A-Za-z0-9._+]+(-[A-Za-z0-9._+]+)*-[0-9][A-Za-z0-9._+~^]*-[0-9][A-Za-z0-9._+~^]*\.fc${FEDORA}[A-Za-z0-9._+~^]*"; then \
+                echo "ERROR: updates-testing-allowlist.txt entry '$s' is not a pinned name-version-release (for example gtk4-4.24.0-1.fc${FEDORA})" >&2; exit 1; \
+            fi; \
+            printf '%s\n' "$s" >>/tmp/ut-specs; \
+        done; \
+        sort -u -o /tmp/ut-specs /tmp/ut-specs; \
+        src=$(grep -l '^\[updates-testing\]$' $(reposfiles) | head -n 1); \
+        if [ -z "$src" ]; then echo "ERROR: no [updates-testing] definition to derive apex-gnome51 from" >&2; exit 1; fi; \
+        { printf '%s\n' '[apex-gnome51]' 'name=Fedora $releasever updates-testing, restricted to GNOME 51.0 (FEDORA-2026-48a7996f9c)' 'enabled=1' 'skip_if_unavailable=False' "includepkgs=$allow"; \
+          sed -n '/^\[updates-testing\]$/,/^\[/p' "$src" | sed -e '/^\[/d' -e '/^[[:space:]]*\(name\|enabled\|countme\|includepkgs\|excludepkgs\|skip_if_unavailable\)[[:space:]]*=/d'; \
+        } >/etc/yum.repos.d/apex-gnome51.repo; \
+        if ! dnf5 -q --repo=apex-gnome51 repoquery --available --arch="$arch,noarch" --queryformat '%{name} %{name}-%{version}-%{release}\n' >/tmp/ut-raw; then \
+            echo "ERROR: cannot query apex-gnome51 (updates-testing); not guessing whether FEDORA-2026-48a7996f9c is still there" >&2; exit 1; \
+        fi; \
+        sort -u /tmp/ut-raw >/tmp/ut-avail; \
+        if [ -s /tmp/ut-avail ]; then \
+            extra=$(while read -r n nvr; do grep -Fxq "$nvr" /tmp/ut-specs || printf ' %s' "$nvr"; done </tmp/ut-avail); \
+            if [ -n "$extra" ]; then echo "ERROR: includepkgs did not restrict apex-gnome51; it would admit:$extra" >&2; exit 1; fi; \
+            cut -d' ' -f2 /tmp/ut-avail >/tmp/ut-known; \
+            missing=$(while read -r s; do grep -Fxq "$s" /tmp/ut-known || printf ' %s' "$s"; done </tmp/ut-specs); \
+            if [ -n "$missing" ]; then echo "ERROR: allowlisted builds not in updates-testing (update edited, or a build superseded; review image/packages/updates-testing-allowlist.txt):$missing" >&2; exit 1; fi; \
+            echo "apex-gnome51 admits $(wc -l </tmp/ut-avail) pinned build(s) from updates-testing"; \
+        else \
+            if ! dnf5 -q --repo=fedora --repo=updates --setopt=fedora.skip_if_unavailable=False --setopt=updates.skip_if_unavailable=False repoquery --available --latest-limit=1 --arch="$arch,noarch" --queryformat '%{name} %{evr}\n' $(sed 's/-[^-]*-[^-]*$//' /tmp/ut-specs) >/tmp/ut-stable; then \
+                echo "ERROR: cannot query the stable repositories (fedora, updates)" >&2; exit 1; \
+            fi; \
+            behind=""; \
+            while read -r s; do \
+                n=${s%-*-*}; vr=${s#"$n"-}; \
+                awk -v n="$n" '$1 == n { print $2 }' /tmp/ut-stable >/tmp/ut-one; \
+                if [ ! -s /tmp/ut-one ]; then behind="$behind $n (not in fedora/updates)"; continue; fi; \
+                while read -r evr; do \
+                    case $evr in *:*) e=${evr%%:*}; svr=${evr#*:} ;; *) e=0; svr=$evr ;; esac; \
+                    if ! printf '%s\n' "$e:$svr" | grep -Eqx '[0-9]+:[A-Za-z0-9._+~^]+-[A-Za-z0-9._+~^]+'; then echo "ERROR: unexpected version '$evr' of $n in the stable repodata" >&2; exit 1; fi; \
+                    c=$(vercmp "$e:$svr" "$e:$vr"); \
+                    case $c in 0 | 1) ;; -1) behind="$behind $n ($svr < $vr)" ;; *) echo "ERROR: rpm.vercmp printed '$c'" >&2; exit 1 ;; esac; \
+                done </tmp/ut-one; \
+            done </tmp/ut-specs; \
+            if [ -n "$behind" ]; then \
+                echo "ERROR: no pinned build is in updates-testing any more, and the stable repositories do not carry them yet:$behind. FEDORA-2026-48a7996f9c was unpushed or withdrawn, or it went stable and the stable repodata has not caught up; composing now would downgrade GNOME. Retry later, or review image/packages/updates-testing-allowlist.txt." >&2; \
+                exit 1; \
+            fi; \
+            echo "WARNING: FEDORA-2026-48a7996f9c left updates-testing and fedora/updates carry all $(wc -l </tmp/ut-specs) pinned packages at the same or newer versions; dropping apex-gnome51. Empty image/packages/updates-testing-allowlist.txt." >&2; \
+            rm -f /etc/yum.repos.d/apex-gnome51.repo; \
+        fi; \
+    fi; \
+    if ! dnf5 -q repo list --enabled >/tmp/repos-enabled; then echo "ERROR: dnf5 repo list failed" >&2; exit 1; fi; \
+    if grep -Eq '^updates-testing' /tmp/repos-enabled; then echo "ERROR: updates-testing is still enabled" >&2; exit 1; fi; \
+    echo "Enabled repositories:"; dnf5 repo list --enabled; \
+    dnf5 clean all; \
+    rm -rf /tmp/apex-pkgs /tmp/apex-names /tmp/apex-names.raw /tmp/ut-list /tmp/ut-raw /tmp/ut-avail /tmp/ut-specs /tmp/ut-known /tmp/ut-stable /tmp/ut-one /tmp/repos-enabled /var/cache/libdnf5
+
+# ==================================================================================
+# builder: the digest-pinned fedora-bootc:45 composes the root filesystem from the
+# `minimal` manifest (bootc, systemd, kernel, dnf, SELinux; recommends: false) plus the
+# Apex lists, in ONE depsolve under the --exclude guards (ADR 0001, ARCHITECTURE 3).
+#
+# --repo names every repository of the compose; rpm-ostree then disables all others
+# of the source root (for example fedora-cisco-openh264 and updates-testing).
+#
+# No --no-docs, on purpose: rpm's nodocs drops everything under %doc and the man
+# pages. This laptop is also the development and recovery machine, and man pages for
+# bootc, podman, systemd, toolbox and cryptsetup are part of RECOVERY.md; that costs
+# some tens of MiB. GNOME's Yelp help (/usr/share/help, installed with %lang, not
+# %doc) would survive --no-docs either way.
+# ==================================================================================
+FROM ${BASE} AS builder
+ARG APEX_VERSION
+ARG LOCK
+RUN --mount=type=bind,from=repos,src=/,dst=/repos,rw \
+    --mount=type=bind,source=image/packages,target=/run/apex-packages \
+    set -eu; \
+    echo "Composing Apex ${APEX_VERSION:-development build}"; \
+    list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }; \
+    set --; \
+    for p in $(list /run/apex-packages/base.txt /run/apex-packages/gnome.txt /run/apex-packages/apex.txt); do set -- "$@" --install "$p"; done; \
+    for p in $(list /run/apex-packages/exclude.txt); do set -- "$@" --exclude "$p"; done; \
+    for n in ${LOCK:-}; do set -- "$@" --lock "$n"; done; \
+    set -- "$@" --repo fedora --repo updates --repo apex; \
+    if [ -f /repos/etc/yum.repos.d/apex-gnome51.repo ]; then set -- "$@" --repo apex-gnome51; fi; \
+    /usr/libexec/bootc-base-imagectl build-rootfs --manifest=minimal "$@" /repos /target-rootfs
+
+# The default compose: the generated rootfs as a single layer (CI rechunks it).
+FROM scratch AS rootfs-build-rootfs
+COPY --from=builder /target-rootfs/ /
+
+# ==================================================================================
+# COMPOSE=dnf fallback (ADR 0013), for when build-rootfs with the GNOME set does not
+# converge. Differences from the default path, all deliberate and all still caught by
+# the final stage's checks:
+#   - the base is the published `standard` fedora-bootc (recommends: true, server
+#     extras such as sssd, nfs-utils, clevis, irqbalance, sos, WALinuxAgent-udev, and
+#     the auto-apply update timer, which the final stage masks);
+#   - installed exclude.txt packages are removed first, then the base is upgraded and
+#     the Apex lists are installed with install_weak_deps=False and the same
+#     excludepkgs guards; excludes do not reach back into the base content;
+#   - --allowerasing lets generic-logos replace fedora-logos;
+#   - LOCK is not applied (dnf5 has no equivalent of an rpm-ostree lockfile here);
+#   - the base image's labels are inherited, so CI must set every dynamic label at
+#     rechunk time (it does for version/revision/created anyway).
+# Same repository configuration as the default path (the repos stage), read through
+# reposdir so nothing of it is written into the image.
+# ==================================================================================
+FROM ${BASE} AS rootfs-dnf
+RUN --mount=type=bind,from=repos,src=/,dst=/repos \
+    --mount=type=bind,source=image/packages,target=/run/apex-packages \
+    set -eu; \
+    list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }; \
+    repos="--setopt=reposdir=/repos/etc/yum.repos.d,/repos/usr/share/dnf5/repos.d --repo=fedora --repo=updates --repo=apex"; \
+    if [ -f /repos/etc/yum.repos.d/apex-gnome51.repo ]; then repos="$repos --repo=apex-gnome51"; fi; \
+    guards="--setopt=install_weak_deps=False --setopt=excludepkgs=$(list /run/apex-packages/exclude.txt | paste -sd, -)"; \
+    present=$(rpm -q --queryformat '%{NAME}\n' $(list /run/apex-packages/exclude.txt) | grep -v ' ' || true); \
+    if [ -n "$present" ]; then echo "Removing excluded packages from the base:" $present; dnf5 -y $repos remove $present; fi; \
+    dnf5 -y $repos $guards upgrade; \
+    dnf5 -y $repos $guards install --allowerasing $(list /run/apex-packages/base.txt /run/apex-packages/gnome.txt /run/apex-packages/apex.txt); \
+    dnf5 -y $repos clean all; \
+    rm -rf /var/cache/libdnf5 /var/lib/dnf /var/log/dnf5.log* /tmp/* /var/tmp/*
+
+# ==================================================================================
+# final: overlay, machine files, systemd state, initramfs, manifest, checks, lint.
+# Build-context mounts sit directly under /run: bootc's nonempty-run-tmp lint skips
+# mount points there, buildah removes the targets afterwards, and the linter itself
+# runs in a separate RUN without mounts.
+# ==================================================================================
+FROM rootfs-${COMPOSE} AS final
+ARG FEDORA
+ARG BASE
+ARG APEX_VERSION
+ARG APEX_REVISION
+ARG RELEASE_BUILD
+COPY image/system_files/ /
+# In order:
+#  1. version/revision: validated (<fedora>.YYYYMMDD.N, 40-hex); development defaults
+#     only when RELEASE_BUILD=0.
+#  2. hardware/m7400qc/generated: /etc/xdg/monitors.xml (ADR 0003); the ALC294 patch
+#     firmware + modprobe option when rendered (ADR 0004), else degraded=audio.
+#  3. degraded=fingerprint unless libfprint is the Apex .apex<N> build (ADR 0006).
+#  4. systemd: a full `systemctl preset-all` applies the presets system_files added
+#     (80-apex.preset also disables units, such as bootloader-update.service); the
+#     compose already reset /etc/systemd to presets, so nothing else changes. Then,
+#     because presets alone are not enough, the Apex units, chronyd (the one NTP
+#     client; image/checks/system.sh verifies it) and gdm are enabled
+#     explicitly, the auto-reboot bootc-fetch-apply-updates.timer is masked
+#     (ADR 0008) and graphical.target is made the default. Each result is verified,
+#     and sshd.service/sshd.socket must not be enabled: openssh-server is there for
+#     the KVM qualification, whose guest alone turns sshd on (install-time karg).
+#  5. GSettings: the Apex override is validated with --strict against all installed
+#     schemas (upstream overrides left out; if upstream schemas alone fail --strict
+#     that is only a warning), then the schema cache is compiled non-strict, so an
+#     upstream override for a schema we do not install cannot break the build.
+#  6. hwdb, and fontconfig 10-sub-pixel-none for non-GTK4 clients (ARCHITECTURE 8).
+#  7. initramfs for the single kernel: generic (no-hostonly), reproducible, early AMD
+#     microcode, amdgpu (early KMS; dracut-install adds its green_sardine firmware),
+#     the crypt and systemd-cryptsetup modules for the LUKS2 root (ADR 0010; --add
+#     makes dracut fail if either cannot be installed), without nouveau/nova-core (the
+#     dGPU stays unbound, ARCHITECTURE 6.4) and without snd-hda-intel (it must load
+#     from the root, where the patch firmware is).
+#  8. /usr/share/apex/manifest.json via apexctl, then validated.
+#  9. image/checks/*.sh (all run; any failure fails the build).
+# 10. lint skips staged for the next RUN; /var and /tmp cleaned.
+# UEFI only: bootupd's BIOS component metadata (generated, owned by no package) is
+# removed, so `bootc install` never runs grub2-install --target i386-pc onto the
+# laptop's disk shared with Windows (found by the first local install; ADR 0010).
+# /run/systemd is a tmpfs for this step: `systemd-analyze verify` (overlay.sh) writes
+# /run/systemd/systemd-units-load, which bootc's nonempty-run-tmp lint rejects, and a
+# later `rm` cannot remove the directory because podman bind-mounts resolv.conf under it.
+RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
+    --mount=type=bind,source=image,target=/run/apex-image \
+    --mount=type=tmpfs,target=/run/systemd \
+    set -eu; \
+    RELEASE_BUILD=${RELEASE_BUILD:-0}; \
+    case "$RELEASE_BUILD" in 0|1) ;; *) echo "ERROR: RELEASE_BUILD must be 0 or 1" >&2; exit 1 ;; esac; \
+    version=${APEX_VERSION:-}; \
+    revision=${APEX_REVISION:-}; \
+    if [ -z "$version" ] || [ -z "$revision" ]; then \
+        if [ "$RELEASE_BUILD" = 1 ]; then echo "ERROR: APEX_VERSION and APEX_REVISION are required when RELEASE_BUILD=1" >&2; exit 1; fi; \
+        version=${version:-${FEDORA}.$(date -u +%Y%m%d).0}; \
+        revision=${revision:-0000000000000000000000000000000000000000}; \
+        echo "WARNING: development build: version $version, revision $revision" >&2; \
+    fi; \
+    printf '%s\n' "$version" | grep -Eqx "${FEDORA}\.[0-9]{8}\.[0-9]+" || { echo "ERROR: APEX_VERSION '$version' is not ${FEDORA}.YYYYMMDD.N" >&2; exit 1; }; \
+    printf '%s\n' "$revision" | grep -Eqx '[0-9a-f]{40}' || { echo "ERROR: APEX_REVISION '$revision' is not a 40-hex commit" >&2; exit 1; }; \
+    degraded=/tmp/apex-degraded; : >"$degraded"; \
+    install -D -m 0644 /run/apex-hw/monitors.xml /etc/xdg/monitors.xml; \
+    fw=/run/apex-hw/alc294-m7400qc.fw; conf=/run/apex-hw/apex-audio.conf; \
+    if [ -f "$fw" ] && [ -f "$conf" ]; then \
+        grep -q 'apex/alc294-m7400qc\.fw' "$conf" || { echo "ERROR: apex-audio.conf must load patch=apex/alc294-m7400qc.fw (firmware is installed under /usr/lib/firmware/apex/)" >&2; exit 1; }; \
+        install -D -m 0644 "$fw" /usr/lib/firmware/apex/alc294-m7400qc.fw; \
+        install -D -m 0644 "$conf" /usr/lib/modprobe.d/apex-audio.conf; \
+        echo "ALC294 patch firmware installed"; \
+    elif [ -f "$fw" ] || [ -f "$conf" ]; then \
+        echo "ERROR: hardware/m7400qc/generated has only one of alc294-m7400qc.fw and apex-audio.conf" >&2; exit 1; \
+    else \
+        echo "NOTE: audio not measured yet: no ALC294 patch firmware (degraded=audio)"; echo audio >>"$degraded"; \
+    fi; \
+    fprel=$(rpm -q --queryformat '%{RELEASE}' libfprint 2>/dev/null || true); \
+    case "$fprel" in \
+        *.apex[0-9]*) echo "libfprint release $fprel (Apex build)" ;; \
+        *) echo "NOTE: libfprint is not the Apex build (${fprel:-not installed}): degraded=fingerprint"; echo fingerprint >>"$degraded" ;; \
+    esac; \
+    mkdir -p /usr/share/apex; \
+    sort -u "$degraded" >/tmp/apex-degraded.sorted; \
+    rm -f /usr/lib/bootupd/updates/BIOS.json; \
+    systemctl preset-all; \
+    systemctl --user --global preset-all; \
+    rm -f /usr/lib/systemd/system/default.target.wants/bootc-fetch-apply-updates.timer; \
+    systemctl mask bootc-fetch-apply-updates.timer; \
+    units="apex-boot-assess.service apex-update-auto.timer apex-flatpak-preinstall.service apex-flatpak-preinstall.timer apex-flatpak-update.timer chronyd.service gdm.service"; \
+    systemctl enable $units; \
+    systemctl set-default graphical.target; \
+    for u in $units; do systemctl is-enabled --quiet "$u" || { echo "ERROR: $u is not enabled" >&2; exit 1; }; done; \
+    [ "$(systemctl is-enabled bootc-fetch-apply-updates.timer 2>/dev/null || true)" = masked ] || { echo "ERROR: bootc-fetch-apply-updates.timer is not masked" >&2; exit 1; }; \
+    [ "$(systemctl get-default)" = graphical.target ] || { echo "ERROR: default target is not graphical.target" >&2; exit 1; }; \
+    for u in sshd.service sshd.socket; do if systemctl is-enabled --quiet "$u" 2>/dev/null; then echo "ERROR: $u is enabled; sshd must stay off outside the qualification VM (80-apex.preset)" >&2; exit 1; fi; done; \
+    schemas=/usr/share/glib-2.0/schemas; tmp=$(mktemp -d); \
+    cp "$schemas"/*.xml "$tmp"/; \
+    for o in "$schemas"/*apex*.gschema.override; do if [ -f "$o" ]; then cp "$o" "$tmp"/; fi; done; \
+    if ! glib-compile-schemas --strict --dry-run "$tmp"; then \
+        rm -f "$tmp"/*apex*.gschema.override; \
+        if glib-compile-schemas --strict --dry-run "$tmp"; then echo "ERROR: the Apex GSettings override is invalid (see above)" >&2; exit 1; fi; \
+        echo "WARNING: installed upstream schemas fail --strict; the Apex override was not validated" >&2; \
+    fi; \
+    rm -rf "$tmp"; \
+    glib-compile-schemas "$schemas"; \
+    systemd-hwdb update --usr; \
+    subpixel=/usr/share/fontconfig/conf.avail/10-sub-pixel-none.conf; \
+    [ -f "$subpixel" ] || { echo "ERROR: $subpixel not found" >&2; exit 1; }; \
+    ln -sfn "$subpixel" /etc/fonts/conf.d/10-sub-pixel-none.conf; \
+    fc-cache --system-only; \
+    set -- /usr/lib/modules/*; \
+    if [ "$#" -ne 1 ] || [ ! -d "$1" ]; then echo "ERROR: expected exactly one kernel in /usr/lib/modules, found: $*" >&2; exit 1; fi; \
+    kver=${1##*/}; \
+    DRACUT_NO_XATTR=1 dracut --no-hostonly --reproducible --early-microcode \
+        --add 'crypt systemd-cryptsetup' \
+        --add-drivers amdgpu --omit-drivers 'nouveau nova_core nova_drm snd_hda_intel' \
+        -f "/usr/lib/modules/$kver/initramfs.img" "$kver"; \
+    set --; \
+    while IFS= read -r d; do if [ -n "$d" ]; then set -- "$@" --degraded "$d"; fi; done </tmp/apex-degraded.sorted; \
+    apexctl build manifest --root / --version "$version" --revision "$revision" --base "$BASE" "$@"; \
+    [ -s /usr/share/apex/manifest.json ] || { echo "ERROR: apexctl build manifest wrote no /usr/share/apex/manifest.json" >&2; exit 1; }; \
+    python3 -c 'import json, sys; m = json.load(open("/usr/share/apex/manifest.json")); \
+        want = {"schema": 1, "name": "apex", "fedora": int(sys.argv[1]), "version": sys.argv[2], \
+            "revision": sys.argv[3], "base_image": sys.argv[4], \
+            "degraded": sorted(open("/tmp/apex-degraded.sorted").read().split())}; \
+        bad = {k: m.get(k) for k, v in want.items() if m.get(k) != v}; \
+        bad.update({} if m.get("packages") else {"packages": "missing or empty"}); \
+        sys.exit("manifest.json mismatch: %r" % bad) if bad else \
+            print("manifest.json OK: %d packages" % len(m["packages"]))' \
+        "$FEDORA" "$version" "$revision" "$BASE"; \
+    rc=0; \
+    for c in /run/apex-image/checks/*.sh; do \
+        echo "== ${c##*/}"; \
+        ROOT=/ APEX_IMAGE_DIR=/run/apex-image RELEASE_BUILD="$RELEASE_BUILD" sh "$c" || rc=1; \
+    done; \
+    if [ "$rc" -ne 0 ]; then echo "ERROR: image checks failed (see FAIL lines above)" >&2; exit 1; fi; \
+    : >/usr/lib/apex-build-lint-skips; \
+    grep -v '^[[:space:]]*#' /run/apex-image/checks/lint-skips.txt | sed '/^[[:space:]]*$/d' >/tmp/lint-skips; \
+    while IFS= read -r line; do \
+        name=$(printf '%s\n' "$line" | cut -f1); \
+        why=$(printf '%s\n' "$line" | cut -s -f2-); \
+        if [ -z "$why" ] || [ "$name" = "$line" ]; then echo "ERROR: lint-skips.txt entry needs lint-name<TAB>justification: $line" >&2; exit 1; fi; \
+        printf '%s\n' "$name" >>/usr/lib/apex-build-lint-skips; \
+    done </tmp/lint-skips; \
+    rm -rf /var/cache/* /var/log/* /var/lib/dnf /var/tmp/* /var/roothome/.cache /tmp/* /tmp/.[!.]*
+
+# bootc's linter, with --fatal-warnings and the justified skips from
+# image/checks/lint-skips.txt (staged by the previous RUN). No mounts here, so /run
+# and /tmp hold only what the container runtime injects.
+RUN set -eu; \
+    set --; \
+    while IFS= read -r n; do if [ -n "$n" ]; then set -- "$@" --skip "$n"; fi; done </usr/lib/apex-build-lint-skips; \
+    rm -f /usr/lib/apex-build-lint-skips; \
+    bootc container lint --fatal-warnings "$@"
+
+LABEL containers.bootc="1" \
+      ostree.bootable="1" \
+      org.opencontainers.image.source="https://github.com/SekiroKenjii/apex-fedora"
+ENV container=oci
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

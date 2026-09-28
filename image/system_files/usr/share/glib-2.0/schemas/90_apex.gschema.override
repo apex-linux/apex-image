@@ -1,0 +1,32 @@
+# Apex vendor defaults (ADR 0011 layer A; ARCHITECTURE §7.2 and §7.3).
+#
+# Only keys whose Apex value differs from the GNOME 51 or Fedora default are listed.
+# There are no dconf locks: the user can change every key in Settings, and "reset"
+# returns to the value here. Override files apply in lexical order, so 90_ wins over
+# Fedora's 00_ files. The image build compiles the schemas; the image checks run
+# glib-compile-schemas --strict so a renamed key fails the build (ARCHITECTURE §11).
+
+[org.gnome.desktop.interface]
+# OLED panel: the dark style is the default (ARCHITECTURE §6.4).
+color-scheme='prefer-dark'
+
+[org.gnome.desktop.input-sources]
+# English plus Vietnamese Telex through ibus-m17n (vi-telex.mim from m17n-db);
+# Super+Space switches (GNOME's default binding). Per-window sources let a terminal
+# stay in English while a chat window stays in Vietnamese. A layout picked on
+# gnome-initial-setup's Typing page is saved for the user and wins over this default.
+sources=[('xkb', 'us'), ('ibus', 'm17n:vi:telex')]
+per-window=true
+
+[org.gnome.shell]
+# Browser, files, terminal, editor and app store. Epiphany is the GTK4 browser in the
+# image and is there on first login; Firefox (Flatpak) stays in the app grid. Bazaar
+# replaces GNOME Software, which Apex does not ship. The shell hides an entry until
+# its app is installed, so the Bazaar Flatpak appears once the preinstall has run.
+favorite-apps=['org.gnome.Epiphany.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'org.gnome.TextEditor.desktop', 'io.github.kolunmi.Bazaar.desktop']
+
+[org.gnome.settings-daemon.plugins.power]
+# The fingerprint sensor is the power key. 'interactive' does nothing on the lock
+# screen, so touching the sensor cannot suspend the laptop, and elsewhere it opens
+# the cancellable power-off dialog (ADR 0006).
+power-button-action='interactive'

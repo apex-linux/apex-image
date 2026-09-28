@@ -1,0 +1,23 @@
+# Apex defaults for `bootc install` (bootc-install-config(5); ADR 0010, ADR 0012).
+#
+# enforce-container-sigpolicy: the installed origin becomes `ostree-image-signed:`, so
+# every later pull refuses a policy whose default is insecureAcceptAnything. On the
+# laptop only /usr/share/apex/containers/policy.json passes that check, and apex-updated
+# always runs bootc with it (M1 contract §6). It does not verify the install source,
+# which bootc reads from the host's containers-storage; ADR 0010 verifies that image
+# before the install.
+#
+# filesystem.root.type: only `bootc install to-disk` reads it, and neither regular path
+# uses to-disk. The laptop (ADR 0010: ESP + ext4 /boot + LUKS2 + btrfs) and the KVM
+# qualification (.github/scripts/qualify.sh default: ESP + ext4 /boot + btrfs root,
+# ADR 0010 minus LUKS) both run `bootc install to-filesystem` onto filesystems
+# prepared in advance, and keep whatever is mounted. The key only makes an ad-hoc
+# to-disk install (qualify.sh QUALIFY_LAYOUT=to-disk, a throwaway VM) produce the same
+# btrfs root; without LUKS, to-disk also puts /boot on that btrfs, so it does not
+# exercise the ext4 /boot grubenv that the boot counter uses on the laptop.
+
+[install]
+enforce-container-sigpolicy = true
+
+[install.filesystem.root]
+type = "btrfs"

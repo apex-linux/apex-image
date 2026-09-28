@@ -1,0 +1,11 @@
+# Read sigstore signatures for Apex images (ADR 0012, ARCHITECTURE §5.1).
+#
+# cosign stores signatures as OCI attachments next to the image. containers/image only
+# looks for them when use-sigstore-attachments is on for the registry scope, and the
+# sigstoreSigned rules in /usr/share/apex/containers/policy.json cannot pass without
+# them. The scope is the ghcr.io/sekirokenjii namespace, so it covers both apex and
+# apex-testing. It lives in the vendor directory under /usr, so it changes only with
+# the signed image, and it must stay the only file that configures this scope.
+docker:
+  ghcr.io/sekirokenjii:
+    use-sigstore-attachments: true

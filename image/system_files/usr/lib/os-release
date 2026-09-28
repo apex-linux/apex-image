@@ -1,0 +1,28 @@
+# Apex identity, os-release(5). Replaces the file from fedora-release-identity-basic, so
+# `rpm -V fedora-release-identity-basic` reports it as modified; that is expected.
+# /etc/os-release is Fedora's symlink to this file. VERSION_ID, VERSION, PRETTY_NAME,
+# CPE_NAME and SUPPORT_END follow the Fedora release and change at each rebase.
+#
+# ID stays "fedora": Apex is Fedora 45 packages plus a few Apex RPMs, and tools key on
+# ID. toolbox 0.3 falls back to fedora-toolbox:42 for an unknown ID (it ignores
+# ID_LIKE), and container scanners pick Fedora's advisories from ID, VERSION_ID and
+# CPE_NAME. VARIANT_ID=apex is the machine-readable way to detect Apex. NAME,
+# PRETTY_NAME and the URLs carry the brand (Settings > About, boot entry titles), and
+# the REDHAT_* keys are dropped so crash reporters never file Apex bugs with Fedora.
+# LOGO names the icon both fedora-logos and generic-logos install; Apex ships
+# generic-logos, so the icon shows no Fedora trademark.
+NAME="Apex"
+VERSION="45 (GNOME 51)"
+ID=fedora
+VERSION_ID=45
+VERSION_CODENAME=""
+PRETTY_NAME="Apex 45 (GNOME 51)"
+LOGO=fedora-logo-icon
+CPE_NAME="cpe:/o:fedoraproject:fedora:45"
+DEFAULT_HOSTNAME="apex"
+HOME_URL="https://github.com/SekiroKenjii/apex-fedora"
+DOCUMENTATION_URL="https://github.com/SekiroKenjii/apex-fedora/tree/main/docs"
+BUG_REPORT_URL="https://github.com/SekiroKenjii/apex-fedora/issues"
+SUPPORT_END=2027-11-24
+VARIANT="Apex"
+VARIANT_ID=apex

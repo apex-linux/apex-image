@@ -1,0 +1,59 @@
+# Apex unit enablement (systemd.preset(5)). The first matching line across all preset
+# files wins, in file-name order, so 80- overrides Fedora's 85-bootc-*.preset and
+# 90-default.preset. Presets apply when the image build runs `systemctl preset-all`
+# after this overlay is copied, and again on first boot (Fedora's systemd does a full
+# preset there). Keep this list identical to the Containerfile's explicit list; the
+# Containerfile additionally enables gdm.service, which Fedora's own preset enables too
+# (image/tests/t-lists.sh checks this).
+
+# Boot assessment (ADR 0009) and background OS update checks (ADR 0008). The units
+# come from the apex RPM.
+enable apex-boot-assess.service
+enable apex-update-auto.timer
+
+# Flatpak apps from Flathub (ARCHITECTURE §7.1). The preinstall runs at boot and is
+# retried by its timer during the first hours after boot (first boot usually has no
+# network until Wi-Fi is joined in Initial Setup).
+enable apex-flatpak-preinstall.service
+enable apex-flatpak-preinstall.timer
+enable apex-flatpak-update.timer
+
+# Exactly one NTP client: chronyd (Fedora's default; the chrony package is in
+# image/packages/base.txt). systemd-timesyncd ships in systemd-udev and stays off, as
+# in Fedora's 90-default.preset; image/checks/system.sh fails unless exactly one NTP
+# unit is enabled.
+enable chronyd.service
+disable systemd-timesyncd.service
+
+# The stock timer runs `bootc upgrade --apply`, which reboots on its own (ADR 0008).
+# A preset cannot undo an enablement symlink under /usr, so the image also masks it.
+disable bootc-fetch-apply-updates.timer
+
+# greenboot-rs is replaced by apex-boot-assess (ADR 0009). The package is excluded;
+# these lines keep it inert if a dependency ever brings it back.
+disable greenboot-healthcheck.service
+disable greenboot-set-rollback-trigger.service
+
+# bootupd's `bootupctl update` on every boot rewrites shim and GRUB on the ESP outside
+# the rollback envelope: a bad or interrupted write breaks every deployment, bootc
+# rollback cannot undo it, and on this laptop the ESP is shared with Windows
+# (ADR 0010). At M1 the owner runs `sudo bootupctl update` by hand, on AC, after a
+# green boot; later apex-updated does it after a deployment has passed two boots
+# (design review, upgrade-safety issue 15). Watch for SBAT revocations from Windows
+# Update: with Secure Boot on, an old shim or GRUB can then stop booting.
+disable bootloader-update.service
+
+# openssh-server is in the image for the KVM qualification only (see
+# image/packages/base.txt). Fedora's 90-default.preset enables sshd.service; on the
+# laptop nothing listens for SSH. The qualification guest starts sshd through the
+# install-time kernel argument systemd.wants=sshd.service, and the image's
+# systemd.ssh_auto=no (kargs.d) turns off systemd's automatic SSH sockets. The final
+# image stage fails if either unit below is enabled.
+disable sshd.service
+disable sshd.socket
+
+# Fedora's service adds the "fedora" OCI Flatpak remote on first boot. Apex's app
+# channel is Flathub only (ARCHITECTURE §7.1), and flatpak preinstall takes an app
+# from the first remote that has it: "fedora" sorts first and also carries
+# org.mozilla.firefox, so it would silently replace the Flathub build.
+disable flatpak-add-fedora-repos.service

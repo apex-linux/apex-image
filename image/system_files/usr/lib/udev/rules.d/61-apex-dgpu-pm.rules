@@ -1,0 +1,15 @@
+# Let the unbound NVIDIA GA107 (10de:25a2, hardware/m7400qc/profile.toml) power down
+# (ARCHITECTURE §6.4).
+#
+# The PCI core creates every device with runtime PM forbidden (power/control=on), and
+# without a driver nothing ever allows it. The NVIDIA driver's own udev rule acts only
+# on ACTION=="bind", which never happens at M1 (apex-dgpu.conf keeps drivers off). With
+# "auto", the PCI core leaves the unbound function in D0 but lets the root port above it
+# runtime-suspend, which cuts the GPU's power (D3cold).
+# Acceptance: runtime_suspended_time is at least 95 % of 10 minutes idle.
+#
+# ATTR{power/control} names the attribute relative to the device's sysfs directory, the
+# same form NVIDIA documents for its runtime PM rule; TEST skips kernels without it.
+
+ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x25a2", \
+  TEST=="power/control", ATTR{power/control}="auto"

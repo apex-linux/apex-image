@@ -1,0 +1,18 @@
+# Apex image: packages built by Apex itself.
+#
+# Format: one binary package name per line; everything after '#' is a comment.
+# These come from the local repository the Containerfile's `repos` stage generates
+# from the build-context directory rpms/ (CI fills it from the apex-rpms and
+# apex-libfprint OCI artifacts). That repository has priority 1, so it wins over the
+# Fedora repositories inside the single build-rootfs depsolve.
+
+# apexctl, apex-updated, apex-boot-assess and their units, D-Bus and polkit files
+# (docs/specs/M1-IMPLEMENTATION.md section 2). Not in Fedora: the local repo must
+# provide it, or the compose fails.
+apex
+
+# The ELAN 04f3:0c6e fix (ADR 0006): Fedora's SRPM rebuilt with packaging/libfprint
+# patches and a `.apex1` release suffix. When libfprint.yml degrades, rpms/ has no
+# libfprint, Fedora's stock build is installed instead and the final stage records
+# `fingerprint` in the manifest's degraded list.
+libfprint

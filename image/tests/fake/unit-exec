@@ -1,0 +1,71 @@
+#!/usr/bin/python3
+"""Print the command line of one Exec*= setting of a unit file, as systemd runs it.
+
+    unit-exec [--run] UNIT_FILE KEY INDEX [FROM=TO ...]
+
+KEY is ExecStart, ExecCondition, ...; INDEX counts that key's lines from 0. The
+arguments are printed NUL-terminated, or with --run executed (keeping the exit status).
+Each FROM=TO replaces a path prefix in the result (to point /usr/bin/x at a test fake).
+
+Parsing follows systemd.syntax(7) and systemd.service(5) as far as the Apex units need:
+a line ending in a backslash continues on the next one (the backslash becomes a space),
+"%%" is a literal "%", words are split on whitespace with single and double quotes, and
+"$$" is a literal "$". Other specifiers and variable references are rejected, so a test
+never runs something systemd would expand differently.
+"""
+
+import os
+import re
+import shlex
+import sys
+
+
+def settings(path):
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    lines = []
+    cur = None
+    for raw in text.split("\n"):
+        if cur is None:
+            if not raw.strip() or raw.lstrip().startswith(("#", ";")):
+                continue
+            cur = raw
+        else:
+            cur += raw
+        if cur.endswith("\\"):
+            cur = cur[:-1] + " "
+            continue
+        lines.append(cur)
+        cur = None
+    return lines
+
+
+def main(argv):
+    execute = argv[:1] == ["--run"]
+    if execute:
+        argv = argv[1:]
+    path, key, index = argv[0], argv[1], int(argv[2])
+    repl = [a.split("=", 1) for a in argv[3:]]
+    values = [line.split("=", 1)[1] for line in settings(path) if line.split("=", 1)[0].strip() == key]
+    value = values[index]
+    if re.search(r"%[^%]", value.replace("%%", "")):
+        sys.exit("unit-exec: specifier in %r" % value)
+    value = value.replace("%%", "%")
+    words = shlex.split(value, posix=True)
+    out = []
+    for w in words:
+        if re.search(r"\$(?!\$)", w.replace("$$", "")):
+            sys.exit("unit-exec: variable reference in %r" % w)
+        w = w.replace("$$", "$")
+        for frm, to in repl:
+            w = w.replace(frm, to)
+        out.append(w)
+    if execute:
+        sys.stdout.flush()
+        os.execvp(out[0], out)
+    sys.stdout.write("".join(w + "\0" for w in out))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

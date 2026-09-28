@@ -1,0 +1,44 @@
+# Build-context exclusions for `podman build -f image/Containerfile .` (podman and
+# buildah read .containerignore from the context root). Syntax as .dockerignore:
+# patterns are relative to the context root, `**` matches any number of directories
+# and a trailing `/` is ignored.
+#
+# image/Containerfile reads only these context paths, and nothing below may match them:
+#   rpms/                         COPY (the local Apex repository)
+#   image/system_files/           COPY (rootfs overlay)
+#   image/, image/packages/       bind mounts (lists, checks, audit)
+#   hardware/m7400qc/generated/   bind mount (rendered hardware files)
+
+# Version control metadata.
+.git/
+
+# Cargo build output (many GiB).
+target/
+
+# Local work directories of .github/scripts (image.sh, qualify.sh) and VM disk images,
+# which run to tens of GiB.
+_build/
+out/
+**/*.qcow2
+**/*.raw
+**/*.iso
+
+# Private keys: `cosign generate-key-pair` writes cosign.key next to cosign.pub. Keep
+# them out of the build context even if one is left in the tree (secrets.sh would then
+# fail the build on the key it finds in the image).
+**/cosign.key
+**/*.key
+
+# Biometric data (as in .gitignore): a gitignored capture left in the tree, for example
+# under hardware/m7400qc/generated or image/system_files, never reaches an image.
+**/*.[Pp][Gg][Mm]
+**/*.[Vv][Aa][Rr][Ii][Aa][Nn][Tt]
+**/*.[Ii][Oo][Cc][Tt][Ll]
+**/*.[Uu][Mm][Oo][Cc][Kk][Dd][Ee][Vv]
+**/*.[Pp][Cc][Aa][Pp]
+**/*.[Pp][Cc][Aa][Pp][Nn][Gg]
+**/var/lib/fprint/
+
+# Tool caches.
+**/node_modules/
+**/__pycache__/

@@ -1,0 +1,4 @@
+#!/bin/sh
+# A fake createrepo_c for the repos-stage test: it only creates repodata/.
+set -eu
+mkdir -p "$1/repodata"

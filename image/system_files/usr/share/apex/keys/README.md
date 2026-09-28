@@ -1,0 +1,65 @@
+# Apex image signing keys (public halves)
+
+These are the cosign public keys that `/usr/share/apex/containers/policy.json` trusts
+(ADR 0012, M1 contract §2). Only public keys ever go here. A CI check scans every image
+layer for private keys.
+
+| File | Trusted for | Private half lives in |
+|---|---|---|
+| `release.pub` | `ghcr.io/sekirokenjii/apex` | GitHub environment `release` (main only, manual approval) |
+| `release-backup.pub` | `ghcr.io/sekirokenjii/apex` | offline only, encrypted; never in GitHub |
+| `ci.pub` | `ghcr.io/sekirokenjii/apex-testing` | GitHub environment `testing` |
+
+## Placeholders
+
+Until the owner generates the keys, each `.pub` file holds the marker line
+`APEX-PLACEHOLDER-NOT-A-KEY` instead of a key. While any marker is present:
+
+- the policy cannot load the key, so it rejects every Apex image (it fails closed);
+- release builds must fail. The image check is
+  `grep -rlx 'APEX-PLACEHOLDER-NOT-A-KEY' /usr/share/apex/keys`, which must print
+  nothing for an image that is promoted to `apex`.
+
+## Generating the keys
+
+Use cosign 3.x. Pick a long passphrase for each key. The legacy signature format is
+required at signing time (ADR 0012), not at generation time.
+
+`cosign generate-key-pair` writes `cosign.key` and `cosign.pub` into the current
+directory. Never run it inside the repository: generate in a private directory outside
+it, for example `cd "$(mktemp -d -p "$XDG_RUNTIME_DIR")"` (tmpfs, removed at logout),
+and copy only the `.pub` file into this directory under its new name. `.gitignore` and
+`.containerignore` also exclude `*.key` as a second guard.
+
+1. **CI key.** On a trusted machine, in such a directory, run
+   `cosign generate-key-pair`. Store the contents of `cosign.key` as the secret
+   `COSIGN_PRIVATE_KEY` and the passphrase as `COSIGN_PASSWORD` in the environment
+   `testing`. Copy `cosign.pub` here as `ci.pub`. Delete the private directory.
+2. **Release key.** Same steps, with the secrets in the environment `release`. Copy
+   `cosign.pub` here as `release.pub`.
+3. **Backup key.** Boot a live USB with networking disabled and run
+   `cosign generate-key-pair` there (or generate it on a hardware token through
+   cosign's PKCS#11 support). Keep the encrypted `cosign.key` on two offline media in
+   different places. Copy only `cosign.pub` here, as `release-backup.pub`.
+4. Record each key's fingerprint in the pull request that adds it:
+   `openssl pkey -pubin -in release.pub -outform DER | sha256sum`. The install runbook
+   checks the key on the live system against this repository (ADR 0010).
+
+Signing, for reference (the workflows own this):
+
+```sh
+cosign sign --yes --new-bundle-format=false --use-signing-config=false \
+  --key env://COSIGN_PRIVATE_KEY ghcr.io/sekirokenjii/apex@sha256:<digest>
+```
+
+## Rotation and compromise (ADR 0012)
+
+- **Planned rotation:** image N adds the new public key next to the old one, N+1 is
+  signed with the new key, N+2 drops the old key. The policy that verifies an update is
+  the one inside the image that is currently booted, so a key must ship one image
+  before anything is signed with it.
+- **Release key compromised:** delete the GitHub secret, build an emergency image whose
+  policy lists `[backup, new-backup]`, and sign it locally with the backup key.
+- Every change to which key a repository trusts also updates the expected mapping at
+  the top of `image/checks/keys.sh`, in the same reviewed change: the image build fails
+  when `policy.json` and that mapping differ.

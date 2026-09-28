@@ -1,0 +1,5 @@
+APEX-PLACEHOLDER-NOT-A-KEY
+This file stands in for the cosign public key release.pub (ADR 0012). It is not a key.
+The policy cannot load it, so it rejects every image of the repository that trusts
+this key. Generate the key as described in README.md and commit its cosign.pub here.
+Release builds fail while the marker line above is present.

@@ -1,0 +1,56 @@
+# Keep system Flatpaks current (ARCHITECTURE §7.1). Started by
+# apex-flatpak-update.timer every 6 hours; apex-updated covers the OS image only.
+#
+# Runs only on AC power (ConditionACPower; a skipped run is not a failure) and not on
+# a metered connection: the ExecCondition skips the run when NetworkManager reports
+# Metered as yes (1) or guess-yes (3), the same network gate as OS updates
+# (ARCHITECTURE §5.2).
+#
+# 1. `flatpak preinstall` catches up a first boot that had no network, and applies
+#    changes to /usr/share/flatpak/preinstall.d that came with an image update.
+# 2. `flatpak update` updates apps and runtimes of the system installation
+#    non-interactively. Per-user installations (`flatpak install --user`) are not
+#    touched; their owner updates them with `flatpak update --user`.
+# 3. `flatpak uninstall --unused` removes runtimes that no app needs any more, which
+#    otherwise pile up at every platform bump. Runtimes the user installed explicitly
+#    are pinned by flatpak and kept. Run as root, flatpak looks for users of a system
+#    runtime only in the system installation and in root's own per-user installation
+#    (flatpak 1.18, flatpak_dir_list_unused_refs), so a runtime used only by a desktop
+#    user's per-user app would look unused and be removed, breaking that app. The step
+#    is therefore skipped while any account (uid >= 1000) has apps or runtimes in its
+#    ~/.local/share/flatpak; that user's own `flatpak uninstall --unused` sees both
+#    installations and is safe.
+
+[Unit]
+Description=Update system Flatpak apps and runtimes
+Documentation=man:flatpak-update(1) man:flatpak-preinstall(1)
+Wants=network-online.target
+After=network-online.target apex-flatpak-preinstall.service
+ConditionACPower=true
+ConditionPathExists=/usr/bin/flatpak
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/bin/sh -c '\
+    case "$$(/usr/bin/busctl get-property org.freedesktop.NetworkManager \
+        /org/freedesktop/NetworkManager org.freedesktop.NetworkManager Metered \
+        2>/dev/null)" in \
+    "u 1"|"u 3") exit 1 ;; \
+    *) exit 0 ;; \
+    esac'
+ExecStart=/usr/bin/flatpak preinstall --system --noninteractive
+ExecStart=/usr/bin/flatpak update --system --noninteractive
+ExecStart=/usr/bin/sh -c '\
+    /usr/bin/getent passwd >/dev/null || exit 0; \
+    if /usr/bin/getent passwd | while IFS=: read -r _ _ uid _ _ home _; do \
+        [ "$$uid" -ge 1000 ] 2>/dev/null || continue; \
+        for d in "$$home"/.local/share/flatpak/app/* "$$home"/.local/share/flatpak/runtime/*; do \
+            if [ -e "$$d" ]; then \
+                echo "$$home has per-user Flatpaks: unused system runtimes are kept"; \
+                exit 1; \
+            fi; \
+        done; \
+    done; then exec /usr/bin/flatpak uninstall --system --unused --noninteractive; fi'
+TimeoutStartSec=2h
+Nice=19
+IOSchedulingClass=idle

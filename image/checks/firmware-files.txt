@@ -1,0 +1,16 @@
+# Firmware files the M7400QC needs, as globs relative to /usr/lib/firmware.
+#
+# This list MIRRORS hardware/m7400qc/profile.toml [firmware].required_files and must
+# stay identical to it (same globs, same order); the Rust side adds the sync test.
+# Edit profile.toml first, then this file. Read by image/checks/firmware.sh.
+#
+# Format: one glob per line; everything after '#' is a comment.
+
+# amdgpu PSP/DMUB/VCN/GFX firmware for the Cezanne iGPU (Renoir family, "green sardine").
+amdgpu/green_sardine_*
+# Intel AX200 Wi-Fi.
+iwlwifi-cc-a0-*.ucode*
+# Intel AX200 Bluetooth.
+intel/ibt-20-1-3.*
+# AMD family 19h CPU microcode (early microcode in the initramfs).
+amd-ucode/microcode_amd_fam19h.bin*
