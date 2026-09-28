@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Guest-side image build for `builder-vm.sh image`: the same steps as image.yml, run in
+# Guest-side image build for `builder-vm.sh image` (`just vm-image`), run in
 # ~/apex-fedora inside the builder VM (see `just image`). Nothing is pushed or signed.
 #
 #   1. the apex RPM          .github/scripts/rpms.sh build       (in fedora:45, as root)
@@ -33,7 +33,7 @@ mkdir -p _build
 
 in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
 
-# rpms.sh and image.sh build from git HEAD, as CI does. This checkout is an rsync copy
+# rpms.sh and image.sh build from git HEAD. This checkout is an rsync copy
 # whose .git directory is independent of the host repository, so uncommitted host
 # changes are captured here in a throwaway snapshot commit. It never leaves the VM:
 # the next sync replaces this .git with the host's.

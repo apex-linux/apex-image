@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Qualify a published Apex image in a KVM guest with OVMF (ADR 0013, ARCHITECTURE 11):
-# a real `bootc install`, GRUB, the Apex boot counter and boot assessment, signature
-# enforcement and the upgrade path, all on the digest that will be promoted.
+# Qualify an Apex image in a KVM guest with OVMF, the G4 VM check (ARCHITECTURE 4 and
+# 11): a real `bootc install`, GRUB, the Apex boot counter and boot assessment,
+# signature enforcement and the upgrade path, all on the digest that will be published.
 #
-#   qualify.sh host-setup              GitHub runner only: /dev/kvm access, QEMU, OVMF
+#   qualify.sh host-setup              for a CI runner, if one is ever used: /dev/kvm
+#                                      access, QEMU, OVMF
 #   qualify.sh fresh CANDIDATE         install CANDIDATE, boot, assert, negative
 #                                      signature tests, reboot with a download-only stage
 #   qualify.sh upgrade FROM CANDIDATE  install FROM (e.g. the current stable), stage
@@ -28,10 +29,11 @@
 #                                      tests (a local image carries no signature)
 #
 # CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
-# ghcr.io/sekirokenjii/apex-testing@sha256:...). Runs the same in CI and in the Fedora 45
-# builder VM (nested KVM); it needs sudo for podman, losetup and mount. `red` works with
-# any two different Apex images whose updater arms the counter, e.g. two apex-testing
-# digests: `qualify.sh red sha256:<older> sha256:<newer>`.
+# ghcr.io/sekirokenjii/apex-testing@sha256:...). It runs in the Fedora 45 builder VM
+# (nested KVM) as the G4 VM check; GitHub does not run it. It needs sudo for podman,
+# losetup and mount. `red` works with any two different Apex images whose updater arms
+# the counter, e.g. two apex-testing digests:
+# `qualify.sh red sha256:<older> sha256:<newer>`.
 #
 # Environment (all optional):
 #   QUALIFY_OUT           work directory (default _build/qualify); fixtures/ and logs/
