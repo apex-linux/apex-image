@@ -44,9 +44,9 @@
 adwaita-icon-theme-51.0-1.fc45
 adwaita-cursor-theme-51.0-1.fc45
 dconf-51.0-1.fc45
-# epiphany-51.0-1.fc45
-epiphany-51.0-1.fc45
-epiphany-runtime-51.0-1.fc45
+# epiphany-51.0-2.fc45 (security rebuild, FEDORA-2026-91259c13b9, checked 2026-09-29)
+epiphany-51.0-2.fc45
+epiphany-runtime-51.0-2.fc45
 # gcr-4.4.1-1.fc45
 gcr-4.4.1-1.fc45
 gcr-libs-4.4.1-1.fc45
@@ -59,9 +59,9 @@ gnome-calendar-51.0-1.fc45
 gnome-characters-51.0-1.fc45
 gnome-clocks-51.0-1.fc45
 gnome-contacts-51.0-1.fc45
-# gnome-control-center-51.0-1.fc45
-gnome-control-center-51.0-1.fc45
-gnome-control-center-filesystem-51.0-1.fc45
+# gnome-control-center-51.0-2.fc45 (security rebuild, FEDORA-2026-91259c13b9, checked 2026-09-29)
+gnome-control-center-51.0-2.fc45
+gnome-control-center-filesystem-51.0-2.fc45
 # gnome-desktop3-51.0-1.fc45 (gnome-desktop4 hard-requires gnome-desktop3)
 gnome-desktop3-51.0-1.fc45
 gnome-desktop4-51.0-1.fc45
