@@ -1,14 +1,13 @@
-//! What an exit 3 records (ADR 0014, decision 18): a hold's limit is 72 hours when a newer
-//! Fedora build is, or may be, a security update, 14 days otherwise.
-
 use crate::core::lock;
 use crate::core::text;
 use crate::core::utc::UtcSecond;
 
 pub const DEFAULT_REASON: &str = "the build failed (no reason recorded)";
 pub const STOCK_REASON: &str = "the owner chose Fedora's build";
+const SECURITY_HOLD_LIMIT_HOURS: i64 = 72;
+const HOLD_LIMIT_DAYS: i64 = 14;
 
-/// Bodhi's verdict over the newer builds: `0 < ? < 1`; `?` counts as security.
+/// The variant order matters: the verdict over several builds is the highest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Security {
     No,
@@ -25,8 +24,6 @@ impl Security {
         }
     }
 
-    /// One build's update types, as Bodhi's JSON gives them joined by spaces; empty when
-    /// the build is not in Bodhi or the query failed.
     pub fn of_types(types: &str) -> Self {
         if format!(" {types} ").contains(" security ") {
             Self::Yes
@@ -39,9 +36,9 @@ impl Security {
 
     pub fn limit(self, since: UtcSecond) -> UtcSecond {
         if self == Self::No {
-            since.add_days(14)
+            since.add_days(HOLD_LIMIT_DAYS)
         } else {
-            since.add_hours(72)
+            since.add_hours(SECURITY_HOLD_LIMIT_HOURS)
         }
     }
 }
@@ -76,8 +73,6 @@ pub fn bodhi_types(json: &[u8]) -> String {
     joined.trim_end_matches('\n').to_owned()
 }
 
-/// The reason recorded for an exit 3: the first line of failed.txt, every byte outside
-/// printable ASCII a space.
 pub fn reason_of(failed_txt: Option<&[u8]>) -> Vec<u8> {
     let first: Vec<u8> = failed_txt
         .map(|t| {
@@ -96,27 +91,30 @@ pub fn reason_of(failed_txt: Option<&[u8]>) -> Vec<u8> {
         .collect()
 }
 
-/// Where an exit 3 goes before the last good build is looked up.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Start {
+pub enum FailureRoute {
     Degrade { line: Vec<u8> },
     StayStock,
     Hold,
 }
 
-pub fn start(degrade: bool, next_current: &[u8], reason: &[u8], now: UtcSecond) -> Start {
+pub fn route_failure(
+    degrade: bool,
+    next_current: &[u8],
+    reason: &[u8],
+    now: UtcSecond,
+) -> FailureRoute {
     if degrade {
         let mut line = format!("degraded - since={now} reason=").into_bytes();
         line.extend_from_slice(reason);
-        Start::Degrade { line }
+        FailureRoute::Degrade { line }
     } else if next_current.starts_with(b"stock ") {
-        Start::StayStock
+        FailureRoute::StayStock
     } else {
-        Start::Hold
+        FailureRoute::Hold
     }
 }
 
-/// The key of a `built K` or `held K` line of rpms.lock.
 pub fn good_key(good: &[u8]) -> Option<String> {
     let rest = good
         .strip_prefix(b"built ")
@@ -125,9 +123,8 @@ pub fn good_key(good: &[u8]) -> Option<String> {
     (len > 0).then(|| text::lossy(&rest[..len]))
 }
 
-/// The Fedora builds of this attempt that the last good build was not made from.
 pub fn newer(attempt: &[u8], good_stock: &[u8], good_pin: &[u8]) -> Vec<String> {
-    text::complete_lines(attempt)
+    text::newline_terminated_lines(attempt)
         .into_iter()
         .filter_map(|line| {
             let f = text::read_fields(line, 2);
@@ -141,7 +138,6 @@ pub fn newer(attempt: &[u8], good_stock: &[u8], good_pin: &[u8]) -> Vec<String> 
         .collect()
 }
 
-/// The hold keeps its start while the newer builds stay the same.
 pub fn since(next_current: &[u8], newer_csv: &str, now: UtcSecond) -> Vec<u8> {
     if next_current.starts_with(b"held ")
         && lock::attr(next_current, "newer") == newer_csv.as_bytes()

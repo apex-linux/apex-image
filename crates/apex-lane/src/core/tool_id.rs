@@ -54,9 +54,10 @@ fn parse_lock(cargo_lock: &str) -> Result<Vec<Package>, ConfigError> {
         .collect()
 }
 
-/// The package names of `[dependencies]` and `[build-dependencies]` (target tables too),
-/// renames resolved against the workspace's `[workspace.dependencies]`.
-fn roots(lane_toml: &str, workspace_toml: &str) -> Result<BTreeSet<String>, ConfigError> {
+fn compiled_dependency_names(
+    lane_toml: &str,
+    workspace_toml: &str,
+) -> Result<BTreeSet<String>, ConfigError> {
     let lane: toml::Table = lane_toml
         .parse()
         .map_err(|e| ConfigError(format!("{CRATE}/Cargo.toml: {e}")))?;
@@ -129,11 +130,11 @@ pub fn preimage(
         .iter()
         .find(|p| p.name == CRATE && p.source.is_none())
         .ok_or_else(|| ConfigError(format!("Cargo.lock has no {CRATE}")))?;
-    let roots = roots(lane_toml, workspace_toml)?;
+    let compiled = compiled_dependency_names(lane_toml, workspace_toml)?;
     let mut queue: VecDeque<&Package> = VecDeque::new();
     for dependency in &lane.dependencies {
         let name = dependency.split(' ').next().unwrap_or_default();
-        if roots.contains(name) {
+        if compiled.contains(name) {
             let found = resolve(&packages, dependency);
             if found.is_empty() {
                 return Err(ConfigError(format!(

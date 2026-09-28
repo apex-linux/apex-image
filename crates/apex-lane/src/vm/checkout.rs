@@ -11,14 +11,12 @@ use crate::pkg::Pkg;
 use crate::shell::cmd::{Cmd, Program, Stderr, Stdout};
 use crate::shell::fs;
 
-/// Source1 as staged for the container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source1 {
     pub archive: String,
     pub tree: String,
 }
 
-/// What the container is asked to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Build {
@@ -35,16 +33,17 @@ pub enum Mode {
     },
 }
 
-/// The paths N counts and that must be clean. packaging/rebuild.sh, the lane before
-/// apex-lane, stays for good: git still counts a deleted path's history, so N never drops.
+/// The paths that must be clean and whose commits N counts.
 pub fn lane_paths(pkg: &Pkg) -> Vec<String> {
     let mut paths = vec![format!("packaging/pkgs/{}", pkg.name)];
     paths.extend(pkg.env.source1.clone());
     paths.extend(SOURCE_PATHS.map(String::from));
+    // The deleted Bash lane: its history keeps counting, or N would drop.
     paths.push("packaging/rebuild.sh".into());
     paths
 }
 
+/// Fixed, so the archive's bytes follow from the tree id alone.
 const SOURCE1_MTIME: &str = "@946684800";
 
 impl Vm<'_> {
@@ -79,7 +78,6 @@ impl Vm<'_> {
         Ok(())
     }
 
-    /// N of `.apexN`: the commits that touch the lane paths.
     pub fn release_n(&self, pkg: &Pkg) -> Result<u64> {
         let out = self.git_out(
             ["rev-list", "--count", "HEAD", "--"]
@@ -93,14 +91,7 @@ impl Vm<'_> {
     }
 
     pub fn head_lane_tree(&self) -> Result<Option<String>> {
-        let out = self.runner.run(
-            &self
-                .git()
-                .args(["rev-parse", "-q", "--verify"])
-                .arg(format!("HEAD:{LANE_TREE_PATH}"))
-                .capture(),
-        )?;
-        Ok(out.ok().then(|| text::lossy(text::chomp(&out.stdout))))
+        self.head_object(LANE_TREE_PATH)
     }
 
     pub fn tool_id(&self) -> Result<String> {
@@ -125,13 +116,12 @@ impl Vm<'_> {
                 .into_iter()
                 .chain(SOURCE_PATHS),
         )?;
-        let id = tool_id::tool_id(
+        Ok(tool_id::tool_id(
             &ls_tree,
             &show(SOURCE_PATHS[0])?,
             &show("Cargo.toml")?,
             &show("Cargo.lock")?,
-        )?;
-        Ok(id)
+        )?)
     }
 
     pub fn repos_base(&self) -> Result<String> {
@@ -155,18 +145,16 @@ impl Vm<'_> {
     }
 
     fn archive(&self, tree: &str, out: &Path) -> Result<()> {
-        let cmd = self
-            .git()
-            .args(["archive", "--format=tar"])
-            .arg(format!("--mtime={SOURCE1_MTIME}"))
-            .arg("-o")
-            .arg(out)
-            .arg(tree);
-        let res = self.runner.run(&cmd)?;
-        if !res.ok() {
-            return Err(infra(format!("{cmd} failed (exit {})", res.code)));
-        }
-        Ok(())
+        self.run_ok(
+            &self
+                .git()
+                .args(["archive", "--format=tar"])
+                .arg(format!("--mtime={SOURCE1_MTIME}"))
+                .arg("-o")
+                .arg(out)
+                .arg(tree),
+        )
+        .map(|_| ())
     }
 
     fn tar_list(&self, archive: &Path, verbose: bool) -> Result<Vec<u8>> {
@@ -174,31 +162,15 @@ impl Vm<'_> {
             .arg(if verbose { "-tvf" } else { "-tf" })
             .arg(archive)
             .capture();
-        let out = self.runner.run(&cmd)?;
-        if !out.ok() {
-            return Err(infra(format!("{cmd} failed (exit {})", out.code)));
-        }
-        Ok(out.stdout)
+        Ok(self.run_ok(&cmd)?.stdout)
     }
 
-    /// The committed Source1 tree as a `git archive` with fixed dates, so its bytes follow
-    /// from the tree id. Every member must match `source1_paths` and none may be a link.
     pub fn stage_source1(&self, pkg: &Pkg, dir: &Path) -> Result<Option<Source1>> {
         let Some(source1) = &pkg.env.source1 else {
             return Ok(None);
         };
         let not_committed = || usage(format!("{source1} is not a committed directory"));
-        let out = self.runner.run(
-            &self
-                .git()
-                .args(["rev-parse", "-q", "--verify"])
-                .arg(format!("HEAD:{source1}"))
-                .capture(),
-        )?;
-        if !out.ok() {
-            return Err(not_committed());
-        }
-        let tree = text::lossy(text::chomp(&out.stdout));
+        let tree = self.head_object(source1)?.ok_or_else(not_committed)?;
         let kind = self.git_out(["cat-file", "-t", tree.as_str()])?;
         if text::chomp(&kind) != b"tree" {
             return Err(not_committed());
@@ -227,7 +199,6 @@ impl Vm<'_> {
         Ok(Some(Source1 { archive, tree }))
     }
 
-    /// Source1 from the working tree, committed or not, through a temporary index.
     pub fn source1_from_worktree(&self, pkg: &Pkg, dir: &Path) -> Result<Option<Source1>> {
         let Some(source1) = &pkg.env.source1 else {
             return Ok(None);
@@ -240,22 +211,14 @@ impl Vm<'_> {
             vec!["read-tree".to_owned(), "HEAD".to_owned()],
             vec!["add".into(), "-A".into(), "--".into(), source1.clone()],
         ] {
-            let cmd = with_index(self.git().args(&args));
-            let out = self.runner.run(&cmd)?;
-            if !out.ok() {
-                return Err(infra(format!("{cmd} failed (exit {})", out.code)));
-            }
+            self.run_ok(&with_index(self.git().args(&args)))?;
         }
-        let cmd = with_index(
+        let out = self.run_ok(&with_index(
             self.git()
                 .arg("write-tree")
                 .arg(format!("--prefix={source1}/"))
                 .capture(),
-        );
-        let out = self.runner.run(&cmd)?;
-        if !out.ok() {
-            return Err(infra(format!("{cmd} failed (exit {})", out.code)));
-        }
+        ))?;
         let tree = text::lossy(text::chomp(&out.stdout));
         let archive = archive_name(source1, &tree);
         self.archive(&tree, &dir.join(&archive))?;
@@ -277,35 +240,31 @@ impl Vm<'_> {
         Ok(())
     }
 
-    /// `chown -R` back to the builder user: the container writes as root.
+    /// Back to the builder user: the container writes as root.
     pub fn own(&self, dir: &Path) -> Result<()> {
         self.under_build(dir)?;
-        let cmd = Cmd::new(Program::Chown)
-            .arg("-R")
-            .arg(format!("{}:{}", self.settings.uid, self.settings.gid))
-            .arg("--")
-            .arg(dir)
-            .privileged(self.settings.is_root);
-        let out = self.runner.run(&cmd)?;
-        if !out.ok() {
-            return Err(infra(format!("{cmd} failed (exit {})", out.code)));
-        }
-        Ok(())
+        self.run_ok(
+            &Cmd::new(Program::Chown)
+                .arg("-R")
+                .arg(format!("{}:{}", self.settings.uid, self.settings.gid))
+                .arg("--")
+                .arg(dir)
+                .privileged(self.settings.is_root),
+        )
+        .map(|_| ())
     }
 
-    /// A work directory the container may have filled as root, removed and made again.
+    /// Removed as root: the container may have filled it as root.
     pub fn fresh_work_dir(&self, dir: &Path, subdirs: &[&str]) -> Result<()> {
         self.under_build(dir)?;
         if dir.symlink_metadata().is_ok() {
-            let cmd = Cmd::new(Program::Rm)
-                .arg("-rf")
-                .arg("--")
-                .arg(dir)
-                .privileged(self.settings.is_root);
-            let out = self.runner.run(&cmd)?;
-            if !out.ok() {
-                return Err(infra(format!("{cmd} failed (exit {})", out.code)));
-            }
+            self.run_ok(
+                &Cmd::new(Program::Rm)
+                    .arg("-rf")
+                    .arg("--")
+                    .arg(dir)
+                    .privileged(self.settings.is_root),
+            )?;
         }
         for sub in subdirs {
             fs::create_dir_all(&dir.join(sub))?;
@@ -313,8 +272,6 @@ impl Vm<'_> {
         Ok(())
     }
 
-    /// The container's status; anything above 3 (podman's own errors, a crash) counts as
-    /// 1.
     pub fn run_container(
         &self,
         pkg: &Pkg,
@@ -386,6 +343,7 @@ impl Vm<'_> {
             cmd = cmd.arg("--github");
         }
         let out = self.runner.run(&cmd.privileged(self.settings.is_root))?;
+        // Above 3: podman's own errors, or a crash.
         Ok(if (0..=3).contains(&out.code) {
             out.code
         } else {

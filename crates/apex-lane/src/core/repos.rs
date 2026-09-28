@@ -1,14 +1,9 @@
-//! The compose's repositories. Before GA the buildroot also admits every subpackage of the
-//! admitted builds: their -devel packages, which the runtime allowlist leaves out.
-
 use std::collections::BTreeSet;
 
 use crate::core::text;
 
 pub const SETOPTS: [&str; 1] = ["--setopt=install_weak_deps=False"];
 
-/// `containerfile_arg NAME`: the default of the first `ARG NAME=value`, trailing space and
-/// one pair of quotes removed.
 pub fn containerfile_arg(containerfile: &[u8], name: &str) -> String {
     for line in text::lines(containerfile) {
         let rest = text::trim_start_space(line);
@@ -36,7 +31,6 @@ pub fn containerfile_arg(containerfile: &[u8], name: &str) -> String {
     String::new()
 }
 
-/// `registry.fedoraproject.org/<name>[:tag]@sha256:<digest>`.
 pub fn is_fedora_pin(s: &str) -> bool {
     let Some(rest) = s.strip_prefix("registry.fedoraproject.org/") else {
         return false;
@@ -65,7 +59,6 @@ pub fn is_fedora_pin(s: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
-/// `APEX_GA_REACHED` over the Containerfile's `ARG GA_REACHED`, else 0.
 pub fn ga_reached(env: Option<&str>, containerfile_value: &str) -> Result<u8, String> {
     let v = env.filter(|v| !v.is_empty()).unwrap_or(containerfile_value);
     match v {
@@ -75,18 +68,14 @@ pub fn ga_reached(env: Option<&str>, containerfile_value: &str) -> Result<u8, St
     }
 }
 
-/// The updates-testing allowlist as an includepkgs value: comments and whitespace gone.
 pub fn testing_includepkgs(allowlist: Option<&[u8]>) -> String {
     let entries: Vec<String> = allowlist
         .map(text::lines)
         .unwrap_or_default()
         .into_iter()
         .map(|line| {
-            let line = line
+            text::strip_comment(line)
                 .iter()
-                .position(|&b| b == b'#')
-                .map_or(line, |hash| &line[..hash]);
-            line.iter()
                 .copied()
                 .filter(|&b| !text::is_space(b))
                 .collect::<Vec<u8>>()
@@ -97,8 +86,9 @@ pub fn testing_includepkgs(allowlist: Option<&[u8]>) -> String {
     entries.join(",")
 }
 
-/// The binary packages of updates-testing that come from the allowlisted builds:
-/// `all` holds `NVR SOURCERPM` lines, `builds` one source RPM per line.
+/// Every subpackage of the allowlisted builds, so the buildroot also gets the -devel
+/// packages the runtime allowlist leaves out. `builds`: one source RPM per line; `all`:
+/// `NVR SOURCERPM` lines.
 pub fn admitted(builds: &[u8], all: &[u8]) -> String {
     let wanted: BTreeSet<&[u8]> = text::lines(builds)
         .into_iter()
@@ -120,7 +110,6 @@ pub fn admitted(builds: &[u8], all: &[u8]) -> String {
         .join(",")
 }
 
-/// `sort -u` in the C locale.
 pub fn sort_unique(lines: &[u8]) -> Vec<u8> {
     let set: BTreeSet<&[u8]> = text::lines(lines).into_iter().collect();
     text::join_lines(&set.into_iter().collect::<Vec<_>>())
@@ -152,13 +141,11 @@ impl Repos {
         self
     }
 
-    /// The key's `repos` line: the binary repositories, then the setopts.
     pub fn key_text(&self) -> String {
         format!("{} {}", self.bin.join(" "), SETOPTS.join(" "))
     }
 }
 
-/// The repositories `makecache` refreshes.
 pub fn refresh_repos(testing: bool) -> Vec<String> {
     let mut out: Vec<String> = [
         "--repo=fedora",

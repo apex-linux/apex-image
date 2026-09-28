@@ -1,5 +1,3 @@
-//! `spec-edit`: anchored edits to Fedora's spec, and the series' Patch lines.
-
 use crate::core::ere::Ere;
 use crate::core::names::is_release_value;
 use crate::core::text::{self, is_space};
@@ -34,12 +32,6 @@ pub struct SpecEdit {
     pub blocks: Vec<Block>,
 }
 
-fn is_blank_or_comment(line: &[u8]) -> bool {
-    let rest = text::trim_start_space(line);
-    rest.is_empty() || rest[0] == b'#'
-}
-
-/// `@[A-Z0-9_]+@` in what is left once the known placeholders are removed, in order.
 fn unknown_placeholder(line: &[u8]) -> Option<String> {
     let mut rest = line.to_vec();
     for p in PLACEHOLDERS {
@@ -66,7 +58,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<SpecEdit, ConfigError> {
     for (i, line) in text::lines(bytes).into_iter().enumerate() {
         let n = i + 1;
         if !open {
-            if is_blank_or_comment(line) {
+            if text::is_blank_or_comment(line) {
                 continue;
             }
             let (op, ere) = if let Some(ere) = line.strip_prefix(b"after ") {
@@ -114,7 +106,6 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<SpecEdit, ConfigError> {
     Ok(SpecEdit { blocks })
 }
 
-/// What fills the placeholders; an empty value is no value.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Values {
     pub apex_release: String,
@@ -134,7 +125,7 @@ impl Values {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyError {
-    /// The family holds: the reason is [`ApplyError::reason`].
+    /// Only this one holds the family (exit 3).
     Anchor {
         op: Op,
         ere: Vec<u8>,
@@ -182,7 +173,6 @@ fn fill(block: &Block, values: &Values) -> Result<Vec<u8>, ApplyError> {
     Ok(filled)
 }
 
-/// Applies the blocks in order. `log` gets `spec-edit: <op> line <n>: <ere>` per block.
 pub fn apply(
     edit: &SpecEdit,
     spec: &[u8],
@@ -222,14 +212,15 @@ pub fn apply(
     Ok(spec)
 }
 
-/// `^<word>[0-9]*[[:space:]]*:`
-fn is_tag(line: &[u8], word: &[u8]) -> bool {
-    let Some(rest) = line.strip_prefix(word) else {
-        return false;
-    };
-    let rest = &rest[rest.iter().take_while(|c| c.is_ascii_digit()).count()..];
+fn is_colon_after_spaces(rest: &[u8]) -> bool {
     let rest = &rest[rest.iter().take_while(|&&c| is_space(c)).count()..];
     rest.first() == Some(&b':')
+}
+
+fn is_tag(line: &[u8], word: &[u8]) -> bool {
+    line.strip_prefix(word).is_some_and(|rest| {
+        is_colon_after_spaces(&rest[rest.iter().take_while(|c| c.is_ascii_digit()).count()..])
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,7 +235,6 @@ pub fn patch_lines(series: &[String]) -> Vec<u8> {
     text::join_lines(&lines)
 }
 
-/// The Patch lines after the spec's last Patch line, or its last Source line.
 pub fn insert_patch_lines(spec: &[u8], patch_lines: &[u8]) -> Result<Vec<u8>, NoAnchor> {
     let lines = text::lines(spec);
     let last = |word: &[u8]| lines.iter().rposition(|line| is_tag(line, word));
@@ -255,7 +245,6 @@ pub fn insert_patch_lines(spec: &[u8], patch_lines: &[u8]) -> Result<Vec<u8>, No
     Ok(out)
 }
 
-/// `^%(autosetup|autopatch)([[:space:]]|$)`
 pub fn uses_autosetup(spec: &[u8]) -> bool {
     text::lines(spec).into_iter().any(|line| {
         [&b"%autosetup"[..], b"%autopatch"].iter().any(|word| {
@@ -265,15 +254,12 @@ pub fn uses_autosetup(spec: &[u8]) -> bool {
     })
 }
 
-/// `^Patch1[0-9]{3}[[:space:]]*:`
 pub fn has_patch_1nnn(spec: &[u8]) -> bool {
     text::lines(spec).into_iter().any(|line| {
         line.strip_prefix(b"Patch1").is_some_and(|rest| {
-            rest.len() >= 3 && rest[..3].iter().all(u8::is_ascii_digit) && {
-                let tail = &rest[3..];
-                let tail = &tail[tail.iter().take_while(|&&c| is_space(c)).count()..];
-                tail.first() == Some(&b':')
-            }
+            rest.len() >= 3
+                && rest[..3].iter().all(u8::is_ascii_digit)
+                && is_colon_after_spaces(&rest[3..])
         })
     })
 }

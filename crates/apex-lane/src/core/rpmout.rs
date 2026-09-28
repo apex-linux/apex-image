@@ -1,14 +1,15 @@
-//! Readings of repoquery, rpm and gpg output.
-
 use crate::core::text;
 
-/// A query that must give exactly one line: `$(...)` has no newline left and is not empty.
+pub const STOCK_FORMAT: &str = "%{name} %{epoch} %{version} %{release} %{sourcerpm}\\n";
+pub const PIN_FORMAT: &str = "%{epoch} %{version} %{release} %{sourcerpm}\\n";
+pub const MIRROR_FORMAT: &str =
+    "%{name}-%{epoch}:%{version}-%{release}.%{arch} %{evr} %{sourcerpm}\\n";
+
 pub fn one_line(output: &[u8]) -> Option<&[u8]> {
     let out = text::chomp(output);
     (!out.is_empty() && !out.contains(&b'\n')).then_some(out)
 }
 
-/// `%{name} %{epoch} %{version} %{release} %{sourcerpm}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub epoch: String,
@@ -17,6 +18,7 @@ pub struct Resolved {
     pub sourcerpm: String,
 }
 
+/// A line of [`STOCK_FORMAT`].
 pub fn stock_line(line: &[u8]) -> Resolved {
     let f = text::read_fields(line, 5);
     Resolved {
@@ -27,7 +29,7 @@ pub fn stock_line(line: &[u8]) -> Resolved {
     }
 }
 
-/// `%{epoch} %{version} %{release} %{sourcerpm}`.
+/// A line of [`PIN_FORMAT`].
 pub fn pin_line(line: &[u8]) -> Resolved {
     let f = text::read_fields(line, 4);
     Resolved {
@@ -38,8 +40,7 @@ pub fn pin_line(line: &[u8]) -> Resolved {
     }
 }
 
-/// The NEVRAs of `%{name}-%{epoch}:%{version}-%{release}.%{arch} %{evr} %{sourcerpm}`
-/// lines at `evr`, built from `sourcerpm`.
+/// The NEVRAs of the [`MIRROR_FORMAT`] lines at `evr` built from `sourcerpm`.
 pub fn mirror_nevras(output: &[u8], evr: &str, sourcerpm: &str) -> Vec<u8> {
     let hits: Vec<&[u8]> = text::lines(output)
         .into_iter()
@@ -53,7 +54,7 @@ pub fn mirror_nevras(output: &[u8], evr: &str, sourcerpm: &str) -> Vec<u8> {
     text::join_lines(&hits)
 }
 
-/// The file name dnf gives a NEVRA: the epoch goes (`sed -E 's/-[0-9]+:/-/'`).
+/// dnf names a downloaded NEVRA without its epoch.
 pub fn nevra_file_stem(nevra: &str) -> String {
     let b = nevra.as_bytes();
     for i in 0..b.len() {
@@ -67,29 +68,27 @@ pub fn nevra_file_stem(nevra: &str) -> String {
     nevra.to_owned()
 }
 
-/// The download spec dnf is given: the first `-0:` goes.
 pub fn download_spec(nevra: &str) -> String {
     nevra.replacen("-0:", "-", 1)
 }
 
-/// The first `fpr` record's fingerprint of `gpg --with-colons`.
+/// From `gpg --with-colons` output.
 pub fn first_fingerprint(output: &[u8]) -> String {
+    const FINGERPRINT_FIELD: usize = 9;
     text::lines(output)
         .into_iter()
         .map(|l| l.split(|&b| b == b':').collect::<Vec<_>>())
         .find(|f| f.first() == Some(&&b"fpr"[..]))
-        .map(|f| text::lossy(f.get(9).copied().unwrap_or_default()))
+        .map(|f| text::lossy(f.get(FINGERPRINT_FIELD).copied().unwrap_or_default()))
         .unwrap_or_default()
 }
 
-/// `grep -Fxq LINE`.
 pub fn has_line(output: &[u8], line: &str) -> bool {
     text::lines(output)
         .into_iter()
         .any(|l| l == line.as_bytes())
 }
 
-/// The last line of check.sh's output that does not start with `ok `.
 pub fn check_reason(log: &[u8]) -> Vec<u8> {
     text::lines(log)
         .into_iter()

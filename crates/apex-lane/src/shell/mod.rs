@@ -1,4 +1,4 @@
-//! Thin I/O: processes, files, the clock, Bodhi and the log. No decisions.
+//! Thin I/O, no decisions.
 
 pub mod bodhi;
 pub mod clock;

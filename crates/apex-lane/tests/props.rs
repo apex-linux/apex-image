@@ -1,6 +1,3 @@
-//! Properties of the lock writer, the release rule, spec-edit, the UTC arithmetic and the
-//! ERE subset.
-
 use apex_lane::core::ere::Ere;
 use apex_lane::core::lock;
 use apex_lane::core::release::{StoredBuild, release_for};

@@ -1,6 +1,5 @@
-//! Byte-exact files under tests/golden/. They were first written by packaging/rebuild.sh
-//! (line 1 of each lock now names apex-lane) and are now the specification. The ones
-//! apex-lane alone writes are rewritten with `APEX_LANE_BLESS=1`.
+//! Byte-exact expectations under tests/golden/; only the files apex-lane alone writes may
+//! be rewritten.
 
 #![allow(clippy::expect_used, reason = "test helpers panic on broken fixtures")]
 
@@ -53,15 +52,12 @@ fn assert_same(path: &str, actual: &[u8]) {
     );
 }
 
-/// For files apex-lane alone writes: `APEX_LANE_BLESS=1` rewrites them.
 fn assert_blessed(path: &str, actual: &[u8]) {
     if std::env::var_os("APEX_LANE_BLESS").is_some() {
         std::fs::write(golden(path), actual).expect("bless");
     }
     assert_same(path, actual);
 }
-
-// ---- spec-edit and the Patch lines -----------------------------------------------------------
 
 fn apply_case(name: &str, spec: &[u8], edit: &[u8], values: &Values, series: &[String]) {
     let parsed = spec_edit::parse(name, edit).expect("parses");
@@ -123,8 +119,7 @@ fn spec_edit_edge_cases() {
     );
 }
 
-/// Fedora's f45 gnome-shell.spec with the committed spec-edit and series: the spec inside
-/// the Bash-built gnome-shell-51.0-1.fc45.apex2.src.rpm.
+/// gnome-shell.out is the spec inside the stored gnome-shell-51.0-1.fc45.apex2.src.rpm.
 #[test]
 fn spec_edit_gnome_shell_f45() {
     let gs = pkg::load(&root(), "gnome-shell", Parse::Full).expect("committed inputs");
@@ -154,8 +149,6 @@ fn patch_lines() {
         assert_same(&format!("spec-edit/patch-{name}.out"), &out);
     }
 }
-
-// ---- locks ---------------------------------------------------------------------------------
 
 fn steps() -> Vec<(String, String, Vec<u8>)> {
     read_str("lock/steps.txt")
@@ -188,8 +181,6 @@ fn lock_sequences() {
         }
     }
 }
-
-// ---- stored sets: the store's real manifests and rpms.lock.next ------------------------------
 
 const APEX2: &str = "gnome-shell-51.0-1.fc45-s22726911a8d4";
 const APEX1: &str = "gnome-shell-51.0-1.fc45-sa221b6e4ead0";
@@ -272,8 +263,6 @@ fn the_stores_manifests_parse() {
     );
 }
 
-/// The manifest header apex-lane renders for the values of the stored .apex2 set is the
-/// one rebuild.sh wrote.
 #[test]
 fn manifest_header_renders_as_stored() {
     let m = read(&format!("manifest/{APEX2}.txt"));
@@ -292,8 +281,7 @@ fn manifest_header_renders_as_stored() {
     assert_eq!(header.as_bytes(), &m[..header.len()]);
 }
 
-/// `record_built` of the stored .apex2 set writes the store's `rpms.lock.next`, which
-/// rebuild.sh wrote, apart from line 1, which names the writer.
+/// Only line 1, which names the writer, differs from the stored `rpms.lock.next`.
 #[test]
 fn record_built_writes_the_stores_lock() {
     let store = tempfile::tempdir().expect("tempdir");
@@ -327,8 +315,6 @@ fn record_built_writes_the_stores_lock() {
         format!("{}\n", lock::HEADER[0]).as_bytes()
     );
 }
-
-// ---- failed.txt, status --------------------------------------------------------------------
 
 /// name, reason, stock, key, and whether the log's tail goes in.
 type FailedCase<'a> = (&'a str, &'a [u8], Option<&'a str>, Option<&'a str>, bool);
@@ -393,8 +379,6 @@ fn status_files() {
         assert_same(&format!("status/{name}.txt"), &out);
     }
 }
-
-// ---- holds ----------------------------------------------------------------------------------
 
 struct FixtureBodhi(PathBuf);
 
@@ -483,19 +467,17 @@ fn hold_cases() {
     }
 }
 
-// ---- the key --------------------------------------------------------------------------------
-
 #[test]
 fn key_preimage() {
     let inputs = KeyInputs {
         pkg: "gnome-shell".into(),
         tool: "88838286103f4706f591bb9aded8a8dc9cab814326ecafcfbb2c07a1c64c4f68".into(),
-        check: Some("5b6f1c0cd6a4b4b0a3a4b49b64f2b91dd1bd41fcb42dbef4a9db18b7bf3fa0b1".into()),
+        check_sh_sha256: Some("5b6f1c0cd6a4b4b0a3a4b49b64f2b91dd1bd41fcb42dbef4a9db18b7bf3fa0b1".into()),
         repos: "--repo=fedora --repo=updates --repo=updates-testing --setopt=updates-testing.includepkgs=gtk4-4.24.0-1.fc45,mutter-51.0-1.fc45 --setopt=install_weak_deps=False".into(),
         stock: "gnome-shell-51.0-1.fc45".into(),
         pin_evr: Some("51.0-1.fc45".into()),
-        pkg_env: "0cc6d5e8a8a1fa0b19c6c10fe9e9f3a8f60e6fb0b5b6f0e2b0fce2e5d8e8a8c1".into(),
-        spec_edit: "4d7a4dbd0c3ca3c5dc0ea3f6d1b6e0f5c1a9e7c3b2d4e6f8a0b2c4d6e8f0a2c4".into(),
+        pkg_env_sha256: "0cc6d5e8a8a1fa0b19c6c10fe9e9f3a8f60e6fb0b5b6f0e2b0fce2e5d8e8a8c1".into(),
+        spec_edit_sha256: "4d7a4dbd0c3ca3c5dc0ea3f6d1b6e0f5c1a9e7c3b2d4e6f8a0b2c4d6e8f0a2c4".into(),
         patches: vec![
             ("0001-build.patch".into(), "136976a28df383973c2658f2d31eb6f1415e851b9f1eb116fd63c4820bcdfbfd".into()),
             ("0002-loader.patch".into(), "9816c59b9eb897a4a5354650655850450932b5ac5039f0723bc1fd650bd643c9".into()),

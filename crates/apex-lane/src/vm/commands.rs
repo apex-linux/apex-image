@@ -20,8 +20,14 @@ fn exit_of_status(rc: i32) -> Exit {
     }
 }
 
+fn is_build_of(nvr: &str, srpm: &str) -> bool {
+    nvr.strip_prefix(srpm)
+        .and_then(|r| r.strip_prefix('-'))
+        .and_then(|vr| vr.split_once('-'))
+        .is_some_and(|(v, r)| !v.is_empty() && !r.is_empty() && !r.contains('-'))
+}
+
 impl Vm<'_> {
-    /// Prints the content key; the container resolves the SRPM and the pin.
     pub fn key(&self, name: &str) -> Result<Exit> {
         let pkg = self.load(name)?;
         self.check_committed(&pkg)?;
@@ -36,22 +42,16 @@ impl Vm<'_> {
         Ok(exit_of_status(rc?))
     }
 
-    /// The patch-queue work tree `_build/pkg/PKG/tree`, from the working copy's patches
-    /// and Source1, committed or not.
+    /// Unlike build, prep takes the working copy's inputs, committed or not.
     pub fn prep(&self, name: &str, nvr: Option<&str>) -> Result<Exit> {
         let pkg = self.load(name)?;
         let srpm = &pkg.env.srpm;
-        if let Some(nvr) = nvr {
-            let ok = nvr
-                .strip_prefix(srpm.as_str())
-                .and_then(|r| r.strip_prefix('-'))
-                .and_then(|vr| vr.split_once('-'))
-                .is_some_and(|(v, r)| !v.is_empty() && !r.is_empty() && !r.contains('-'));
-            if !ok {
-                return Err(usage(format!(
-                    "NVR must be a build of {srpm}, like {srpm}-51.1-1.fc45"
-                )));
-            }
+        if let Some(nvr) = nvr
+            && !is_build_of(nvr, srpm)
+        {
+            return Err(usage(format!(
+                "NVR must be a build of {srpm}, like {srpm}-51.1-1.fc45"
+            )));
         }
         let dir = self.root.join("_build/pkg").join(&pkg.name);
         self.fresh_work_dir(&dir, &["in"])?;
@@ -75,8 +75,7 @@ impl Vm<'_> {
         Ok(exit_of_status(rc))
     }
 
-    /// git in the work tree with no user or system configuration, so that format-patch
-    /// writes the same bytes on every machine.
+    /// No user or system configuration, so format-patch writes the same bytes everywhere.
     fn tree_git(tree: &Path) -> Cmd {
         Cmd::new(Program::Git)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -87,8 +86,6 @@ impl Vm<'_> {
             .arg(tree)
     }
 
-    /// The work tree's commits back to `patches/`: one per series entry, in order; each
-    /// NEW name takes one more commit and joins the series.
     pub fn export(&self, name: &str, new: &[String]) -> Result<()> {
         let pkg = pkg::load(&self.root, name, Parse::Export)?;
         let tree = self.root.join("_build/pkg").join(&pkg.name).join("tree");
@@ -181,21 +178,19 @@ impl Vm<'_> {
     ) -> Result<()> {
         fs::create_dir_all(patches)?;
         for (commit, name) in commits.iter().zip(names) {
-            let patch = Self::tree_git(tree)
-                .args([
-                    "format-patch",
-                    "-1",
-                    "--stdout",
-                    "-N",
-                    "--zero-commit",
-                    "--no-signature",
-                ])
-                .arg(commit)
-                .stdout(Stdout::File(patches.join(name.as_str())));
-            let out = self.runner.run(&patch)?;
-            if !out.ok() {
-                return Err(infra(format!("{patch} failed (exit {})", out.code)));
-            }
+            self.run_ok(
+                &Self::tree_git(tree)
+                    .args([
+                        "format-patch",
+                        "-1",
+                        "--stdout",
+                        "-N",
+                        "--zero-commit",
+                        "--no-signature",
+                    ])
+                    .arg(commit)
+                    .stdout(Stdout::File(patches.join(name.as_str()))),
+            )?;
             let subject = self.runner.run(
                 &Self::tree_git(tree)
                     .args(["log", "-1", "--format=%h %s"])
@@ -214,21 +209,20 @@ impl Vm<'_> {
         let now = self.clock.now();
         let mut out = status::render(
             "rpms.lock.next (the next image build takes it):",
-            fs::read_opt(&self.next_lock())?.as_deref(),
+            fs::read_opt(&self.next_lock_file())?.as_deref(),
             now,
         );
         out.extend(status::render(
             "rpms.lock (the last image that passed its gates):",
-            fs::read_opt(&self.lock())?.as_deref(),
+            fs::read_opt(&self.lock_file())?.as_deref(),
             now,
         ));
         Ok(out)
     }
 
-    /// rpms.lock.next becomes rpms.lock, once every file it names is in the store.
     pub fn promote(&self) -> Result<()> {
         let _lock = fs::lock_store(&self.settings.store)?;
-        let next = self.next_lock();
+        let next = self.next_lock_file();
         let Some(text) = fs::read_opt(&next)? else {
             return Err(infra(format!("no {} to promote", next.display())));
         };
@@ -251,8 +245,8 @@ impl Vm<'_> {
         }
         let tmp = self.settings.store.join("rpms.lock.tmp");
         fs::copy_with_mode(&next, &tmp)?;
-        std::fs::rename(&tmp, self.lock())
-            .map_err(|e| fs::io_error("cannot replace", &self.lock(), &e))?;
+        std::fs::rename(&tmp, self.lock_file())
+            .map_err(|e| fs::io_error("cannot replace", &self.lock_file(), &e))?;
         self.report.log("promoted rpms.lock.next to rpms.lock");
         Ok(())
     }

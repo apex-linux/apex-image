@@ -1,5 +1,3 @@
-//! The log on stderr; on GitHub Actions, workflow commands and the step summary.
-
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -8,7 +6,6 @@ use std::sync::{Arc, Mutex};
 pub struct Reporter {
     pub github: bool,
     pub summary_file: Option<PathBuf>,
-    /// Takes the log instead of stderr (tests).
     pub capture: Option<Arc<Mutex<Vec<u8>>>>,
 }
 

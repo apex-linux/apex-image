@@ -1,5 +1,3 @@
-//! Child processes: programs at absolute paths, argv built from typed values.
-
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::File;
@@ -69,11 +67,8 @@ pub enum Stdout {
     Inherit,
     Null,
     Capture,
-    /// Truncated, like `>FILE`.
     File(PathBuf),
-    /// `>>FILE`.
     Append(PathBuf),
-    /// Our stderr, like `>&2`.
     Stderr,
 }
 
@@ -82,7 +77,6 @@ pub enum Stderr {
     Inherit,
     Null,
     Capture,
-    /// Wherever stdout goes, like `2>&1`.
     ToStdout,
 }
 
@@ -155,14 +149,12 @@ impl Cmd {
         self.stdout(Stdout::Capture)
     }
 
-    /// `>FILE 2>&1`.
     #[must_use]
     pub fn log_to(self, file: impl Into<PathBuf>) -> Self {
         self.stdout(Stdout::File(file.into()))
             .stderr(Stderr::ToStdout)
     }
 
-    /// The same command through sudo, unless this process is root already.
     #[must_use]
     pub fn privileged(self, is_root: bool) -> Self {
         if is_root {
@@ -190,7 +182,6 @@ impl fmt::Display for Cmd {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// The exit status, or 128 plus the signal, as a shell reports it.
     pub code: i32,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -204,12 +195,10 @@ impl Outcome {
 
 pub trait Runner {
     fn run(&self, cmd: &Cmd) -> Result<Outcome>;
-    /// `first | second`, both statuses reported (pipefail).
     fn pipe(&self, first: &Cmd, second: &Cmd) -> Result<(Outcome, Outcome)>;
     fn sleep(&self, duration: Duration);
 }
 
-/// Runs processes for real. On the VM side the children get a cleared environment.
 #[derive(Debug, Clone)]
 pub struct StdRunner {
     base_env: Option<Vec<(OsString, OsString)>>,
@@ -355,8 +344,8 @@ impl Runner for StdRunner {
     }
 }
 
-/// Up to `attempts` runs, sleeping `delay`, then twice as long, between them. A command
-/// whose output goes to a file should append to it, so every attempt stays in the log.
+/// A command whose output goes to a file should append to it, so every attempt stays in
+/// the log.
 pub fn retry(
     runner: &dyn Runner,
     report: &Reporter,

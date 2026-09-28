@@ -1,6 +1,3 @@
-//! The lane assertions selftest.sh made on packaging/rebuild.sh, against apex-lane, with the
-//! same fixtures and expectations.
-
 #![allow(clippy::expect_used, reason = "test helpers panic on broken fixtures")]
 
 use std::path::{Path, PathBuf};
@@ -34,8 +31,6 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-// ---- pkg.env ------------------------------------------------------------------------------
-
 #[test]
 fn pkg_env_a_list_value() {
     let env = pkg_env::parse("pkg.env", PKG_ENV.as_bytes()).expect("parses");
@@ -48,7 +43,6 @@ fn pkg_env_a_single_value() {
     assert_eq!(env.pin.as_deref(), Some("mutter"));
 }
 
-/// pkg.env edited by EDIT must be refused (exit 2), naming the file.
 fn refused(edit: impl Fn(Vec<String>) -> Vec<String>) {
     let lines = edit(PKG_ENV.lines().map(String::from).collect());
     let text = lines.join("\n") + "\n";
@@ -135,8 +129,6 @@ fn pkg_env_refuses_a_line_that_is_not_key_value() {
     refused(|l| plus(l, "just words"));
 }
 
-// ---- series -------------------------------------------------------------------------------
-
 struct Patches(tempfile::TempDir);
 
 impl Patches {
@@ -214,8 +206,6 @@ fn series_without_file_checks_takes_a_missing_patch() {
 fn series_refuses_an_empty_series() {
     assert!(Patches::new().parse("# nothing\n", true).is_err());
 }
-
-// ---- spec-edit ----------------------------------------------------------------------------
 
 const SPEC: &str = "Name:           x
 Release:        %autorelease
@@ -364,8 +354,6 @@ fn no_patch_or_source_line_holds_the_build() {
     );
 }
 
-// ---- release_for --------------------------------------------------------------------------
-
 struct Store(tempfile::TempDir);
 
 impl Store {
@@ -445,8 +433,6 @@ fn release_rule() {
     );
 }
 
-// ---- checksig -----------------------------------------------------------------------------
-
 const SIG6: &str = "x.src.rpm:
     Header OpenPGP V4 RSA/SHA256 signature, key fingerprint: 4f50a6114cd5c6976a7f1179655a4b02f577861e: OK
     Header SHA256 digest: OK
@@ -482,8 +468,6 @@ fn checksig_no_signature_at_all() {
     assert!(!checksig_ok(b"    Header SHA256 digest: OK\n", "f577861e"));
 }
 
-// ---- Source1 members ----------------------------------------------------------------------
-
 #[test]
 fn source1_members() {
     let allowed = ["apex.gresource.xml", "js/ui/apex/", "data/theme/apex/"].map(String::from);
@@ -507,8 +491,6 @@ fn source1_members() {
         assert!(!member_ok(m, &allowed), "Source1 member {m} is refused");
     }
 }
-
-// ---- rpms.lock ----------------------------------------------------------------------------
 
 fn gs_rpms() -> Vec<u8> {
     format!(
@@ -630,8 +612,6 @@ fn nevra_name_of_a_nevra() {
     );
 }
 
-// ---- the committed gnome-shell inputs -----------------------------------------------------
-
 fn gnome_shell() -> pkg::Pkg {
     pkg::load(&root(), "gnome-shell", Parse::Full).expect("the committed gnome-shell inputs parse")
 }
@@ -678,7 +658,7 @@ fn desktop_shell_holds_only_source1_paths() {
     assert!(outside.is_empty(), "outside source1_paths: {outside:?}");
 }
 
-/// The anchors match Fedora's spec lines once each (f45 gnome-shell.spec, 2026-09-28).
+/// Fedora's lines as of f45 gnome-shell.spec, 2026-09-28.
 #[test]
 fn gnome_shell_spec_edit_applies_to_fedoras_lines() {
     let fedora = "Release:        %autorelease

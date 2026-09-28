@@ -1,6 +1,3 @@
-//! `apex-lane`: the rebuild lane (packaging/README.md). Run it in the builder VM through
-//! tools/builder-vm/lane.sh, which builds it from the checkout's HEAD.
-
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,7 +11,7 @@ use apex_lane::shell::report::Reporter;
 use apex_lane::vm::{self, Settings, Vm, build::exit_of};
 use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 
-/// The tree id of crates/apex-lane this binary was built from (lane.sh sets it).
+/// Set by tools/builder-vm/lane.sh: the git tree id of crates/apex-lane.
 const BUILT_FROM: Option<&str> = option_env!("APEX_LANE_TREE");
 
 #[derive(Debug, Parser)]
@@ -75,6 +72,24 @@ struct Common {
     source1_tree: Option<String>,
     #[arg(long)]
     github: bool,
+}
+
+impl Common {
+    fn args(self, mode: ModeKind, pkg: String) -> container::Args {
+        container::Args {
+            mode,
+            pkg,
+            nvr: None,
+            n: 0,
+            tool: String::new(),
+            repos_base: self.repos_base,
+            ga_reached: self.ga_reached,
+            source1: self.source1,
+            source1_tree: self.source1_tree,
+            locked_evr: None,
+            keep_work: false,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -231,8 +246,8 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
     }
 }
 
-/// build, key and prep run the Fedora half with this binary: it must be the lane of the
-/// checkout's HEAD, whose tree also goes into the content key.
+/// build, key and prep run the Fedora half with this binary, and the content key counts
+/// the lane tree of HEAD: the two must be the same.
 fn check_built_from(vm: &Vm<'_>) -> Result<()> {
     let head = vm.head_lane_tree()?;
     match (BUILT_FROM, head.as_deref()) {
@@ -247,7 +262,7 @@ fn check_built_from(vm: &Vm<'_>) -> Result<()> {
 }
 
 fn in_container(c: InContainer, report: &Reporter) -> Result<Exit> {
-    let (mode, pkg, nvr, n, tool, locked_evr, keep_work, common) = match c.mode {
+    let args = match c.mode {
         InContainerMode::Build {
             pkg,
             n,
@@ -255,49 +270,32 @@ fn in_container(c: InContainer, report: &Reporter) -> Result<Exit> {
             locked_evr,
             keep_work,
             common,
-        } => (
-            ModeKind::Build,
-            pkg,
-            None,
+        } => container::Args {
             n,
             tool,
             locked_evr,
             keep_work,
-            common,
-        ),
+            ..common.args(ModeKind::Build, pkg)
+        },
         InContainerMode::Key {
             pkg,
             n,
             tool,
             common,
-        } => (ModeKind::Key, pkg, None, n, tool, None, false, common),
-        InContainerMode::Prep { pkg, nvr, common } => (
-            ModeKind::Prep,
-            pkg,
+        } => container::Args {
+            n,
+            tool,
+            ..common.args(ModeKind::Key, pkg)
+        },
+        InContainerMode::Prep { pkg, nvr, common } => container::Args {
             nvr,
-            0,
-            String::new(),
-            None,
-            false,
-            common,
-        ),
+            ..common.args(ModeKind::Prep, pkg)
+        },
     };
     let runner = StdRunner::inherit();
     let container = Container {
         paths: Paths::default(),
-        args: container::Args {
-            mode,
-            pkg,
-            nvr,
-            n,
-            tool,
-            repos_base: common.repos_base,
-            ga_reached: common.ga_reached,
-            source1: common.source1,
-            source1_tree: common.source1_tree,
-            locked_evr,
-            keep_work,
-        },
+        args,
         runner: &runner,
         report,
         is_root: nix::unistd::geteuid().is_root(),

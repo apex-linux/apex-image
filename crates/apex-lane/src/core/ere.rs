@@ -20,6 +20,11 @@ const CLASSES: [&str; 12] = [
     "cntrl", "xdigit",
 ];
 const MAX_COUNT: u32 = 255;
+const NOT_AN_INTERVAL: &str = "a { that starts no interval: write \\{ or [{] for the character";
+const NON_ASCII_IN_BRACKET: &str =
+    "a non-ASCII byte inside [ ] (its meaning depends on the locale)";
+const MISPLACED_DASH: &str = "a - inside [ ] must come first, last, or in one range";
+const UNTERMINATED_BRACKET: &str = "an unterminated [";
 
 impl Ere {
     pub fn new(source: &[u8]) -> Result<Self, EreError> {
@@ -89,6 +94,14 @@ impl Parser<'_> {
         Some(b)
     }
 
+    fn at_class_open(&self) -> bool {
+        matches!(self.peek(), Some(b':' | b'=' | b'.'))
+    }
+
+    fn at_range_dash(&self) -> bool {
+        self.peek() == Some(b'-') && self.peek_at(1).is_some_and(|e| e != b']')
+    }
+
     fn alternation(&mut self) -> Result<String, EreError> {
         let mut out = self.branch()?;
         while self.peek() == Some(b'|') {
@@ -148,9 +161,7 @@ impl Parser<'_> {
             b'*' | b'+' | b'?' => {
                 return error(format!("{} follows nothing it could repeat", char::from(c)));
             }
-            b'{' => {
-                return error("a { that starts no interval: write \\{ or [{] for the character");
-            }
+            b'{' => return error(NOT_AN_INTERVAL),
             other => (byte(other), true),
         })
     }
@@ -209,7 +220,7 @@ impl Parser<'_> {
     }
 
     fn interval(&mut self) -> Result<String, EreError> {
-        let invalid = || error("a { that starts no interval: write \\{ or [{] for the character");
+        let invalid = || error(NOT_AN_INTERVAL);
         let min = self.number()?;
         let out = if self.peek() == Some(b',') {
             self.i += 1;
@@ -246,7 +257,7 @@ impl Parser<'_> {
         let mut first = true;
         loop {
             let Some(c) = self.next() else {
-                return error("an unterminated [");
+                return error(UNTERMINATED_BRACKET);
             };
             if c == b']' && !first {
                 break;
@@ -254,23 +265,21 @@ impl Parser<'_> {
             let at_start = first;
             first = false;
             if !c.is_ascii() {
-                return error("a non-ASCII byte inside [ ] (its meaning depends on the locale)");
+                return error(NON_ASCII_IN_BRACKET);
             }
-            if c == b'[' && matches!(self.peek(), Some(b':' | b'=' | b'.')) {
+            if c == b'[' && self.at_class_open() {
                 out.push_str(&self.class()?);
                 continue;
             }
-            if self.peek() == Some(b'-') && self.peek_at(1).is_some_and(|e| e != b']') {
+            if self.at_range_dash() {
                 self.i += 1;
                 let Some(end) = self.next() else {
-                    return error("an unterminated [");
+                    return error(UNTERMINATED_BRACKET);
                 };
                 if !end.is_ascii() {
-                    return error(
-                        "a non-ASCII byte inside [ ] (its meaning depends on the locale)",
-                    );
+                    return error(NON_ASCII_IN_BRACKET);
                 }
-                if end == b'[' && matches!(self.peek(), Some(b':' | b'=' | b'.')) {
+                if end == b'[' && self.at_class_open() {
                     return error("a range cannot end in a class");
                 }
                 if end < c {
@@ -280,14 +289,14 @@ impl Parser<'_> {
                         char::from(end)
                     ));
                 }
-                if self.peek() == Some(b'-') && self.peek_at(1).is_some_and(|e| e != b']') {
-                    return error("a - inside [ ] must come first, last, or in one range");
+                if self.at_range_dash() {
+                    return error(MISPLACED_DASH);
                 }
                 let _ = write!(out, "\\x{c:02X}-\\x{end:02X}");
                 continue;
             }
             if c == b'-' && !at_start && self.peek() != Some(b']') {
-                return error("a - inside [ ] must come first, last, or in one range");
+                return error(MISPLACED_DASH);
             }
             let _ = write!(out, "\\x{c:02X}");
         }

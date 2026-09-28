@@ -16,13 +16,12 @@ impl From<Exit> for ExitCode {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LaneError {
-    /// Usage or configuration: pkg.env, series, spec-edit, Source1, a dirty checkout.
+    /// Usage or configuration.
     #[error("{0}")]
     Usage(String),
-    /// Infrastructure: repositories, downloads, signatures, the store; nothing recorded.
     #[error("{0}")]
     Infra(String),
-    /// The inputs give no shippable build; the reason was already reported.
+    /// Already reported where it happened.
     #[error("{0}")]
     NoShippableBuild(String),
 }
@@ -47,7 +46,6 @@ pub fn infra(message: impl Into<String>) -> LaneError {
     LaneError::Infra(message.into())
 }
 
-/// A configuration file that the lane refuses (exit 2).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ConfigError(pub String);

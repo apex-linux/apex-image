@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::{Attempt, Container, Setup, Stock, secs};
+use super::{Attempt, Container, RETRY_DELAY, Setup, Stock};
 use crate::core::exact_tree::prune_dirs;
 use crate::core::manifest::{self, Header};
 use crate::core::names::is_release_value;
 use crate::core::release::{self, StoredBuild};
-use crate::core::repos::SETOPTS;
 use crate::core::rpmout;
 use crate::core::spec_edit::{self, ApplyError, Values};
 use crate::core::text;
@@ -14,7 +13,6 @@ use crate::error::{Result, infra};
 use crate::shell::cmd::{Cmd, Program, Stderr, Stdout, retry};
 use crate::shell::fs;
 
-/// The rpmbuild tree and where its pieces go.
 struct Work {
     dir: PathBuf,
     top: PathBuf,
@@ -78,28 +76,13 @@ impl Container<'_> {
             mirrors: Vec::new(),
             work,
         };
-        let step = |name: &'static str, t: Instant, timings: &mut Vec<(&'static str, u64)>| {
-            timings.push((name, t.elapsed().as_secs()));
-        };
-        let t = Instant::now();
-        self.download(&mut b)?;
-        step("download", t, &mut timings);
-        let t = Instant::now();
-        self.pristine(&mut b)?;
-        step("pristine-prep", t, &mut timings);
+        timed(&mut timings, "download", || self.download(&mut b))?;
+        timed(&mut timings, "pristine-prep", || self.pristine(&mut b))?;
         self.edit_spec(&b)?;
-        let t = Instant::now();
-        self.builddep(&b)?;
-        step("builddep", t, &mut timings);
-        let t = Instant::now();
-        self.patched_prep(&b)?;
-        step("apex-prep", t, &mut timings);
-        let t = Instant::now();
-        self.rpmbuild(&b)?;
-        step("rpmbuild", t, &mut timings);
-        let t = Instant::now();
-        self.lane_checks(&b)?;
-        step("checks", t, &mut timings);
+        timed(&mut timings, "builddep", || self.builddep(&b))?;
+        timed(&mut timings, "apex-prep", || self.patched_prep(&b))?;
+        timed(&mut timings, "rpmbuild", || self.rpmbuild(&b))?;
+        timed(&mut timings, "checks", || self.lane_checks(&b))?;
         self.outputs(&b, &preimage)?;
         timings.push(("total", t0.elapsed().as_secs()));
         let lines: Vec<String> = timings.iter().map(|(n, s)| format!("{n} {s}")).collect();
@@ -146,15 +129,12 @@ impl Container<'_> {
         if !b.mirrors.is_empty() {
             let dir = b.work.dir.join("mirror");
             fs::create_dir_all(&dir)?;
-            let download = Cmd::new(Program::Dnf5)
-                .args(["-y", "-q"])
-                .args(&b.setup.repos.bin)
-                .args(SETOPTS)
+            let download = Self::dnf_bin(&b.setup.repos)
                 .arg("download")
                 .arg(format!("--destdir={}", dir.display()))
                 .args(b.mirrors.iter().map(|(_, n)| rpmout::download_spec(n)))
                 .stdout(Stdout::Null);
-            if !retry(self.runner, self.report, 3, secs(10), &download)?.ok() {
+            if !retry(self.runner, self.report, 3, RETRY_DELAY, &download)?.ok() {
                 return Err(infra("cannot download the mirror RPMs"));
             }
             for (_, nevra) in &b.mirrors {
@@ -174,8 +154,6 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// The `mirror=` and `mirror_dev=` packages at the pin, each exactly once, built from the
-    /// pin's source RPM.
     fn mirror_nevras(&self, setup: &Setup, stock: &Stock) -> Result<Vec<(String, String)>> {
         let env = &setup.pkg.env;
         let mut out = Vec::new();
@@ -189,14 +167,11 @@ impl Container<'_> {
                 .pin
                 .as_ref()
                 .ok_or_else(|| infra("mirror= needs a pin"))?;
-            let query = self.check(
+            let query = self.run_ok(
                 &Self::dnf_bin(&setup.repos)
                     .arg("repoquery")
                     .arg(format!("--arch={},noarch", setup.arch))
-                    .args([
-                        "--queryformat",
-                        "%{name}-%{epoch}:%{version}-%{release}.%{arch} %{evr} %{sourcerpm}\\n",
-                    ])
+                    .args(["--queryformat", rpmout::MIRROR_FORMAT])
                     .arg(name)
                     .capture(),
                 "repoquery failed",
@@ -226,7 +201,7 @@ impl Container<'_> {
     }
 
     fn spec_version_release(&self, b: &Build<'_>) -> Result<String> {
-        let out = self.check(
+        let out = self.run_ok(
             &Cmd::new(Program::Rpmspec)
                 .args(["-q", "--srpm", "--queryformat", "%{version}-%{release}\\n"])
                 .args(b.work.spec_define())
@@ -238,7 +213,6 @@ impl Container<'_> {
         Ok(text::lossy(text::chomp(&out.stdout)))
     }
 
-    /// Unpack, the release arithmetic, and Fedora's %prep without any Apex input.
     fn pristine(&self, b: &mut Build<'_>) -> Result<()> {
         self.report
             .group("Unpack, release arithmetic, pristine %prep");
@@ -314,7 +288,6 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// spec-edit, the Patch lines, and the checks on the edited spec.
     fn edit_spec(&self, b: &Build<'_>) -> Result<()> {
         self.report.group("spec-edit and the series");
         let pkg = &b.setup.pkg;
@@ -382,7 +355,6 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// `diff -u` of Fedora's spec and the edited one, to spec.diff and the log.
     fn write_spec_diff(&self, b: &Build<'_>) -> Result<()> {
         let spec_name = fs::file_name(&b.spec);
         let diff = self.runner.run(
@@ -401,7 +373,6 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// The edited spec gives the Apex release, and pins the exact build it is built with.
     fn check_edited_spec(&self, b: &Build<'_>) -> Result<()> {
         let fail = |reason: &str| self.fail(&b.attempt, reason.as_bytes(), None);
         let want = format!("{}-{}", b.stock.version, b.release);
@@ -414,7 +385,7 @@ impl Container<'_> {
         if let Some(pin) = &b.stock.pin {
             let isa = self.rpm_eval("%{_isa}")?;
             let query = |what: &str, stderr: Stderr| {
-                self.check(
+                self.run_ok(
                     &Cmd::new(Program::Rpmspec)
                         .args(["-q", what])
                         .args(b.work.spec_define())
@@ -448,16 +419,13 @@ impl Container<'_> {
         self.report.group("Build dependencies");
         let log = b.work.logs.join("builddep.log");
         fs::write(&log, b"")?;
-        let builddep = Cmd::new(Program::Dnf5)
-            .args(["-y", "-q"])
-            .args(&b.setup.repos.bin)
-            .args(SETOPTS)
+        let builddep = Self::dnf_bin(&b.setup.repos)
             .arg("builddep")
             .args(b.work.spec_define())
             .arg(&b.spec)
             .stdout(Stdout::Append(log.clone()))
             .stderr(Stderr::ToStdout);
-        if !retry(self.runner, self.report, 2, secs(10), &builddep)?.ok() {
+        if !retry(self.runner, self.report, 2, RETRY_DELAY, &builddep)?.ok() {
             self.report
                 .raw(text::tail_lines(&fs::read(&log).unwrap_or_default(), 30));
             return Err(infra("dnf5 builddep failed"));
@@ -481,7 +449,6 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// %prep with the Apex inputs, then the tree must be exactly Fedora's plus them.
     fn patched_prep(&self, b: &Build<'_>) -> Result<()> {
         self.report.group("Patched %prep, and the exact tree");
         let log = b.work.logs.join("prep-apex.log");
@@ -508,8 +475,8 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// Why the patched %prep failed: the first series entry that does not apply to the
-    /// pristine tree, applied in order (a rebase conflict names its feature).
+    /// The first series entry that does not apply after the ones before it: a rebase
+    /// conflict names its feature.
     fn culprit(&self, b: &Build<'_>) -> Result<String> {
         let t = b.work.dir.join("culprit");
         let _ = std::fs::remove_dir_all(&t);
@@ -537,8 +504,7 @@ impl Container<'_> {
         Ok(reason)
     }
 
-    /// Undo the series, the declared %prep changes and Source1 on a copy of the patched
-    /// tree, then compare it with the pristine one.
+    /// Every Apex input undone on a copy of the patched tree leaves the pristine one.
     fn exact_tree(&self, b: &Build<'_>, src: &Path) -> Result<()> {
         let pkg = &b.setup.pkg;
         let env = &pkg.env;
@@ -588,7 +554,7 @@ impl Container<'_> {
         }
         let members = match &self.args.source1 {
             Some(archive) => {
-                let out = self.check(
+                let out = self.run_ok(
                     &Cmd::new(Program::Tar)
                         .arg("-tf")
                         .arg(b.work.top.join("SOURCES").join(archive))
@@ -664,6 +630,10 @@ impl Container<'_> {
         })
     }
 
+    fn apex_srpms(b: &Build<'_>) -> Result<Vec<PathBuf>> {
+        fs::files_under(&b.work.top.join("SRPMS"), &|n| has_suffix(n, ".src.rpm"))
+    }
+
     fn query(&self, rpm: &Path, format: &str) -> Result<String> {
         let out = self.runner.run(
             &Cmd::new(Program::Rpm)
@@ -674,7 +644,6 @@ impl Container<'_> {
         Ok(text::lossy(text::chomp(&out.stdout)))
     }
 
-    /// The generic lane checks, then the package's own check.sh.
     fn lane_checks(&self, b: &Build<'_>) -> Result<()> {
         self.report.group("Lane checks");
         let fail =
@@ -734,7 +703,7 @@ impl Container<'_> {
                     None,
                 ));
             };
-            let reqs = self.check(
+            let reqs = self.run_ok(
                 &Cmd::new(Program::Rpm)
                     .args(["-qp", "--requires", "--"])
                     .arg(f)
@@ -749,7 +718,7 @@ impl Container<'_> {
                 ));
             }
         }
-        let srpms = fs::files_under(&b.work.top.join("SRPMS"), &|n| has_suffix(n, ".src.rpm"))?;
+        let srpms = Self::apex_srpms(b)?;
         if srpms.len() != 1 {
             return Err(fail(
                 format!("rpmbuild produced {} source RPMs", srpms.len()),
@@ -818,8 +787,6 @@ impl Container<'_> {
         }
     }
 
-    /// The store set in /work/out: the built RPMs (no debuginfo), the mirror and dev
-    /// RPMs, the Apex SRPM, manifest.txt, key.txt and key-input.txt.
     fn outputs(&self, b: &Build<'_>, preimage: &str) -> Result<()> {
         let out = self.paths.out();
         let env = &b.setup.pkg.env;
@@ -873,7 +840,7 @@ impl Container<'_> {
             fs::copy_with_mode(&f, &out.join(fs::file_name(&f)))?;
             m.push_str(&entry(kind, n, &f)?);
         }
-        let srpms = fs::files_under(&b.work.top.join("SRPMS"), &|n| has_suffix(n, ".src.rpm"))?;
+        let srpms = Self::apex_srpms(b)?;
         let [srpm] = &srpms[..] else {
             return Err(infra(format!(
                 "rpmbuild produced {} source RPMs",
@@ -888,7 +855,6 @@ impl Container<'_> {
     }
 }
 
-/// The builds of a package's store, in the order of `STORE/*/manifest.txt`.
 pub fn stored_builds(store: &Path) -> Result<Vec<StoredBuild>> {
     fs::sorted_entries(store)?
         .into_iter()
@@ -898,9 +864,20 @@ pub fn stored_builds(store: &Path) -> Result<Vec<StoredBuild>> {
         .collect()
 }
 
-/// `find -name '*SUFFIX'`: case-sensitive, as find is.
+/// Case-sensitive, as `find -name '*SUFFIX'` is.
 fn has_suffix(name: &str, suffix: &str) -> bool {
     name.as_bytes().ends_with(suffix.as_bytes())
+}
+
+fn timed(
+    timings: &mut Vec<(&'static str, u64)>,
+    step: &'static str,
+    run: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let start = Instant::now();
+    run()?;
+    timings.push((step, start.elapsed().as_secs()));
+    Ok(())
 }
 
 fn mirror_file(work: &Work, nevra: &str) -> PathBuf {

@@ -1,5 +1,3 @@
-//! A lane package as the checkout holds it: `packaging/pkgs/<pkg>/`.
-
 use std::path::{Path, PathBuf};
 
 use crate::core::names::is_pkg_name;
@@ -33,7 +31,6 @@ pub fn pkgs_dir(root: &Path) -> PathBuf {
     root.join("packaging/pkgs")
 }
 
-/// Every package of the lane: a directory of packaging/pkgs with a pkg.env, in byte order.
 pub fn all(root: &Path) -> Result<Vec<String>> {
     Ok(fs::sorted_entries(&pkgs_dir(root))?
         .into_iter()
@@ -44,9 +41,7 @@ pub fn all(root: &Path) -> Result<Vec<String>> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Parse {
-    /// pkg.env, series with its files, spec-edit.
     Full,
-    /// pkg.env and series without file checks.
     Export,
 }
 

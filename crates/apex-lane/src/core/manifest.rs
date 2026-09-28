@@ -1,11 +1,9 @@
-//! `manifest.txt` of a stored set, format 1.
-
 use crate::core::text;
 
 pub const FORMAT_LINE: &str = "# apex-lane manifest 1: kind nevra sha256 file";
 
-/// `sed -n 's/^# .* NAME=\([^ ]*\).*$/\1/p' | head -n 1`, which the stored manifests were
-/// read with: the last ` NAME=` on the first `# ` line that has one.
+/// The last ` NAME=` on the first `# ` line that has one: the greedy sed rule the stored
+/// manifests were read with.
 pub fn header_field(manifest: &[u8], name: &str) -> Vec<u8> {
     let needle = format!(" {name}=");
     for line in text::lines(manifest) {
@@ -32,7 +30,6 @@ pub struct Entry<'a> {
     pub file: &'a [u8],
 }
 
-/// The data lines (`grep -v '^#' | while read -r kind nevra sha file`).
 pub fn entries(manifest: &[u8]) -> Vec<Entry<'_>> {
     text::lines(manifest)
         .into_iter()
@@ -49,7 +46,6 @@ pub fn entries(manifest: &[u8]) -> Vec<Entry<'_>> {
         .collect()
 }
 
-/// The kinds whose file is in the stored set.
 pub fn is_stored_kind(kind: &[u8]) -> bool {
     matches!(kind, b"built" | b"mirror" | b"dev" | b"apex-srpm")
 }

@@ -1,5 +1,3 @@
-//! `rpms.lock` and `rpms.lock.next`, format 1: one record per line.
-
 use crate::core::manifest;
 use crate::core::names::{nevra_evr, nevra_name};
 use crate::core::text;
@@ -17,8 +15,6 @@ fn is_record_of(line: &[u8], record: &[u8], family: &str) -> bool {
     f.first() == Some(&record) && f.get(1) == Some(&family.as_bytes())
 }
 
-/// The family's line without `family NAME `: its state, key and attributes. Empty when
-/// there is none.
 pub fn family_line(lock: &[u8], family: &str) -> Vec<u8> {
     let Some(line) = text::lines(lock)
         .into_iter()
@@ -26,7 +22,7 @@ pub fn family_line(lock: &[u8], family: &str) -> Vec<u8> {
     else {
         return Vec::new();
     };
-    // `sub(/^family [^ ]+ /, "")`: single spaces only, else the whole line.
+    // As awk's `sub(/^family [^ ]+ /, "")`: single spaces only, else the whole line.
     if let Some(rest) = line.strip_prefix(b"family ") {
         let name_len = rest.iter().take_while(|&&b| b != b' ').count();
         if name_len > 0 && rest.get(name_len) == Some(&b' ') {
@@ -36,7 +32,6 @@ pub fn family_line(lock: &[u8], family: &str) -> Vec<u8> {
     line.to_vec()
 }
 
-/// The family's rpm lines, each with its newline.
 pub fn rpm_lines(lock: &[u8], family: &str) -> Vec<u8> {
     let lines: Vec<&[u8]> = text::lines(lock)
         .into_iter()
@@ -45,7 +40,6 @@ pub fn rpm_lines(lock: &[u8], family: &str) -> Vec<u8> {
     text::join_lines(&lines)
 }
 
-/// An attribute of a family line; `reason=` runs to the end of the line.
 pub fn attr(line: &[u8], name: &str) -> Vec<u8> {
     let reason_at = text::find(line, b" reason=");
     if name == "reason" {
@@ -59,8 +53,7 @@ pub fn attr(line: &[u8], name: &str) -> Vec<u8> {
         .map_or_else(Vec::new, <[u8]>::to_vec)
 }
 
-/// FAMILY's records go last; the others keep their bytes and order. The image's content key
-/// hashes the lock, so the bytes matter.
+/// The other families keep their bytes and order: the image's content key hashes the lock.
 pub fn put(old: Option<&[u8]>, family: &str, line: &[u8], rpms: &[u8]) -> Vec<u8> {
     let mut out = text::join_lines(&HEADER);
     for kept in old.map(text::lines).unwrap_or_default() {
@@ -88,8 +81,6 @@ pub struct BadNevra {
     pub nevra: String,
 }
 
-/// The lock lines of a stored set: its built RPMs named by `install` (once per name
-/// listed), then every mirror RPM, in manifest order. `dev` RPMs are never locked.
 pub fn manifest_lock_rpms(
     label: &str,
     manifest_text: &[u8],
@@ -108,12 +99,7 @@ pub fn manifest_lock_rpms(
         })?;
         let line = |kind: &str| {
             let mut l = format!("rpm {family} {kind} ").into_bytes();
-            for (i, part) in [name, e.nevra, e.sha256].iter().enumerate() {
-                if i > 0 {
-                    l.push(b' ');
-                }
-                l.extend_from_slice(part);
-            }
+            l.extend_from_slice(&[name, e.nevra, e.sha256].join(&b' '));
             l.extend_from_slice(format!(" {keypath}/").as_bytes());
             l.extend_from_slice(e.file);
             l.push(b'\n');
@@ -132,7 +118,6 @@ pub fn manifest_lock_rpms(
     Ok(out)
 }
 
-/// How many of `rpms` (lock lines) are Apex-built.
 pub fn built_count(rpms: &[u8]) -> usize {
     text::lines(rpms)
         .into_iter()
@@ -140,8 +125,6 @@ pub fn built_count(rpms: &[u8]) -> usize {
         .count()
 }
 
-/// The EVR of the family's main package in the lock, no epoch when it is 0; empty when
-/// there is none.
 pub fn locked_evr(lock: &[u8], family: &str, srpm: &str) -> Vec<u8> {
     let rpms = rpm_lines(lock, family);
     text::lines(&rpms)
@@ -152,7 +135,7 @@ pub fn locked_evr(lock: &[u8], family: &str, srpm: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// `(sha256, path)` of every rpm line (`grep '^rpm ' | read -r _ _ _ _ _ sha path`).
+/// `(sha256, path)` of every rpm line.
 pub fn rpm_files(lock: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
     text::lines(lock)
         .into_iter()
@@ -164,7 +147,7 @@ pub fn rpm_files(lock: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         .collect()
 }
 
-/// A store path as image.sh accepts it: relative, with no `..` component.
+/// As image.sh accepts it.
 pub fn is_store_path(path: &[u8]) -> bool {
     !path.is_empty() && !path.starts_with(b"/") && !path.split(|&b| b == b'/').any(|c| c == b"..")
 }

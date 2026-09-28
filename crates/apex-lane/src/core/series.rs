@@ -1,10 +1,7 @@
-//! `series`: one `NNNN-name.patch` per line, in order; `#` starts a comment.
-
 use crate::core::names::is_patch_name;
 use crate::core::text;
 use crate::error::ConfigError;
 
-/// Whether the series must name existing files, and how to tell.
 #[derive(Clone, Copy)]
 pub enum Files<'a> {
     Check {
@@ -27,11 +24,7 @@ impl std::fmt::Debug for Files<'_> {
 pub fn parse(file: &str, bytes: &[u8], files: Files<'_>) -> Result<Vec<String>, ConfigError> {
     let mut patches: Vec<String> = Vec::new();
     for line in text::lines(bytes) {
-        let line = line
-            .iter()
-            .position(|&b| b == b'#')
-            .map_or(line, |hash| &line[..hash]);
-        let line = text::trim_end_space(text::trim_start_space(line));
+        let line = text::trim_end_space(text::trim_start_space(text::strip_comment(line)));
         if line.is_empty() {
             continue;
         }

@@ -1,5 +1,3 @@
-//! `status`: one block per family of a lock.
-
 use crate::core::lock;
 use crate::core::text;
 use crate::core::utc::UtcSecond;
@@ -50,7 +48,6 @@ pub fn render(title: &str, lock_text: Option<&[u8]>, now: UtcSecond) -> Vec<u8> 
     out
 }
 
-/// `printf '%-Ns'`.
 fn pad(s: &[u8], width: usize) -> Vec<u8> {
     let mut out = s.to_vec();
     out.resize(width.max(s.len()), b' ');

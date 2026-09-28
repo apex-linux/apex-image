@@ -1,24 +1,21 @@
-//! The container digest is recorded in the manifest, not hashed: dependency drift does not
-//! warrant a rebuild.
-
 use std::fmt::Write as _;
 
 use crate::core::hash::sha256_hex;
 
 pub const SCHEMA: u32 = 2;
 
+/// No container digest: it goes into the manifest, since dependency drift does not warrant
+/// a rebuild.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyInputs {
     pub pkg: String,
     pub tool: String,
-    /// sha256 of check.sh.
-    pub check: Option<String>,
-    /// The binary repositories and the setopts, as the dnf calls pass them.
+    pub check_sh_sha256: Option<String>,
     pub repos: String,
     pub stock: String,
     pub pin_evr: Option<String>,
-    pub pkg_env: String,
-    pub spec_edit: String,
+    pub pkg_env_sha256: String,
+    pub spec_edit_sha256: String,
     /// (series entry, sha256), in series order.
     pub patches: Vec<(String, String)>,
     pub source1_tree: Option<String>,
@@ -35,12 +32,12 @@ pub fn preimage(k: &KeyInputs) -> String {
         "apex lane key {SCHEMA}\npkg {}\nlane {}\ncheck {}\nrepos {}\nstock {}\npin {}\npkg.env {}\nspec-edit {}\n",
         k.pkg,
         k.tool,
-        or_dash(&k.check),
+        or_dash(&k.check_sh_sha256),
         k.repos,
         k.stock,
         or_dash(&k.pin_evr),
-        k.pkg_env,
-        k.spec_edit,
+        k.pkg_env_sha256,
+        k.spec_edit_sha256,
     );
     for (entry, sha) in &k.patches {
         let _ = writeln!(out, "patch {entry} {sha}");
@@ -67,12 +64,12 @@ mod tests {
         let k = KeyInputs {
             pkg: "gnome-shell".into(),
             tool: "t".repeat(64),
-            check: None,
+            check_sh_sha256: None,
             repos: "--repo=fedora --repo=updates --setopt=install_weak_deps=False".into(),
             stock: "gnome-shell-51.0-1.fc45".into(),
             pin_evr: Some("51.0-1.fc45".into()),
-            pkg_env: "e".into(),
-            spec_edit: "s".into(),
+            pkg_env_sha256: "e".into(),
+            spec_edit_sha256: "s".into(),
             patches: vec![("0001-build.patch".into(), "a".into())],
             source1_tree: None,
             n: 3,

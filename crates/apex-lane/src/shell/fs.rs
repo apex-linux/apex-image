@@ -14,7 +14,6 @@ pub fn read(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).map_err(|e| io_error("cannot read", path, &e))
 }
 
-/// The file's bytes, or `None` when it does not exist.
 pub fn read_opt(path: &Path) -> Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -44,13 +43,10 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     read(path).map(|bytes| hash::sha256_hex(&bytes))
 }
 
-/// FILE replaced atomically by a new file of mode 0600 in the same directory.
+/// The new file has tempfile's mode, 0600.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let name = file_name(path);
     let mut tmp = tempfile::Builder::new()
         .prefix(&format!("{name}."))
         .rand_bytes(6)
@@ -67,26 +63,34 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Copies `from` to `to` with `from`'s permission bits.
-pub fn copy_with_mode(from: &Path, to: &Path) -> Result<()> {
-    let mode = fs::metadata(from)
-        .map_err(|e| io_error("cannot stat", from, &e))?
-        .permissions()
-        .mode();
+fn copy_then_chmod(from: &Path, to: &Path, mode: u32) -> Result<()> {
     let bytes = read(from)?;
     write(to, &bytes)?;
     fs::set_permissions(to, fs::Permissions::from_mode(mode))
         .map_err(|e| io_error("cannot chmod", to, &e))
 }
 
-pub fn install_0644(from: &Path, to: &Path) -> Result<()> {
-    let bytes = read(from)?;
-    write(to, &bytes)?;
-    fs::set_permissions(to, fs::Permissions::from_mode(0o644))
-        .map_err(|e| io_error("cannot chmod", to, &e))
+pub fn copy_with_mode(from: &Path, to: &Path) -> Result<()> {
+    let mode = fs::metadata(from)
+        .map_err(|e| io_error("cannot stat", from, &e))?
+        .permissions()
+        .mode();
+    copy_then_chmod(from, to, mode)
 }
 
-/// Directory entries sorted by name bytes (a glob in the C locale); dot entries skipped.
+pub fn install_0644(from: &Path, to: &Path) -> Result<()> {
+    copy_then_chmod(from, to, 0o644)
+}
+
+fn sort_by_bytes(paths: &mut [PathBuf]) {
+    paths.sort_by(|a, b| {
+        a.as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.as_os_str().as_encoded_bytes())
+    });
+}
+
+/// As a glob sees them in the C locale: dot entries skipped, sorted by bytes.
 pub fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>> {
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -101,15 +105,10 @@ pub fn sorted_entries(dir: &Path) -> Result<Vec<PathBuf>> {
                 .is_some_and(|n| !n.as_encoded_bytes().starts_with(b"."))
         })
         .collect();
-    out.sort_by(|a, b| {
-        a.as_os_str()
-            .as_encoded_bytes()
-            .cmp(b.as_os_str().as_encoded_bytes())
-    });
+    sort_by_bytes(&mut out);
     Ok(out)
 }
 
-/// Regular files under `dir` (not following links), sorted by full path bytes.
 pub fn files_under(dir: &Path, keep: &dyn Fn(&str) -> bool) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -131,11 +130,7 @@ pub fn files_under(dir: &Path, keep: &dyn Fn(&str) -> bool) -> Result<Vec<PathBu
             }
         }
     }
-    out.sort_by(|a, b| {
-        a.as_os_str()
-            .as_encoded_bytes()
-            .cmp(b.as_os_str().as_encoded_bytes())
-    });
+    sort_by_bytes(&mut out);
     Ok(out)
 }
 
@@ -145,7 +140,6 @@ pub fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Holds `STORE/.lock` for as long as it lives.
 #[derive(Debug)]
 pub struct StoreLock {
     _file: File,

@@ -1,6 +1,3 @@
-//! Where apex-lane deliberately differs from packaging/rebuild.sh, the Bash lane it
-//! replaced; the differences in the VM and container flows are tested with them.
-
 #![allow(clippy::expect_used, reason = "test helpers panic on broken fixtures")]
 
 use std::path::Path;
@@ -13,7 +10,7 @@ use apex_lane::core::spec_edit;
 use apex_lane::core::status;
 use apex_lane::core::utc::UtcSecond;
 use apex_lane::error::Exit;
-use apex_lane::shell::bodhi::query_value;
+use apex_lane::shell::bodhi::percent_encode;
 
 fn refused_ere(ere: &str) -> String {
     let err = spec_edit::parse("spec-edit", format!("after {ere}\n\tx\nend\n").as_bytes())
@@ -22,7 +19,6 @@ fn refused_ere(ere: &str) -> String {
     err.0
 }
 
-/// grep -E cannot compile these: rebuild.sh held the family; the typo is configuration.
 #[test]
 fn an_ere_grep_cannot_compile_is_a_config_error() {
     assert!(refused_ere("a{2,1}").contains("counts down"));
@@ -41,7 +37,7 @@ fn constructs_outside_the_ere_subset_are_refused() {
 #[test]
 fn a_plus_in_an_nvr_reaches_bodhi_encoded() {
     assert_eq!(
-        query_value("libsigc++30-3.6.0-1.fc45"),
+        percent_encode("libsigc++30-3.6.0-1.fc45"),
         "libsigc%2B%2B30-3.6.0-1.fc45"
     );
 }
@@ -90,12 +86,12 @@ fn the_key_names_the_lane_tool() {
     let text = preimage(&KeyInputs {
         pkg: "p".into(),
         tool: "0".repeat(64),
-        check: None,
+        check_sh_sha256: None,
         repos: "r".into(),
         stock: "s".into(),
         pin_evr: None,
-        pkg_env: "e".into(),
-        spec_edit: "s".into(),
+        pkg_env_sha256: "e".into(),
+        spec_edit_sha256: "s".into(),
         patches: Vec::new(),
         source1_tree: None,
         n: 1,
@@ -106,8 +102,6 @@ fn the_key_names_the_lane_tool() {
     assert!(!text.contains("script "));
 }
 
-/// GNU `date -d` read almost anything (`limit=x` as the military time zone X); the lane
-/// writes only `%Y-%m-%dT%H:%M:%SZ`, and reads only that.
 #[test]
 fn limit_and_since_are_read_strictly() {
     let lock_text = b"family gnome-shell held k since=2026-10-12T04:10:00Z limit=x reason=r\n";

@@ -18,28 +18,27 @@ fn git_in(tree: &Path) -> Cmd {
 }
 
 impl Container<'_> {
-    /// Fedora's %prep history, a commit of what it left uncommitted, the tag apex-base.
     fn init_tree(&self, tree: &Path, nvr: &str) -> Result<()> {
         let g = || git_in(tree);
         if !tree.join(".git").is_dir() {
-            self.check(&g().args(["init", "-q"]), "git init failed")?;
+            self.run_ok(&g().args(["init", "-q"]), "git init failed")?;
         }
-        let status = self.check(
+        let status = self.run_ok(
             &g().args(["status", "--porcelain"]).capture(),
             "git status failed",
         )?;
         if !text::chomp(&status.stdout).is_empty() {
-            self.check(&g().args(["add", "-A"]), "git add failed")?;
-            self.check(
+            self.run_ok(&g().args(["add", "-A"]), "git add failed")?;
+            self.run_ok(
                 &g().args(["commit", "-q", "-m"]).arg(format!("{nvr} %prep")),
                 "git commit failed",
             )?;
         }
-        self.check(
+        self.run_ok(
             &g().args(["tag", "-f", "apex-base"]).stdout(Stdout::Null),
             "git tag failed",
         )?;
-        let head = self.check(
+        let head = self.run_ok(
             &g().args(["rev-parse", "HEAD"]).capture(),
             "git rev-parse failed",
         )?;
@@ -53,8 +52,6 @@ impl Container<'_> {
         )
     }
 
-    /// The patch-queue work tree in /work/tree: Fedora's %prep, the series as commits
-    /// after the tag apex-base, then Source1 and the declared %prep changes.
     pub(super) fn prep(&self) -> Result<()> {
         let setup = self.setup()?;
         let want = self
@@ -125,8 +122,7 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// Source1 unpacked and ignored by git, the declared %prep changes made and marked
-    /// skip-worktree, so `git commit -a` never picks them up.
+    /// Excluded or marked skip-worktree, so `git commit -a` never picks them up.
     fn add_source1_and_changes(&self, tree: &Path, pkg: &crate::pkg::Pkg) -> Result<()> {
         let g = || git_in(tree);
         if let Some(archive) = &self.args.source1 {
@@ -141,7 +137,7 @@ impl Container<'_> {
             }
         }
         let skip = |path: &str| {
-            self.check(
+            self.run_ok(
                 &g().args(["update-index", "--skip-worktree", "--", path]),
                 "git update-index failed",
             )
@@ -197,8 +193,7 @@ mod tests {
         String::from_utf8(out.stdout).unwrap()
     }
 
-    /// rebuild.sh made the declared %prep changes only with Source1; the exact-tree check
-    /// expects them always.
+    /// The exact-tree check expects them with or without Source1.
     #[test]
     fn the_declared_prep_changes_without_source1() {
         let tree = tempfile::tempdir().unwrap();

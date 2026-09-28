@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
-/// The directories Source1 and the moves may have created, children before parents: every
-/// parent path of each member (a trailing `/` dropped first) and of each moved TO.
+/// Every parent directory of the members and of the moved-to paths, children first.
 pub fn prune_dirs(members: &[String], moved_tos: &[String]) -> Vec<String> {
     let mut dirs = BTreeSet::new();
     for m in members.iter().chain(moved_tos) {

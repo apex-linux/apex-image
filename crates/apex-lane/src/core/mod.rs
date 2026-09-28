@@ -1,5 +1,4 @@
-//! The lane's decisions and formats: bytes and values in, values out. No file system,
-//! process, environment or clock.
+//! Pure decisions and formats: no file system, process, environment or clock.
 
 pub mod checksig;
 pub mod ere;

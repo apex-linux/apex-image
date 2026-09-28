@@ -1,7 +1,3 @@
-//! The VM and container flows against a scripted runner: podman, sudo, dnf5, rpm,
-//! rpmbuild, rpmspec, rpmkeys and gpg are faked; git, cp, tar, diff and bash run for real
-//! on temporary checkouts.
-
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -28,7 +24,6 @@ use apex_lane::vm::{Outcome as Built, Settings, Vm};
 
 type Script = dyn Fn(&Cmd) -> Option<Outcome>;
 
-/// Answers the faked programs from a script and runs the others for real.
 struct Fake {
     log: RefCell<Vec<Cmd>>,
     script: Box<Script>,
@@ -167,7 +162,6 @@ const DEMO_EDIT: &str = concat!(
     "after ^%autosetup\n\ttar -xkf %{SOURCE1}\nend\n",
 );
 
-/// A checkout with one lane package, demo, committed.
 fn checkout(env: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let r = dir.path();
@@ -202,7 +196,6 @@ fn checkout(env: &str) -> tempfile::TempDir {
     dir
 }
 
-/// A format-patch that adds a line to hello.txt, made by git.
 fn demo_patch() -> String {
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("hello.txt"), "hello\n");
@@ -246,7 +239,7 @@ fn mount(args: &[String], to: &str) -> PathBuf {
     PathBuf::from(spec.split(':').next().unwrap())
 }
 
-/// The container side as the VM sees it: `out` holds what the scenario writes.
+/// `scenario(out, store)` plays the container and returns its exit status.
 fn vm_fake(scenario: impl Fn(&Path, &Path) -> i32 + 'static) -> Fake {
     Fake::new(move |cmd| {
         if cmd.program != Program::Sudo {
@@ -606,7 +599,6 @@ fn a_source1_member_outside_source1_paths_is_refused() {
     );
 }
 
-/// A store with one built set and an rpms.lock.next that takes it.
 fn promotable(t: &VmTest) -> (PathBuf, Vec<u8>) {
     let set = t.store.path().join("pkgs/demo").join(KEY);
     built_set(&set, KEY);
@@ -691,11 +683,8 @@ fn status_prints_both_locks() {
     );
 }
 
-// ---- the container side ------------------------------------------------------------------
-
 const FEDORA_SPEC: &str = "Name:           demo\nVersion:        1.0\nRelease:        %autorelease\nSource0:        demo-1.0.tar.xz\nBuildRequires:  mutter-devel >= 50\nRequires:       mutter%{?_isa} >= 50\n%prep\n%autosetup -S git\n";
 
-/// What the faked build tools do.
 #[derive(Clone, Default)]
 struct Tools {
     spec: Option<String>,
@@ -758,7 +747,7 @@ impl ContainerTest {
                 src: self.src.path().to_path_buf(),
                 work: self.work.path().to_path_buf(),
                 store: self.store.path().to_path_buf(),
-                keys: self.keys.path().to_path_buf(),
+                fedora_keys: self.keys.path().to_path_buf(),
             },
             args: Args {
                 mode: ModeKind::Build,
@@ -796,8 +785,7 @@ fn define_top(args: &[String]) -> PathBuf {
     PathBuf::from(d.strip_prefix("_topdir ").unwrap())
 }
 
-/// name, version, release, arch of an RPM file name.
-fn parts(file: &str) -> (String, String, String, String) {
+fn nvra_of_file_name(file: &str) -> (String, String, String, String) {
     let stem = file.strip_suffix(".rpm").unwrap();
     let (rest, arch) = stem.rsplit_once('.').unwrap();
     let (rest, release) = rest.rsplit_once('-').unwrap();
@@ -895,7 +883,6 @@ fn container_fake(tools: Tools) -> Fake {
     })
 }
 
-/// `rpmbuild`: the stock and the patched %prep trees, or the built RPMs.
 fn rpmbuild(tools: &Tools, args: &[String]) -> Option<Outcome> {
     let has = |a: &str| args.iter().any(|x| x == a);
     let top = define_top(args);
@@ -940,12 +927,11 @@ fn rpmbuild(tools: &Tools, args: &[String]) -> Option<Outcome> {
     ok("built\n")
 }
 
-/// `rpm -qp`: what the file name says.
 fn rpm_query(tools: &Tools, args: &[String]) -> Option<Outcome> {
     let has = |a: &str| args.iter().any(|x| x == a);
     let file = args.last().unwrap();
     let (name, version, release, arch) =
-        parts(Path::new(file).file_name().unwrap().to_str().unwrap());
+        nvra_of_file_name(Path::new(file).file_name().unwrap().to_str().unwrap());
     let release = tools
         .built_release
         .clone()
@@ -1096,7 +1082,6 @@ fn container_build_takes_m_above_the_stored_builds() {
     assert!(t.out("spec.diff").contains("%{autorelease}.apex3.1\n"));
 }
 
-/// Stops with exit 3, the reason on line 1 of failed.txt.
 fn holds(env: &str, edit: &str, tools: &Tools, reason: &str) {
     let t = ContainerTest::new(env, edit);
     let fake = container_fake(tools.clone());
@@ -1329,9 +1314,6 @@ fn a_command_through_sudo_keeps_its_argv() {
     );
 }
 
-// ---- export ---------------------------------------------------------------------------------
-
-/// A work tree with the tag apex-base and two commits after it.
 fn work_tree(root: &Path) -> PathBuf {
     let tree = root.join("_build/pkg/demo/tree");
     write(&tree.join("hello.txt"), "hello\n");

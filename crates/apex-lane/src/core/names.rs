@@ -1,5 +1,3 @@
-/// A lane package (a directory of packaging/pkgs), and a family: `^[a-z0-9][a-z0-9._+-]*$`.
-/// image.sh and `apexctl manifest --held` accept no other family name.
 pub fn is_pkg_name(s: &str) -> bool {
     let b = s.as_bytes();
     !b.is_empty()
@@ -8,42 +6,39 @@ pub fn is_pkg_name(s: &str) -> bool {
             .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._+-".contains(&c))
 }
 
+/// image.sh and `apexctl manifest --held` accept no other family name.
 pub fn is_family_name(s: &str) -> bool {
     is_pkg_name(s)
 }
 
-/// An RPM name: `^[A-Za-z0-9._+-]+$`.
-pub fn is_package_name(s: &str) -> bool {
+pub fn is_rpm_name(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"._+-".contains(&c))
 }
 
-/// A series entry: `^[0-9]{4}-[A-Za-z0-9._-]+\.patch$`.
 pub fn is_patch_name(s: &str) -> bool {
-    let b = s.as_bytes();
-    let Some(stem) = s.strip_suffix(".patch") else {
+    let Some((number, name)) = s
+        .strip_suffix(".patch")
+        .and_then(|stem| stem.split_once('-'))
+    else {
         return false;
     };
-    b.len() > 11
-        && b[..4].iter().all(u8::is_ascii_digit)
-        && b[4] == b'-'
-        && stem.len() > 5
-        && stem.as_bytes()[5..]
-            .iter()
-            .all(|&c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+    number.len() == 4
+        && number.bytes().all(|c| c.is_ascii_digit())
+        && !name.is_empty()
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
 }
 
-/// A release or EVR value the lane writes into a spec or passes to rpm's Lua:
-/// `^[A-Za-z0-9._:~^+-]+$`.
+/// Safe to write into a spec or to pass to rpm's Lua.
 pub fn is_release_value(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"._:~^+-".contains(&c))
 }
 
-/// The package name of `name-epoch:version-release.arch`
-/// (`^(.+)-[0-9]+:[^-]+-[^-]+\.[^.]+$`).
 pub fn nevra_name(nevra: &[u8]) -> Option<&[u8]> {
     (1..nevra.len())
         .rev()
@@ -77,8 +72,6 @@ fn is_epoch_vr_arch(s: &[u8]) -> bool {
     dash > 0 && dot > 0 && dot + 1 < release_arch.len()
 }
 
-/// `E:V-R` of a NEVRA, and no epoch when it is 0
-/// (`sed -E 's/^.+-([0-9]+:[^-]+-[^-]+)\.[^.]+$/\1/; s/^0://'`).
 pub fn nevra_evr(nevra: &[u8]) -> Vec<u8> {
     let evr = match nevra_name(nevra) {
         Some(name) => {
@@ -94,7 +87,7 @@ pub fn nevra_evr(nevra: &[u8]) -> Vec<u8> {
     }
 }
 
-/// `<stock NVR>-s<12 lowercase hex>`: the content key, also a store directory name.
+/// Also a store directory name, so nothing that leaves the store passes.
 pub fn is_content_key(s: &str) -> bool {
     let Some((nvr, hex)) = s.rsplit_once("-s") else {
         return false;
@@ -107,7 +100,6 @@ pub fn is_content_key(s: &str) -> bool {
         && !nvr.contains(':')
 }
 
-/// The words of a pkg.env list value.
 pub fn words(value: &str) -> Vec<String> {
     value
         .split([' ', '\t', '\n'])
@@ -155,7 +147,7 @@ mod tests {
         assert!(!is_patch_name("../x.patch"));
         assert!(!is_patch_name("0001-a/b.patch"));
         assert!(is_pkg_name("gnome-shell") && !is_pkg_name("Gnome") && !is_pkg_name("-x"));
-        assert!(is_package_name("NetworkManager-libnm") && !is_package_name("a b"));
+        assert!(is_rpm_name("NetworkManager-libnm") && !is_rpm_name("a b"));
         assert!(is_content_key("gnome-shell-51.0-1.fc45-s22726911a8d4"));
         assert!(!is_content_key("gnome-shell-51.0-1.fc45-s22726911a8d"));
         assert!(!is_content_key("../x-s22726911a8d4"));

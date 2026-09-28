@@ -1,5 +1,4 @@
-//! The Fedora half, as root in a fresh `REPOS_BASE` container: the checkout at /src, the
-//! work directory at /work, the package's store at /store.
+//! The Fedora half, as root in a fresh `REPOS_BASE` container.
 
 mod build;
 mod prep;
@@ -21,8 +20,8 @@ use crate::shell::cmd::{Cmd, Outcome, Program, Runner, Stderr, Stdout, retry};
 use crate::shell::fs;
 use crate::shell::report::Reporter;
 
-/// Fedora release keys, checked against the key file of the container before it is
-/// imported. Source: fedoraproject.org/security and fedora-repos dist-git, 2026-09-24.
+/// The container's key file must match it before it is imported. From
+/// fedoraproject.org/security and fedora-repos dist-git, 2026-09-24.
 pub const FEDORA_45_KEY_FPR: &str = "4F50A6114CD5C6976A7F1179655A4B02F577861E";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,8 +51,7 @@ pub struct Paths {
     pub src: PathBuf,
     pub work: PathBuf,
     pub store: PathBuf,
-    /// Where the image keeps the Fedora release keys.
-    pub keys: PathBuf,
+    pub fedora_keys: PathBuf,
 }
 
 impl Default for Paths {
@@ -62,7 +60,7 @@ impl Default for Paths {
             src: "/src".into(),
             work: "/work".into(),
             store: "/store".into(),
-            keys: "/usr/share/pki/rpm-gpg".into(),
+            fedora_keys: "/usr/share/pki/rpm-gpg".into(),
         }
     }
 }
@@ -90,7 +88,6 @@ impl std::fmt::Debug for Container<'_> {
     }
 }
 
-/// What setup found: the package, the repositories and the Fedora key's ID.
 #[derive(Debug, Clone)]
 pub struct Setup {
     pub pkg: Pkg,
@@ -99,7 +96,6 @@ pub struct Setup {
     pub arch: String,
 }
 
-/// The stock build, and the pin's newest -devel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stock {
     pub epoch: String,
@@ -117,16 +113,13 @@ pub struct Pin {
     pub evr: String,
 }
 
-/// What a failed.txt names besides the reason.
 #[derive(Debug, Clone, Default)]
 pub struct Attempt {
     pub stock: Option<String>,
     pub key: Option<String>,
 }
 
-fn secs(n: u64) -> Duration {
-    Duration::from_secs(n)
-}
+const RETRY_DELAY: Duration = Duration::from_secs(10);
 
 impl Container<'_> {
     pub fn run(&self) -> Result<()> {
@@ -143,7 +136,7 @@ impl Container<'_> {
         }
     }
 
-    fn check(&self, cmd: &Cmd, what: &str) -> Result<Outcome> {
+    fn run_ok(&self, cmd: &Cmd, what: &str) -> Result<Outcome> {
         let out = self.runner.run(cmd)?;
         if !out.ok() {
             return Err(infra(format!("{what} (exit {}): {cmd}", out.code)));
@@ -152,7 +145,7 @@ impl Container<'_> {
     }
 
     fn rpm_eval(&self, expr: &str) -> Result<String> {
-        let out = self.check(
+        let out = self.run_ok(
             &Cmd::new(Program::Rpm).arg("-E").arg(expr).capture(),
             "rpm -E failed",
         )?;
@@ -166,7 +159,6 @@ impl Container<'_> {
             .args(SETOPTS)
     }
 
-    /// The reason goes to failed.txt, with the log's tail, and the family holds (exit 3).
     fn fail(&self, attempt: &Attempt, reason: &[u8], log: Option<&Path>) -> LaneError {
         let out = self.paths.out();
         let log_bytes = log.and_then(|p| std::fs::read(p).ok().map(|b| (fs::file_name(p), b)));
@@ -190,7 +182,6 @@ impl Container<'_> {
         LaneError::NoShippableBuild(text::lossy(reason))
     }
 
-    /// Parses the inputs again, then the repositories, the tools and the Fedora key.
     fn setup(&self) -> Result<Setup> {
         let env_path = pkg::pkgs_dir(&self.paths.src)
             .join(&self.args.pkg)
@@ -253,14 +244,14 @@ impl Container<'_> {
             .join("image/packages/updates-testing-allowlist.txt");
         let allow = repos::testing_includepkgs(fs::read_opt(&allow_path)?.as_deref());
         let testing = self.args.ga_reached != 1 && !allow.is_empty();
-        // The cache volume may be days old. minrate drops a mirror slower than 64 KiB/s for
-        // 30 s; dnf's default, 1000 B/s, once kept a run on a stalled mirror for 15 minutes.
+        // --refresh: the cache volume may be days old. minrate: dnf's default, 1000 B/s,
+        // once kept a run on a stalled mirror for 15 minutes.
         let refresh = Cmd::new(Program::Dnf5)
             .args(["-q", "--refresh", "--setopt=minrate=65536"])
             .args(repos::refresh_repos(testing))
             .arg("makecache")
             .stdout(Stdout::Null);
-        if !retry(self.runner, self.report, 3, secs(10), &refresh)?.ok() {
+        if !retry(self.runner, self.report, 3, RETRY_DELAY, &refresh)?.ok() {
             return Err(infra("cannot refresh the repository metadata"));
         }
         if !testing {
@@ -270,7 +261,7 @@ impl Container<'_> {
             self.runner,
             self.report,
             3,
-            secs(10),
+            RETRY_DELAY,
             &Cmd::new(Program::Dnf5)
                 .args(["-q", "--repo=updates-testing"])
                 .arg(format!("--setopt=updates-testing.includepkgs={allow}"))
@@ -295,7 +286,7 @@ impl Container<'_> {
             self.runner,
             self.report,
             3,
-            secs(10),
+            RETRY_DELAY,
             &Cmd::new(Program::Dnf5)
                 .args([
                     "-q",
@@ -332,7 +323,7 @@ impl Container<'_> {
         let fedora = self.rpm_eval("%fedora")?;
         let key_file = self
             .paths
-            .keys
+            .fedora_keys
             .join(format!("RPM-GPG-KEY-fedora-{fedora}-primary"));
         if !key_file.is_file() {
             return Err(infra(format!(
@@ -363,15 +354,14 @@ impl Container<'_> {
                 key_file.display()
             )));
         }
-        self.check(
+        self.run_ok(
             &Cmd::new(Program::Rpmkeys).arg("--import").arg(&key_file),
             "rpmkeys --import failed",
         )?;
         Ok(FEDORA_45_KEY_FPR[FEDORA_45_KEY_FPR.len() - 8..].to_owned())
     }
 
-    /// FILE carries only OK signatures, one by the Fedora release key; dnf checks
-    /// downloads against the metadata only.
+    /// dnf checks a download against the repository metadata only.
     fn verify(&self, setup: &Setup, file: &Path) -> Result<()> {
         let name = fs::file_name(file);
         let checksig = |verbose: bool| {
@@ -401,19 +391,14 @@ impl Container<'_> {
         Ok(())
     }
 
-    /// The stock build (the binary named srpm= whose source RPM is its own NVR) and the
-    /// pin (the newest <pin>-devel); attempt.txt records both.
     fn resolve(&self, setup: &Setup, want: Option<&str>) -> Result<Stock> {
         let env = &setup.pkg.env;
         let want = want.unwrap_or(&env.srpm);
-        let query = self.check(
+        let query = self.run_ok(
             &Self::dnf_bin(&setup.repos)
                 .args(["repoquery", "--latest-limit=1"])
                 .arg(format!("--arch={},noarch", setup.arch))
-                .args([
-                    "--queryformat",
-                    "%{name} %{epoch} %{version} %{release} %{sourcerpm}\\n",
-                ])
+                .args(["--queryformat", rpmout::STOCK_FORMAT])
                 .arg(want)
                 .capture(),
             "repoquery failed",
@@ -468,14 +453,11 @@ impl Container<'_> {
     }
 
     fn resolve_pin(&self, setup: &Setup, pin: &str) -> Result<Pin> {
-        let query = self.check(
+        let query = self.run_ok(
             &Self::dnf_bin(&setup.repos)
                 .args(["repoquery", "--latest-limit=1"])
                 .arg(format!("--arch={}", setup.arch))
-                .args([
-                    "--queryformat",
-                    "%{epoch} %{version} %{release} %{sourcerpm}\\n",
-                ])
+                .args(["--queryformat", rpmout::PIN_FORMAT])
                 .arg(format!("{pin}-devel"))
                 .capture(),
             "repoquery failed",
@@ -513,7 +495,7 @@ impl Container<'_> {
         let inputs = KeyInputs {
             pkg: pkg.name.clone(),
             tool: self.args.tool.clone(),
-            check: if check.is_file() {
+            check_sh_sha256: if check.is_file() {
                 Some(sha(&check)?)
             } else {
                 None
@@ -521,8 +503,8 @@ impl Container<'_> {
             repos: setup.repos.key_text(),
             stock: stock.nvr.clone(),
             pin_evr: stock.pin.as_ref().map(|p| p.evr.clone()),
-            pkg_env: sha(&pkg.dir.join("pkg.env"))?,
-            spec_edit: sha(&pkg.dir.join("spec-edit"))?,
+            pkg_env_sha256: sha(&pkg.dir.join("pkg.env"))?,
+            spec_edit_sha256: sha(&pkg.dir.join("spec-edit"))?,
             patches: pkg
                 .series
                 .iter()
@@ -554,7 +536,7 @@ impl Container<'_> {
             .arg(format!("--destdir={}", dir.display()))
             .arg(spec)
             .stdout(Stdout::Null);
-        if !retry(self.runner, self.report, 3, secs(10), &download)?.ok() {
+        if !retry(self.runner, self.report, 3, RETRY_DELAY, &download)?.ok() {
             return Err(infra(format!("cannot download {}", stock.sourcerpm)));
         }
         let path = dir.join(&stock.sourcerpm);
@@ -569,7 +551,6 @@ impl Container<'_> {
         Ok(path)
     }
 
-    /// The SRPM into TOP/SOURCES, its spec into TOP/SPECS.
     fn unpack(&self, srpm: &Path, top: &Path) -> Result<PathBuf> {
         for d in ["BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"] {
             fs::create_dir_all(&top.join(d))?;
@@ -599,8 +580,6 @@ impl Container<'_> {
         Ok(dest)
     }
 
-    /// The source tree %prep made: the one directory in BUILD/*-build/, apart from
-    /// SPECPARTS.
     fn srcdir(top: &Path) -> Option<PathBuf> {
         let dirs = |p: &Path| -> Vec<PathBuf> {
             std::fs::read_dir(p)
@@ -623,7 +602,6 @@ impl Container<'_> {
         }
     }
 
-    /// Everything in TOP/BUILD but the dot entries goes (`rm -rf BUILD/*`).
     fn empty_build_dir(top: &Path) -> Result<()> {
         let build = top.join("BUILD");
         for entry in fs::sorted_entries(&build)? {
@@ -638,7 +616,7 @@ impl Container<'_> {
     }
 
     fn copy_tree(&self, from: &Path, to: &Path) -> Result<()> {
-        self.check(
+        self.run_ok(
             &Cmd::new(Program::Cp).arg("-a").arg("--").arg(from).arg(to),
             "cp -a failed",
         )

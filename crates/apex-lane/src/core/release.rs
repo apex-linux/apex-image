@@ -1,6 +1,3 @@
-//! `.apexN.M`: a pin-only Fedora update changes the key without a commit, and two builds
-//! must never share a NEVRA, so M separates the keys of one stock NVR at one N.
-
 use crate::core::manifest::header_field;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +21,8 @@ pub fn base(stock_release: &str, n: u64) -> String {
     format!("{stock_release}.apex{n}")
 }
 
-/// `stored` in the store's directory order. A stored key keeps its release.
+/// `.apexN.M`: M separates the keys of one stock NVR at one N, since a pin-only Fedora
+/// update changes the key without a commit and two builds must never share a NEVRA.
 pub fn release_for(stored: &[StoredBuild], stock: &str, base: &str, key: &str) -> Vec<u8> {
     let mut top: Option<u64> = None;
     for build in stored {
@@ -58,7 +56,6 @@ pub fn release_for(stored: &[StoredBuild], stock: &str, base: &str, key: &str) -
     }
 }
 
-/// The part of the release after Fedora's.
 pub fn suffix<'a>(release: &'a str, stock_release: &str) -> &'a str {
     release.strip_prefix(stock_release).unwrap_or(release)
 }

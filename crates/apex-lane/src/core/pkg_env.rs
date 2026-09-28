@@ -1,8 +1,8 @@
-//! `pkg.env`: KEY=VALUE lines, read and never sourced.
+//! `pkg.env` is read, never sourced by a shell.
 
 use std::collections::BTreeMap;
 
-use crate::core::names::{is_family_name, is_package_name, words};
+use crate::core::names::{is_family_name, is_rpm_name, words};
 use crate::core::text::{self, is_space};
 use crate::error::ConfigError;
 
@@ -48,18 +48,11 @@ fn is_value_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || b"._/:+ -".contains(&c)
 }
 
-fn is_blank_or_comment(line: &[u8]) -> bool {
-    let rest = text::trim_start_space(line);
-    rest.is_empty() || rest[0] == b'#'
-}
-
-/// The KEY=VALUE lines: known keys, each once, each value in the charset.
 fn read_values(file: &str, bytes: &[u8]) -> Result<BTreeMap<&'static str, String>, ConfigError> {
-    let err = |msg: String| ConfigError(msg);
     let mut cfg: BTreeMap<&'static str, String> = BTreeMap::new();
     for (i, line) in text::lines(bytes).into_iter().enumerate() {
         let n = i + 1;
-        if is_blank_or_comment(line) {
+        if text::is_blank_or_comment(line) {
             continue;
         }
         let eq = line.iter().position(|&b| b == b'=');
@@ -70,18 +63,18 @@ fn read_values(file: &str, bytes: &[u8]) -> Result<BTreeMap<&'static str, String
                     .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
         });
         let (Some(eq), Some(key)) = (eq, key) else {
-            return Err(err(format!("{file}:{n}: expected KEY=VALUE")));
+            return Err(ConfigError(format!("{file}:{n}: expected KEY=VALUE")));
         };
         let key = String::from_utf8_lossy(key);
         let Some(known) = KEYS.iter().find(|k| **k == key) else {
-            return Err(err(format!("{file}:{n}: unknown key '{key}'")));
+            return Err(ConfigError(format!("{file}:{n}: unknown key '{key}'")));
         };
         if cfg.contains_key(known) {
-            return Err(err(format!("{file}:{n}: '{key}' is set twice")));
+            return Err(ConfigError(format!("{file}:{n}: '{key}' is set twice")));
         }
         let value = text::trim_end_space(&line[eq + 1..]);
         if value.is_empty() || !value.iter().copied().all(is_value_char) {
-            return Err(err(format!(
+            return Err(ConfigError(format!(
                 "{file}:{n}: '{key}' has an empty value or a character outside [A-Za-z0-9._/:+ -]"
             )));
         }
@@ -91,23 +84,22 @@ fn read_values(file: &str, bytes: &[u8]) -> Result<BTreeMap<&'static str, String
 }
 
 pub fn parse(file: &str, bytes: &[u8]) -> Result<PkgEnv, ConfigError> {
-    let err = |msg: String| ConfigError(msg);
     let cfg = read_values(file, bytes)?;
     for key in REQUIRED {
         if !cfg.contains_key(key) {
-            return Err(err(format!("{file}: '{key}' is required")));
+            return Err(ConfigError(format!("{file}: '{key}' is required")));
         }
     }
     let get = |key: &str| cfg.get(key).cloned().unwrap_or_default();
     match get("source").as_str() {
         "fedora-srpm" => {}
         reserved @ ("copr-srpm" | "git") => {
-            return Err(err(format!(
+            return Err(ConfigError(format!(
                 "{file}: source={reserved} is reserved for roadmap S1c/S2c"
             )));
         }
         other => {
-            return Err(err(format!(
+            return Err(ConfigError(format!(
                 "{file}: source must be fedora-srpm, not '{other}'"
             )));
         }
@@ -115,38 +107,44 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<PkgEnv, ConfigError> {
     let on_fail = match get("on_fail").as_str() {
         "hold" => OnFail::Hold,
         "degrade" => OnFail::Degrade,
-        _ => return Err(err(format!("{file}: on_fail must be hold or degrade"))),
+        _ => {
+            return Err(ConfigError(format!(
+                "{file}: on_fail must be hold or degrade"
+            )));
+        }
     };
     let (srpm, family) = (get("srpm"), get("family"));
-    if !is_package_name(&srpm) || !is_package_name(&family) {
-        return Err(err(format!(
+    if !is_rpm_name(&srpm) || !is_rpm_name(&family) {
+        return Err(ConfigError(format!(
             "{file}: srpm and family are single package names"
         )));
     }
     if !is_family_name(&family) {
-        return Err(err(format!(
+        return Err(ConfigError(format!(
             "{file}: family '{family}' must match ^[a-z0-9][a-z0-9._+-]*$, the names the image accepts"
         )));
     }
     let source1 = cfg.get("source1").cloned();
     if let Some(source1) = &source1 {
         if !cfg.contains_key("source1_paths") {
-            return Err(err(format!("{file}: source1 needs source1_paths")));
+            return Err(ConfigError(format!("{file}: source1 needs source1_paths")));
         }
         if source1.starts_with('/') || source1.contains("..") {
-            return Err(err(format!(
+            return Err(ConfigError(format!(
                 "{file}: source1 is a directory of this repository"
             )));
         }
     }
     let pin = cfg.get("pin").cloned();
     if (cfg.contains_key("mirror") || cfg.contains_key("mirror_dev")) && pin.is_none() {
-        return Err(err(format!("{file}: mirror and mirror_dev need pin")));
+        return Err(ConfigError(format!(
+            "{file}: mirror and mirror_dev need pin"
+        )));
     }
     if let Some(pin) = &pin
-        && !is_package_name(pin)
+        && !is_rpm_name(pin)
     {
-        return Err(err(format!("{file}: pin is a single package name")));
+        return Err(ConfigError(format!("{file}: pin is a single package name")));
     }
     let mut prep_moved = Vec::new();
     for pair in words(&get("prep_moved")) {
@@ -155,7 +153,7 @@ pub fn parse(file: &str, bytes: &[u8]) -> Result<PkgEnv, ConfigError> {
                 prep_moved.push((from.to_owned(), to.to_owned()));
             }
             _ => {
-                return Err(err(format!(
+                return Err(ConfigError(format!(
                     "{file}: prep_moved entries are FROM:TO, not '{pair}'"
                 )));
             }

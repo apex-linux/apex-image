@@ -1,18 +1,14 @@
-//! Line and field rules of the tools the lane's formats were first written with: awk,
-//! grep, `read -r` and `$(...)`, in the C locale.
+//! The line and field rules of awk, grep, `read -r` and `$(...)` in the C locale, which the
+//! lane's formats were first written with.
 
-/// `[[:space:]]` in the C locale.
 pub fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 
-/// The default field separators of awk and of `read` (space, tab, newline).
-pub fn is_blank(b: u8) -> bool {
+pub fn is_ifs(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n')
 }
 
-/// Lines as awk, grep and `while read || [[ -n $line ]]` see them: a final line without a
-/// newline counts.
 pub fn lines(text: &[u8]) -> Vec<&[u8]> {
     if text.is_empty() {
         return Vec::new();
@@ -21,8 +17,7 @@ pub fn lines(text: &[u8]) -> Vec<&[u8]> {
     body.split(|&b| b == b'\n').collect()
 }
 
-/// Lines as a plain `while read` loop sees them: a final line without a newline is lost.
-pub fn complete_lines(text: &[u8]) -> Vec<&[u8]> {
+pub fn newline_terminated_lines(text: &[u8]) -> Vec<&[u8]> {
     let mut all = lines(text);
     if !text.is_empty() && !text.ends_with(b"\n") {
         all.pop();
@@ -40,28 +35,38 @@ pub fn trim_start_space(s: &[u8]) -> &[u8] {
     &s[start..]
 }
 
-fn trim_blank(s: &[u8]) -> &[u8] {
-    let start = s.iter().position(|&b| !is_blank(b)).unwrap_or(s.len());
+fn trim_ifs(s: &[u8]) -> &[u8] {
+    let start = s.iter().position(|&b| !is_ifs(b)).unwrap_or(s.len());
     let s = &s[start..];
-    let end = s.iter().rposition(|&b| !is_blank(b)).map_or(0, |i| i + 1);
+    let end = s.iter().rposition(|&b| !is_ifs(b)).map_or(0, |i| i + 1);
     &s[..end]
 }
 
-/// awk's default fields.
+pub fn is_blank_or_comment(line: &[u8]) -> bool {
+    let rest = trim_start_space(line);
+    rest.is_empty() || rest[0] == b'#'
+}
+
+pub fn strip_comment(line: &[u8]) -> &[u8] {
+    line.iter()
+        .position(|&b| b == b'#')
+        .map_or(line, |hash| &line[..hash])
+}
+
 pub fn fields(line: &[u8]) -> Vec<&[u8]> {
-    line.split(|&b| is_blank(b))
+    line.split(|&b| is_ifs(b))
         .filter(|f| !f.is_empty())
         .collect()
 }
 
-/// `read -r v1 ... vN`: N values, the last one holding the rest of the line.
+/// As `read -r v1 ... vN`: the last value holds the rest of the line.
 pub fn read_fields(line: &[u8], n: usize) -> Vec<&[u8]> {
     let mut out = Vec::with_capacity(n);
-    let mut rest = trim_blank(line);
+    let mut rest = trim_ifs(line);
     while out.len() + 1 < n {
-        let end = rest.iter().position(|&b| is_blank(b)).unwrap_or(rest.len());
+        let end = rest.iter().position(|&b| is_ifs(b)).unwrap_or(rest.len());
         out.push(&rest[..end]);
-        rest = trim_blank(&rest[end..]);
+        rest = trim_ifs(&rest[end..]);
     }
     if n > 0 {
         out.push(rest);
@@ -75,7 +80,6 @@ pub fn chomp(s: &[u8]) -> &[u8] {
     &s[..end]
 }
 
-/// `tail -n N`.
 pub fn tail_lines(text: &[u8], n: usize) -> &[u8] {
     if n == 0 {
         return &[];
@@ -146,8 +150,8 @@ mod tests {
         assert_eq!(lines(b"\n"), vec![&b""[..]]);
         assert_eq!(lines(b"a\nb"), vec![&b"a"[..], b"b"]);
         assert_eq!(lines(b"a\n\n"), vec![&b"a"[..], b""]);
-        assert_eq!(complete_lines(b"a\nb"), vec![&b"a"[..]]);
-        assert_eq!(complete_lines(b"a\nb\n"), vec![&b"a"[..], b"b"]);
+        assert_eq!(newline_terminated_lines(b"a\nb"), vec![&b"a"[..]]);
+        assert_eq!(newline_terminated_lines(b"a\nb\n"), vec![&b"a"[..], b"b"]);
     }
 
     #[test]

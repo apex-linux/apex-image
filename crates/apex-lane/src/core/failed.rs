@@ -1,5 +1,3 @@
-//! `failed.txt`: why the inputs gave no shippable build.
-
 use crate::core::text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

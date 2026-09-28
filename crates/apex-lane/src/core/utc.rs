@@ -1,6 +1,5 @@
 use std::fmt;
 
-/// A UTC second, written `%Y-%m-%dT%H:%M:%SZ` in locks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UtcSecond(pub i64);
 

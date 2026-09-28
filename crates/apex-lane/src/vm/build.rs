@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use super::Vm;
 use super::checkout::{Mode, Source1};
-use crate::core::hold::{self, Start, Timer};
+use crate::core::hold::{self, FailureRoute, Timer};
 use crate::core::lock;
 use crate::core::manifest::{self, header_field};
 use crate::core::names::is_content_key;
@@ -15,7 +15,6 @@ use crate::pkg::{self, Parse, Pkg};
 use crate::shell::cmd::{Cmd, Program};
 use crate::shell::fs;
 
-/// How one package went. The last three leave no new build to ship (exit 3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Built(String),
@@ -49,7 +48,6 @@ impl Vm<'_> {
         Ok(())
     }
 
-    /// `build PKG|all`, under the store lock. Stops at the first error.
     pub fn build(&self, target: &str) -> Result<Vec<Outcome>> {
         let pkgs = if target == "all" {
             let all = pkg::all(&self.root)?;
@@ -71,7 +69,7 @@ impl Vm<'_> {
         let start = Instant::now();
         let n = self.release_n(&pkg)?;
         let tool = self.tool_id()?;
-        let locked = fs::read_opt(&self.lock())?.unwrap_or_default();
+        let locked = fs::read_opt(&self.lock_file())?.unwrap_or_default();
         let locked_evr = text::lossy(&lock::locked_evr(&locked, &pkg.env.family, &pkg.env.srpm));
         let work = self.lane_work(&pkg.name);
         self.fresh_work_dir(&work, &["in", "out"])?;
@@ -159,8 +157,7 @@ impl Vm<'_> {
         Ok(Outcome::Built(key))
     }
 
-    /// The Apex RPM key's plug-in point (packaging/README.md, "Signing"): in the VM, so the
-    /// key never enters the build container.
+    /// Signing belongs here, in the VM, so the Apex RPM key never enters the build container.
     fn sign_built(&self, out: &Path) -> Result<()> {
         self.check_signing()?;
         self.report
@@ -172,18 +169,13 @@ impl Vm<'_> {
         match std::fs::rename(from, to) {
             Ok(()) => Ok(()),
             Err(e) if e.raw_os_error() == Some(nix::libc::EXDEV) => {
-                let cmd = Cmd::new(Program::Cp).arg("-a").arg("--").arg(from).arg(to);
-                let out = self.runner.run(&cmd)?;
-                if !out.ok() {
-                    return Err(infra(format!("{cmd} failed (exit {})", out.code)));
-                }
+                self.run_ok(&Cmd::new(Program::Cp).arg("-a").arg("--").arg(from).arg(to))?;
                 remove_tree(from)
             }
             Err(e) => Err(fs::io_error("cannot move", from, &e)),
         }
     }
 
-    /// Every file of the stored set has its manifest sha256.
     pub fn verify_stored(dir: &Path) -> Result<()> {
         let manifest_text = fs::read(&dir.join("manifest.txt"))?;
         for e in manifest::entries(&manifest_text) {
@@ -205,12 +197,11 @@ impl Vm<'_> {
     }
 
     fn lock_put(&self, family: &str, line: &[u8], rpms: &[u8]) -> Result<()> {
-        let path = self.next_lock();
+        let path = self.next_lock_file();
         let old = fs::read_opt(&path)?;
         fs::atomic_write(&path, &lock::put(old.as_deref(), family, line, rpms))
     }
 
-    /// `rpms.lock.next` takes the stored build KEY for the package's family.
     pub fn record_built(&self, pkg: &Pkg, key: &str) -> Result<()> {
         let dir = self.store_pkg(&pkg.name).join(key);
         let path = dir.join("manifest.txt");
@@ -233,8 +224,6 @@ impl Vm<'_> {
         self.lock_put(&pkg.env.family, format!("built {key}").as_bytes(), &rpms)
     }
 
-    /// After an exit 3. With no last good build to hold, the image build must stop: an
-    /// error (exit 1), not a hold.
     pub fn record_failure(&self, pkg: &Pkg, out: &Path) -> Result<Outcome> {
         let family = pkg.env.family.as_str();
         let failed = fs::read_opt(&out.join("failed.txt"))?;
@@ -245,23 +234,23 @@ impl Vm<'_> {
         if let Some(failed) = &failed {
             fs::write(&store.join("last-failure.txt"), failed)?;
         }
-        let next_text = fs::read_opt(&self.next_lock())?.unwrap_or_default();
+        let next_text = fs::read_opt(&self.next_lock_file())?.unwrap_or_default();
         let current = lock::family_line(&next_text, family);
-        match hold::start(pkg.env.on_fail == OnFail::Degrade, &current, &reason, now) {
-            Start::Degrade { line } => {
+        match hold::route_failure(pkg.env.on_fail == OnFail::Degrade, &current, &reason, now) {
+            FailureRoute::Degrade { line } => {
                 self.lock_put(family, &line, b"")?;
                 self.report
                     .summary(&hold::summary_degraded(&pkg.name, family, &reason));
                 return Ok(Outcome::Degraded);
             }
-            Start::StayStock => {
+            FailureRoute::StayStock => {
                 self.report
                     .summary(&hold::summary_stays_stock(&pkg.name, family, &reason));
                 return Ok(Outcome::KeptStock);
             }
-            Start::Hold => {}
+            FailureRoute::Hold => {}
         }
-        let lock_text = fs::read_opt(&self.lock())?.unwrap_or_default();
+        let lock_text = fs::read_opt(&self.lock_file())?.unwrap_or_default();
         let Some(good_key) = hold::good_key(&lock::family_line(&lock_text, family)) else {
             return Err(infra(format!(
                 "{}: {}. rpms.lock has no last good build of the {family} family to hold, so the image build stops. Fix the series, or ship Fedora's build: just pkg-stock {}",
