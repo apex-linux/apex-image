@@ -5,11 +5,20 @@
 # from the build-context directory rpms/ (`image.sh context` fills it from the builder
 # VM's _build/rpms and _build/libfprint). That repository has priority 1, so it wins
 # over the Fedora repositories inside the single build-rootfs depsolve.
+#
+# The Fedora packages Apex rebuilds (gnome-shell, and the Fedora-signed mutter it is
+# pinned to) are not listed here: the rebuild lane's lock admits them to that
+# repository at their locked builds (packaging/README.md), and gnome.txt installs them.
 
 # apexctl, apex-updated, apex-boot-assess and their units, D-Bus and polkit files
 # (docs/specs/M1-IMPLEMENTATION.md section 2). Not in Fedora: the local repo must
 # provide it, or the compose fails.
 apex
+
+# The Apex desktop data (packaging/apex-desktop.spec): the Apex GSettings schema, which
+# the layer in the rebuilt gnome-shell needs (without it the shell runs in safe mode),
+# and the shell's crash guard (ADR 0014).
+apex-desktop
 
 # The ELAN 04f3:0c6e fix (ADR 0006): Fedora's SRPM rebuilt with packaging/libfprint
 # patches and a `.apex1` release suffix. When the rebuild degrades (exit 3), rpms/ has

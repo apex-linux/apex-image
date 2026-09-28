@@ -25,6 +25,22 @@ for p in chrony tar iputils systemd-oomd-defaults; do
     if grep -Fxq "$p" "$T/install"; then ok "installed: $p"; else not_ok "installed: $p"; fi
 done
 if grep -Fxq gtk2 "$T/exclude"; then ok "excluded: gtk2"; else not_ok "excluded: gtk2"; fi
+# The Apex schema and the shell's crash guard (apex-desktop); the rebuilt shell and its
+# mutter come through the lane's lock, never from apex.txt.
+if list "$P/apex.txt" | grep -Fxq apex-desktop; then ok "apex.txt: apex-desktop"; else not_ok "apex.txt: apex-desktop"; fi
+if list "$P/apex.txt" | grep -Eq '^(gnome-shell|gnome-shell-common|mutter|mutter-common)$'; then
+    not_ok "apex.txt names no lane package"
+else
+    ok "apex.txt names no lane package"
+fi
+# The rebuilt shell draws GNOME's 'default' colour scheme light (ADR 0014): the vendor
+# override sets none.
+OVERRIDE=$IMAGE_DIR/system_files/usr/share/glib-2.0/schemas/90_apex.gschema.override
+if grep -Eq '^[[:space:]]*color-scheme[[:space:]]*=' "$OVERRIDE"; then
+    not_ok "the vendor override sets no color-scheme"
+else
+    ok "the vendor override sets no color-scheme"
+fi
 # F45 has no passwd package: shadow-utils ships /usr/bin/passwd (image/checks/system.sh).
 if grep -Fxq passwd "$T/install"; then not_ok "no nonexistent passwd package"; else ok "no nonexistent passwd package"; fi
 

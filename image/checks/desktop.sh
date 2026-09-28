@@ -1,0 +1,286 @@
+#!/bin/sh
+# The rebuilt desktop (ADR 0014; ARCHITECTURE 11, G1 "Desktop"; design/SPEC.md 7.1).
+#
+#   - the rebuild lane: /usr/share/apex/rpms.lock (the lane's lock this image was built
+#     from) records a gnome-shell family, and every RPM it locks for a built or held
+#     family is installed at exactly the locked NEVRA, so the compose took the bytes the
+#     lane checked;
+#   - gnome-shell and gnome-shell-common are an .apexN (or .apexN.M) build. When the
+#     family is stock or degraded (the owner's choice at a hold limit: degraded=shell)
+#     they are Fedora's, signed by Fedora's key, and carry no Apex marker. The Apex RPM
+#     key does not exist yet, so the Apex builds are unsigned (packaging/README.md,
+#     Signing): that line is a SKIP;
+#   - gnome-shell requires mutter(x86-64) = the installed mutter's EVR, and mutter and
+#     mutter-common carry Fedora's signature;
+#   - the Apex theme is compiled in: the light and dark markers and the high-contrast
+#     structure marker are in /usr/share/gnome-shell/gnome-shell-theme.gresource, which
+#     stores its CSS uncompressed (grep -a). Each marker names its sheet, and only that
+#     entry file imports it (patch 0001-build). Upstream's sheets under
+#     /org/gnome/shell/theme/stock/ sit in libshell's resource, where only gresource
+#     (glib2-devel, not in the image) can name them: the lane's check.sh proves them byte
+#     for byte, and G2 loads them in safe mode;
+#   - rpm -V gnome-shell gnome-shell-common is clean, file mtimes aside (the ostree
+#     checkout of the compose sets every mtime to 0): the theme is inside the package;
+#   - no shell extension ships in /usr/share/gnome-shell/extensions/;
+#   - no text file under /usr or /etc names G_RESOURCE_OVERLAYS, --unsafe-mode or
+#     APEX_SHELL_TEST_FAULT: the shell's dev loop and its fault injection never reach the
+#     image. Binary files (libgio reads the first, libshell's layer the last) and
+#     documentation (/usr/share/{doc,licenses,man,info,help,gtk-doc}: GLib's NEWS names
+#     the first) cannot set them and are not searched;
+#   - the Apex schema is installed with the layer's keys and compiles with --strict;
+#   - the crash guard is installed: the drop-in adds OnFailure=apex-shell-safe.service to
+#     GNOME Shell's user unit, the guard runs before gnome-session-restart-dbus.service
+#     (which the same OnFailure= list starts), and both verify (systemd-analyze --user).
+#
+# Environment: ROOT, APEX_IMAGE_DIR (see lib/common.sh); APEX_RPMS_LOCK overrides the
+# lock's path (default ROOT/usr/share/apex/rpms.lock).
+set -eu
+CHECK_NAME=desktop
+APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+. "$APEX_CHECKS_DIR/lib/common.sh"
+
+LOCK=${APEX_RPMS_LOCK:-$(rootpath /usr/share/apex/rpms.lock)}
+THEME=/usr/share/gnome-shell/gnome-shell-theme.gresource
+SCHEMA=/usr/share/glib-2.0/schemas/io.github.sekirokenjii.Apex.Desktop.gschema.xml
+USERUNITS=/usr/lib/systemd/user
+# Fedora 45's package signing key: its long key ID ends its fingerprint
+# (4F50 A611 4CD5 C697 6A7F 1179 655A 4B02 F577 861E; packaging/rebuild.sh).
+FEDORA_KEYID=655a4b02f577861e
+MARKERS='/*! apex-shell-theme light */
+/*! apex-shell-theme dark */
+/*! apex-shell-structure */'
+FORBIDDEN='G_RESOURCE_OVERLAYS
+--unsafe-mode
+APEX_SHELL_TEST_FAULT'
+
+make_tmpdir
+
+# query NAME FORMAT: rpm -q --qf FORMAT NAME, one line per installed build; nothing when
+# NAME is not installed (rpm then prints its message on stdout).
+query() {
+    if rpmq -q "$1" >/dev/null 2>&1; then
+        rpmq -q --qf "$2" "$1"
+    fi
+}
+
+# evr_of NAME: the installed EPOCH:VERSION-RELEASE of NAME (epoch 0 included).
+evr_of() {
+    query "$1" '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' | head -n 1
+}
+
+# fedora_signed NAME: NAME's signature was made by Fedora's key. The Signature field of
+# rpm -qi is one line in rpm 4 and a list of indented lines after "Signature :" in rpm 6
+# ("RSA/SHA256, <date>, Key ID 655a4b02f577861e"), so it runs to the next field.
+fedora_signed() {
+    rpmq -qi "$1" 2>/dev/null |
+        awk '/^Signature[[:space:]]*:/ { on = 1; print; next } on && /^[[:space:]]/ { print; next } { on = 0 }' |
+        grep -iq "$FEDORA_KEYID"
+}
+
+# --- the lane's lock -------------------------------------------------------------------
+state=''
+if [ ! -f "$LOCK" ]; then
+    fail "no $(unroot "$LOCK"): the image build installs the rebuild lane's lock there (image/Containerfile)"
+else
+    state=$(awk '$1 == "family" && $2 == "gnome-shell" { print $3; exit }' "$LOCK")
+    [ -n "$state" ] || fail "$(unroot "$LOCK") has no gnome-shell family: the image took no decision about the shell"
+    awk '$1 == "family" { st[$2] = $3 }
+        $1 == "rpm" && (st[$2] == "built" || st[$2] == "held") { print $4, $5 }' "$LOCK" >"$TMPD/locked"
+    bad=0
+    while read -r name nevra; do
+        have=$(query "$name" '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' | paste -sd ' ' -)
+        if [ "$have" != "$nevra" ]; then
+            fail "$name: installed ${have:-nothing}, but the lane locked $nevra"
+            bad=1
+        fi
+    done <"$TMPD/locked"
+    if [ "$bad" -eq 0 ]; then
+        pass "the $(wc -l <"$TMPD/locked" | tr -d ' ') locked RPM(s) are installed at their locked NEVRAs"
+    fi
+fi
+
+# --- gnome-shell: an Apex build, or Fedora's by the owner's choice ----------------------
+case $state in
+    built | held)
+        for p in gnome-shell gnome-shell-common; do
+            vr=$(query "$p" '%{VERSION}-%{RELEASE}\n' | head -n 1)
+            if printf '%s\n' "$vr" | grep -Eq '\.apex[0-9]+(\.[0-9]+)?$'; then
+                pass "$p $vr is an Apex build (the family is $state)"
+            else
+                fail "$p ${vr:-(not installed)} is not an .apexN build, but the lane's gnome-shell family is $state"
+            fi
+        done
+        skip "the Apex RPM signature of gnome-shell: there is no Apex RPM key yet (packaging/README.md, Signing)"
+        pin=$(rpmq -q --requires gnome-shell 2>/dev/null | sed -n 's/^mutter(x86-64) = \([^ ]*\)$/\1/p' | head -n 1)
+        mutter=$(evr_of mutter)
+        case $pin in
+            '') fail "gnome-shell has no Requires: mutter(x86-64) = EVR (packaging/pkgs/gnome-shell/spec-edit)" ;;
+            *:*) ;;
+            *) pin=0:$pin ;;
+        esac
+        if [ -n "$pin" ]; then
+            if [ "$pin" = "$mutter" ]; then
+                pass "gnome-shell requires mutter = $pin, the installed mutter"
+            else
+                fail "gnome-shell requires mutter = $pin, but mutter ${mutter:-is not installed}"
+            fi
+        fi
+        printf '%s\n' "$MARKERS" >"$TMPD/markers"
+        if [ ! -f "$(rootpath "$THEME")" ]; then
+            fail "no $THEME"
+        else
+            while IFS= read -r m; do
+                if grep -aFq -- "$m" "$(rootpath "$THEME")"; then
+                    pass "$THEME carries $m"
+                else
+                    fail "$THEME lacks $m: the Apex SCSS did not reach the compiled sheets"
+                fi
+            done <"$TMPD/markers"
+        fi
+        skip "upstream's sheets under /org/gnome/shell/theme/stock/: in libshell's resource; the lane (check.sh) and G2 check them"
+        ;;
+    stock | degraded)
+        for p in gnome-shell gnome-shell-common; do
+            vr=$(query "$p" '%{VERSION}-%{RELEASE}\n' | head -n 1)
+            if [ -z "$vr" ]; then
+                fail "$p is not installed"
+            elif printf '%s\n' "$vr" | grep -Eq '\.apex[0-9]+'; then
+                fail "$p $vr is an Apex build, but the lane's gnome-shell family is $state"
+            elif fedora_signed "$p"; then
+                pass "$p $vr is Fedora's build, signed by Fedora's key (the family is $state: degraded=shell)"
+            else
+                fail "$p is not signed by Fedora's key ($FEDORA_KEYID)"
+            fi
+        done
+        if [ -f "$(rootpath "$THEME")" ] && grep -aFq -- 'apex-shell-' "$(rootpath "$THEME")"; then
+            fail "$THEME carries an Apex marker, but the family is $state"
+        else
+            pass "no Apex marker in the theme: the stock shell"
+        fi
+        ;;
+    '') ;;
+    *)
+        fail "the lane's gnome-shell family is in the unknown state '$state' (built, held, stock or degraded): nothing about the shell was checked"
+        ;;
+esac
+
+for p in mutter mutter-common; do
+    if ! rpmq -q "$p" >/dev/null 2>&1; then
+        fail "$p is not installed"
+    elif fedora_signed "$p"; then
+        pass "$p $(evr_of "$p") carries Fedora's signature"
+    else
+        fail "$p is not signed by Fedora's key ($FEDORA_KEYID): mutter must be Fedora's binary (ADR 0014)"
+    fi
+done
+
+# --- rpm -V ------------------------------------------------------------------------------
+rc=0
+rpmq -V --nomtime gnome-shell gnome-shell-common >"$TMPD/verify" 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -s "$TMPD/verify" ]; then
+    pass "rpm -V gnome-shell gnome-shell-common is clean (mtimes aside)"
+else
+    fail "rpm -V gnome-shell gnome-shell-common (exit $rc): $(head -n 5 "$TMPD/verify" | paste -sd '|' -)"
+fi
+
+# --- no shell extensions ------------------------------------------------------------------
+ext=$(rootpath /usr/share/gnome-shell/extensions)
+shipped=''
+for e in "$ext"/* "$ext"/.[!.]*; do
+    if [ -e "$e" ] || [ -L "$e" ]; then shipped="$shipped ${e##*/}"; fi
+done
+if [ -n "$shipped" ]; then
+    fail "shell extensions ship in /usr/share/gnome-shell/extensions:$shipped"
+else
+    pass "no shell extension in /usr/share/gnome-shell/extensions"
+fi
+
+# --- the dev loop and the fault injection stay out of the image ----------------------------
+printf '%s\n' "$FORBIDDEN" >"$TMPD/forbidden"
+rc=0
+LC_ALL=C grep -rlIF -D skip -f "$TMPD/forbidden" "$(rootpath /usr)" "$(rootpath /etc)" \
+    >"$TMPD/named" 2>"$TMPD/grep.err" || rc=$?
+docs=0
+bad=0
+case $rc in
+    0 | 1) ;;
+    *)
+        # A file grep could not read was not searched: no pass line.
+        fail "grep could not search every file under /usr and /etc (exit $rc): $(head -n 3 "$TMPD/grep.err" | paste -sd ' ' -)"
+        bad=1
+        ;;
+esac
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    path=$(unroot "$f")
+    case $path in
+        /usr/share/doc/* | /usr/share/licenses/* | /usr/share/man/* | /usr/share/info/* | \
+            /usr/share/help/* | /usr/share/gtk-doc/*)
+            docs=$((docs + 1))
+            ;;
+        *)
+            fail "$path names $(grep -oF -f "$TMPD/forbidden" "$f" | sort -u | paste -sd ',' -)"
+            bad=1
+            ;;
+    esac
+done <"$TMPD/named"
+if [ "$bad" -eq 0 ]; then
+    pass "no text file under /usr or /etc names $(paste -sd ',' "$TMPD/forbidden") ($docs documentation file(s) not counted)"
+fi
+
+# --- the Apex schema -----------------------------------------------------------------------
+if [ ! -f "$(rootpath "$SCHEMA")" ]; then
+    fail "no $SCHEMA: the layer would run in safe mode (apex-desktop)"
+else
+    for k in layer-enabled disabled-features; do
+        if grep -q "<key name=\"$k\"" "$(rootpath "$SCHEMA")"; then
+            pass "the Apex schema has $k"
+        else
+            fail "the Apex schema has no key $k"
+        fi
+    done
+    if ! command -v glib-compile-schemas >/dev/null 2>&1; then
+        fail "glib-compile-schemas not found"
+    else
+        mkdir "$TMPD/schemas"
+        cp "$(rootpath "$SCHEMA")" "$TMPD/schemas/"
+        if glib-compile-schemas --strict --dry-run "$TMPD/schemas" >"$TMPD/out" 2>&1; then
+            pass "the Apex schema compiles with --strict"
+        else
+            fail "the Apex schema fails --strict: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
+        fi
+    fi
+fi
+
+# --- the crash guard -------------------------------------------------------------------------
+dropin=$USERUNITS/org.gnome.Shell@.service.d/50-apex.conf
+guard=$USERUNITS/apex-shell-safe.service
+if [ ! -f "$(rootpath "$dropin")" ] || [ ! -f "$(rootpath "$guard")" ]; then
+    fail "the crash guard is not installed ($dropin, $guard)"
+elif ! grep -Eq '^OnFailure=([^#]* )?apex-shell-safe\.service( |$)' "$(rootpath "$dropin")"; then
+    fail "$dropin does not add OnFailure=apex-shell-safe.service"
+elif ! grep -q '^ConditionPathExists=%t/apex-shell-starting$' "$(rootpath "$guard")"; then
+    fail "$guard is not gated on the layer's marker %t/apex-shell-starting"
+elif ! grep -Eq '^Before=([^#]* )?gnome-session-restart-dbus\.service( |$)' "$(rootpath "$guard")"; then
+    fail "$guard is not ordered before gnome-session-restart-dbus.service (its gsettings write would race the session bus restart)"
+elif ! command -v systemd-analyze >/dev/null 2>&1; then
+    fail "systemd-analyze not found"
+else
+    mkdir "$TMPD/run"
+    rc=0
+    env -i PATH=/usr/bin:/usr/sbin XDG_RUNTIME_DIR="$TMPD/run" SYSTEMD_UNIT_PATH="$(rootpath "$USERUNITS")" \
+        systemd-analyze --user verify --man=no --recursive-errors=no \
+        org.gnome.Shell@user.service apex-shell-safe.service </dev/null >"$TMPD/out" 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        fail "systemd-analyze --user verify (exit $rc): $(head -n 5 "$TMPD/out" | paste -sd '|' -)"
+    elif grep -Eq '(apex-shell-safe\.service|50-apex\.conf)' "$TMPD/out"; then
+        fail "systemd-analyze --user verify: $(grep -E '(apex-shell-safe\.service|50-apex\.conf)' "$TMPD/out" | head -n 5 | paste -sd '|' -)"
+    else
+        if [ -s "$TMPD/out" ]; then
+            warn "systemd-analyze --user verify: messages about other units: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
+        fi
+        pass "the crash guard is installed: OnFailure=apex-shell-safe.service on GNOME Shell's unit, ordered before the session bus restart, and both verify"
+    fi
+fi
+
+finish

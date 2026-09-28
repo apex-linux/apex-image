@@ -4,12 +4,17 @@
 # Guest-side image build for `builder-vm.sh image` (`just vm-image`), run in
 # ~/apex-fedora inside the builder VM (see `just image`). Nothing is pushed or signed.
 #
-#   1. the apex RPM          .github/scripts/rpms.sh build       (in fedora:45, as root)
+#   1. apex and apex-desktop .github/scripts/rpms.sh build       (in fedora:45, as root)
 #   2. the patched libfprint .github/scripts/libfprint.sh build  (exit 3 = degraded)
-#   3. the image             .github/scripts/image.sh context, build, inspect
+#   3. the rebuild lane      packaging/rebuild.sh build all      (exit 3 = a family held,
+#                            degraded or kept stock; rpms.lock.next says which)
+#   4. the image             .github/scripts/image.sh context --lane-lock
+#                            ~/apex-store/rpms.lock.next, build, inspect
 #
-# With --image-only, steps 1 and 2 are skipped and the RPMs of the previous run in
-# _build/rpms and _build/libfprint are reused (for Containerfile or image/ changes).
+# With --image-only, steps 1 to 3 are skipped: the RPMs of the previous run in
+# _build/rpms and _build/libfprint, and the lane's current rpms.lock.next, are reused
+# (for Containerfile or image/ changes). Nothing promotes the lane's lock: after the
+# image passed its gates, `just pkg-promote` makes rpms.lock.next the last good lock.
 set -euo pipefail
 
 image_only=0
@@ -21,6 +26,7 @@ esac
 
 cd "$HOME/apex-fedora"
 readonly FEDORA=registry.fedoraproject.org/fedora:45
+readonly LANE_LOCK=${APEX_STORE:-$HOME/apex-store}/rpms.lock.next
 # Every full run starts from empty outputs: the containers write them as root, and a
 # stale RPM next to a new one would let dnf pick either.
 if ((!image_only)); then
@@ -28,24 +34,27 @@ if ((!image_only)); then
 elif [[ ! -s _build/rpms/SHA256SUMS ]]; then
     echo "--image-only needs the RPMs of an earlier full run in _build/rpms" >&2
     exit 1
+elif [[ ! -s $LANE_LOCK ]]; then
+    echo "--image-only needs the lane's $LANE_LOCK of an earlier full run (or just pkg-build)" >&2
+    exit 1
 fi
 mkdir -p _build
 
 in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
 
-# rpms.sh and image.sh build from git HEAD: uncommitted host changes become a throwaway
-# snapshot commit in this VM copy of the checkout (snapshot.sh).
+# rpms.sh, the lane and image.sh build from git HEAD: uncommitted host changes become a
+# throwaway snapshot commit in this VM copy of the checkout (snapshot.sh).
 tools/builder-vm/snapshot.sh
 
 libfprint_args=(--libfprint-dir _build/libfprint)
 if ((image_only)); then
-    echo "== 1/3, 2/3 skipped (--image-only): reusing _build/rpms and _build/libfprint"
+    echo "== 1/4 to 3/4 skipped (--image-only): reusing _build/rpms, _build/libfprint and $LANE_LOCK"
     [[ -d _build/libfprint && -n $(ls -A _build/libfprint) ]] || libfprint_args=()
 else
-    echo "== 1/3 apex RPM"
+    echo "== 1/4 apex and apex-desktop RPMs"
     in_fedora .github/scripts/rpms.sh build /src/_build/rpms
 
-    echo "== 2/3 libfprint"
+    echo "== 2/4 libfprint"
     rc=0
     in_fedora .github/scripts/libfprint.sh build /src/_build/libfprint || rc=$?
     case $rc in
@@ -54,10 +63,21 @@ else
            libfprint_args=() ;;
         *) echo "libfprint: build failed (exit $rc)" >&2; exit "$rc" ;;
     esac
+
+    echo "== 3/4 rebuild lane"
+    rc=0
+    packaging/rebuild.sh build all || rc=$?
+    case $rc in
+        0) ;;
+        3) echo "lane: a family is held, degraded or kept stock; the image takes what $LANE_LOCK records" ;;
+        *) echo "lane: failed (exit $rc); $LANE_LOCK is unchanged" >&2; exit "$rc" ;;
+    esac
 fi
 
-echo "== 3/3 image"
-.github/scripts/image.sh context --rpms-dir _build/rpms "${libfprint_args[@]}"
+echo "== 4/4 image"
+.github/scripts/image.sh context --rpms-dir _build/rpms "${libfprint_args[@]}" --lane-lock "$LANE_LOCK"
 .github/scripts/image.sh build
 .github/scripts/image.sh inspect
+packaging/rebuild.sh status
 echo "build-image: done; state in ~/apex-fedora/_build/image"
+echo "After the image passed its gates (G2, and G4 for a new gnome-shell, mutter or gdm NVR): just pkg-promote"

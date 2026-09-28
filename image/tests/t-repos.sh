@@ -2,7 +2,9 @@
 # The Containerfile's repos stage, run as written: its RUN script is taken from
 # image/Containerfile and executed in a bubblewrap sandbox whose /etc/yum.repos.d,
 # /apex and /run/apex-packages are test fixtures, with fake dnf5, rpm and createrepo_c
-# (image/tests/fake). Needs bwrap with unprivileged user namespaces and overlayfs.
+# (image/tests/fake). /apex holds what image.sh context puts into rpms/: the apex and
+# apex-desktop RPMs, libfprint, and the rebuild lane's RPMs with its lock, rpms.lock.
+# Needs bwrap with unprivileged user namespaces and overlayfs.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v bwrap >/dev/null 2>&1 || skip_all "bwrap not found"
@@ -67,8 +69,15 @@ setup() {
         printf 'skip_if_unavailable=True\n\n[updates-testing-debuginfo]\nname=debug\nenabled=1\n'
     } >"$S/etc/yum.repos.d/fedora-updates-testing.repo"
     : >"$S/apex/apex-0.1.0-1.fc45.x86_64.rpm"
+    : >"$S/apex/apex-desktop-0.1.0-1.fc45.noarch.rpm"
     : >"$S/apex/libfprint-1.94.10-1.fc45.apex1.x86_64.rpm"
     : >"$S/apex/libfprint-devel-1.94.10-1.fc45.apex1.x86_64.rpm"
+    # The lane: gnome-shell .apex1 and the Fedora-signed mutter it was built against.
+    for f in gnome-shell-51.0-1.fc45.apex1.x86_64 gnome-shell-common-51.0-1.fc45.apex1.noarch \
+        mutter-51.0-1.fc45.x86_64 mutter-common-51.0-1.fc45.noarch; do
+        : >"$S/apex/$f.rpm"
+    done
+    lane_lock built >"$S/apex/rpms.lock"
     nvr_rows "$S/packages/updates-testing-allowlist.txt" >"$S/dnf/testing.txt"
     # Unrelated updates-testing content and an i686 build, none of it admitted.
     printf 'systemd 0 262 1.fc45 x86_64\ngnome-maps 0 51.0 1.fc45 x86_64\nglib2 0 2.90.0 1.fc45 i686\n' \
@@ -76,6 +85,27 @@ setup() {
     # The stable repositories as on 2026-09-24: the 51~rc builds.
     nvr_rows "$S/packages/updates-testing-allowlist.txt" |
         awk '{ $3 = ($1 == "gtk4" ? "4.23.4" : "51~rc"); $4 = "2.fc45"; print }' >"$S/dnf/stable.txt"
+}
+
+# lane_lock STATE: rpms.lock with the gnome-shell family in STATE (packaging/README.md);
+# built and held families lock the four RPMs setup puts into /apex.
+lane_lock() {
+    sha=$(printf '%064d' 0 | tr 0 a)
+    printf '# apex rpms.lock 1: written by packaging/rebuild.sh (packaging/README.md, "rpms.lock")\n'
+    printf 'family gnome-shell %s gnome-shell-51.0-1.fc45-s0123456789ab\n' "$1"
+    case $1 in
+        built | held)
+            for n in gnome-shell:x86_64:apex1 gnome-shell-common:noarch:apex1 mutter:x86_64: mutter-common:noarch:; do
+                name=${n%%:*} rest=${n#*:}
+                arch=${rest%%:*} apex=${rest#*:}
+                kind=built
+                [ -n "$apex" ] || kind=mirror
+                vr=51.0-1.fc45${apex:+.$apex}
+                printf 'rpm gnome-shell %s %s %s-0:%s.%s %s pkgs/gnome-shell/k/%s-%s.%s.rpm\n' \
+                    "$kind" "$name" "$name" "$vr" "$arch" "$sha" "$name" "$vr" "$arch"
+            done
+            ;;
+    esac
 }
 
 # stage NAME [VAR=VALUE...]: run the RUN script in scenario NAME.
@@ -109,9 +139,18 @@ if grep -c '^skip_if_unavailable' "$T/a/$REPOS/apex-gnome51.repo" | grep -qx 1; 
 expect_file "A: it keeps the updates-testing metalink" '^metalink=.*repo=updates-testing-f' "$T/a/$REPOS/apex-gnome51.repo"
 expect_file "A: updates-testing is disabled" '^enabled=0$' "$T/a/$REPOS/fedora-updates-testing.repo"
 if grep -q '^enabled=1' "$T/a/$REPOS/fedora-updates-testing.repo"; then not_ok "A: updates-testing-debuginfo is disabled too"; else ok "A: updates-testing-debuginfo is disabled too"; fi
-expect_file "A: [apex] admits only the names in apex.txt" '^includepkgs=apex,libfprint$' "$T/a/$REPOS/apex.repo"
-expect_file "A: Fedora's libfprint is excluded" '^excludepkgs=libfprint$' "$T/a/$REPOS/fedora-fedora.repo"
-expect_out "A: libfprint-devel from rpms/ is reported as not admitted" '^NOTE: rpms/ also has packages that are not in apex.txt; \[apex\] does not admit them: libfprint-devel$'
+expect_file "A: [apex] admits only the names in apex.txt and rpms.lock" \
+    '^includepkgs=apex,apex-desktop,gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/apex.repo"
+for p in fedora updates; do
+    expect_file "A: $p excludes the locked names and libfprint, in one line" \
+        '^excludepkgs=gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/fedora-$p.repo"
+    if [ "$(grep -c '^excludepkgs=' "$T/a/$REPOS/fedora-$p.repo")" = 1 ]; then ok "A: one excludepkgs line in $p"; else not_ok "A: one excludepkgs line in $p"; fi
+done
+expect_file "A: apex-gnome51 excludes them after its own check" \
+    '^excludepkgs=gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/apex-gnome51.repo"
+expect_out "A: [apex] offers the locked builds" '^\[apex\] offers exactly the 4 locked build\(s\)$'
+expect_out "A: the lane's families are printed" '^  family gnome-shell built gnome-shell-51\.0-1\.fc45-s0123456789ab$'
+expect_out "A: libfprint-devel from rpms/ is reported as not admitted" '^NOTE: rpms/ also has packages that are not in apex.txt or rpms.lock; \[apex\] does not admit them: libfprint-devel$'
 
 # B. Review finding: a failed updates-testing query must not read as "went stable".
 setup b
@@ -206,7 +245,8 @@ setup m
 rm "$T/m/apex"/libfprint*
 stage m
 expect_rc "M: without the Apex libfprint it builds" 0
-if grep -q '^excludepkgs=libfprint' "$T/m/$REPOS/fedora-fedora.repo"; then not_ok "M: Fedora's libfprint is not excluded"; else ok "M: Fedora's libfprint is not excluded"; fi
+expect_file "M: Fedora's libfprint is not excluded, the lane's names are" \
+    '^excludepkgs=gnome-shell,gnome-shell-common,mutter,mutter-common$' "$T/m/$REPOS/fedora-fedora.repo"
 
 # N. rpms/ without the apex RPM, and apex.txt without apex.
 setup n
@@ -217,5 +257,58 @@ setup n2
 sed -i 's/^apex$/# apex/' "$T/n2/packages/apex.txt"
 stage n2
 expect_rc "N: an apex.txt without apex fails" 1
+
+# O. No lane lock: the image build stops (nothing degrades a design package on its own).
+setup o
+rm "$T/o/apex/rpms.lock"
+stage o
+expect_rc "O: rpms/ without rpms.lock fails" 1
+expect_out "O: and names the lane" "^ERROR: rpms/ has no rpms.lock: image.sh context --lane-lock"
+setup o2
+printf 'family gnome-shell built k\n' >"$T/o2/apex/rpms.lock"
+stage o2
+expect_rc "O: a lock without its format line fails" 1
+
+# P. A locked NEVRA that rpms/ does not carry.
+setup p
+rm "$T/p/apex/mutter-51.0-1.fc45.x86_64.rpm"
+stage p
+expect_rc "P: a missing locked build fails" 1
+expect_out "P: and names it" '^  < mutter mutter-0:51\.0-1\.fc45\.x86_64$'
+
+# Q. Another build of a locked name next to the locked one: [apex] would offer both.
+setup q
+: >"$T/q/apex/mutter-51.0-2.fc45.x86_64.rpm"
+stage q
+expect_rc "Q: a second build of a locked name fails" 1
+expect_out "Q: and names it" '^  > mutter mutter-0:51\.0-2\.fc45\.x86_64$'
+
+# R. The owner chose stock: no lane RPMs, Fedora's shell and mutter stay visible.
+setup r
+rm "$T/r/apex"/gnome-shell* "$T/r/apex"/mutter*
+lane_lock stock >"$T/r/apex/rpms.lock"
+stage r
+expect_rc "R: a stock family builds" 0
+expect_file "R: [apex] admits apex.txt only" '^includepkgs=apex,apex-desktop,libfprint$' "$T/r/$REPOS/apex.repo"
+expect_file "R: fedora excludes libfprint only" '^excludepkgs=libfprint$' "$T/r/$REPOS/fedora-fedora.repo"
+setup r2
+rm "$T/r2/apex"/gnome-shell* "$T/r2/apex"/mutter* "$T/r2/apex"/libfprint*
+lane_lock stock >"$T/r2/apex/rpms.lock"
+stage r2
+expect_rc "R: stock and degraded libfprint build" 0
+if grep -q '^excludepkgs=' "$T/r2/$REPOS/fedora-fedora.repo"; then not_ok "R: nothing is excluded"; else ok "R: nothing is excluded"; fi
+
+# S. rpm lines of a family that is not built or held.
+setup s
+lane_lock built | sed 's/^family gnome-shell built/family gnome-shell stock/' >"$T/s/apex/rpms.lock"
+stage s
+expect_rc "S: rpm lines of a stock family fail" 1
+
+# T. Held: the last good build keeps winning, exactly like a built one.
+setup t
+lane_lock held >"$T/t/apex/rpms.lock"
+stage t
+expect_rc "T: a held family builds" 0
+expect_file "T: with its names admitted" '^includepkgs=apex,apex-desktop,gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/t/$REPOS/apex.repo"
 
 done_testing

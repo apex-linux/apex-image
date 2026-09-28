@@ -1,4 +1,4 @@
-# Apex vendor defaults (ADR 0011 layer A; ARCHITECTURE §7.2 and §7.3).
+# Apex vendor defaults (ADR 0014; ARCHITECTURE §7.2 and §7.3; design/SPEC.md §6.3).
 #
 # Only keys whose Apex value differs from the GNOME 51 or Fedora default are listed.
 # There are no dconf locks: the user can change every key in Settings, and "reset"
@@ -6,9 +6,8 @@
 # Fedora's 00_ files. The image build compiles the schemas; the image checks run
 # glib-compile-schemas --strict so a renamed key fails the build (ARCHITECTURE §11).
 
-[org.gnome.desktop.interface]
-# OLED panel: the dark style is the default (ARCHITECTURE §6.4).
-color-scheme='prefer-dark'
+# color-scheme keeps GNOME's 'default': the rebuilt gnome-shell draws it light, and Dark
+# Style still gives 'prefer-dark' (ADR 0014; ARCHITECTURE §7.4; design/SPEC.md §6.3).
 
 [org.gnome.desktop.input-sources]
 # English plus Vietnamese Telex through ibus-m17n (vi-telex.mim from m17n-db);

@@ -5,15 +5,19 @@ It answers the queries image/checks/*.sh and the Containerfile's repos stage mak
 from a JSON package database named by FAKE_RPMDB:
 
     {"gtk3": {"evr": "3.24.52-6.fc45",
+              "arch": "x86_64",
               "requires": ["libgtk-3.so.0()(64bit)", ...],
               "provides": ["gtk3", "libgtk-3.so.0()(64bit)", ...],
               "files": ["/usr/lib64/libgtk-3.so.0"],
-              "modified": []}, ...}
+              "modified": [],
+              "signature": "RSA/SHA256, Mon Sep 14 2026, Key ID 655a4b02f577861e"}, ...}
 
 "requires" models the rpm header, not the repodata: like real rpm (and unlike
 createrepo's primary.xml) it keeps requirements a package satisfies itself. Every
 package provides its own name implicitly. "modified" lists files whose digest changed
-(rpm -V prints them with a '5'). --root and --dbpath are accepted and ignored.
+(rpm -V prints them with a '5'). "arch" defaults to x86_64 and "signature" to
+"(none)"; rpm -qi prints it as rpm 6.1 does, on an indented line after "Signature :".
+--root and --dbpath are accepted and ignored.
 
 `rpm -E` knows %fedora (FAKE_FEDORA, default 45), %_arch (x86_64) and
 %{lua: print(rpm.vercmp('A', 'B'))}, with rpm's own EVR comparison.
@@ -126,6 +130,8 @@ def load_db():
         db = json.load(f)
     for name, pkg in db.items():
         pkg.setdefault("evr", "1.0-1.fc45")
+        pkg.setdefault("arch", "x86_64")
+        pkg.setdefault("signature", "(none)")
         pkg.setdefault("requires", [])
         pkg.setdefault("files", [])
         pkg.setdefault("modified", [])
@@ -166,7 +172,8 @@ def fmt_pkg(fmt, name, pkg):
     epoch, version, release = parse_evr(pkg["evr"])
     return (fmt.replace("%{NAME}", name).replace("%{name}", name)
             .replace("%{VERSION}", version).replace("%{RELEASE}", release or "")
-            .replace("%{release}", release or ""))
+            .replace("%{release}", release or "").replace("%{ARCH}", pkg["arch"])
+            .replace("%{EPOCHNUM}", epoch or "0"))
 
 
 def main(argv):
@@ -234,6 +241,40 @@ def main(argv):
                 rc = 1
             for n in found:
                 sys.stdout.write(fmt_pkg(qf or "%{NAME}-%{VERSION}-%{RELEASE}\n", n, db[n]))
+        return rc
+    if "-qi" in flags:
+        rc = 0
+        for n in rest:
+            if n not in db:
+                print("package %s is not installed" % n)
+                rc = 1
+                continue
+            epoch, version, release = parse_evr(db[n]["evr"])
+            print("Name         : %s\nVersion      : %s\nRelease      : %s\nArchitecture : %s\n"
+                  "Signature    :\n               %s\nSource RPM   : %s-%s-%s.src.rpm"
+                  % (n, version, release, db[n]["arch"], db[n]["signature"], n, version, release))
+        return rc
+    if "--requires" in flags and "-q" in flags:
+        rc = 0
+        for n in rest:
+            if n not in db:
+                print("package %s is not installed" % n)
+                rc = 1
+                continue
+            for r in db[n]["requires"]:
+                print(r)
+        return rc
+    if "-V" in flags:
+        rc = 0
+        for n in rest:
+            if n not in db:
+                print("package %s is not installed" % n)
+                rc = 1
+                continue
+            for f in db[n]["files"]:
+                if f in db[n]["modified"]:
+                    print("S.5....%s.    %s" % ("." if "--nomtime" in flags else "T", f))
+                    rc = 1
         return rc
     if "-Vf" in flags:
         rc = 0

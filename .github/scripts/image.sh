@@ -7,10 +7,14 @@
 # (sudo when not root).
 #
 #   image.sh context [--rpms-ref REF|--rpms-dir DIR] [--libfprint-ref REF|--libfprint-dir DIR]
-#                    [--lock FILE]    put the RPM inputs into the context; FILE (a lock.txt
-#                                     of an earlier build) is replayed through --build-arg LOCK
+#                    --lane-lock LANE [--lock FILE]
+#                                     put the RPM inputs into the context; LANE is the rebuild
+#                                     lane's lock in its store (packaging/README.md: the
+#                                     builder VM's ~/apex-store/rpms.lock.next); FILE (a
+#                                     lock.txt of an earlier build) is replayed through
+#                                     --build-arg LOCK
 #   image.sh build                    podman build image/Containerfile -> localhost/apex:build
-#   image.sh inspect                  manifest.json, lock list, degraded, content key
+#   image.sh inspect                  manifest.json, lock list, degraded, held, content key
 #   image.sh unchanged                exit 0 when the content key equals apex-testing:45's
 #   image.sh rechunk                  rpm-ostree build-chunked-oci into an OCI layout
 #   image.sh push                     push the layout as apex-testing:sha-<git12>-<run>
@@ -18,13 +22,20 @@
 #                                     lock list (lib.sh replay_run_ok; needs gh, GH_TOKEN)
 #
 # State lives in APEX_WORK (default _build/image): build.env, manifest.json, lock.txt,
-# image.env (degraded, content key), digest. The OCI layout and the rechunk work tree go
-# to APEX_SCRATCH (ci-host.sh storage sets it on runners; default APEX_WORK).
+# image.env (degraded, held, content key), digest. The OCI layout and the rechunk work
+# tree go to APEX_SCRATCH (ci-host.sh storage sets it on runners; default APEX_WORK).
+#
+# The lane lock is required: gnome-shell and the other design packages reach the image
+# only through it, and nothing degrades a design package to stock on its own (ADR 0014,
+# "Hold on failure"). It must record every family of packaging/pkgs/*/pkg.env; a family
+# the owner set to stock is recorded as such. context copies the RPMs of its built and
+# held families from the store (PATH is relative to LANE's directory), checks each
+# sha256, and puts the lock itself into rpms/rpms.lock, where the Containerfile reads it.
 #
 # Environment:
 #   APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
-#   APEX_RPMS_KEY, APEX_LIBFPRINT_KEY   input keys for the content key (the context
-#                     step records them from the artifacts when unset)
+#   APEX_RPMS_KEY, APEX_DESKTOP_KEY, APEX_LIBFPRINT_KEY   input keys for the content
+#                     key (the context step records them from the artifacts when unset)
 #   APEX_COMPOSE      passed as --build-arg COMPOSE (build-rootfs or dnf)
 #   APEX_TARGET       podman build --target (a stage of image/Containerfile)
 #   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0). Set it to 1 for an image
@@ -60,25 +71,139 @@ load_env() {
 }
 
 # ---------------------------------------------------------------------------------------
+# The rebuild lane's lock (packaging/README.md, "The store and rpms.lock"). selftest.sh
+# covers these helpers.
+
+# lane_families: the family of every lane package (packaging/pkgs/*/pkg.env), sorted.
+lane_families() {
+    local f
+    for f in "$APEX_ROOT"/packaging/pkgs/*/pkg.env; do
+        [[ -f $f ]] || continue
+        sed -n 's/^family=[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' "$f"
+    done | LC_ALL=C sort -u
+}
+
+# lane_lock_check LOCK FAMILY...: LOCK is a format-1 rpms.lock that records every FAMILY.
+# Each family is built, held, stock or degraded, and only built and held families have
+# rpm lines, at least one of them Apex-built. Every rpm line names a build of its package,
+# a sha256 and a relative store path whose file name matches the NEVRA, and no package
+# appears twice. Prints "PATH SHA256" per rpm line; returns 1 with a reason on stderr.
+lane_lock_check() {
+    local lock=$1
+    shift
+    [[ -f $lock ]] || { log "no lane lock $lock"; return 1; }
+    [[ $(head -n 1 -- "$lock") == '# apex rpms.lock 1:'* ]] ||
+        { log "$lock is not an rpms.lock of format 1 (its first line)"; return 1; }
+    awk -v want="$*" '
+        function bad(msg) { printf "%s:%d: %s\n", FILENAME, FNR, msg > "/dev/stderr"; failed = 1; exit 1 }
+        /^#/ || NF == 0 { next }
+        $1 == "family" {
+            if (NF < 4) bad("a family line is: family NAME STATE KEY [ATTR...]")
+            if ($2 !~ /^[a-z0-9][a-z0-9._+-]*$/) bad("bad family name \"" $2 "\"")
+            if ($2 in state) bad("family " $2 " appears twice")
+            if ($3 !~ /^(built|held|stock|degraded)$/) bad("family " $2 ": unknown state " $3)
+            state[$2] = $3
+            order[++families] = $2
+            next
+        }
+        $1 == "rpm" {
+            if (NF != 7) bad("an rpm line is: rpm FAMILY KIND NAME NEVRA SHA256 PATH")
+            if (!($2 in state)) bad("an rpm line of " $2 " comes before its family line, or it has none")
+            if (state[$2] != "built" && state[$2] != "held") bad("family " $2 " is " state[$2] ", but has rpm lines")
+            if ($3 != "built" && $3 != "mirror") bad("unknown rpm kind " $3)
+            name = $4; nevra = $5; rest = substr(nevra, length(name) + 2)
+            if (index(nevra, name "-") != 1 || rest !~ /^[0-9]+:[^-:]+-[^-]+\.[A-Za-z0-9_]+$/)
+                bad(nevra " is not a NEVRA of " name)
+            if (length($6) != 64 || $6 ~ /[^0-9a-f]/) bad("bad sha256 for " nevra)
+            sub(/^[0-9]+:/, "", rest)
+            file = $7; sub(/^.*\//, "", file)
+            if ($7 ~ /^\// || $7 ~ /(^|\/)\.\.(\/|$)/ || file != name "-" rest ".rpm")
+                bad("the store path " $7 " is not " name "-" rest ".rpm below the store")
+            if (name in seen) bad("package " name " appears twice")
+            seen[name] = 1
+            if ($3 == "built") apex[$2]++
+            print $7, $6
+            next
+        }
+        { bad("unknown record \"" $1 "\"") }
+        END {
+            if (failed) exit 1
+            for (i = 1; i <= families; i++) {
+                f = order[i]
+                if ((state[f] == "built" || state[f] == "held") && !apex[f]) {
+                    printf "%s: family %s is %s, but has no Apex-built rpm line\n", FILENAME, f, state[f] > "/dev/stderr"
+                    exit 1
+                }
+            }
+            n = split(want, w, " ")
+            for (i = 1; i <= n; i++) {
+                if (!(w[i] in state)) {
+                    printf "%s: no family %s (packaging/pkgs), so the image would silently take the Fedora build; run the lane, or choose stock (just pkg-stock)\n", FILENAME, w[i] > "/dev/stderr"
+                    exit 1
+                }
+            }
+        }' "$lock"
+}
+
+# lane_lock_states LOCK STATE: the families in STATE, comma-separated and sorted.
+lane_lock_states() {
+    awk -v s="$2" '$1 == "family" && $3 == s { print $2 }' "$1" | LC_ALL=C sort | paste -sd, -
+}
+
+# lane_context LANE: copy the RPMs of LANE's built and held families from its store into
+# the context, checking each sha256, and put LANE itself into rpms/rpms.lock.
+lane_context() {
+    local lane=$1 store path sha dest n=0
+    local -a families
+    mapfile -t families < <(lane_families)
+    local list
+    list=$(lane_lock_check "$lane" "${families[@]}") || die "lane lock $lane is not usable (see above)"
+    store=$(cd "$(dirname -- "$lane")" && pwd)
+    while read -r path sha; do
+        [[ -n $path ]] || continue
+        dest=$RPMS_DIR/${path##*/}
+        [[ ! -e $dest ]] || die "$dest exists twice: the lane and another RPM input both provide it"
+        [[ -f $store/$path ]] || die "the lane store has no $store/$path"
+        [[ $(sha256sum <"$store/$path" | cut -d' ' -f1) == "$sha" ]] ||
+            die "$store/$path does not match its sha256 in $lane"
+        cp -- "$store/$path" "$dest"
+        n=$((n + 1))
+    done <<<"$list"
+    cp -- "$lane" "$RPMS_DIR/rpms.lock"
+    local held stock degraded
+    held=$(lane_lock_states "$lane" held)
+    stock=$(lane_lock_states "$lane" stock)
+    degraded=$(lane_lock_states "$lane" degraded)
+    log "lane: $n RPM(s) from $store (families: ${families[*]:-none}; held: ${held:-none}; stock: ${stock:-none})"
+    [[ -z $held ]] || warn "lane: held at the last good build: $held (just pkg-status shows the reason and the limit)"
+    [[ -z $stock ]] || warn "lane: Fedora's build by the owner's choice: $stock"
+    [[ -z $degraded ]] || warn "lane: degraded to Fedora's build: $degraded"
+}
+
+# ---------------------------------------------------------------------------------------
 
 cmd_context() {
-    local rpms_ref="" rpms_dir="" fp_ref="" fp_dir="" lock=""
+    local rpms_ref="" rpms_dir="" fp_ref="" fp_dir="" lock="" lane=""
     while (($#)); do
         case $1 in
             --rpms-ref) rpms_ref=$2; shift 2 ;;
             --rpms-dir) rpms_dir=$2; shift 2 ;;
             --libfprint-ref) fp_ref=$2; shift 2 ;;
             --libfprint-dir) fp_dir=$2; shift 2 ;;
+            --lane-lock) lane=$2; shift 2 ;;
             --lock) lock=$2; shift 2 ;;
             *) die "context: unknown option $1" ;;
         esac
     done
     [[ -n $rpms_ref || -n $rpms_dir ]] || die "context: the apex RPMs are required (--rpms-ref or --rpms-dir)"
+    [[ -n $lane ]] || die "context: the rebuild lane's lock is required (--lane-lock; in the builder VM" \
+        "$HOME/apex-store/rpms.lock.next): gnome-shell reaches the image only through it, and nothing" \
+        "degrades a design package to stock on its own (ADR 0014)"
     mkdir -p "$APEX_WORK"
     rm -rf "$RPMS_DIR"
     mkdir -p "$RPMS_DIR"
 
-    local rpms_key=${APEX_RPMS_KEY:-} fp_key=${APEX_LIBFPRINT_KEY:-}
+    local rpms_key=${APEX_RPMS_KEY:-} fp_key=${APEX_LIBFPRINT_KEY:-} desktop_key=${APEX_DESKTOP_KEY:-}
     if [[ -n $rpms_ref ]]; then
         "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull "$rpms_ref" "$RPMS_DIR"
         [[ -n $rpms_key ]] || rpms_key=$rpms_ref
@@ -86,6 +211,7 @@ cmd_context() {
         (cd "$rpms_dir" && sha256sum --check --strict --quiet SHA256SUMS) || die "$rpms_dir: bad SHA256SUMS"
         cp -- "$rpms_dir"/*.rpm "$RPMS_DIR/"
         [[ -n $rpms_key || ! -f $rpms_dir/KEY ]] || rpms_key=$(cat "$rpms_dir/KEY")
+        [[ -n $desktop_key || ! -f $rpms_dir/KEY_DESKTOP ]] || desktop_key=$(cat "$rpms_dir/KEY_DESKTOP")
     fi
 
     if [[ -n $fp_ref ]]; then
@@ -112,10 +238,14 @@ cmd_context() {
         log "replaying $(wc -l <"$lock") locked NEVRAs"
     fi
 
+    lane_context "$lane"
+
     (cd "$RPMS_DIR" && sha256sum -- *.rpm >SHA256SUMS)
     {
         printf 'RPMS_KEY=%q\n' "${rpms_key:-unknown}"
+        printf 'DESKTOP_KEY=%q\n' "${desktop_key:-unknown}"
         printf 'LIBFPRINT_KEY=%q\n' "${fp_key:-unknown}"
+        printf 'LANE_LOCK_SHA256=%q\n' "$(sha256sum <"$RPMS_DIR/rpms.lock" | cut -d' ' -f1)"
         printf 'REPLAY_LOCK=%q\n' "$([[ -n $lock ]] && echo 1 || echo 0)"
     } >"$APEX_WORK/inputs.env"
     summary "### Build inputs" "" '```' "$(cat "$RPMS_DIR/SHA256SUMS")" '```'
@@ -186,12 +316,14 @@ cmd_inspect() {
         >"$APEX_WORK/manifest.json"
     jq -e --arg v "$APEX_VERSION" --arg r "$APEX_REVISION" --argjson f "$APEX_FEDORA" \
         '.schema == 1 and .name == "apex" and .version == $v and .revision == $r and .fedora == $f
-         and (.packages | type == "array" and length > 0) and (.degraded | type == "array")' \
+         and (.packages | type == "array" and length > 0) and (.degraded | type == "array")
+         and (.held | type == "array")' \
         "$APEX_WORK/manifest.json" >/dev/null ||
         die "manifest.json does not match the build ($APEX_VERSION, $APEX_REVISION) or the contract (M1 §3)"
 
-    local degraded key
+    local degraded held key
     degraded=$(jq -r '.degraded | sort | join(",")' "$APEX_WORK/manifest.json")
+    held=$(jq -r '.held | sort | join(",")' "$APEX_WORK/manifest.json")
     # Lock list for replay (build-rootfs --lock takes NEVRAs).
     manifest_lock_list <"$APEX_WORK/manifest.json" >"$APEX_WORK/lock.txt"
 
@@ -202,18 +334,23 @@ cmd_inspect() {
         printf 'apex content key schema 1\n'
         printf 'base %s\n' "$BASE"
         printf 'degraded %s\n' "$degraded"
+        printf 'held %s\n' "$held"
         printf 'rpms %s\n' "$RPMS_KEY"
+        printf 'desktop-rpm %s\n' "$DESKTOP_KEY"
         printf 'libfprint %s\n' "$LIBFPRINT_KEY"
+        printf 'lane %s\n' "$LANE_LOCK_SHA256"
         printf 'tree image %s\n' "$("${git_[@]}" rev-parse HEAD:image 2>/dev/null || echo none)"
+        printf 'tree desktop %s\n' "$("${git_[@]}" rev-parse HEAD:desktop 2>/dev/null || echo none)"
         printf 'tree hardware %s\n' "$("${git_[@]}" rev-parse HEAD:hardware 2>/dev/null || echo none)"
         jq -cS '[.packages[] | {name, epoch, version, release, arch}]' "$APEX_WORK/manifest.json"
     } | sha256sum | cut -c1-64)
 
-    printf 'DEGRADED=%q\nCONTENT_KEY=%q\n' "$degraded" "$key" >"$APEX_WORK/image.env"
+    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\n' "$degraded" "$held" "$key" >"$APEX_WORK/image.env"
     summary "Manifest: $(jq '.packages | length' "$APEX_WORK/manifest.json") packages;" \
-        "degraded: \`${degraded:-none}\`; content key \`$key\`"
+        "degraded: \`${degraded:-none}\`; held: \`${held:-none}\`; content key \`$key\`"
     set_output version "$APEX_VERSION"
     set_output degraded "$degraded"
+    set_output held "$held"
     set_output content-key "$key"
 }
 
@@ -236,7 +373,7 @@ cmd_unchanged() {
 }
 
 # rechunk_once OUT TMP PREV...: one build-chunked-oci run into a clean OUT.
-# shellcheck disable=SC2153 # BASE, DEGRADED, ... come from load_env
+# shellcheck disable=SC2153 # BASE, DEGRADED, HELD, ... come from load_env
 rechunk_once() {
     local out=$1 tmp=$2
     shift 2
@@ -258,6 +395,7 @@ rechunk_once() {
         --label "org.opencontainers.image.source=$APEX_SOURCE_URL" \
         --label "org.opencontainers.image.created=$CREATED" \
         --label "$APEX_LABEL_PREFIX.degraded=$DEGRADED" \
+        --label "$APEX_LABEL_PREFIX.held=$HELD" \
         --label "$APEX_LABEL_PREFIX.content-key=$CONTENT_KEY" \
         --label "$APEX_LABEL_PREFIX.fedora=$APEX_FEDORA" \
         --output "oci:/out/$OCI_REF:latest"
@@ -341,4 +479,8 @@ main() {
     esac
 }
 
-main "$@"
+# selftest.sh sources this file to test its lane-lock helpers; only a direct run starts
+# main.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
+fi

@@ -32,9 +32,10 @@ just vm-image
 `just vm-image` copies this checkout into the VM and builds, exactly like CI but without
 pushing or signing:
 
-- the apex RPM;
+- the apex and apex-desktop RPMs;
 - the patched libfprint;
-- the image.
+- the rebuild lane's packages (gnome-shell), into `rpms.lock.next` of the store below;
+- the image, from those RPMs and that lock.
 
 The results are in `~/apex-fedora/_build/` inside the VM.
 
@@ -46,7 +47,7 @@ The other recipes:
 | `just vm-status` | Show whether it runs, plus uptime, disk and memory use. |
 | `just vm-ssh [CMD…]` | Open a shell in the VM, or run `CMD`. |
 | `just vm-sync` | Copy the checkout to `~/apex-fedora` in the VM. |
-| `just vm-image-only` | Rebuild only the image, reusing the RPMs of the last `just vm-image`. |
+| `just vm-image-only` | Rebuild only the image, reusing the RPMs and the lane's `rpms.lock.next` of the last `just vm-image`. |
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
 serial log) and `destroy --yes`.
