@@ -1,31 +1,23 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Prepare a GitHub-hosted Ubuntu runner for image work (ADR 0013, "Disk"). The
-# subcommands that change the host refuse to run outside GitHub Actions; in the
-# Fedora 45 builder VM none of them is needed.
+# Prepare a GitHub-hosted Ubuntu runner for image work. The subcommands that change the
+# host run only on GitHub Actions.
 #
 #   ci-host.sh free-disk                  delete preinstalled toolchains we never use
-#   ci-host.sh storage                    btrfs (zstd) loopback as rootful podman storage
+#   ci-host.sh storage                    btrfs (zstd) loopback as rootful podman storage,
+#                                         and APEX_SCRATCH on the other disk
 #   ci-host.sh podman-conf                rootful podman: sqlite database, temp in the store
 #   ci-host.sh kvm                        make /dev/kvm usable by the runner user
 #   ci-host.sh preflight STORE_GB SCRATCH_GB
 #                                         fail fast unless that much space is free
 #   ci-host.sh usage STEP                 add a df/du row for STEP to the job summary
-#
-# storage mounts a btrfs filesystem (compress=zstd) at /var/lib/containers, the rootful
-# podman store, on whichever of /mnt and / has more free space, and exports
-# APEX_SCRATCH, a directory on the other filesystem for the rechunk work tree and the
-# OCI layout. Keeping the two apart spreads the peak (builder + image in the store,
-# ostree repo + OCI output in the scratch directory) over both disks. GITHUB_ENV only
-# reaches later steps, so storage also records the directory in
-# $RUNNER_TEMP/apex-scratch, where preflight and usage find it in the same step.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 readonly STORE=${APEX_CI_STORE:-/var/lib/containers}
-# Where storage records the scratch directory it chose (see the header).
+# GITHUB_ENV reaches only later steps; preflight and usage in the same step read this.
 readonly SCRATCH_RECORD=${RUNNER_TEMP:-/tmp}/apex-scratch
 
 ci_only() {
@@ -39,8 +31,6 @@ export_env() {
 
 avail_bytes() { df --output=avail -B1 "$1" | tail -n 1 | tr -d ' '; }
 
-# scratch_dir: the scratch directory: APEX_SCRATCH when the environment has it, else
-# the one storage recorded, else empty.
 scratch_dir() {
     if [[ -n ${APEX_SCRATCH:-} ]]; then
         printf '%s\n' "$APEX_SCRATCH"
@@ -54,8 +44,6 @@ cmd_free_disk() {
     ci_only free-disk
     local before
     before=$(avail_bytes /)
-    # Plain rm -rf of preinstalled SDKs (no third-party action, ADR 0013). None of these
-    # is used by Apex jobs; the list follows the runner image's software inventory.
     sudo rm -rf /usr/share/dotnet
     sudo rm -rf /usr/local/lib/android
     sudo rm -rf /opt/ghc /usr/local/.ghcup
@@ -118,9 +106,8 @@ cmd_storage() {
 
 cmd_podman_conf() {
     ci_only podman-conf
-    # sqlite: the podman 6 of Fedora 45 inside `bootc install` containers shares this
-    # store and no longer reads BoltDB. image_copy_tmp_dir keeps big temporary copies in
-    # the store's filesystem instead of the root disk's /var/tmp.
+    # sqlite: Fedora 45's podman 6 in `bootc install` containers shares this store and no
+    # longer reads BoltDB.
     sudo mkdir -p /etc/containers/containers.conf.d "$STORE/tmp"
     printf '[engine]\ndatabase_backend = "sqlite"\nimage_copy_tmp_dir = "%s/tmp"\n' "$STORE" |
         sudo tee /etc/containers/containers.conf.d/50-apex-ci.conf >/dev/null
@@ -199,7 +186,6 @@ main() {
     esac
 }
 
-# selftest.sh sources this file to test its functions; only a direct run starts main.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     main "$@"
 fi

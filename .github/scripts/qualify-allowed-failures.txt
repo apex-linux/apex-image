@@ -1,8 +1,3 @@
-# Units allowed to be failed in the qualification VM (qualify.sh), one unit name per
-# line; '#' starts a comment. `systemctl is-system-running` may report "degraded" only
-# when every failed unit is listed here. Each entry needs a reason, and the list should
-# only shrink: a unit that fails in the VM usually fails on the laptop too.
-#
-# The VM (QEMU q35, OVMF, virtio disk/net/gpu, no sound card, no fingerprint reader,
-# no battery) is not the M7400QC, so hardware units that fail only for lack of their
-# device may be listed. None is needed so far.
+# Units allowed to be failed in the qualification VM, one per line, each with its reason.
+# The list should only shrink: a unit that fails in the VM usually fails on the laptop
+# too, except hardware units that lack their device there (sound, fingerprint, battery).

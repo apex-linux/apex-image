@@ -1,51 +1,34 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Assemble, inspect, rechunk and push the Apex image (ADR 0013). Every step is a
-# subcommand, so a caller can record disk usage between them. The builder VM runs
-# context, build and inspect (`just vm-image`, `just image`). Rootful podman throughout
-# (sudo when not root).
+# Assemble, inspect, rechunk and push the Apex image, with rootful podman (sudo when not
+# root).
 #
 #   image.sh context [--rpms-ref REF|--rpms-dir DIR] [--libfprint-ref REF|--libfprint-dir DIR]
 #                    --lane-lock LANE [--lock FILE]
 #                                     put the RPM inputs into the context; LANE is the rebuild
-#                                     lane's lock in its store (packaging/README.md: the
-#                                     builder VM's ~/apex-store/rpms.lock.next); FILE (a
-#                                     lock.txt of an earlier build) is replayed through
-#                                     --build-arg LOCK
+#                                     lane's lock in its store (the builder VM's
+#                                     ~/apex-store/rpms.lock.next); FILE (a lock.txt of an
+#                                     earlier build) is replayed through --build-arg LOCK
 #   image.sh build                    podman build image/Containerfile -> localhost/apex:build
 #   image.sh inspect                  manifest.json, lock list, degraded, held, content key
 #   image.sh unchanged                exit 0 when the content key equals apex-testing:45's
 #   image.sh rechunk                  rpm-ostree build-chunked-oci into an OCI layout
 #   image.sh push                     push the layout as apex-testing:sha-<git12>-<run>
 #   image.sh replay-check RUN_ID      exit 0 only when image.yml run RUN_ID may supply a
-#                                     lock list (lib.sh replay_run_ok; needs gh, GH_TOKEN)
-#
-# State lives in APEX_WORK (default _build/image): build.env, manifest.json, lock.txt,
-# image.env (degraded, held, content key), digest. The OCI layout and the rechunk work
-# tree go to APEX_SCRATCH (ci-host.sh storage sets it on runners; default APEX_WORK).
-#
-# The lane lock is required: gnome-shell and the other design packages reach the image
-# only through it, and nothing degrades a design package to stock on its own (ADR 0014,
-# "Hold on failure"). It must record every family of packaging/pkgs/*/pkg.env; a family
-# the owner set to stock is recorded as such. context copies the RPMs of its built and
-# held families from the store (PATH is relative to LANE's directory), checks each
-# sha256, and puts the lock itself into rpms/rpms.lock, where the Containerfile reads it.
+#                                     lock list (needs gh, GH_TOKEN)
 #
 # Environment:
+#   APEX_WORK         the state: build.env, manifest.json, lock.txt, image.env, digest
+#                     (default _build/image)
+#   APEX_SCRATCH      the OCI layout and the rechunk work tree (default APEX_WORK)
 #   APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
 #   APEX_RPMS_KEY, APEX_DESKTOP_KEY, APEX_LIBFPRINT_KEY   input keys for the content
 #                     key (the context step records them from the artifacts when unset)
 #   APEX_COMPOSE      passed as --build-arg COMPOSE (build-rootfs or dnf)
 #   APEX_TARGET       podman build --target (a stage of image/Containerfile)
-#   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0). Set it to 1 for an image
-#                     that will be pushed: the Containerfile then requires real public
-#                     keys (image/checks/keys.sh), since the pushed digest is what gets
-#                     promoted.
-#
-# Fedora bases: ARG BASE and ARG REPOS_BASE must be digest pins on
-# registry.fedoraproject.org (lib.sh is_fedora_pin). quay.io stops serving a Fedora
-# digest about a day after Fedora moves the tag, so a pin there is refused.
+#   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0); 1 for an image that will
+#                     be pushed, which then requires the real public keys
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -53,8 +36,6 @@ set -euo pipefail
 : "${APEX_WORK:=$APEX_ROOT/_build/image}"
 : "${APEX_SCRATCH:=$APEX_WORK}"
 readonly IMAGE=localhost/apex:build
-# The build context is the repository root; the Containerfile's repos stage turns the
-# RPMs in its rpms/ directory into the local priority-1 repository (image/packages/apex.txt).
 readonly CONTEXT=$APEX_ROOT
 readonly RPMS_DIR=$CONTEXT/rpms
 readonly OCI_REF=apex
@@ -70,11 +51,6 @@ load_env() {
     done
 }
 
-# ---------------------------------------------------------------------------------------
-# The rebuild lane's lock (packaging/README.md, "The store and rpms.lock"). selftest.sh
-# covers these helpers.
-
-# lane_families: the family of every lane package (packaging/pkgs/*/pkg.env), sorted.
 lane_families() {
     local f
     for f in "$APEX_ROOT"/packaging/pkgs/*/pkg.env; do
@@ -83,11 +59,8 @@ lane_families() {
     done | LC_ALL=C sort -u
 }
 
-# lane_lock_check LOCK FAMILY...: LOCK is a format-1 rpms.lock that records every FAMILY.
-# Each family is built, held, stock or degraded, and only built and held families have
-# rpm lines, at least one of them Apex-built. Every rpm line names a build of its package,
-# a sha256 and a relative store path whose file name matches the NEVRA, and no package
-# appears twice. Prints "PATH SHA256" per rpm line; returns 1 with a reason on stderr.
+# lane_lock_check LOCK FAMILY...: prints "PATH SHA256" per rpm line of a valid LOCK that
+# records every FAMILY.
 lane_lock_check() {
     local lock=$1
     shift
@@ -145,13 +118,10 @@ lane_lock_check() {
         }' "$lock"
 }
 
-# lane_lock_states LOCK STATE: the families in STATE, comma-separated and sorted.
 lane_lock_states() {
     awk -v s="$2" '$1 == "family" && $3 == s { print $2 }' "$1" | LC_ALL=C sort | paste -sd, -
 }
 
-# lane_context LANE: copy the RPMs of LANE's built and held families from its store into
-# the context, checking each sha256, and put LANE itself into rpms/rpms.lock.
 lane_context() {
     local lane=$1 store path sha dest n=0
     local -a families
@@ -179,8 +149,6 @@ lane_context() {
     [[ -z $stock ]] || warn "lane: Fedora's build by the owner's choice: $stock"
     [[ -z $degraded ]] || warn "lane: degraded to Fedora's build: $degraded"
 }
-
-# ---------------------------------------------------------------------------------------
 
 cmd_context() {
     local rpms_ref="" rpms_dir="" fp_ref="" fp_dir="" lock="" lane=""
@@ -222,8 +190,6 @@ cmd_context() {
         cp -- "$fp_dir"/*.rpm "$RPMS_DIR/"
         [[ -n $fp_key || ! -f $fp_dir/key.txt ]] || fp_key=$(cat "$fp_dir/key.txt")
     else
-        # ADR 0006: no patched build, so the compose installs Fedora's stock libfprint and
-        # the final stage records degraded=fingerprint in manifest.json.
         warn "no patched libfprint: the image will use Fedora's stock libfprint (degraded=fingerprint)"
         fp_key=degraded
     fi
@@ -231,7 +197,6 @@ cmd_context() {
     rm -f "$APEX_WORK/replay.lock"
     if [[ -n $lock ]]; then
         [[ -s $lock ]] || die "lock file $lock is empty"
-        # One NEVRA per line; the Containerfile takes them space-separated in ARG LOCK.
         grep -Eqv '^[A-Za-z0-9._+-]+-([0-9]+:)?[A-Za-z0-9._+~^-]+-[A-Za-z0-9._+~^]+\.[A-Za-z0-9_]+$' "$lock" &&
             die "lock file $lock has lines that are not NEVRAs"
         cp -- "$lock" "$APEX_WORK/replay.lock"
@@ -296,8 +261,7 @@ cmd_build() {
     [[ -z ${APEX_TARGET:-} ]] || args+=(--target "$APEX_TARGET")
 
     group "podman build ($version)"
-    # The flag set proven for build-rootfs on Ubuntu runners (ADR 0013). No secrets are
-    # passed: this job holds none.
+    # The privileges build-rootfs needs inside the build.
     podman_ build --pull=missing --layers=false \
         --cap-add=SYS_ADMIN,NET_ADMIN --device /dev/fuse \
         --security-opt seccomp=unconfined --security-opt label=disable \
@@ -308,7 +272,27 @@ cmd_build() {
         "RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}$([[ -f $APEX_WORK/replay.lock ]] && echo ', lock replay'))"
 }
 
+# No build time goes in, so a rebuild of unchanged inputs publishes nothing.
 # shellcheck disable=SC2153 # BASE, RPMS_KEY, ... come from load_env
+content_key() {
+    local degraded=$1 held=$2
+    local git_=(git -c safe.directory="$APEX_ROOT" -C "$APEX_ROOT")
+    {
+        printf 'apex content key schema 1\n'
+        printf 'base %s\n' "$BASE"
+        printf 'degraded %s\n' "$degraded"
+        printf 'held %s\n' "$held"
+        printf 'rpms %s\n' "$RPMS_KEY"
+        printf 'desktop-rpm %s\n' "$DESKTOP_KEY"
+        printf 'libfprint %s\n' "$LIBFPRINT_KEY"
+        printf 'lane %s\n' "$LANE_LOCK_SHA256"
+        printf 'tree image %s\n' "$("${git_[@]}" rev-parse HEAD:image 2>/dev/null || echo none)"
+        printf 'tree desktop %s\n' "$("${git_[@]}" rev-parse HEAD:desktop 2>/dev/null || echo none)"
+        printf 'tree hardware %s\n' "$("${git_[@]}" rev-parse HEAD:hardware 2>/dev/null || echo none)"
+        jq -cS '[.packages[] | {name, epoch, version, release, arch}]' "$APEX_WORK/manifest.json"
+    } | sha256sum | cut -c1-64
+}
+
 cmd_inspect() {
     require podman jq git sha256sum
     load_env build.env inputs.env
@@ -324,26 +308,8 @@ cmd_inspect() {
     local degraded held key
     degraded=$(jq -r '.degraded | sort | join(",")' "$APEX_WORK/manifest.json")
     held=$(jq -r '.held | sort | join(",")' "$APEX_WORK/manifest.json")
-    # Lock list for replay (build-rootfs --lock takes NEVRAs).
     manifest_lock_list <"$APEX_WORK/manifest.json" >"$APEX_WORK/lock.txt"
-
-    # Content key: what the image contains, independent of when it was built. A scheduled
-    # build with the key of the current apex-testing:45 publishes nothing.
-    local git_=(git -c safe.directory="$APEX_ROOT" -C "$APEX_ROOT")
-    key=$({
-        printf 'apex content key schema 1\n'
-        printf 'base %s\n' "$BASE"
-        printf 'degraded %s\n' "$degraded"
-        printf 'held %s\n' "$held"
-        printf 'rpms %s\n' "$RPMS_KEY"
-        printf 'desktop-rpm %s\n' "$DESKTOP_KEY"
-        printf 'libfprint %s\n' "$LIBFPRINT_KEY"
-        printf 'lane %s\n' "$LANE_LOCK_SHA256"
-        printf 'tree image %s\n' "$("${git_[@]}" rev-parse HEAD:image 2>/dev/null || echo none)"
-        printf 'tree desktop %s\n' "$("${git_[@]}" rev-parse HEAD:desktop 2>/dev/null || echo none)"
-        printf 'tree hardware %s\n' "$("${git_[@]}" rev-parse HEAD:hardware 2>/dev/null || echo none)"
-        jq -cS '[.packages[] | {name, epoch, version, release, arch}]' "$APEX_WORK/manifest.json"
-    } | sha256sum | cut -c1-64)
+    key=$(content_key "$degraded" "$held")
 
     printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\n' "$degraded" "$held" "$key" >"$APEX_WORK/image.env"
     summary "Manifest: $(jq '.packages | length' "$APEX_WORK/manifest.json") packages;" \
@@ -361,7 +327,7 @@ cmd_unchanged() {
     current=$(registry_label "$APEX_REPO_TESTING:$APEX_FEDORA" "$APEX_LABEL_PREFIX.content-key") || rc=$?
     case $rc in
         0) ;;
-        3) log "$APEX_REPO_TESTING:$APEX_FEDORA does not exist yet"; return 1 ;;
+        "$REGISTRY_ABSENT") log "$APEX_REPO_TESTING:$APEX_FEDORA does not exist yet"; return 1 ;;
         *) warn "cannot read $APEX_REPO_TESTING:$APEX_FEDORA; publishing"; return 1 ;;
     esac
     if [[ $current == "$CONTENT_KEY" ]]; then
@@ -372,7 +338,6 @@ cmd_unchanged() {
     return 1
 }
 
-# rechunk_once OUT TMP PREV...: one build-chunked-oci run into a clean OUT.
 # shellcheck disable=SC2153 # BASE, DEGRADED, HELD, ... come from load_env
 rechunk_once() {
     local out=$1 tmp=$2
@@ -381,9 +346,8 @@ rechunk_once() {
     mkdir -p "$out" "$tmp"
     local -a auth=()
     [[ -z ${REGISTRY_AUTH_FILE:-} ]] || auth=(-v "$REGISTRY_AUTH_FILE:/run/containers/0/auth.json:ro,z")
-    # rpm-ostree comes from the digest-pinned builder base, never from the image under
-    # construction. /var/tmp holds its temporary ostree repo (a full copy), so it goes
-    # to the scratch filesystem next to the output.
+    # rpm-ostree runs from the pinned builder base, never from the image under construction.
+    # Its temporary ostree repo in /var/tmp is a full copy, hence the scratch filesystem.
     podman_ run --rm --privileged --pull=never --security-opt label=disable \
         --mount "type=image,source=$IMAGE,target=/apex-rootfs" \
         -v "$out:/out:z" -v "$tmp:/var/tmp:z" "${auth[@]}" \
@@ -406,19 +370,15 @@ cmd_rechunk() {
     load_env build.env image.env
     local out="$APEX_SCRATCH/oci" tmp="$APEX_SCRATCH/rechunk-tmp" rc=0
 
-    # Keep yesterday's layer plan so a daily update downloads only what changed. Best
-    # effort: the first build, or an unreadable registry, rechunks from scratch.
     local -a prev=()
     registry_digest "$APEX_REPO_TESTING:$APEX_FEDORA" >/dev/null || rc=$?
     case $rc in
         0) prev=(--previous-build "docker://$APEX_REPO_TESTING:$APEX_FEDORA") ;;
-        3) notice "no $APEX_REPO_TESTING:$APEX_FEDORA yet: rechunking without --previous-build" ;;
+        "$REGISTRY_ABSENT") notice "no $APEX_REPO_TESTING:$APEX_FEDORA yet: rechunking without --previous-build" ;;
         *) warn "cannot read $APEX_REPO_TESTING:$APEX_FEDORA: rechunking without --previous-build" ;;
     esac
 
     group "rpm-ostree compose build-chunked-oci"
-    # Retried once from a clean output: --previous-build reads the registry, and a lost
-    # connection there should not cost the whole build.
     retry 2 30 rechunk_once "$out" "$tmp" "${prev[@]}"
     endgroup
     as_root rm -rf "$tmp"
@@ -437,7 +397,6 @@ cmd_push() {
     digestfile=$(mktemp)
     local -a auth=()
     [[ -z ${REGISTRY_AUTH_FILE:-} ]] || auth=(--authfile "$REGISTRY_AUTH_FILE")
-    # A unique, never-moving tag; channel tags move only after signing (publish.sh).
     retry 4 30 as_root skopeo copy --quiet --preserve-digests "${auth[@]}" \
         --digestfile "$digestfile" "oci:$out/$OCI_REF:latest" "docker://$APEX_REPO_TESTING:$tag"
     digest=$(as_root cat "$digestfile")
@@ -479,8 +438,6 @@ main() {
     esac
 }
 
-# selftest.sh sources this file to test its lane-lock helpers; only a direct run starts
-# main.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     main "$@"
 fi

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Qualify an Apex image in a KVM guest with OVMF, the G4 VM check (ARCHITECTURE 4 and
-# 11): a real `bootc install`, GRUB, the Apex boot counter and boot assessment,
-# signature enforcement and the upgrade path, all on the digest that will be published.
+# Qualify an Apex image in a KVM guest with OVMF: a real `bootc install`, GRUB, the Apex
+# boot counter and boot assessment, signature enforcement and the upgrade path, all on
+# the digest that will be published.
 #
 #   qualify.sh host-setup              for a CI runner, if one is ever used: /dev/kvm
 #                                      access, QEMU, OVMF
@@ -13,7 +13,7 @@
 #                                      CANDIDATE by digest, apply it with FROM's apexctl
 #                                      (arms the boot counter), reboot, assert green and
 #                                      confirmed
-#   qualify.sh red FROM CANDIDATE      the counted rollback (ADR 0009): install FROM, stage
+#   qualify.sh red FROM CANDIDATE      the counted rollback: install FROM, stage
 #                                      CANDIDATE, write CANDIDATE's digest to the hook
 #                                      /var/lib/apex/force-red, apply, then boot without
 #                                      ever logging in: CANDIDATE must fail its assessment
@@ -22,24 +22,22 @@
 #                                      denylist CANDIDATE and leave grubenv disarmed
 #   qualify.sh all CANDIDATE           fresh, then upgrade and red from apex:45 when it
 #                                      exists and differs from CANDIDATE
-#   qualify.sh local IMAGE             builder VM smoke test of an unpublished image in
-#                                      local container storage (localhost/NAME:TAG, e.g.
+#   qualify.sh local IMAGE             smoke test of an unpublished image in local
+#                                      container storage (localhost/NAME:TAG, e.g.
 #                                      image.sh's localhost/apex:build): install, boot and
 #                                      assert green like `fresh`, without the signature
 #                                      tests (a local image carries no signature)
 #
 # CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
-# ghcr.io/sekirokenjii/apex-testing@sha256:...). It runs in the Fedora 45 builder VM
-# (nested KVM) as the G4 VM check; GitHub does not run it. It needs sudo for podman,
-# losetup and mount. `red` works with any two different Apex images whose updater arms
-# the counter, e.g. two apex-testing digests:
-# `qualify.sh red sha256:<older> sha256:<newer>`.
+# ghcr.io/sekirokenjii/apex-testing@sha256:...). It needs nested KVM, and sudo for
+# podman, losetup and mount. `red` works with any two different Apex images whose updater
+# arms the counter, e.g. `qualify.sh red sha256:<older> sha256:<newer>`.
 #
 # Environment (all optional):
 #   QUALIFY_OUT           work directory (default _build/qualify); fixtures/ and logs/
 #                         in it are the artifacts worth keeping
 #   QUALIFY_LAYOUT        separate-boot (default): ESP + ext4 /boot + btrfs root, the
-#                         ADR 0010 layout, installed with `bootc install to-filesystem`;
+#                         laptop's layout, installed with `bootc install to-filesystem`;
 #                         to-disk: `bootc install to-disk --via-loopback --filesystem btrfs`
 #                         (`red` is skipped there: GRUB cannot count on a btrfs /boot)
 #   QUALIFY_DISK_GB (40)  QUALIFY_MEM (6G)  QUALIFY_SMP (4)  QUALIFY_SSH_PORT (2222)
@@ -49,20 +47,13 @@
 #   QUALIFY_POLL          seconds between checks while waiting for QEMU (default 5)
 #   QUALIFY_KEEP_DISKS    1 keeps the VM disks after each scenario
 #   OVMF_CODE, OVMF_VARS, OVMF_FORMAT  firmware files (auto-detected on Ubuntu, Fedora)
-#
-# Why separate-boot by default: GRUB cannot write its environment block into a file on
-# btrfs, and `to-disk` without LUKS puts /boot on the btrfs root. The laptop has an ext4
-# /boot (ADR 0010), and the boot counter must be tested the way the laptop runs it.
-#
-# The image must contain openssh-server (it may stay disabled): the install adds the
-# kernel argument systemd.wants=sshd.service to the guest only, next to root's key. It
-# also masks the Flatpak preinstall and update units (install_kargs): they fetch from
-# Flathub, which qualification must not depend on.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 : "${QUALIFY_OUT:=$APEX_ROOT/_build/qualify}"
+# GRUB cannot save its environment block on btrfs, and to-disk puts /boot on the btrfs
+# root: the boot counter is tested on an ext4 /boot, as the laptop runs it.
 : "${QUALIFY_LAYOUT:=separate-boot}"
 : "${QUALIFY_DISK_GB:=40}"
 : "${QUALIFY_MEM:=6G}"
@@ -76,9 +67,8 @@ readonly STRICT_POLICY=/usr/share/apex/containers/policy.json
 readonly GRUBENV=/boot/grub2/grubenv
 readonly GUEST_TMP=/var/tmp/apex-qualify
 readonly ALLOWED_FAILURES="$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt"
-# Contract sections 1 and 4, and the qualification hook of crate apex-boot
-# (checks::force_red::FORCE_RED_PATH, check name checks::names::FORCED_RED).
 readonly APEX_STATE=/var/lib/apex
+# Must match crate apex-boot: checks::force_red::FORCE_RED_PATH, checks::names::FORCED_RED.
 readonly FORCE_RED=$APEX_STATE/force-red
 readonly FORCED_RED_CHECK=forced-red
 
@@ -86,13 +76,10 @@ VM_NAME=
 VM_SERIAL=
 declare -a LOOPS=() MOUNTS=()
 
-# ---------------------------------------------------------------------------------------
-# Results
-
 result() {
-    # result TEST STATUS DETAIL: one row of the results table.
-    printf '| %s | %s | %s |\n' "$1" "$2" "$3" >>"$QUALIFY_OUT/results.md"
-    log "[$2] $1: $3"
+    local test=$1 status=$2 detail=$3
+    printf '| %s | %s | %s |\n' "$test" "$status" "$detail" >>"$QUALIFY_OUT/results.md"
+    log "[$status] $test: $detail"
 }
 
 fail() {
@@ -105,9 +92,6 @@ publish_results() {
     summary "### Qualification (${QUALIFY_LAYOUT})" "" "| Test | Result | Detail |" "|---|---|---|" \
         "$(cat "$QUALIFY_OUT/results.md")"
 }
-
-# ---------------------------------------------------------------------------------------
-# Host side
 
 find_ovmf() {
     if [[ -n ${OVMF_CODE:-} && -n ${OVMF_VARS:-} ]]; then
@@ -143,9 +127,9 @@ candidate_ref() {
 
 digest_of() { printf '%s\n' "${1##*@}"; }
 repo_of() { printf '%s\n' "${1%@*}"; }
+channel_of() { printf '%s:%s\n' "$(repo_of "$1")" "$APEX_FEDORA"; }
 
 podman_pull() {
-    # Local images (qualify.sh local) are already in container storage.
     [[ $1 != localhost/* ]] || return 0
     local -a auth=()
     [[ -z ${REGISTRY_AUTH_FILE:-} ]] || auth=(--authfile "$REGISTRY_AUTH_FILE")
@@ -158,12 +142,8 @@ ensure_key() {
     cp "$QUALIFY_OUT/key.pub" "$QUALIFY_OUT/authorized_keys"
 }
 
-# The Flatpak units of the image. They download about 1 GB from Flathub on a fresh
-# system, and the preinstall service's start job keeps `systemctl is-system-running
-# --wait` in "starting" until that download ends; a Flathub outage fails the unit and
-# the boot counts as degraded. Qualification tests the OS image, not Flathub, so every
-# guest boots with them masked. Kernel arguments given at install time are carried to
-# every later deployment, so the upgrade and rollback boots keep the masks.
+# Qualification must not depend on Flathub: these fetch about 1 GB and hold
+# is-system-running in "starting" meanwhile. Install-time kargs reach every later boot.
 readonly QUALIFY_MASKED_UNITS=(
     apex-flatpak-preinstall.service
     apex-flatpak-preinstall.timer
@@ -171,8 +151,6 @@ readonly QUALIFY_MASKED_UNITS=(
     apex-flatpak-update.timer
 )
 
-# install_kargs: the `bootc install` kernel-argument options, one per line: a serial
-# console for the logs, sshd for the assertions (guest only), and the masks above.
 install_kargs() {
     local unit
     printf '%s\n' --karg console=tty0 --karg "console=ttyS0,115200n8" --karg systemd.wants=sshd.service
@@ -182,7 +160,6 @@ install_kargs() {
 }
 
 install_disk() {
-    # install_disk NAME IMAGE TARGET_IMGREF
     local name=$1 image=$2 target=$3 disk="$QUALIFY_OUT/$1.raw"
     group "Install $image ($QUALIFY_LAYOUT) into $disk"
     podman_pull "$image"
@@ -210,7 +187,7 @@ install_disk() {
             local loop mnt="$QUALIFY_OUT/mnt-$name"
             loop=$(as_root losetup --find --show --partscan "$disk")
             LOOPS+=("$loop")
-            # GPT: ESP, ext4 /boot, btrfs root (DPS root type), as ADR 0010 minus LUKS.
+            # The laptop's layout minus LUKS; root carries the DPS root partition type.
             as_root sfdisk --quiet --wipe always "$loop" <<'EOF'
 label: gpt
 size=600MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="esp"
@@ -231,8 +208,7 @@ EOF
             as_root mkdir -p "$mnt/boot/efi"
             as_root mount "${loop}p1" "$mnt/boot/efi"
             MOUNTS+=("$mnt/boot/efi")
-            # --generic-image: install the removable-media EFI path and never touch the
-            # host's EFI variables (this runs on the runner, not in the guest).
+            # --generic-image: this runs on the host, whose EFI variables must stay untouched.
             as_root podman run "${common[@]}" -v "$mnt:/target" "$image" \
                 bootc install to-filesystem --generic-image \
                 --target-imgref "$target" --root-ssh-authorized-keys /out/authorized_keys \
@@ -246,7 +222,6 @@ EOF
     endgroup
 }
 
-# drop_disk NAME: delete a scenario's disk once it is done (QUALIFY_KEEP_DISKS=1 keeps it).
 drop_disk() {
     [[ ${QUALIFY_KEEP_DISKS:-0} == 1 ]] || rm -f "$QUALIFY_OUT/$1.raw" "$QUALIFY_OUT/$1.vars"
 }
@@ -259,10 +234,8 @@ unmount_all() {
     MOUNTS=()
 }
 
-# start_vm NAME [LOG [QEMU_ARG...]]: boot disk NAME in the background. The serial console
-# goes to logs/LOG.serial.log (LOG defaults to NAME; QEMU truncates the file, so each
-# start that must keep its own console log gets its own LOG). QEMU_ARGs are appended,
-# e.g. -no-reboot.
+# start_vm NAME [LOG [QEMU_ARG...]]: QEMU truncates the console log, so a boot whose log
+# must survive the next start needs its own LOG.
 start_vm() {
     local name=$1 log=${2:-$1}
     shift "$(($# < 2 ? $# : 2))"
@@ -290,8 +263,6 @@ vm_alive() {
     [[ -n $VM_NAME && -f $QUALIFY_OUT/$VM_NAME.pid ]] && kill -0 "$(cat "$QUALIFY_OUT/$VM_NAME.pid")" 2>/dev/null
 }
 
-# wait_vm_exit SECONDS: wait until the QEMU process has ended; false when it still runs
-# after SECONDS. Never talks to the guest.
 wait_vm_exit() {
     local deadline=$((SECONDS + $1))
     while vm_alive; do
@@ -321,9 +292,7 @@ stop_vm() {
     VM_NAME=
 }
 
-# poweroff_vm TEST: shut the guest down and wait for QEMU to exit. Unlike stop_vm it never
-# kills QEMU: ostree finalizes a staged deployment while the system shuts down, and a
-# killed VM would boot the old deployment again.
+# Unlike stop_vm, never kills QEMU: ostree finalizes a staged deployment during shutdown.
 poweroff_vm() {
     local test=$1
     vm_ssh 'systemctl poweroff' >/dev/null 2>&1 || true
@@ -339,14 +308,12 @@ vm_ssh() {
         root@127.0.0.1 -- "$@"
 }
 
-# wait_ssh [HINT]: wait until the guest accepts SSH. HINT explains a VM that exits
-# meanwhile (with -no-reboot, a guest reboot ends QEMU).
 wait_ssh() {
-    local hint=${1:-} deadline=$((SECONDS + QUALIFY_BOOT_TIMEOUT))
+    local exit_hint=${1:-} deadline=$((SECONDS + QUALIFY_BOOT_TIMEOUT))
     while ((SECONDS < deadline)); do
         if ! vm_alive; then
             tail -n 80 "$VM_SERIAL" >&2 || true
-            die "VM $VM_NAME exited${hint:+: $hint}"
+            die "VM $VM_NAME exited${exit_hint:+: $exit_hint}"
         fi
         # QEMU's user network accepts the TCP connection before the guest listens, so
         # bound the whole attempt, banner exchange included.
@@ -379,9 +346,7 @@ vm_reboot() {
 
 status_json() { vm_ssh 'bootc status --format=json --format-version=1'; }
 
-# grubenv: `grub2-editenv list` in the guest. bootupd creates the block at install
-# (`grub2-editenv grubenv create`), so a missing file means boot counting is broken and
-# the assertion that reads this output must fail.
+# bootupd creates grubenv at install, so a missing file means boot counting is broken.
 grubenv() { vm_ssh "grub2-editenv $GRUBENV list"; }
 
 save_journal() {
@@ -391,8 +356,7 @@ save_journal() {
         >"$QUALIFY_OUT/logs/$VM_NAME-$1.units.txt" 2>&1 || true
 }
 
-# capture NAME: keep the bootc status JSON as a fixture for crates/apex-bootc tests.
-capture() {
+save_bootc_status_fixture() {
     local name=$1 version dir
     version=$(vm_ssh 'rpm -q --queryformat "%{version}-%{release}" bootc' 2>/dev/null || echo unknown)
     dir="$QUALIFY_OUT/fixtures/bootc-$version"
@@ -401,11 +365,6 @@ capture() {
     jq -e . "$dir/$name.json" >/dev/null || fail "fixture $name" "bootc status is not JSON"
 }
 
-# ---------------------------------------------------------------------------------------
-# Assertions
-
-# assert_running TEST: the boot finished; "degraded" is accepted only for failed units
-# listed in qualify-allowed-failures.txt.
 assert_running() {
     local test=$1 state failed unexpected
     state=$(vm_ssh 'timeout 900 systemctl is-system-running --wait' 2>/dev/null || true)
@@ -428,9 +387,6 @@ assert_running() {
     esac
 }
 
-# wait_assessment TEST: wait (at most 10 min) until this boot's apex-boot-assess.service
-# has finished, and require that it succeeded. It waits up to 2 min for a session that
-# proves the desktop before it runs its checks.
 wait_assessment() {
     local test=$1 props deadline=$((SECONDS + 600)) exit_ts active res code
     while true; do
@@ -449,7 +405,6 @@ wait_assessment() {
     fi
 }
 
-# assert_grubenv TEST STATE [DIGEST]: the Apex variables are in STATE (grubenv_check).
 assert_grubenv() {
     local test=$1 env problem
     env=$(grubenv) || fail "$test" "cannot read $GRUBENV"
@@ -457,9 +412,6 @@ assert_grubenv() {
         fail "$test" "grubenv: $problem (all: $(tr '\n' ' ' <<<"$env"))"
 }
 
-# assert_green TEST EXPECTED_DIGEST [confirmed]: the boot finished, the Apex assessment
-# ran green, the boot counter is disarmed and the booted image is EXPECTED_DIGEST. With
-# `confirmed` (the first boot of an applied update) apex_ok must also be 1.
 assert_green() {
     local test=$1 expected=$2 grubstate=${3:-disarmed} status booted
     assert_running "$test"
@@ -470,7 +422,6 @@ assert_green() {
     booted=$(jq -r '.status.booted.image.imageDigest // empty' <<<"$status")
     [[ $booted == "$expected" ]] || fail "$test" "booted digest is '$booted', expected $expected"
 
-    # Contract test: apexctl talks to apex-updated and its JSON must parse.
     local apexctl
     apexctl=$(vm_ssh 'apexctl status --json') || fail "$test" "apexctl status --json failed"
     jq -e 'type == "object"' <<<"$apexctl" >/dev/null || fail "$test" "apexctl status --json is not a JSON object"
@@ -479,8 +430,6 @@ assert_green() {
     result "$test" PASS "running, apex-boot-assess green, grubenv $grubstate, booted $expected"
 }
 
-# expect_rejected TEST COMMAND: COMMAND (run in the guest) must fail with a signature or
-# policy error and must leave no staged deployment behind.
 expect_rejected() {
     local test=$1 cmd=$2 out rc=0
     out=$(vm_ssh "$cmd" 2>&1) || rc=$?
@@ -494,13 +443,9 @@ expect_rejected() {
     result "$test" PASS "rejected: $(grep -Ei -m1 'signature|rejected|verif|policy' <<<"$out" | cut -c1-160)"
 }
 
-# ---------------------------------------------------------------------------------------
-# Scenarios
-
 negative_tests() {
     local candidate=$1 wrong_pub policy
     vm_ssh "mkdir -p $GUEST_TMP/no-registries.d"
-    # A fresh P-256 key that never signed anything, in a copy of the image's own policy.
     wrong_pub=$(openssl ecparam -name prime256v1 -genkey -noout | openssl ec -pubout 2>/dev/null)
     vm_ssh "cat > $GUEST_TMP/wrong.pub" <<<"$wrong_pub"
     policy=$(vm_ssh "cat $STRICT_POLICY") || fail "policy" "$STRICT_POLICY missing in the image"
@@ -511,8 +456,7 @@ negative_tests() {
         "CONTAINERS_POLICY_JSON=$GUEST_TMP/wrong-policy.json bootc switch --enforce-container-sigpolicy --download-only $candidate"
     expect_rejected foreign-registry \
         "CONTAINERS_POLICY_JSON=$STRICT_POLICY bootc switch --enforce-container-sigpolicy --download-only registry.fedoraproject.org/fedora-bootc:$APEX_FEDORA"
-    # With sigstore lookups disabled the candidate presents no signature at all, which is
-    # what an unsigned image in the Apex scopes looks like to the policy.
+    # An empty registries.d disables sigstore lookups: the candidate then looks unsigned.
     if vm_ssh 'command -v skopeo' >/dev/null 2>&1; then
         expect_rejected no-signature \
             "timeout 300 skopeo --policy $STRICT_POLICY --registries.d $GUEST_TMP/no-registries.d copy docker://$candidate dir:$GUEST_TMP/unsigned-copy; rc=\$?; rm -rf $GUEST_TMP/unsigned-copy; exit \$rc"
@@ -521,9 +465,6 @@ negative_tests() {
     fi
 }
 
-# download_only_test CANDIDATE: stage another signed image with --download-only, reboot,
-# and check that nothing changed (ADR 0008/0009: a locked stage is never booted and
-# never triggers a rollback).
 download_only_test() {
     local candidate=$1 cand_digest target="" target_digest rc spec
     cand_digest=$(digest_of "$candidate")
@@ -559,7 +500,7 @@ download_only_test() {
         fail download-only-stage "the staged deployment is not download-only"
     [[ $(jq -r '.status.staged.image.imageDigest' <<<"$status") == "$target_digest" ]] ||
         fail download-only-stage "staged digest differs from $target ($target_digest)"
-    capture staged-download-only
+    save_bootc_status_fixture staged-download-only
     assert_grubenv download-only-stage disarmed
     result download-only-stage PASS "staged $target ($target_digest), locked, boot counter not armed"
 
@@ -572,8 +513,6 @@ download_only_test() {
         fail download-only-reboot "the locked stage survived the reboot"
 }
 
-# stage_candidate TEST CANDIDATE: stage CANDIDATE download-only under the strict policy,
-# exactly as apex-updated would, and check what bootc staged.
 stage_candidate() {
     local test=$1 candidate=$2 digest status
     digest=$(digest_of "$candidate")
@@ -588,45 +527,32 @@ stage_candidate() {
     result "$test" PASS "staged $digest download-only under the strict policy"
 }
 
-# apply_candidate TEST DIGEST FIXTURE: the booted image's own `apexctl update apply` (N
-# installs N+1). It must arm the boot counter exactly as the contract says, although the
-# fresh install has no rollback deployment. The arming precondition (contract §5) is:
-# booted from an image, a different image staged, grubenv not armed for the booted
-# digest, and health-failure.json not naming it. A fresh install meets all four:
-# assert_green waits for a disarmed grubenv, and force-red names only the candidate.
-# Then unlock the stage.
+# Apply arms only when a different image is staged and the booted one is neither armed nor
+# named by health-failure.json, all of which a fresh install meets.
 apply_candidate() {
     local test=$1 digest=$2 fixture=$3
     vm_ssh "apexctl update apply --digest $digest" || fail "$test" "apexctl update apply failed"
     assert_grubenv "$test" armed "$digest"
     status_json | jq -e '.status.staged != null and ((.status.staged.downloadOnly // false) | not)' >/dev/null ||
         fail "$test" "the stage is still locked (or gone) after Apply"
-    capture "$fixture"
+    save_bootc_status_fixture "$fixture"
     result "$test" PASS "apexctl update apply armed apex_target=$digest apex_counter=$APEX_BOOT_ATTEMPTS and unlocked the stage"
 }
 
-# set_force_red DIGEST: write the qualification hook of crate apex-boot
-# (checks::force_red): a boot of DIGEST fails its assessment with the required check
-# `forced-red`. Only root can write /var/lib/apex (0700), and apex-boot-assess ignores the
-# file when it or its directory is writable by group or others.
+# apex-boot-assess ignores the hook unless it and its directory are writable by root only.
 set_force_red() {
     local digest=$1 mode
     is_digest "$digest" || die "set_force_red: invalid digest '$digest'"
+    local hook_size=$((${#digest} + 1))
     vm_ssh "install -d -m 0700 $APEX_STATE && (umask 077 && printf '%s\n' $digest > $FORCE_RED.tmp) && mv -f $FORCE_RED.tmp $FORCE_RED" ||
         fail red-hook "cannot write $FORCE_RED"
     mode=$(vm_ssh "stat -c '%a %U %s' $FORCE_RED $APEX_STATE" | tr '\n' ' ')
-    [[ $mode == "600 root 72 700 root "* ]] || fail red-hook "unexpected mode/owner/size of the hook: $mode"
+    [[ $mode == "600 root $hook_size 700 root "* ]] || fail red-hook "unexpected mode/owner/size of the hook: $mode"
     result red-hook PASS "$FORCE_RED names $digest"
 }
 
-# armed_attempts NAME ATTEMPTS: boot disk NAME, whose default entry is an armed update
-# that fails its assessment, and let it reboot itself ATTEMPTS times. QEMU runs with
-# -no-reboot, so every reboot the guest starts ends the QEMU process, which is how the
-# attempts are counted; QEMU is then started again on the same disk and firmware
-# variables. Nothing logs in meanwhile: an SSH login is a logind user session, and
-# apex-boot-assess never reboots while one exists (it would publish HealthFailure and
-# wait for the user instead). After the last attempt the VM is started once more, still
-# with -no-reboot, so one more reboot shows up as an exited VM in wait_ssh.
+# With -no-reboot every guest reboot ends QEMU, which counts the attempts. Nothing may log
+# in: apex-boot-assess never reboots while a user session exists.
 armed_attempts() {
     local name=$1 attempts=$2 n
     group "Boot the armed target of $name without logging in (expect $attempts self-reboots)"
@@ -640,9 +566,8 @@ armed_attempts() {
     endgroup
 }
 
-# forced_red_boots N: how many of the N boots before this one logged the forced-red check
-# of apex-boot-assess. Prints nothing when the journal is not persistent (fewer than N+1
-# boots listed), so the caller can tell "not checkable" from "0".
+# forced_red_boots N: counts among the N previous boots; prints nothing when the journal
+# is not persistent, so that the caller can tell "unknown" from 0.
 forced_red_boots() {
     local n=$1 listed count=0 b
     listed=$(vm_ssh 'journalctl --list-boots --no-pager 2>/dev/null' | grep -cE '^[[:space:]]*-?[0-9]+[[:space:]]' || true)
@@ -655,10 +580,6 @@ forced_red_boots() {
     printf '%s\n' "$count"
 }
 
-# assert_counted_rollback TEST PREVIOUS TARGET: the boot after GRUB fell back. PREVIOUS is
-# running, its assessment made it the default again (bootc rollback through apex-updated,
-# so the failed TARGET is now the rollback deployment), TARGET is denylisted, the intent
-# is gone, grubenv is disarmed, and the health failure names TARGET and forced-red.
 assert_counted_rollback() {
     local test=$1 previous=$2 target=$3 status booted file
     assert_running "$test"
@@ -675,7 +596,7 @@ assert_counted_rollback() {
     [[ $(jq -r '.status.rollback.image.imageDigest // empty' <<<"$status") == "$target" ]] ||
         fail "$test" "the rollback deployment is not the failed target $target"
     [[ -z $(jq -r '.status.staged // empty' <<<"$status") ]] || fail "$test" "a staged deployment exists after the rollback"
-    capture counted-rollback
+    save_bootc_status_fixture counted-rollback
 
     file=$(vm_ssh "cat $APEX_STATE/denylist.json") || fail "$test" "$APEX_STATE/denylist.json is missing"
     denylist_has "$target" <<<"$file" || fail "$test" "$target is not in the denylist: $file"
@@ -703,12 +624,11 @@ cmd_fresh() {
     candidate=$(candidate_ref "$1")
     digest=$(digest_of "$candidate")
     ensure_key
-    # The spec the laptop's testing channel follows; the install itself uses the digest.
-    install_disk fresh "$candidate" "$(repo_of "$candidate"):$APEX_FEDORA"
+    install_disk fresh "$candidate" "$(channel_of "$candidate")"
     start_vm fresh
     wait_ssh
     assert_green fresh-install "$digest"
-    capture booted
+    save_bootc_status_fixture booted
     negative_tests "$candidate"
     download_only_test "$candidate"
     save_journal final
@@ -725,13 +645,11 @@ cmd_upgrade() {
     digest=$(digest_of "$candidate")
     [[ $from_digest != "$digest" ]] || die "upgrade: FROM and CANDIDATE are the same image"
     ensure_key
-    install_disk upgrade "$from" "$(repo_of "$from"):$APEX_FEDORA"
+    install_disk upgrade "$from" "$(channel_of "$from")"
     start_vm upgrade
     wait_ssh
     assert_green upgrade-baseline "$from_digest"
 
-    # Stage the candidate exactly as apex-updated would (strict policy, download-only),
-    # then let the booted image's own updater apply it: N installs N+1.
     stage_candidate upgrade-stage "$candidate"
     local grubstate=disarmed
     if vm_ssh 'command -v apexctl' >/dev/null 2>&1; then
@@ -743,12 +661,11 @@ cmd_upgrade() {
     fi
 
     vm_reboot
-    # The first boot of an armed update must be confirmed (apex_ok=1) and disarmed.
     assert_green upgrade-reboot "$digest" "$grubstate"
     status=$(status_json)
     [[ $(jq -r '.status.rollback.image.imageDigest // empty' <<<"$status") == "$from_digest" ]] ||
         fail upgrade-reboot "rollback deployment is not the previous image $from_digest"
-    capture upgraded
+    save_bootc_status_fixture upgraded
     save_journal final
     stop_vm
     drop_disk upgrade
@@ -769,7 +686,7 @@ cmd_red() {
         return 0
     fi
     ensure_key
-    install_disk red "$from" "$(repo_of "$from"):$APEX_FEDORA"
+    install_disk red "$from" "$(channel_of "$from")"
     start_vm red
     wait_ssh
     assert_green red-baseline "$from_digest"
@@ -784,8 +701,7 @@ cmd_red() {
     set_force_red "$digest"
     apply_candidate red-apply "$digest" red-staged-applied
     save_journal baseline
-    # Power off instead of rebooting: the next boots run with -no-reboot so that each
-    # self-reboot of the candidate can be counted without logging in.
+    # Powered off, not rebooted: the counted boots start under -no-reboot.
     poweroff_vm red-apply
 
     armed_attempts red "$APEX_BOOT_ATTEMPTS"
@@ -793,7 +709,6 @@ cmd_red() {
     assert_counted_rollback red-fallback "$from_digest" "$digest"
     save_journal fallback
 
-    # The user reads the failure and dismisses it: AcknowledgeHealthFailure.
     if vm_ssh 'apexctl update acknowledge --help' >/dev/null 2>&1; then
         vm_ssh 'apexctl update acknowledge' || fail red-acknowledge "apexctl update acknowledge failed"
         ! vm_ssh "test -e $APEX_STATE/health-failure.json" ||
@@ -803,8 +718,6 @@ cmd_red() {
         result red-acknowledge SKIP "$from's apexctl has no 'update acknowledge'"
     fi
 
-    # An ordinary reboot must now start the previous image, unarmed: it is the default
-    # again, and the failed target is only the rollback deployment.
     stop_vm
     start_vm red red-settled
     wait_ssh
@@ -827,13 +740,11 @@ cmd_local() {
     digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
         die "$image is not in local container storage (build it with image.sh build)"
     ensure_key
-    # Later updates of such an install follow the testing channel (apex-testing:45); a
-    # laptop installed by docs/INSTALL.md follows apex:45.
     install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
     start_vm local
     wait_ssh
     assert_green local-install "$digest"
-    capture booted
+    save_bootc_status_fixture booted
     save_journal final
     stop_vm
     drop_disk local
@@ -855,7 +766,7 @@ cmd_all() {
                 cmd_red "$APEX_REPO_STABLE@$stable" "$candidate"
             fi
             ;;
-        3)
+        "$REGISTRY_ABSENT")
             result upgrade SKIP "apex:$APEX_FEDORA does not exist yet (first promotion)"
             result red SKIP "apex:$APEX_FEDORA does not exist yet: no previous image to fall back to"
             notice "upgrade and counted-rollback tests skipped: $APEX_REPO_STABLE:$APEX_FEDORA does not exist yet"
@@ -901,7 +812,6 @@ main() {
     "cmd_$cmd" "$@"
 }
 
-# selftest.sh sources this file to test its functions; only a direct run starts main.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     main "$@"
 fi

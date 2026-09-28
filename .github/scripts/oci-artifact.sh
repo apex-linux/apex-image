@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Content-addressed RPM artifacts on ghcr.io (ADR 0013): a FROM scratch image whose
-# only layer holds /rpms/*.rpm and /rpms/SHA256SUMS. The workflows that pushed and
-# attested them are gone (ci.yml builds nothing); image.sh context still pulls one by
-# digest. This script goes with lock replay in S2c.
+# RPM artifacts on ghcr.io: a FROM scratch image whose only layer holds /rpms/*.rpm and
+# /rpms/SHA256SUMS.
 #
 #   oci-artifact.sh digest REF          print the digest of REF; exit 3 when it is absent,
 #                                       4 when access is denied (a cache miss to callers)
@@ -17,19 +15,13 @@
 #   oci-artifact.sh push DIR REPO TAG   push DIR/*.rpm as REPO:TAG, print REPO@DIGEST
 #   oci-artifact.sh pull REF DEST       copy the RPMs of REF into DEST and verify them
 #
-# push uses buildah (rootful through sudo when not root); pull, digest and lookup use
-# skopeo; lookup also uses gh (GH_TOKEN, with attestations: read). REGISTRY_AUTH_FILE,
-# when set, is used for every registry call.
-#
-# Why lookup checks provenance: the tags are mutable and anyone holding a packages:
-# write token for the repository could point apex-rpms:<key> at other RPMs, which the
-# image build would install and the CI key would then sign. A publish job attested the
-# digest it pushed (actions/attest-build-provenance), and a cached artifact is reused
-# only when that attestation verifies for this repository, the given workflow at
-# refs/heads/main, a GitHub-hosted runner, and the key in the artifact's own label.
+# Environment: REGISTRY_AUTH_FILE for every registry call; GH_TOKEN (attestations: read)
+# for lookup.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+readonly UNVERIFIED=5
 
 cmd_digest() {
     (($# == 1)) || die "usage: oci-artifact.sh digest REF"
@@ -37,9 +29,8 @@ cmd_digest() {
     registry_digest "$1"
 }
 
-# verify_provenance REPO DIGEST WORKFLOW: gh attestation verify for REPO@DIGEST. The
-# raw manifest is the subject: its SHA-256 is DIGEST (checked here as well), and gh
-# looks attestations up by that digest.
+# Tags are mutable: anyone with packages:write could point one at other RPMs, which the
+# image would install and CI would sign. The attestation's subject is the raw manifest.
 verify_provenance() {
     local repo=$1 digest=$2 workflow=$3 tmp rc=0 identity
     require gh sha256sum
@@ -67,14 +58,14 @@ cmd_lookup() {
     ((rc == 0)) || return "$rc"
     if ! verify_provenance "$repo" "$digest" "$workflow"; then
         warn "$repo:$key ($digest) has no valid attestation by $workflow on main; treating it as a cache miss"
-        return 5
+        return "$UNVERIFIED"
     fi
     rc=0
     label=$(registry_label "$repo@$digest" "$APEX_LABEL_PREFIX.content-key") || rc=$?
     ((rc == 0)) || return 1
     if [[ $label != "$key" ]]; then
         warn "$repo:$key ($digest) is labelled content-key '$label'; treating it as a cache miss"
-        return 5
+        return "$UNVERIFIED"
     fi
     printf '%s\n' "$digest"
 }
@@ -102,7 +93,6 @@ cmd_push() {
         --label "$APEX_LABEL_PREFIX.content-key=$tag" \
         --label "org.opencontainers.image.description=Apex build artifact (RPMs), not a runnable image" \
         "$ctr"
-    # --timestamp 0 keeps the artifact free of build-time metadata.
     as_root buildah commit --quiet --timestamp 0 "$ctr" "localhost/apex-artifact:$tag" >/dev/null
     retry 4 10 as_root buildah push "${auth[@]}" --digestfile "$digestfile" \
         "localhost/apex-artifact:$tag" "docker://$repo:$tag"
@@ -150,7 +140,6 @@ main() {
     esac
 }
 
-# selftest.sh sources this file to test its functions; only a direct run starts main.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     main "$@"
 fi

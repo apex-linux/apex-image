@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Sign, tag and promote Apex images (ADR 0012, ADR 0013). Only digests move; nothing is
-# rebuilt, so what qualification booted is exactly what the channel tag points at.
+# Sign, tag and promote Apex images. Only digests move; nothing is rebuilt.
 #
 #   publish.sh sign REPO DIGEST             cosign-sign REPO@DIGEST (legacy .sig format)
 #   publish.sh tag-testing DIGEST VERSION   move apex-testing:45 to DIGEST
@@ -10,18 +9,8 @@
 #   publish.sh promote-tag DIGEST           move apex:45 to DIGEST
 #   publish.sh version DIGEST               print the candidate's version label
 #
-# Every tag move is a manifest-only `skopeo copy --preserve-digests` whose source must
-# pass the image's own committed policy (image/system_files/usr/share/apex/containers/
-# policy.json, key paths pointed at the checkout). So apex-testing:45 only ever names a
-# digest with a valid CI-key signature, and apex:45 one with a valid release-key
-# signature, checked by containers/image exactly as bootc checks it on the laptop.
-# Versions must strictly increase, and the candidate's commit
-# (org.opencontainers.image.revision) must be the current tag's commit or a descendant
-# of it: the version's date is the build date, so re-running an old run would otherwise
-# publish old code under a newer version. That needs the full history of main in the
-# checkout (fetch-depth: 0). A re-run that finds the tag already on DIGEST is a no-op.
-# A tag counts as absent (first publication) only when inspect says the manifest is
-# unknown AND `skopeo list-tags` confirms it.
+# A tag moves only to a digest that passes the image's own committed policy, with a newer
+# version built from the same or a later commit of main (needs fetch-depth: 0).
 #
 # Environment: REGISTRY_AUTH_FILE (write access for tag moves); for sign also
 # COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GH_TOKEN and GITHUB_ACTOR, and cosign on PATH.
@@ -31,22 +20,18 @@ set -euo pipefail
 
 readonly SYSTEM_FILES="$APEX_ROOT/image/system_files"
 readonly COMMITTED_POLICY="$SYSTEM_FILES/usr/share/apex/containers/policy.json"
+readonly TAG_ALREADY_THERE=10
 
-# The committed strict policy, with /usr/share/apex/... key paths rewritten to the
-# checkout, written to a temporary file whose path is printed.
 checkout_policy() {
     [[ -f $COMMITTED_POLICY ]] || die "missing $COMMITTED_POLICY: cannot verify signatures"
     local out
     out=$(mktemp --suffix=.json)
     policy_key_root "$SYSTEM_FILES" <"$COMMITTED_POLICY" >"$out"
-    # Refuse a policy that would accept anything: the check below would then prove nothing.
+    # A policy that accepts anything would make every verified copy prove nothing.
     policy_rejects_by_default <"$out" || die "$COMMITTED_POLICY does not default to reject"
     printf '%s\n' "$out"
 }
 
-# require_keys NAME...: fail clearly while a committed public key is still the
-# placeholder (image/system_files/usr/share/apex/keys/README.md); the policy would
-# reject everything anyway, but with a far less helpful error.
 require_keys() {
     local k f
     for k in "$@"; do
@@ -58,8 +43,6 @@ require_keys() {
     done
 }
 
-# A registries.d directory that enables sigstore attachments for ghcr.io/sekirokenjii:
-# the committed one when the image ships it, otherwise an equivalent generated file.
 checkout_registries_d() {
     local dir committed
     dir=$(mktemp -d)
@@ -74,7 +57,6 @@ checkout_registries_d() {
     printf '%s\n' "$dir"
 }
 
-# verified_copy SRC DST: manifest-only copy that fails unless SRC passes the policy.
 verified_copy() {
     local src=$1 dst=$2 policy regd
     policy=$(checkout_policy)
@@ -87,7 +69,7 @@ verified_copy() {
     rm -rf "$policy" "$regd"
 }
 
-# candidate_labels DIGEST: "<version> <revision>" of apex-testing@DIGEST, validated.
+# candidate_labels DIGEST: prints "VERSION REVISION" of apex-testing@DIGEST.
 candidate_labels() {
     local digest=$1 json version fedora revision
     is_digest "$digest" || die "invalid digest '$digest'"
@@ -102,22 +84,20 @@ candidate_labels() {
     printf '%s %s\n' "$version" "$revision"
 }
 
-# candidate_version DIGEST: the version label alone (publish.sh version).
 candidate_version() {
     local labels
     labels=$(candidate_labels "$1")
     printf '%s\n' "${labels% *}"
 }
 
-# check_increases REPO:TAG DIGEST VERSION REVISION: 0 = move the tag, 10 = already
-# there; dies when the move would not increase the version, would go back to an older
-# commit, or the current state is unknown.
+# The version's date is the build date, so a re-run of an old run would carry old code
+# under a newer version: the commit must descend from the current tag's as well.
 check_increases() {
     local ref=$1 digest=$2 version=$3 revision=$4 json rc=0 cur_digest cur_version cur_revision
     json=$(registry_inspect "$ref") || rc=$?
     case $rc in
         0) ;;
-        3)
+        "$REGISTRY_ABSENT")
             registry_tag_absent "${ref%:*}" "${ref##*:}" ||
                 die "inspect found no $ref but list-tags does not confirm it; refusing to treat it as a first publication"
             log "$ref does not exist yet; first publication"
@@ -130,7 +110,7 @@ check_increases() {
     cur_revision=$(jq -r '.Labels["org.opencontainers.image.revision"] // ""' <<<"$json")
     if [[ $cur_digest == "$digest" ]]; then
         log "$ref already points at $digest"
-        return 10
+        return "$TAG_ALREADY_THERE"
     fi
     version_valid "$cur_version" || die "$ref carries no valid version label ('$cur_version')"
     version_gt "$version" "$cur_version" ||
@@ -160,7 +140,7 @@ cmd_sign() {
     printf '%s' "$GH_TOKEN" | cosign login "$APEX_REGISTRY" \
         --username "${GITHUB_ACTOR:-apex-ci}" --password-stdin >/dev/null
     # Legacy .sig tags: containers/image (bootc, skopeo, podman) cannot verify the new
-    # bundle format yet (ADR 0012). Rekor upload stays on for leak detection.
+    # bundle format yet. Rekor upload stays on for leak detection.
     retry 3 15 cosign sign --yes --new-bundle-format=false --use-signing-config=false \
         --key env://COSIGN_PRIVATE_KEY "$repo@$digest"
     rm -rf "$DOCKER_CONFIG"
@@ -177,7 +157,7 @@ cmd_tag_testing() {
     check_increases "$APEX_REPO_TESTING:$APEX_FEDORA" "$digest" "$version" "$revision" || rc=$?
     case $rc in
         0) verified_copy "$APEX_REPO_TESTING@$digest" "$APEX_REPO_TESTING:$APEX_FEDORA" ;;
-        10) ;;
+        "$TAG_ALREADY_THERE") ;;
         *) return "$rc" ;;
     esac
     summary "\`$APEX_REPO_TESTING:$APEX_FEDORA\` -> \`$digest\` ($version)"
@@ -190,8 +170,7 @@ cmd_promote_copy() {
     labels=$(candidate_labels "$digest")
     version=${labels% *} revision=${labels#* }
     check_increases "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$version" "$revision" || rc=$?
-    ((rc == 0 || rc == 10)) || return "$rc"
-    # The immutable version tag: never overwrite it with a different digest.
+    ((rc == 0 || rc == TAG_ALREADY_THERE)) || return "$rc"
     rc=0
     existing=$(registry_digest "$APEX_REPO_STABLE:$version") || rc=$?
     case $rc in
@@ -200,7 +179,7 @@ cmd_promote_copy() {
                 die "$APEX_REPO_STABLE:$version already exists as $existing; version tags are immutable"
             log "$APEX_REPO_STABLE:$version already points at $digest"
             ;;
-        3)
+        "$REGISTRY_ABSENT")
             registry_tag_absent "$APEX_REPO_STABLE" "$version" ||
                 die "inspect found no $APEX_REPO_STABLE:$version but list-tags does not confirm it; not overwriting a version tag"
             verified_copy "$APEX_REPO_TESTING@$digest" "$APEX_REPO_STABLE:$version"
@@ -220,7 +199,7 @@ cmd_promote_tag() {
     check_increases "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$version" "$revision" || rc=$?
     case $rc in
         0) verified_copy "$APEX_REPO_STABLE@$digest" "$APEX_REPO_STABLE:$APEX_FEDORA" ;;
-        10) ;;
+        "$TAG_ALREADY_THERE") ;;
         *) return "$rc" ;;
     esac
     summary "\`$APEX_REPO_STABLE:$APEX_FEDORA\` -> \`$digest\` ($version)"
@@ -243,7 +222,6 @@ main() {
     esac
 }
 
-# selftest.sh sources this file to test its functions; only a direct run starts main.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     main "$@"
 fi
