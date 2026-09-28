@@ -2,10 +2,11 @@
 # bootc applies changes to this file on upgrade and keeps machine-local arguments.
 #
 # Boot counting (ADR 0009): an armed update is rolled back only if failed boots reach
-# GRUB again, so early failures must reboot instead of waiting at a prompt.
+# GRUB again, so a kernel panic must reboot instead of hanging.
 #   panic=10             reboot 10 s after a kernel panic
-#   rd.shell=0           no dracut emergency shell, which would wait at the console
-#   rd.emergency=reboot  what dracut does on a fatal initramfs error; it needs rd.shell=0
+# The dracut rescue shell stays: on the only machine it is worth more than a faster
+# fallback. An initramfs failure on a counted boot waits there, and a forced power-off
+# moves the counter (ARCHITECTURE §5.3).
 #
 # dGPU (ARCHITECTURE §6.4): no driver binds the GA107 at M1, so it can idle in D3cold
 # (see /usr/lib/udev/rules.d/61-apex-dgpu-pm.rules). dracut copies
@@ -34,8 +35,6 @@ kargs = [
   "rhgb",
   "quiet",
   "panic=10",
-  "rd.shell=0",
-  "rd.emergency=reboot",
   "modprobe.blacklist=nouveau,nova_core",
   "rd.driver.blacklist=nouveau,nova_core",
   "systemd.ssh_auto=no",

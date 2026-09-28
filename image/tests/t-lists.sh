@@ -59,8 +59,12 @@ if command -v python3 >/dev/null 2>&1; then
     run python3 -c 'import sys, tomllib; print("\n".join(tomllib.load(open(sys.argv[1], "rb"))["kargs"]))' \
         "$IMAGE_DIR/system_files/usr/lib/bootc/kargs.d/10-apex.toml"
     expect_rc "kargs.d parses as TOML" 0
-    for k in rhgb quiet panic=10 rd.shell=0 rd.emergency=reboot systemd.ssh_auto=no; do
+    for k in rhgb quiet panic=10 systemd.ssh_auto=no; do
         expect_out "karg $k" "^$k\$"
+    done
+    # The dracut rescue shell stays available (ARCHITECTURE §5.3).
+    for k in rd.shell=0 rd.emergency=reboot; do
+        expect_no_out "no karg $k" "^$k\$"
     done
 fi
 
