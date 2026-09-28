@@ -33,16 +33,9 @@ mkdir -p _build
 
 in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
 
-# rpms.sh and image.sh build from git HEAD. This checkout is an rsync copy
-# whose .git directory is independent of the host repository, so uncommitted host
-# changes are captured here in a throwaway snapshot commit. It never leaves the VM:
-# the next sync replaces this .git with the host's.
-if ! git rev-parse -q --verify HEAD >/dev/null || [[ -n $(git status --porcelain) ]]; then
-    git add -A
-    git -c user.name='Apex builder VM' -c user.email='builder-vm@localhost' \
-        commit -q --no-verify -m 'builder-vm snapshot of the host working tree (local only, never pushed)'
-    echo "snapshot commit $(git rev-parse --short=12 HEAD) of the host working tree (VM copy only)"
-fi
+# rpms.sh and image.sh build from git HEAD: uncommitted host changes become a throwaway
+# snapshot commit in this VM copy of the checkout (snapshot.sh).
+tools/builder-vm/snapshot.sh
 
 libfprint_args=(--libfprint-dir _build/libfprint)
 if ((image_only)); then

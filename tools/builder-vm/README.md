@@ -51,6 +51,21 @@ The other recipes:
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
 serial log) and `destroy --yes`.
 
+The tools that build from git HEAD see uncommitted host changes through
+`snapshot.sh`, which commits a dirty VM copy of the checkout as a throwaway snapshot.
+The next sync replaces that copy's `.git` with the host's, so the snapshot never leaves
+the VM.
+
+## Rebuild lane
+
+The `just pkg-*` recipes run `packaging/rebuild.sh` in the VM: Fedora SRPMs rebuilt
+with the Apex series, such as gnome-shell with the Apex layer
+([packaging/README.md](../../packaging/README.md#the-rebuild-lane)). Its state lives in
+`~/apex-store/` in the VM, outside the synced checkout: the built sets by content key,
+`rpms.lock` and `rpms.lock.next`. dnf's metadata for the lane's containers is kept in
+the podman volume `apex-lane-dnf-cache`. A cold gnome-shell build takes about 10
+minutes.
+
 ## Resources
 
 | Setting | Default | Variable |
