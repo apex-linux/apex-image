@@ -10,8 +10,6 @@ LOCK=${APEX_RPMS_LOCK:-$(rootpath /usr/share/apex/rpms.lock)}
 THEME=/usr/share/gnome-shell/gnome-shell-theme.gresource
 SCHEMA=/usr/share/glib-2.0/schemas/io.github.sekirokenjii.Apex.Desktop.gschema.xml
 USERUNITS=/usr/lib/systemd/user
-# Fedora 45's signing key, fingerprint 4F50 A611 4CD5 C697 6A7F 1179 655A 4B02 F577 861E.
-FEDORA_KEYID=655a4b02f577861e
 MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */
 /*! apex-shell-structure */'
@@ -30,14 +28,6 @@ query() {
 
 evr_of() {
     query "$1" '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' | head -n 1
-}
-
-# The Signature field of rpm -qi is one line in rpm 4 and indented lines after
-# "Signature :" in rpm 6, so it runs to the next field.
-fedora_signed() {
-    root_rpm -qi "$1" 2>/dev/null |
-        awk '/^Signature[[:space:]]*:/ { on = 1; print; next } on && /^[[:space:]]/ { print; next } { on = 0 }' |
-        grep -iq "$FEDORA_KEYID"
 }
 
 state=''
@@ -70,8 +60,12 @@ case $state in
             else
                 fail "$p ${vr:-(not installed)} is not an .apexN build, but the lane's gnome-shell family is $state"
             fi
+            if signed_by "$APEX_RPM_KEYID" "$p"; then
+                pass "$p carries the Apex RPM signature ($APEX_RPM_KEYID)"
+            else
+                fail "$p is not signed by the Apex RPM key ($APEX_RPM_KEYID)"
+            fi
         done
-        skip "the Apex RPM signature of gnome-shell: there is no Apex RPM key yet (packaging/README.md, Signing)"
         pin=$(root_rpm -q --requires gnome-shell 2>/dev/null | sed -n 's/^mutter(x86-64) = \([^ ]*\)$/\1/p' | head -n 1)
         mutter=$(evr_of mutter)
         case $pin in
@@ -108,7 +102,7 @@ case $state in
                 fail "$p is not installed"
             elif printf '%s\n' "$vr" | grep -Eq '\.apex[0-9]+'; then
                 fail "$p $vr is an Apex build, but the lane's gnome-shell family is $state"
-            elif fedora_signed "$p"; then
+            elif signed_by "$FEDORA_KEYID" "$p"; then
                 pass "$p $vr is Fedora's build, signed by Fedora's key (the family is $state: degraded=shell)"
             else
                 fail "$p is not signed by Fedora's key ($FEDORA_KEYID)"
@@ -129,7 +123,7 @@ esac
 for p in mutter mutter-common; do
     if ! root_rpm -q "$p" >/dev/null 2>&1; then
         fail "$p is not installed"
-    elif fedora_signed "$p"; then
+    elif signed_by "$FEDORA_KEYID" "$p"; then
         pass "$p $(evr_of "$p") carries Fedora's signature"
     else
         fail "$p is not signed by Fedora's key ($FEDORA_KEYID): mutter must be Fedora's binary (ADR 0014)"

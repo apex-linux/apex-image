@@ -7,7 +7,7 @@
 # by its inputs in ~/.cache/apex-lane.
 #
 #   lane.sh ARGS...   run apex-lane ARGS in the checkout (build, key, prep, export,
-#                     status, promote, stock)
+#                     status, promote, stock, sign)
 #   lane.sh --path    print the binary's path, building it when needed
 set -eEuo pipefail
 # A failure of lane.sh itself exits 1, never a child's status: 3 means a held family.

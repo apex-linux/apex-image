@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use super::Vm;
 use super::checkout::{Mode, Source1};
+use super::sign::Signer;
 use crate::core::hold::{self, FailureRoute, Timer};
 use crate::core::lock;
 use crate::core::manifest::{self, header_field};
@@ -37,17 +38,6 @@ impl Vm<'_> {
         Ok(pkg)
     }
 
-    pub fn check_signing(&self) -> Result<()> {
-        let conf = &self.settings.signing_env;
-        if conf.symlink_metadata().is_ok() {
-            return Err(infra(format!(
-                "{} exists, but this lane does not sign yet: add the rpmsign step of packaging/README.md (Signing) first",
-                conf.display()
-            )));
-        }
-        Ok(())
-    }
-
     pub fn build(&self, target: &str) -> Result<Vec<Outcome>> {
         let pkgs = if target == "all" {
             let all = pkg::all(&self.root)?;
@@ -59,13 +49,13 @@ impl Vm<'_> {
             vec![target.to_owned()]
         };
         let _lock = fs::lock_store(&self.settings.store)?;
-        pkgs.iter().map(|p| self.build_one(p)).collect()
+        let signer = self.signer()?;
+        pkgs.iter().map(|p| self.build_one(p, &signer)).collect()
     }
 
-    pub fn build_one(&self, name: &str) -> Result<Outcome> {
+    pub fn build_one(&self, name: &str, signer: &Signer) -> Result<Outcome> {
         let pkg = self.load(name)?;
         self.check_committed(&pkg)?;
-        self.check_signing()?;
         let start = Instant::now();
         let n = self.release_n(&pkg)?;
         let tool = self.tool_id()?;
@@ -122,7 +112,9 @@ impl Vm<'_> {
         };
         if out.join("unchanged").is_file() {
             let key = key_of("unchanged")?;
-            Self::verify_stored(&self.store_pkg(&pkg.name).join(&key))?;
+            let stored = self.store_pkg(&pkg.name).join(&key);
+            Self::verify_stored(&stored)?;
+            signer.check_stored(&stored)?;
             self.record_built(&pkg, &key)?;
             self.report.summary(&[
                 format!("### {}: unchanged", pkg.name),
@@ -139,7 +131,7 @@ impl Vm<'_> {
                 stored.display()
             )));
         }
-        self.sign_built(&out)?;
+        self.sign_built(&out, signer)?;
         let partial = self.store_pkg(&pkg.name).join(format!(".partial-{key}"));
         remove_tree(&partial)?;
         self.move_tree(&out, &partial)?;
@@ -155,14 +147,6 @@ impl Vm<'_> {
             "```".into(),
         ]);
         Ok(Outcome::Built(key))
-    }
-
-    /// Signing belongs here, in the VM, so the Apex RPM key never enters the build container.
-    fn sign_built(&self, out: &Path) -> Result<()> {
-        self.check_signing()?;
-        self.report
-            .log("signing: no Apex RPM key yet; the built RPMs stay unsigned ([apex] gpgcheck=0)");
-        fs::append(&out.join("manifest.txt"), b"# sig=none\n")
     }
 
     fn move_tree(&self, from: &Path, to: &Path) -> Result<()> {

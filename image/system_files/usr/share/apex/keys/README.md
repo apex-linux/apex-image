@@ -1,7 +1,8 @@
-# Apex image signing keys (public halves)
+# Apex signing keys (public halves)
 
-These are the cosign public keys that `/usr/share/apex/containers/policy.json` trusts
-(ADR 0012, M1 contract §2). Only public keys ever go here. A CI check scans every image
+The `.pub` files are the cosign public keys that `/usr/share/apex/containers/policy.json`
+trusts (ADR 0012, M1 contract §2). `RPM-GPG-KEY-apex` is the Apex RPM key
+([below](#rpm-gpg-key-apex)). Only public keys ever go here. A CI check scans every image
 layer for private keys.
 
 | File | Trusted for | Private half lives in |
@@ -9,6 +10,7 @@ layer for private keys.
 | `release.pub` | `ghcr.io/sekirokenjii/apex` | GitHub environment `release` (main only, manual approval) |
 | `release-backup.pub` | `ghcr.io/sekirokenjii/apex` | offline only, encrypted; never in GitHub |
 | `ci.pub` | `ghcr.io/sekirokenjii/apex-testing` | GitHub environment `testing` |
+| `RPM-GPG-KEY-apex` | the RPMs of `[apex]` in the image build, not images | the builder VM; one offline backup |
 
 ## Placeholders
 
@@ -51,6 +53,15 @@ Signing, for reference (the workflows own this):
 cosign sign --yes --new-bundle-format=false --use-signing-config=false \
   --key env://COSIGN_PRIVATE_KEY ghcr.io/sekirokenjii/apex@sha256:<digest>
 ```
+
+## RPM-GPG-KEY-apex
+
+The public half of the Apex RPM key: OpenPGP Ed25519, fingerprint
+`553A 9389 03DF FEEA 647F 7CC4 ABEF 111D 1FCF 882B`. It signs every RPM the builder VM
+builds. The image build's `[apex]` repository verifies with it, and G1 checks that this
+file holds exactly the key pinned in `image/checks/lib/common.sh`. Its private half lives
+only in the builder VM, with one offline backup (packaging/README.md, "Signing";
+rotation in RECOVERY §6.8). `policy.json` does not use it.
 
 ## Rotation and compromise (ADR 0012)
 

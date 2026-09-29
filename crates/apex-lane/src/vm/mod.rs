@@ -1,6 +1,7 @@
 pub mod build;
 pub mod checkout;
 pub mod commands;
+pub mod sign;
 
 use std::path::{Path, PathBuf};
 

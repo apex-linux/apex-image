@@ -83,6 +83,28 @@ pub fn first_fingerprint(output: &[u8]) -> String {
         .unwrap_or_default()
 }
 
+/// From `gpg --with-colons` output: one per primary key, never a subkey's.
+pub fn primary_fingerprints(output: &[u8]) -> Vec<String> {
+    const FINGERPRINT_FIELD: usize = 9;
+    let mut out = Vec::new();
+    let mut after_pub = false;
+    for line in text::lines(output) {
+        let f: Vec<&[u8]> = line.split(|&b| b == b':').collect();
+        match f[0] {
+            b"pub" => after_pub = true,
+            b"fpr" if after_pub => {
+                out.push(text::lossy(
+                    f.get(FINGERPRINT_FIELD).copied().unwrap_or_default(),
+                ));
+                after_pub = false;
+            }
+            b"sub" | b"sec" | b"ssb" => after_pub = false,
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn has_line(output: &[u8], line: &str) -> bool {
     text::lines(output)
         .into_iter()
@@ -118,6 +140,13 @@ mod tests {
         assert_eq!(
             first_fingerprint(b"pub:-:4096:1:655A4B02F577861E:1:::::scESC::::::23::0:\nfpr:::::::::4F50A6114CD5C6976A7F1179655A4B02F577861E:\n"),
             "4F50A6114CD5C6976A7F1179655A4B02F577861E"
+        );
+        assert_eq!(
+            primary_fingerprints(b"pub:-:255:22:ABEF111D1FCF882B:1::::scSC:\nfpr:::::::::553A938903DFFEEA647F7CC4ABEF111D1FCF882B:\nuid:-::::1::X::A::\nsub:-:255:18:1:1::::e:\nfpr:::::::::0000000000000000000000000000000000000001:\npub:-:255:22:2:1::::scSC:\nfpr:::::::::0000000000000000000000000000000000000002:\n"),
+            [
+                "553A938903DFFEEA647F7CC4ABEF111D1FCF882B",
+                "0000000000000000000000000000000000000002"
+            ]
         );
         assert_eq!(check_reason(b"ok a\nnot ok: b\nok c\n"), b"not ok: b");
         assert_eq!(

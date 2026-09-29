@@ -27,6 +27,21 @@ esac
 sed -e 's/^RUN[[:space:]]*//' -e ':a' -e 's/^--mount=[^[:space:]]*[[:space:]]*//' -e 'ta' \
     "$T/run.raw" >"$T/run.sh"
 expect_file "the RUN script starts with set -eu" '^set -eu;' "$T/run.sh"
+expect_file "[apex] verifies with the Apex RPM key, which COPY puts next to the RPMs" \
+    ' apexkey=/apex/RPM-GPG-KEY-apex;' "$T/run.sh"
+expect_file "and with Fedora's key" ' fedorakey=/usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-[$]rel-primary;' "$T/run.sh"
+awk '/^FROM .* AS repos$/ { stage = 1; next } stage && /^FROM / { exit } stage && /^COPY / { print }' \
+    "$IMAGE_DIR/Containerfile" >"$T/copies"
+printf '%s\n' 'COPY rpms/ /apex/' \
+    'COPY image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex /apex/RPM-GPG-KEY-apex' >"$T/copies.want"
+if cmp -s "$T/copies.want" "$T/copies"; then
+    ok "the committed Apex RPM key is copied over rpms/, so the build context cannot replace it"
+else
+    not_ok "the committed Apex RPM key is copied over rpms/, so the build context cannot replace it" &&
+        sed 's/^/#   /' "$T/copies"
+fi
+# The sandbox cannot add directories under the host's /usr, so Fedora's key sits at its root.
+sed -i -e 's|/usr/share/pki/rpm-gpg/|/pki/|g' "$T/run.sh"
 
 list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }
 
@@ -44,8 +59,11 @@ nvr_rows() {
 # setup NAME: the repo files, rpms/, packages/ and fake dnf5 data of a fresh scenario.
 setup() {
     S=$T/$1
-    mkdir -p "$S/etc/yum.repos.d" "$S/etc/alternatives" "$S/apex" "$S/dnf" "$S/packages"
+    mkdir -p "$S/etc/yum.repos.d" "$S/etc/alternatives" "$S/apex" "$S/dnf" "$S/packages" \
+        "$S/pki"
     cp "$IMAGE_DIR"/packages/*.txt "$S/packages/"
+    cp "$IMAGE_DIR/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" "$S/apex/"
+    printf 'Fedora 45 key\n' >"$S/pki/RPM-GPG-KEY-fedora-45-primary"
     # shellcheck disable=SC2016 # $releasever and $basearch are dnf's, written literally
     for p in fedora updates; do
         {
@@ -111,6 +129,7 @@ stage() {
         --symlink usr/lib64 /lib64 \
         --bind "$S/etc" /etc --ro-bind-try /etc/alternatives /etc/alternatives \
         --bind "$S/apex" /apex --ro-bind "$S/packages" /run/apex-packages \
+        --ro-bind "$S/pki" /pki \
         --ro-bind "$FAKE" /fake --bind "$S/dnf" /fakednf \
         --tmpfs /tmp --dir /var/cache --proc /proc --dev /dev \
         --clearenv --setenv PATH /fake:/usr/bin --setenv LC_ALL C \
@@ -133,6 +152,16 @@ expect_file "A: updates-testing is disabled" '^enabled=0$' "$T/a/$REPOS/fedora-u
 if grep -q '^enabled=1' "$T/a/$REPOS/fedora-updates-testing.repo"; then not_ok "A: updates-testing-debuginfo is disabled too"; else ok "A: updates-testing-debuginfo is disabled too"; fi
 expect_file "A: [apex] admits only the names in apex.txt and rpms.lock" \
     '^includepkgs=apex,apex-desktop,gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/apex.repo"
+expect_file "A: [apex] checks signatures" '^gpgcheck=1$' "$T/a/$REPOS/apex.repo"
+expect_file "A: with the Apex RPM key and Fedora's, for the mirrored mutter, both in the repository" \
+    '^gpgkey=file:///repos/apex/RPM-GPG-KEY-apex file:///repos/apex/RPM-GPG-KEY-fedora-45-primary$' \
+    "$T/a/$REPOS/apex.repo"
+if cmp -s "$T/a/pki/RPM-GPG-KEY-fedora-45-primary" "$T/a/apex/RPM-GPG-KEY-fedora-45-primary"; then
+    ok "A: Fedora's key is copied next to the RPMs"
+else
+    not_ok "A: Fedora's key is copied next to the RPMs"
+fi
+if grep -Eq '^gpgcheck=0' "$T/a/$REPOS/apex.repo"; then not_ok "A: no gpgcheck=0 in [apex]"; else ok "A: no gpgcheck=0 in [apex]"; fi
 for p in fedora updates; do
     expect_file "A: $p excludes the locked names and libfprint, in one line" \
         '^excludepkgs=gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/fedora-$p.repo"
@@ -282,5 +311,16 @@ lane_lock held >"$T/t/apex/rpms.lock"
 stage t
 expect_rc "T: a held family builds" 0
 expect_file "T: with its names admitted" '^includepkgs=apex,apex-desktop,gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/t/$REPOS/apex.repo"
+
+setup u
+rm "$T/u/apex/RPM-GPG-KEY-apex"
+stage u
+expect_rc "U: without the Apex RPM key it fails" 1
+expect_out "U: and names it" '^ERROR: /apex/RPM-GPG-KEY-apex is missing: \[apex\] verifies its packages with it$'
+setup u2
+rm "$T/u2/pki/RPM-GPG-KEY-fedora-45-primary"
+stage u2
+expect_rc "U: without Fedora's key it fails" 1
+expect_out "U: and names it" '^ERROR: /pki/RPM-GPG-KEY-fedora-45-primary is missing: \[apex\] verifies its packages with it$'
 
 done_testing

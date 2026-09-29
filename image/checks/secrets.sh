@@ -14,7 +14,7 @@ PATTERN='(^|["'"'"'[:space:]=]|\\n)-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?----
 
 make_tmpdir
 
-# Apex packages come from the unsigned local repository: owning a file never excuses it.
+# Apex builds these packages itself, so owning a file never excuses it.
 if [ -r "$APEX_PACKAGES" ]; then
     read_list "$APEX_PACKAGES" | cut -f1 >"$TMPD/apex-packages"
 else

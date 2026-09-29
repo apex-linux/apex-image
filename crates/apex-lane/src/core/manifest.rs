@@ -84,6 +84,58 @@ pub fn entry_line(kind: &str, nevra: &str, sha256: &str, file: &str) -> String {
     format!("{kind} {nevra} {sha256} {file}\n")
 }
 
+/// The Apex RPM key signs these; `mirror` and `dev` RPMs keep Fedora's signature.
+pub fn is_signed_kind(kind: &[u8]) -> bool {
+    matches!(kind, b"built" | b"apex-srpm")
+}
+
+const SIG_LINE: &[u8] = b"# sig=";
+
+/// `manifest` after the files of `signed` (name, new sha256) were signed with the key
+/// `fingerprint`: their entries carry the new digests and one `# sig=` line names the
+/// key. `None` when no entry names any of them.
+pub fn resigned(
+    manifest: &[u8],
+    signed: &[(String, String)],
+    fingerprint: &str,
+) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(manifest.len() + 64);
+    let mut named = false;
+    for line in text::lines(manifest) {
+        if line.starts_with(SIG_LINE) {
+            continue;
+        }
+        let f = text::read_fields(line, 4);
+        let hit = if line.starts_with(b"#") {
+            None
+        } else {
+            signed.iter().find(|(file, _)| file.as_bytes() == f[3])
+        };
+        if let Some((file, sha256)) = hit {
+            named = true;
+            out.extend_from_slice(
+                entry_line(&text::lossy(f[0]), &text::lossy(f[1]), sha256, file).as_bytes(),
+            );
+        } else {
+            out.extend_from_slice(line);
+            out.push(b'\n');
+        }
+    }
+    out.extend_from_slice(SIG_LINE);
+    out.extend_from_slice(fingerprint.as_bytes());
+    out.push(b'\n');
+    named.then_some(out)
+}
+
+/// The fingerprint of the key the set was signed with, or `none` for a set stored before
+/// the lane signed.
+pub fn signed_with(manifest: &[u8]) -> Option<&[u8]> {
+    text::lines(manifest)
+        .into_iter()
+        .rev()
+        .find_map(|line| line.strip_prefix(SIG_LINE))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +159,31 @@ mod tests {
             "an empty value still counts"
         );
         assert_eq!(header_field(b"x key=a\n", "key"), b"");
+    }
+
+    #[test]
+    fn resigning_replaces_digests_and_the_sig_line() {
+        let m = b"# apex-lane manifest 1: kind nevra sha256 file\n# pkg=x\nbuilt a-0:1-1.x86_64 aaa a-1-1.x86_64.rpm\nmirror m-0:1-1.x86_64 mmm m-1-1.x86_64.rpm\napex-srpm a-0:1-1.src sss a-1-1.src.rpm\n# sig=none\n";
+        let signed = [
+            ("a-1-1.x86_64.rpm".to_owned(), "AAA".to_owned()),
+            ("a-1-1.src.rpm".to_owned(), "SSS".to_owned()),
+        ];
+        assert_eq!(
+            resigned(m, &signed, "F00D").unwrap(),
+            b"# apex-lane manifest 1: kind nevra sha256 file\n# pkg=x\nbuilt a-0:1-1.x86_64 AAA a-1-1.x86_64.rpm\nmirror m-0:1-1.x86_64 mmm m-1-1.x86_64.rpm\napex-srpm a-0:1-1.src SSS a-1-1.src.rpm\n# sig=F00D\n"
+        );
+        assert_eq!(
+            resigned(m, &[("other.rpm".into(), "x".into())], "F00D"),
+            None
+        );
+        assert_eq!(signed_with(m), Some(&b"none"[..]));
+        assert_eq!(
+            signed_with(&resigned(m, &signed, "F00D").unwrap()),
+            Some(&b"F00D"[..])
+        );
+        assert_eq!(signed_with(b"# pkg=x\nbuilt a b c d\n"), None);
+        assert!(is_signed_kind(b"built") && is_signed_kind(b"apex-srpm"));
+        assert!(!is_signed_kind(b"mirror") && !is_signed_kind(b"dev"));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Guest-side image build for `builder-vm.sh image`, run in ~/apex-fedora inside the
-# builder VM. Nothing is pushed or signed, and nothing promotes the lane's lock.
+# builder VM. The Apex RPM key signs every RPM; nothing is pushed, the image is not
+# signed, and nothing promotes the lane's lock.
 #
 #   build-image.sh [--image-only]
 #
@@ -35,6 +36,15 @@ mkdir -p _build
 
 in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
 
+# In the VM, after the container: the Apex RPM key never meets a build script. The lane
+# signs its own builds the same way.
+sign_rpms() {
+    local dir=$1
+    sudo chown -R "$(id -u):$(id -g)" -- "$dir"
+    tools/builder-vm/lane.sh sign "$dir"/*.rpm
+    (cd "$dir" && sha256sum -- *.rpm >SHA256SUMS)
+}
+
 # rpms.sh, apex-lane and image.sh build from git HEAD: uncommitted host changes become a
 # throwaway snapshot commit in this VM copy of the checkout (snapshot.sh).
 tools/builder-vm/snapshot.sh
@@ -46,12 +56,13 @@ if ((image_only)); then
 else
     echo "== 1/4 apex and apex-desktop RPMs"
     in_fedora .github/scripts/rpms.sh build /src/_build/rpms
+    sign_rpms _build/rpms
 
     echo "== 2/4 libfprint"
     rc=0
     in_fedora .github/scripts/libfprint.sh build /src/_build/libfprint || rc=$?
     case $rc in
-        0) ;;
+        0) sign_rpms _build/libfprint ;;
         3) echo "libfprint: patches do not apply; the image uses Fedora's libfprint (degraded=fingerprint)"
            libfprint_args=() ;;
         *) echo "libfprint: build failed (exit $rc)" >&2; exit "$rc" ;;

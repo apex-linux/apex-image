@@ -30,14 +30,16 @@ ARG GA_REACHED
 ARG FEDORA_GA_DATE
 ARG ALLOWLIST_GRACE_DAYS
 COPY rpms/ /apex/
+COPY image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex /apex/RPM-GPG-KEY-apex
 # updates-testing is disabled in the repo files themselves: rpm-ostree's libdnf does
 # not read dnf5's repos.override.d.
 # excludepkgs is one line per repository: libdnf and libdnf5 keep only the last one.
 # apex-gnome51 gets the excludes after its own check, which must see the pinned builds.
 # [apex] has priority 1, which beats version: includepkgs keeps a stray RPM in rpms/
 # from replacing the signed Fedora package of the same name.
-# gpgcheck=0 is scoped to this pipeline's local repository. Never lower
-# %_pkgverify_level or pass --nosignature: sign with an ephemeral per-build key instead.
+# [apex] also trusts Fedora's key: the lane mirrors Fedora's mutter into it, unmodified.
+# libdnf reads a local repository's gpgkey= from the repository by file name, so both
+# keys sit in /apex next to the RPMs.
 # libdnf ignores an includepkgs list that matches nothing and would admit all of
 # updates-testing, so apex-gnome51 must offer exactly the pinned builds.
 # An NVR carries no epoch: the stable build's epoch is used on both sides of vercmp,
@@ -47,6 +49,9 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     rel=$(rpm -E %fedora); \
     if [ "$rel" != "${FEDORA}" ]; then echo "ERROR: REPOS_BASE is Fedora $rel, not ${FEDORA}" >&2; exit 1; fi; \
     arch=$(rpm -E %_arch); \
+    apexkey=/apex/RPM-GPG-KEY-apex; fedorakey=/usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-$rel-primary; \
+    for k in "$apexkey" "$fedorakey"; do if [ ! -s "$k" ]; then echo "ERROR: $k is missing: [apex] verifies its packages with it" >&2; exit 1; fi; done; \
+    cp "$fedorakey" /apex/; \
     reposfiles() { for f in /etc/yum.repos.d/*.repo /usr/share/dnf5/repos.d/*.repo; do if [ -f "$f" ]; then printf '%s\n' "$f"; fi; done; }; \
     list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }; \
     list /run/apex-packages/updates-testing-allowlist.txt >/tmp/ut-list; \
@@ -98,7 +103,7 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
         for f in $(reposfiles); do sed -i -e "/^\[\(fedora\|updates\)\]\$/a excludepkgs=$excludes" "$f"; done; \
         echo "fedora and updates exclude: $excludes"; \
     fi; \
-    printf '%s\n' '[apex]' 'name=Apex packages built by this pipeline (build context rpms/)' 'baseurl=file:///repos/apex' 'enabled=1' 'priority=1' "includepkgs=$apexnames" 'gpgcheck=0' 'repo_gpgcheck=0' 'skip_if_unavailable=False' >/etc/yum.repos.d/apex.repo; \
+    printf '%s\n' '[apex]' 'name=Apex packages built by this pipeline (build context rpms/)' 'baseurl=file:///repos/apex' 'enabled=1' 'priority=1' "includepkgs=$apexnames" 'gpgcheck=1' "gpgkey=file:///repos$apexkey file:///repos/apex/${fedorakey##*/}" 'repo_gpgcheck=0' 'skip_if_unavailable=False' >/etc/yum.repos.d/apex.repo; \
     if [ "${GA_REACHED}" != 1 ] && [ -n "$allow" ]; then \
         vercmp() { rpm -E "%{lua: print(rpm.vercmp('$1', '$2'))}"; }; \
         if [ "$(vercmp 1:51~rc-2.fc45 1:51.0-1.fc45)" != -1 ] || [ "$(vercmp 51.0.1-1.fc45 51.0-1.fc45)" != 1 ]; then echo "ERROR: rpm.vercmp does not order versions as expected" >&2; exit 1; fi; \

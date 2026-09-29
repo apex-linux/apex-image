@@ -1,10 +1,13 @@
 #!/bin/sh
 # Fedora 45's rpm signature enforcement stays on: no rpm macro file and no dnf5
-# configuration, repository or override in the image weakens it.
+# configuration, repository or override in the image weakens it. The image ships the
+# Apex RPM key, and every package Apex builds carries its signature.
 set -eu
 CHECK_NAME=signing
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$APEX_CHECKS_DIR/lib/common.sh"
+
+APEX_RPM_KEY=/usr/share/apex/keys/RPM-GPG-KEY-apex
 
 if [ -e "$(rootpath /etc/rpm/macros.verify)" ]; then
     fail "/etc/rpm/macros.verify exists (it overrides signature enforcement)"
@@ -80,6 +83,50 @@ while IFS= read -r f; do
 done <"$TMPD/dnfconf"
 if [ "$bad" -eq 0 ]; then
     pass "no dnf configuration, repository or override disables gpgcheck ($(wc -l <"$TMPD/dnfconf" | tr -d ' ') file(s))"
+fi
+
+key=$(rootpath "$APEX_RPM_KEY")
+if [ ! -s "$key" ]; then
+    fail "no $APEX_RPM_KEY: the public half of the Apex RPM key"
+elif ! command -v gpg >/dev/null 2>&1; then
+    fail "gpg not found: $APEX_RPM_KEY cannot be read"
+else
+    mkdir -m 0700 "$TMPD/gnupg"
+    rc=0
+    gpg --homedir "$TMPD/gnupg" --batch --quiet --with-colons --show-keys -- "$key" \
+        >"$TMPD/key" 2>"$TMPD/key.err" || rc=$?
+    # The fpr record after pub is the primary key's; one after sub is a subkey's.
+    fprs=$(awk -F: '$1 == "pub" { want = 1; next }
+        $1 == "fpr" && want { print $10; want = 0 }
+        $1 == "sub" || $1 == "sec" || $1 == "ssb" { want = 0 }' "$TMPD/key" | paste -sd ' ' -)
+    if [ "$rc" -ne 0 ]; then
+        fail "$APEX_RPM_KEY is not an OpenPGP public key (gpg exit $rc): $(head -n 3 "$TMPD/key.err" | paste -sd '|' -)"
+    elif [ "$fprs" = "$APEX_RPM_KEY_FPR" ]; then
+        pass "$APEX_RPM_KEY is the Apex RPM key $APEX_RPM_KEY_FPR"
+    else
+        fail "$APEX_RPM_KEY holds [${fprs}], not the Apex RPM key $APEX_RPM_KEY_FPR alone"
+    fi
+fi
+
+# Apex builds apex.txt's packages and every .apexN release. Only libfprint has a Fedora
+# fallback: when its rebuild degrades, the image takes Fedora's (degraded=fingerprint).
+if ! root_rpm -qa --qf '%{NAME} %{RELEASE}\n' >"$TMPD/installed" 2>"$TMPD/rpm.err"; then
+    fail "rpm -qa failed: $(head -n 3 "$TMPD/rpm.err" | paste -sd '|' -)"
+else
+    read_list "$APEX_IMAGE_DIR/packages/apex.txt" >"$TMPD/own"
+    awk 'NR == FNR { own[$1] = 1; next } own[$1] || $2 ~ /\.apex[0-9]/' \
+        "$TMPD/own" "$TMPD/installed" | sort -u >"$TMPD/apex-built"
+    [ -s "$TMPD/apex-built" ] || fail "no installed package is Apex's (image/packages/apex.txt, .apexN)"
+    while read -r name release; do
+        if signed_by "$APEX_RPM_KEYID" "$name"; then
+            pass "$name $release carries the Apex RPM signature ($APEX_RPM_KEYID)"
+        elif [ "$name" = libfprint ] && ! printf '%s\n' "$release" | grep -q '\.apex[0-9]' &&
+            signed_by "$FEDORA_KEYID" "$name"; then
+            pass "$name $release is Fedora's build, signed by Fedora's key"
+        else
+            fail "$name $release is not signed by the Apex RPM key ($APEX_RPM_KEYID)"
+        fi
+    done <"$TMPD/apex-built"
 fi
 
 finish

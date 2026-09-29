@@ -29,13 +29,14 @@ just vm-create
 just vm-image
 ```
 
-`just vm-image` copies this checkout into the VM and builds, exactly like CI but without
-pushing or signing:
+`just vm-image` copies this checkout into the VM and builds, in order:
 
 - the apex and apex-desktop RPMs;
 - the patched libfprint;
 - the rebuild lane's packages (gnome-shell), into `rpms.lock.next` of the store below;
 - the image, from those RPMs and that lock.
+
+The Apex RPM key signs every RPM; nothing pushes or signs the image.
 
 The results are in `~/apex-fedora/_build/` inside the VM.
 
@@ -50,7 +51,9 @@ The other recipes:
 | `just vm-image-only` | Rebuild only the image, reusing the RPMs and the lane's `rpms.lock.next` of the last `just vm-image`. |
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
-serial log) and `destroy --yes`.
+serial log) and `destroy --yes`. `destroy` deletes the Apex RPM key with the disk; a new
+VM gets it back from its offline backup
+([packaging/README.md](../../packaging/README.md#signing), "A new builder VM").
 
 The tools that build from git HEAD see uncommitted host changes through
 `snapshot.sh`, which commits a dirty VM copy of the checkout as a throwaway snapshot.
@@ -71,6 +74,11 @@ sets by content key, `rpms.lock` and `rpms.lock.next`. dnf's metadata for the la
 containers is kept in the podman volume `apex-lane-dnf-cache`. A cold gnome-shell build
 takes about 10 minutes; the first run of `lane.sh` adds a few minutes for the builder
 image and a cold `cargo build`.
+
+The Apex RPM key signs every RPM the VM builds, in the VM and after the build container
+exits ([packaging/README.md](../../packaging/README.md#signing)). Its GnuPG home,
+`~/.local/share/apex/rpm-gnupg`, and `~/.config/apex/rpm-signing.env`, which names it,
+live outside the synced checkout. `provision.sh` installs `rpm-sign` and `gnupg2`.
 
 ## Resources
 

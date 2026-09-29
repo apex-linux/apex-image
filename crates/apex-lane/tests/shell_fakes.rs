@@ -20,6 +20,7 @@ use apex_lane::shell::bodhi::Bodhi;
 use apex_lane::shell::clock::FixedClock;
 use apex_lane::shell::cmd::{Cmd, Outcome, Program, Runner, StdRunner, Stderr, Stdout};
 use apex_lane::shell::report::Reporter;
+use apex_lane::vm::sign::PUBLIC_KEY_PATH;
 use apex_lane::vm::{Outcome as Built, Settings, Vm};
 
 type Script = dyn Fn(&Cmd) -> Option<Outcome>;
@@ -177,6 +178,7 @@ fn checkout(env: &str) -> tempfile::TempDir {
     );
     write(&r.join("packaging/pkgs/demo/spec-edit"), DEMO_EDIT);
     write(&r.join("desktop/demo/demo/apex.js"), "// apex\n");
+    write(&r.join(PUBLIC_KEY_PATH), "the committed public key\n");
     write(
         &r.join("crates/apex-lane/Cargo.toml"),
         "[package]\nname = \"apex-lane\"\nversion = \"0.1.0\"\n",
@@ -239,11 +241,59 @@ fn mount(args: &[String], to: &str) -> PathBuf {
     PathBuf::from(spec.split(':').next().unwrap())
 }
 
+const FPR: &str = "553A938903DFFEEA647F7CC4ABEF111D1FCF882B";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SigningKey {
+    Usable,
+    SecretMissing,
+    Foreign,
+}
+
+/// gpg, rpmsign and rpmkeys with the Apex RPM key `FPR`, which the committed public key
+/// holds. rpmsign appends to the file, so its digest changes like a real signature's.
+fn signing_tools(cmd: &Cmd, key: SigningKey) -> Option<Outcome> {
+    let args = argv(cmd);
+    let has = |a: &str| args.iter().any(|x| x == a);
+    match cmd.program {
+        Program::Gpg if has("--show-keys") => ok(&format!(
+            "pub:-:255:22:ABEF111D1FCF882B:1::::scSC:\nfpr:::::::::{FPR}:\n"
+        )),
+        Program::Gpg if has("--list-secret-keys") && key == SigningKey::SecretMissing => exit(2),
+        Program::Gpg if has("--list-secret-keys") => ok(""),
+        Program::Rpmsign => {
+            let rpm = args.last().unwrap();
+            let mut bytes = std::fs::read(rpm).unwrap();
+            bytes.extend_from_slice(b" +signature");
+            std::fs::write(rpm, bytes).unwrap();
+            ok("")
+        }
+        Program::Rpmkeys if has("--import") => ok(""),
+        Program::Rpmkeys if key == SigningKey::Usable => ok(&format!(
+            "{}:\n    Header OpenPGP V4 EdDSA/SHA512 signature, key fingerprint: {}: OK\n    Header SHA256 digest: OK\n",
+            args.last().unwrap(),
+            FPR.to_ascii_lowercase()
+        )),
+        Program::Rpmkeys => Some(Outcome {
+            code: 1,
+            stdout:
+                b"    Header OpenPGP V4 EdDSA/SHA512 signature, key ID 0123456789abcdef: NOKEY\n"
+                    .to_vec(),
+            stderr: Vec::new(),
+        }),
+        _ => None,
+    }
+}
+
 /// `scenario(out, store)` plays the container and returns its exit status.
 fn vm_fake(scenario: impl Fn(&Path, &Path) -> i32 + 'static) -> Fake {
+    vm_fake_signing(SigningKey::Usable, scenario)
+}
+
+fn vm_fake_signing(key: SigningKey, scenario: impl Fn(&Path, &Path) -> i32 + 'static) -> Fake {
     Fake::new(move |cmd| {
         if cmd.program != Program::Sudo {
-            return None;
+            return signing_tools(cmd, key);
         }
         let args = argv(cmd);
         match args[0].as_str() {
@@ -310,11 +360,20 @@ struct VmTest {
 
 impl VmTest {
     fn new(env: &str) -> Self {
-        Self {
+        let t = Self {
             root: checkout(env),
             store: tempfile::tempdir().unwrap(),
             report: Reporter::capturing(),
-        }
+        };
+        t.signing_env(&format!(
+            "APEX_RPM_KEY_FPR={FPR}\nAPEX_RPM_GNUPGHOME={}/gnupg\n",
+            t.store.path().display()
+        ));
+        t
+    }
+
+    fn signing_env(&self, text: &str) {
+        write(&self.store.path().join("rpm-signing.env"), text);
     }
 
     fn vm<'a>(&'a self, fake: &'a Fake, clock: &'a FixedClock) -> Vm<'a> {
@@ -350,12 +409,6 @@ fn vm_build_stores_and_records_the_set() {
     let c = clock();
     let outcomes = t.vm(&fake, &c).build("demo").expect("built");
     assert_eq!(outcomes, [Built::Built(KEY.into())]);
-    let set = t.store.path().join("pkgs/demo").join(KEY);
-    assert!(
-        std::fs::read_to_string(set.join("manifest.txt"))
-            .unwrap()
-            .ends_with("\n# sig=none\n")
-    );
     let lock_text = t.next_lock();
     assert!(lock_text.starts_with(lock::HEADER[0]));
     assert!(lock_text.contains(&format!(
@@ -420,9 +473,75 @@ fn vm_build_stores_and_records_the_set() {
 }
 
 #[test]
+fn vm_build_signs_the_apex_built_rpms_before_the_store() {
+    let t = VmTest::new(DEMO_ENV);
+    let fake = vm_fake(|out, _| {
+        built_set(out, KEY);
+        0
+    });
+    let c = clock();
+    assert_eq!(
+        t.vm(&fake, &c).build("demo").unwrap(),
+        [Built::Built(KEY.into())]
+    );
+    let set = t.store.path().join("pkgs/demo").join(KEY);
+    let manifest = std::fs::read_to_string(set.join("manifest.txt")).unwrap();
+    assert!(
+        manifest.ends_with(&format!("\n# sig={FPR}\n")),
+        "{manifest}"
+    );
+    let signed = |file: &str| {
+        let bytes = std::fs::read(set.join(file)).unwrap();
+        assert!(bytes.ends_with(b" +signature"), "{file} is signed");
+        sha256_hex(&bytes)
+    };
+    for (kind, file) in [
+        ("built", "demo-1.0-1.fc45.apex3.x86_64.rpm"),
+        ("apex-srpm", "demo-1.0-1.fc45.apex3.src.rpm"),
+    ] {
+        assert!(
+            manifest.contains(&format!(" {} {file}\n", signed(file))),
+            "{kind}: {manifest}"
+        );
+    }
+    let mirror = "mutter-51.0-1.fc45.x86_64.rpm";
+    assert_eq!(
+        std::fs::read(set.join(mirror)).unwrap(),
+        mirror.as_bytes(),
+        "Fedora's signature stays"
+    );
+    let rpmsign = fake.calls("rpmsign");
+    assert_eq!(rpmsign.len(), 2);
+    assert_eq!(
+        rpmsign[0][..5],
+        [
+            "--define".to_owned(),
+            format!("_gpg_path {}/gnupg", t.store.path().display()),
+            "--define".to_owned(),
+            format!("_openpgp_sign_id {FPR}"),
+            "--addsign".to_owned(),
+        ]
+    );
+    let lock_text = t.next_lock();
+    assert!(lock_text.contains(&format!(
+        "demo-0:1.0-1.fc45.apex3.x86_64 {} pkgs/demo/{KEY}/demo-1.0-1.fc45.apex3.x86_64.rpm\n",
+        signed("demo-1.0-1.fc45.apex3.x86_64.rpm")
+    )));
+}
+
+fn stored_set(t: &VmTest, sig: &str) -> PathBuf {
+    let set = t.store.path().join("pkgs/demo").join(KEY);
+    built_set(&set, KEY);
+    let mut manifest = std::fs::read_to_string(set.join("manifest.txt")).unwrap();
+    let _ = writeln!(manifest, "# sig={sig}");
+    write(&set.join("manifest.txt"), manifest);
+    set
+}
+
+#[test]
 fn vm_build_unchanged_takes_the_stored_key() {
     let t = VmTest::new(DEMO_ENV);
-    built_set(&t.store.path().join("pkgs/demo").join(KEY), KEY);
+    stored_set(&t, FPR);
     let fake = vm_fake(|out, _| {
         write(&out.join("unchanged"), format!("{KEY}\n"));
         0
@@ -436,6 +555,29 @@ fn vm_build_unchanged_takes_the_stored_key() {
         t.next_lock()
             .contains(&format!("family demo built {KEY}\n"))
     );
+}
+
+#[test]
+fn an_unchanged_set_without_the_apex_signature_is_refused() {
+    for sig in ["none", "0000000000000000000000000000000000000001"] {
+        let t = VmTest::new(DEMO_ENV);
+        let set = stored_set(&t, sig);
+        let fake = vm_fake(|out, _| {
+            write(&out.join("unchanged"), format!("{KEY}\n"));
+            0
+        });
+        let c = clock();
+        let err = t.vm(&fake, &c).build("demo").unwrap_err();
+        assert_eq!(err.exit(), Exit::Error, "{err}");
+        assert!(
+            err.to_string().contains(&format!(
+                "{} records sig={sig}, not the Apex RPM key {FPR}",
+                set.display()
+            )),
+            "{err}"
+        );
+        assert_eq!(t.next_lock(), "", "sig={sig}");
+    }
 }
 
 fn failed(out: &Path) -> i32 {
@@ -528,17 +670,101 @@ fn stock_records_the_owners_choice() {
 }
 
 #[test]
-fn the_signing_check_runs_before_the_container() {
+fn the_signing_key_is_checked_before_the_container() {
+    let other = "0000000000000000000000000000000000000001";
+    for (env, exit, wanted) in [
+        (None, Exit::Error, "no Apex RPM key"),
+        (
+            Some("APEX_RPM_KEY_FPR=x\n"),
+            Exit::Usage,
+            "APEX_RPM_KEY_FPR must be",
+        ),
+        (
+            Some(format!("APEX_RPM_KEY_FPR={other}\nAPEX_RPM_GNUPGHOME=/g\n").as_str()),
+            Exit::Error,
+            "the image would not trust these signatures",
+        ),
+    ] {
+        let t = VmTest::new(DEMO_ENV);
+        match env {
+            Some(text) => t.signing_env(text),
+            None => std::fs::remove_file(t.store.path().join("rpm-signing.env")).unwrap(),
+        }
+        let fake = vm_fake(|_, _| panic!("the container must not start"));
+        let c = clock();
+        let err = t.vm(&fake, &c).build("demo").unwrap_err();
+        assert_eq!(err.exit(), exit, "{err}");
+        assert!(err.to_string().contains(wanted), "{err}");
+        assert!(fake.calls("podman").is_empty());
+    }
+}
+
+#[test]
+fn a_gnupg_home_without_the_secret_key_is_refused_before_the_container() {
     let t = VmTest::new(DEMO_ENV);
-    write(
-        &t.store.path().join("rpm-signing.env"),
-        "APEX_RPM_KEY_FPR=x\n",
-    );
-    let fake = vm_fake(|_, _| panic!("the container must not start"));
+    let fake = vm_fake_signing(SigningKey::SecretMissing, |_, _| {
+        panic!("the container must not start")
+    });
     let c = clock();
     let err = t.vm(&fake, &c).build("demo").unwrap_err();
-    assert!(matches!(err, LaneError::Infra(ref m) if m.contains("does not sign yet")));
+    assert_eq!(err.exit(), Exit::Error, "{err}");
+    assert!(
+        err.to_string()
+            .contains(&format!("gnupg holds no secret key {FPR}")),
+        "{err}"
+    );
     assert!(fake.calls("podman").is_empty());
+}
+
+#[test]
+fn a_signature_that_does_not_verify_stores_nothing() {
+    let t = VmTest::new(DEMO_ENV);
+    let fake = vm_fake_signing(SigningKey::Foreign, |out, _| {
+        built_set(out, KEY);
+        0
+    });
+    let c = clock();
+    let err = t.vm(&fake, &c).build("demo").unwrap_err();
+    assert!(
+        matches!(err, LaneError::Infra(ref m) if m.contains("does not verify with the committed Apex RPM key") && m.contains("NOKEY")),
+        "{err}"
+    );
+    assert!(!t.store.path().join("pkgs/demo").join(KEY).exists());
+    assert_eq!(t.next_lock(), "");
+}
+
+#[test]
+fn sign_signs_rpms_and_the_manifest_beside_them() {
+    let t = VmTest::new(DEMO_ENV);
+    let dir = t.store.path().join("libfprint");
+    let rpm = dir.join("libfprint-1.94.10-1.fc45.apex1.x86_64.rpm");
+    write(&rpm, "rpm");
+    write(
+        &dir.join("manifest.txt"),
+        format!(
+            "# apex-libfprint manifest 1: kind nevra sha256 file\n# key=k\npatch 0101-a {} 0101-a.patch\nrpm libfprint-0:1.94.10-1.fc45.apex1.x86_64 {} libfprint-1.94.10-1.fc45.apex1.x86_64.rpm\n",
+            "p".repeat(64),
+            sha256_hex(b"rpm")
+        ),
+    );
+    let fake = vm_fake(|_, _| panic!("no container"));
+    let c = clock();
+    t.vm(&fake, &c)
+        .sign_files(std::slice::from_ref(&rpm))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("manifest.txt")).unwrap(),
+        format!(
+            "# apex-libfprint manifest 1: kind nevra sha256 file\n# key=k\npatch 0101-a {} 0101-a.patch\nrpm libfprint-0:1.94.10-1.fc45.apex1.x86_64 {} libfprint-1.94.10-1.fc45.apex1.x86_64.rpm\n# sig={FPR}\n",
+            "p".repeat(64),
+            sha256_hex(b"rpm +signature")
+        )
+    );
+    let err = t
+        .vm(&fake, &c)
+        .sign_files(&[dir.join("manifest.txt")])
+        .unwrap_err();
+    assert_eq!(err.exit(), Exit::Usage);
 }
 
 #[test]

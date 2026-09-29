@@ -15,6 +15,7 @@ fi
 packages=(
     podman buildah skopeo          # image.sh (rootful)
     jq git-core rsync python3      # helper scripts
+    rpm-sign gnupg2                # the Apex RPM key: rpmsign in apex-lane and build-image.sh
     zstd xz tar findutils          # artifacts and layers
     just                           # repository recipes
     qemu-kvm-core edk2-ovmf        # qualify.sh: nested KVM boots with OVMF

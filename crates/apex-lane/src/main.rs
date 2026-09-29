@@ -50,6 +50,12 @@ enum Command {
     /// The owner's choice at a hold limit: the next image takes Fedora's build of the
     /// package's family.
     Stock { pkg: String },
+    /// Sign RPMs in place with the Apex RPM key: the builder VM's apex, apex-desktop and
+    /// libfprint builds. A manifest.txt beside them records it.
+    Sign {
+        #[arg(required = true)]
+        rpms: Vec<PathBuf>,
+    },
     #[command(hide = true)]
     InContainer(InContainer),
 }
@@ -242,6 +248,7 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
         }
         Command::Promote => vm.promote().map(|()| Exit::Ok),
         Command::Stock { pkg } => vm.stock(&pkg).map(|()| Exit::Ok),
+        Command::Sign { rpms } => vm.sign_files(&rpms).map(|()| Exit::Ok),
         Command::InContainer(_) => unreachable!("handled above"),
     }
 }

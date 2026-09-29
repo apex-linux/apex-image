@@ -15,6 +15,7 @@ pub mod release;
 pub mod repos;
 pub mod rpmout;
 pub mod series;
+pub mod signing;
 pub mod source1;
 pub mod spec_edit;
 pub mod status;

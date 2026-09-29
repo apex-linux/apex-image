@@ -32,11 +32,12 @@ rpmdb() {
     python3 - "$@" <<'PY'
 import json, sys
 fedora = "RSA/SHA256, Mon Sep 14 2026 10:00:00 AM UTC, Key ID 655a4b02f577861e"
+apex = "EdDSA/SHA512, Tue Sep 29 2026 07:00:00 AM UTC, Key ID abef111d1fcf882b"
 theme = "/usr/share/gnome-shell/gnome-shell-theme.gresource"
 db = {
-    "gnome-shell": {"evr": "51.0-1.fc45.apex1", "files": [theme],
+    "gnome-shell": {"evr": "51.0-1.fc45.apex1", "files": [theme], "signature": apex,
                     "requires": ["mutter(x86-64) >= 51.0", "mutter(x86-64) = 51.0-1.fc45"]},
-    "gnome-shell-common": {"evr": "51.0-1.fc45.apex1", "arch": "noarch"},
+    "gnome-shell-common": {"evr": "51.0-1.fc45.apex1", "arch": "noarch", "signature": apex},
     "mutter": {"evr": "51.0-1.fc45", "signature": fedora},
     "mutter-common": {"evr": "51.0-1.fc45", "arch": "noarch", "signature": fedora},
 }
@@ -81,7 +82,9 @@ desktop good
 expect_rc "the Apex shell as the lane built it passes" 0
 expect_out "every locked RPM at its NEVRA" '^PASS desktop: the 4 locked RPM\(s\) are installed at their locked NEVRAs$'
 expect_out "gnome-shell is an Apex build" '^PASS desktop: gnome-shell 51\.0-1\.fc45\.apex1 is an Apex build \(the family is built\)$'
-expect_out "the signature is a SKIP until the Apex key exists" '^SKIP desktop: the Apex RPM signature of gnome-shell'
+for p in gnome-shell gnome-shell-common; do
+    expect_out "$p carries the Apex RPM signature" "^PASS desktop: $p carries the Apex RPM signature \\(ABEF111D1FCF882B\\)\$"
+done
 expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.0-1\.fc45, the installed mutter$'
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
@@ -141,6 +144,13 @@ desktop unsigned
 expect_rc "a mutter without Fedora's signature fails" 1
 expect_out "unsigned" '^FAIL desktop: mutter is not signed by Fedora.s key'
 expect_out "another key" '^FAIL desktop: mutter-common is not signed by Fedora.s key'
+
+r=$(mkroot apexunsigned)
+rpmdb "$T/apexunsigned.db" 'gnome-shell.signature=(none)' 'gnome-shell-common.signature=RSA/SHA256, Key ID 655a4b02f577861e'
+desktop apexunsigned
+expect_rc "a locked Apex shell without the Apex signature fails" 1
+expect_out "unsigned" '^FAIL desktop: gnome-shell is not signed by the Apex RPM key \(ABEF111D1FCF882B\)$'
+expect_out "Fedora's key instead" '^FAIL desktop: gnome-shell-common is not signed by the Apex RPM key'
 
 r=$(mkroot nodark)
 printf 'GVariant\000/*! apex-shell-theme light */\n\000/*! apex-shell-structure */\n' >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
