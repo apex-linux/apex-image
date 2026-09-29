@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Guest-side provisioning of the Apex builder VM. builder-vm.sh pipes this script into
-# `ssh builder@vm bash -s`; it is idempotent and safe to re-run (`builder-vm.sh provision`).
+# builder-vm.sh pipes this into `ssh builder@vm bash -s`; it must stay safe to re-run.
 set -euo pipefail
 
 # shellcheck source=/dev/null
@@ -27,13 +26,12 @@ packages=(
 )
 sudo dnf5 -y install "${packages[@]}"
 
-# zram swap (zram-generator creates it at boot; start it now on the first run).
+# zram-generator makes the swap unit at boot; daemon-reload runs it now.
 if ! swapon --show=NAME --noheadings | grep -q zram; then
     sudo systemctl daemon-reload
     sudo systemctl start systemd-zram-setup@zram0.service || true
 fi
 
-# Nested KVM for qualification boots; takes effect at the next login.
 if [[ -c /dev/kvm ]]; then
     getent group kvm >/dev/null && sudo usermod -aG kvm "$(id -un)"
 else

@@ -1,6 +1,4 @@
 #!/bin/sh
-# No private key block in the image, except in an unmodified file of a non-Apex package
-# or a reviewed fixture.
 set -eu
 CHECK_NAME=secrets
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -22,8 +20,7 @@ else
     : >"$TMPD/apex-packages"
 fi
 
-# /proc, /sys, /dev and /run are not part of the image (/run holds the build context);
-# the targets of top-level symlinks are scanned anyway.
+# /run holds the build context; top-level symlinks point into directories scanned anyway.
 : >"$TMPD/dirs"
 if [ "$ROOT" = / ]; then
     for d in /* /.[!.]*; do
@@ -77,10 +74,9 @@ while IFS= read -r hit; do
         fail "private key in a file of an Apex-built package ($apex_owner): $path"
         continue
     fi
-    # rpm -V prints "<flags> <attr> <path>"; a '5' as the third flag is a changed digest.
     changed=$(root_rpm -Vf "$path" 2>/dev/null | awk -v p="$path" '
-        { f = $NF }
-        f == p && ($1 == "missing" || substr($1, 3, 1) == "5") { print "yes" }' || true)
+        { flags = $1; file = $NF; digest_changed = (substr(flags, 3, 1) == "5") }
+        file == p && (flags == "missing" || digest_changed) { print "yes" }' || true)
     if [ -n "$changed" ]; then
         fail "private key in a package file whose content was modified: $path ($owner)"
     else

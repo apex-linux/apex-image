@@ -1,55 +1,61 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Qualify an Apex image in a KVM guest with OVMF: a real `bootc install`, GRUB, the Apex
-# boot counter and boot assessment, signature enforcement and the upgrade path, all on
-# the digest that will be published.
-#
-#   qualify.sh host-setup              for a CI runner, if one is ever used: /dev/kvm
-#                                      access, QEMU, OVMF
-#   qualify.sh fresh CANDIDATE         install CANDIDATE, boot, assert, negative
-#                                      signature tests, reboot with a download-only stage
-#   qualify.sh upgrade FROM CANDIDATE  install FROM (e.g. the current stable), stage
-#                                      CANDIDATE by digest, apply it with FROM's apexctl
-#                                      (arms the boot counter), reboot, assert green and
-#                                      confirmed
-#   qualify.sh red FROM CANDIDATE      the counted rollback: install FROM, stage
-#                                      CANDIDATE, write CANDIDATE's digest to the hook
-#                                      /var/lib/apex/force-red, apply, then boot without
-#                                      ever logging in: CANDIDATE must fail its assessment
-#                                      and reboot itself 3 times, GRUB must fall back to
-#                                      FROM, and FROM must roll back (bootc rollback),
-#                                      denylist CANDIDATE and leave grubenv disarmed
-#   qualify.sh all CANDIDATE           fresh, then upgrade and red from apex:45 when it
-#                                      exists and differs from CANDIDATE
-#   qualify.sh local IMAGE             smoke test of an unpublished image in local
-#                                      container storage (localhost/NAME:TAG, e.g.
-#                                      image.sh's localhost/apex:build): install, boot and
-#                                      assert green like `fresh`, without the signature
-#                                      tests (a local image carries no signature)
-#
-# CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
-# ghcr.io/sekirokenjii/apex-testing@sha256:...). It needs nested KVM, and sudo for
-# podman, losetup and mount. `red` works with any two different Apex images whose updater
-# arms the counter, e.g. `qualify.sh red sha256:<older> sha256:<newer>`.
-#
-# Environment (all optional):
-#   QUALIFY_OUT           work directory (default _build/qualify); fixtures/ and logs/
-#                         in it are the artifacts worth keeping
-#   QUALIFY_LAYOUT        separate-boot (default): ESP + ext4 /boot + btrfs root, the
-#                         laptop's layout, installed with `bootc install to-filesystem`;
-#                         to-disk: `bootc install to-disk --via-loopback --filesystem btrfs`
-#                         (`red` is skipped there: GRUB cannot count on a btrfs /boot)
-#   QUALIFY_DISK_GB (40)  QUALIFY_MEM (6G)  QUALIFY_SMP (4)  QUALIFY_SSH_PORT (2222)
-#   QUALIFY_BOOT_TIMEOUT  seconds to wait for SSH after a boot (default 900)
-#   QUALIFY_ATTEMPT_TIMEOUT  seconds an armed, failing boot may take until it has
-#                         rebooted itself (default QUALIFY_BOOT_TIMEOUT + 300)
-#   QUALIFY_POLL          seconds between checks while waiting for QEMU (default 5)
-#   QUALIFY_KEEP_DISKS    1 keeps the VM disks after each scenario
-#   OVMF_CODE, OVMF_VARS, OVMF_FORMAT  firmware files (auto-detected on Ubuntu, Fedora)
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    cat >&2 <<'EOF'
+
+Qualify an Apex image in a KVM guest with OVMF: a real `bootc install`, GRUB, the Apex
+boot counter and boot assessment, signature enforcement and the upgrade path, all on
+the digest that will be published.
+
+  qualify.sh host-setup              for a CI runner, if one is ever used: /dev/kvm
+                                     access, QEMU, OVMF
+  qualify.sh fresh CANDIDATE         install CANDIDATE, boot, assert, negative
+                                     signature tests, reboot with a download-only stage
+  qualify.sh upgrade FROM CANDIDATE  install FROM (e.g. the current stable), stage
+                                     CANDIDATE by digest, apply it with FROM's apexctl
+                                     (arms the boot counter), reboot, assert green and
+                                     confirmed
+  qualify.sh red FROM CANDIDATE      the counted rollback: install FROM, stage
+                                     CANDIDATE, write CANDIDATE's digest to the hook
+                                     /var/lib/apex/force-red, apply, then boot without
+                                     ever logging in: CANDIDATE must fail its assessment
+                                     and reboot itself 3 times, GRUB must fall back to
+                                     FROM, and FROM must roll back (bootc rollback),
+                                     denylist CANDIDATE and leave grubenv disarmed
+  qualify.sh all CANDIDATE           fresh, then upgrade and red from apex:45 when it
+                                     exists and differs from CANDIDATE
+  qualify.sh local IMAGE             smoke test of an unpublished image in local
+                                     container storage (localhost/NAME:TAG, e.g.
+                                     image.sh's localhost/apex:build): install, boot and
+                                     assert green like `fresh`, without the signature
+                                     tests (a local image carries no signature)
+
+CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
+ghcr.io/sekirokenjii/apex-testing@sha256:...). It needs nested KVM, and sudo for
+podman, losetup and mount. `red` works with any two different Apex images whose updater
+arms the counter, e.g. `qualify.sh red sha256:<older> sha256:<newer>`.
+
+Environment (all optional):
+  QUALIFY_OUT           work directory (default _build/qualify); fixtures/ and logs/
+                        in it are the artifacts worth keeping
+  QUALIFY_LAYOUT        separate-boot (default): ESP + ext4 /boot + btrfs root, the
+                        laptop's layout, installed with `bootc install to-filesystem`;
+                        to-disk: `bootc install to-disk --via-loopback --filesystem btrfs`
+                        (`red` is skipped there: GRUB cannot count on a btrfs /boot)
+  QUALIFY_DISK_GB (40)  QUALIFY_MEM (6G)  QUALIFY_SMP (4)  QUALIFY_SSH_PORT (2222)
+  QUALIFY_BOOT_TIMEOUT  seconds to wait for SSH after a boot (default 900)
+  QUALIFY_ATTEMPT_TIMEOUT  seconds an armed, failing boot may take until it has
+                        rebooted itself (default QUALIFY_BOOT_TIMEOUT + 300)
+  QUALIFY_POLL          seconds between checks while waiting for QEMU (default 5)
+  QUALIFY_KEEP_DISKS    1 keeps the VM disks after each scenario
+  OVMF_CODE, OVMF_VARS, OVMF_FORMAT  firmware files (auto-detected on Ubuntu, Fedora)
+EOF
+    exit 2
+}
 
 : "${QUALIFY_OUT:=$APEX_ROOT/_build/qualify}"
 # GRUB cannot save its environment block on btrfs, and to-disk puts /boot on the btrfs
@@ -234,8 +240,7 @@ unmount_all() {
     MOUNTS=()
 }
 
-# start_vm NAME [LOG [QEMU_ARG...]]: QEMU truncates the console log, so a boot whose log
-# must survive the next start needs its own LOG.
+# QEMU truncates the console log, so a boot whose log must survive the next start passes its own.
 start_vm() {
     local name=$1 log=${2:-$1}
     shift "$(($# < 2 ? $# : 2))"
@@ -566,8 +571,7 @@ armed_attempts() {
     endgroup
 }
 
-# forced_red_boots N: counts among the N previous boots; prints nothing when the journal
-# is not persistent, so that the caller can tell "unknown" from 0.
+# Prints nothing, not 0, when the journal is not persistent, so the caller can tell unknown from none.
 forced_red_boots() {
     local n=$1 listed count=0 b
     listed=$(vm_ssh 'journalctl --list-boots --no-pager 2>/dev/null' | grep -cE '^[[:space:]]*-?[0-9]+[[:space:]]' || true)

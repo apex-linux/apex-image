@@ -2,9 +2,8 @@ use crate::core::text;
 
 const SIGNATURE_KEY: &[u8] = b"signature, key";
 
-/// rpm 4 prints `Signature, key ID f577861e: OK`, rpm 6 `signature, key fingerprint:
-/// 4f50...861e: OK`. `key_id` is a tail of the fingerprint: its last 8 hex digits match
-/// both, the whole fingerprint only rpm 6.
+/// `key_id`, a fingerprint tail, matches rpm 4's `Signature, key ID f577861e: OK` by its last 8
+/// hex digits, and rpm 6's `signature, key fingerprint: 4f50...861e: OK` also when whole.
 pub fn checksig_ok(output: &[u8], key_id: &str) -> bool {
     let id = key_id.to_ascii_lowercase();
     let mut any = false;

@@ -1,5 +1,4 @@
-# name<TAB>milestone<TAB>reason, for the packages image/checks/legacy.sh flags. The
-# milestone is when the entry goes: M<n>[.<n>] when Apex work removes it, F46 when it
+# The milestone is when an entry goes: M<n>[.<n>] when Apex work removes it, F46 when it
 # waits for upstream (re-checked at the F46 rebase). The list only shrinks.
 
 gtk3	F46	The GTK3 toolkit, a hard dependency of every GTK3 consumer below (xdg-desktop-portal-gtk, ibus, evolution-data-server, ...). Removed with the last of them.

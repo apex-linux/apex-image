@@ -1,7 +1,5 @@
 #!/bin/sh
-# policy.json trusts exactly TRUST_MAP and rejects everything else; a release build also
-# needs three distinct real keys. bootc only refuses an insecureAcceptAnything default,
-# so this is the one guard of the mapping.
+# bootc refuses only an insecureAcceptAnything default: this check alone guards the trust mapping.
 set -eu
 CHECK_NAME=keys
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -16,8 +14,8 @@ case $RELEASE_BUILD in
         ;;
 esac
 
-# repository<TAB>key path. Change it only with policy.json, in one reviewed change; the
-# CI key never signs for ghcr.io/sekirokenjii/apex.
+# Changes only together with policy.json, in one reviewed change. The CI key never signs for
+# ghcr.io/sekirokenjii/apex.
 TRUST_MAP='ghcr.io/sekirokenjii/apex	/usr/share/apex/keys/release.pub
 ghcr.io/sekirokenjii/apex	/usr/share/apex/keys/release-backup.pub
 ghcr.io/sekirokenjii/apex-testing	/usr/share/apex/keys/ci.pub'
@@ -25,6 +23,8 @@ ghcr.io/sekirokenjii/apex-testing	/usr/share/apex/keys/ci.pub'
 KEYDIR=$(rootpath /usr/share/apex/keys)
 POLICY=$(rootpath /usr/share/apex/containers/policy.json)
 REQUIRED_KEYS='release ci release-backup'
+DER_SEQUENCE_TAG=30
+ED25519_SPKI_BYTES=44
 
 for k in $REQUIRED_KEYS; do
     if [ -s "$KEYDIR/$k.pub" ]; then
@@ -41,7 +41,6 @@ if [ ! -s "$POLICY" ]; then
 elif ! command -v python3 >/dev/null 2>&1; then
     fail "python3 not available: the trust mapping of policy.json cannot be checked"
 else
-    # Prints the referenced key paths, or the problems on stderr and exits 1.
     if python3 - "$POLICY" "$TRUST_MAP" >"$TMPD/keypaths" 2>"$TMPD/policy.err" <<'PY'
 import json
 import sys
@@ -148,8 +147,7 @@ if [ "$RELEASE_BUILD" != 1 ]; then
     finish
 fi
 
-# der_of FILE OUT: decodes FILE's single PUBLIC KEY block into OUT, its base64 body into
-# OUT.b64.
+# der_of PEM OUT: decodes PEM's single PUBLIC KEY block into OUT, its base64 body into OUT.b64.
 der_of() {
     blocks=$(grep -c '^-----BEGIN PUBLIC KEY-----$' "$1" || true)
     ends=$(grep -c '^-----END PUBLIC KEY-----$' "$1" || true)
@@ -181,10 +179,9 @@ for f in "$KEYDIR"/*.pub; do
             fail "$rel does not parse as a public key (openssl)"
         fi
     else
-        # SubjectPublicKeyInfo is a DER SEQUENCE (0x30) of at least 44 bytes (Ed25519).
         first=$(od -An -tx1 -N1 "$TMPD/$name.der" | tr -d ' \n')
         size=$(wc -c <"$TMPD/$name.der" | tr -d ' ')
-        if [ "$first" = 30 ] && [ "$size" -ge 44 ]; then
+        if [ "$first" = "$DER_SEQUENCE_TAG" ] && [ "$size" -ge "$ED25519_SPKI_BYTES" ]; then
             pass "$rel decodes to a $size-byte DER SEQUENCE (openssl unavailable: structural check only)"
         else
             fail "$rel does not decode to a DER SubjectPublicKeyInfo"

@@ -1,6 +1,5 @@
-# https://dl.flathub.org/repo/flathub.flatpakrepo unchanged below this header (sha256
-# 3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a). flatpak names the
-# remote after this file.
+# https://dl.flathub.org/repo/flathub.flatpakrepo unchanged below; flatpak names the remote after
+# this file. sha256 3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a
 [Flatpak Repo]
 Title=Flathub
 Url=https://dl.flathub.org/repo/

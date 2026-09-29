@@ -1,6 +1,3 @@
-# One package per line; '#' starts a comment. Weak dependencies are off, so useful weak
-# dependencies of GNOME are listed. GTK3 packages need a legacy allowlist entry.
-
 gdm
 gnome-shell
 gnome-session-wayland-session
@@ -15,18 +12,14 @@ tecla
 gnome-backgrounds
 adwaita-icon-theme
 adwaita-cursor-theme
-# A weak dependency of gnome-shell: the Bluetooth quick setting and panel.
 gnome-bluetooth
-# The backend of gvfs-goa and of Calendar and Contacts sync.
 gnome-online-accounts
 
 xdg-desktop-portal
 xdg-desktop-portal-gnome
-# GTK3, but still the only Inhibit and Email portal backend.
 xdg-desktop-portal-gtk
 xdg-user-dirs
 
-# oo7 replaces gnome-keyring on F45.
 oo7-daemon
 pam_oo7
 oo7-portal
@@ -56,7 +49,6 @@ gnome-logs
 yelp
 gnome-user-docs
 epiphany
-# GTK3 until GNOME Disks ships its GTK4 port.
 gnome-disk-utility
 gnome-firmware
 
@@ -72,24 +64,19 @@ gvfs-smb
 gvfs-afc
 gvfs-goa
 
-# gsettings-desktop-schemas only weakly requires the Adwaita fonts.
 adwaita-sans-fonts
 adwaita-mono-fonts
-# fontconfig's generic families, for web content and non-GTK4 clients.
 default-fonts-core-sans
 default-fonts-core-serif
 default-fonts-core-mono
 default-fonts-core-emoji
 default-fonts-cjk-sans
 
-# ibus-gtk3 comes as a hard dependency of ibus while gtk3 is installed.
 ibus
 ibus-gtk4
 ibus-m17n
-# vi-telex.mim, for m17n:vi:telex.
 m17n-db
 
-# Also provides the VA-API drivers (radeonsi) on F45.
 mesa-dri-drivers
 mesa-vulkan-drivers
 gstreamer1-plugins-base

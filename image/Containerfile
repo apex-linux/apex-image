@@ -1,8 +1,5 @@
-# Apex OS image: Fedora 45 + GNOME 51 for the ASUS Vivobook Pro 14X OLED M7400QC.
-# Built by .github/scripts/image.sh build from the repository root; rpms/ holds the
-# Apex RPMs and the rebuild lane's rpms.lock. Never build with --cache-from/--cache-to:
-# the build-rootfs RUN line does not change when the repositories do.
-# Every RUN is a plain `sh -c` line (no heredocs), so buildah older than 1.33 builds it.
+# Never build with --cache-from/--cache-to: build-rootfs's RUN line stays the same when the
+# repositories change. RUN lines are plain `sh -c`, no heredocs, for buildah older than 1.33.
 
 ARG FEDORA=45
 # Digest pins on registry.fedoraproject.org only (quay.io stops serving a digest a day
@@ -15,35 +12,22 @@ ARG APEX_REVISION=
 ARG GA_REACHED=0
 ARG FEDORA_GA_DATE=2026-10-20
 ARG ALLOWLIST_GRACE_DAYS=7
-# 1 for images headed to a registry: explicit version and revision, real public keys.
 ARG RELEASE_BUILD=0
-# build-rootfs or dnf: the final stage is FROM rootfs-${COMPOSE}.
 ARG COMPOSE=build-rootfs
-# Replay: space-separated NEVRAs of an earlier build's manifest (build-rootfs --lock).
 ARG LOCK=
 
-# repos: the source root build-rootfs composes from. rpm-ostree rewrites gpgkey=file://
-# paths into it but not baseurl=, so [apex] names its path inside the builder: /repos.
+# build-rootfs composes from this stage's root. rpm-ostree rewrites gpgkey=file:// paths into
+# it but not baseurl=, so [apex] names its path inside the builder: /repos.
 FROM ${REPOS_BASE} AS repos
 ARG FEDORA
 ARG GA_REACHED
 ARG FEDORA_GA_DATE
 ARG ALLOWLIST_GRACE_DAYS
 COPY rpms/ /apex/
+# libdnf reads a local repository's gpgkey= by file name from the repository itself.
 COPY image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex /apex/RPM-GPG-KEY-apex
-# updates-testing is disabled in the repo files themselves: rpm-ostree's libdnf does
-# not read dnf5's repos.override.d.
-# excludepkgs is one line per repository: libdnf and libdnf5 keep only the last one.
-# apex-gnome51 gets the excludes after its own check, which must see the pinned builds.
-# [apex] has priority 1, which beats version: includepkgs keeps a stray RPM in rpms/
-# from replacing the signed Fedora package of the same name.
-# [apex] also trusts Fedora's key: the lane mirrors Fedora's mutter into it, unmodified.
-# libdnf reads a local repository's gpgkey= from the repository by file name, so both
-# keys sit in /apex next to the RPMs.
-# libdnf ignores an includepkgs list that matches nothing and would admit all of
-# updates-testing, so apex-gnome51 must offer exactly the pinned builds.
-# An NVR carries no epoch: the stable build's epoch is used on both sides of vercmp,
-# since Fedora never lowers one.
+# libdnf keeps only a repository's last excludepkgs line, and admits all of it when its
+# includepkgs matches nothing: apex-gnome51 must offer exactly the pinned builds.
 RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     set -eu; \
     rel=$(rpm -E %fedora); \
@@ -69,7 +53,7 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install createrepo_c; \
     if ! find /apex -name '*.rpm' | grep -q .; then echo "ERROR: rpms/ in the build context has no RPMs (the apex RPM is required)" >&2; exit 1; fi; \
     lock=/apex/rpms.lock; \
-    if [ ! -f "$lock" ]; then echo "ERROR: rpms/ has no rpms.lock: image.sh context --lane-lock puts the rebuild lane's lock there (ARCHITECTURE 4.1)" >&2; exit 1; fi; \
+    if [ ! -f "$lock" ]; then echo "ERROR: rpms/ has no rpms.lock: image.sh context --lane-lock puts the rebuild lane's lock there" >&2; exit 1; fi; \
     if ! head -n 1 "$lock" | grep -q '^# apex rpms.lock 1:'; then echo "ERROR: rpms/rpms.lock is not an rpms.lock of format 1" >&2; exit 1; fi; \
     echo "Rebuild lane (rpms/rpms.lock):"; awk '$1 == "family" { print "  " $0 }' "$lock"; \
     awk '$1 == "family" { st[$2] = $3 } $1 == "rpm" { if (st[$2] != "built" && st[$2] != "held") { print "ERROR: rpms.lock: an rpm line of " $2 ", which is not built or held" > "/dev/stderr"; exit 1 } print $4, $5 }' "$lock" >/tmp/lock-rpms.raw; \
@@ -183,9 +167,8 @@ RUN --mount=type=bind,from=repos,src=/,dst=/repos,rw \
 FROM scratch AS rootfs-build-rootfs
 COPY --from=builder /target-rootfs/ /
 
-# The fallback for when build-rootfs does not converge. Excludes do not reach into
-# the base, so excluded packages are removed first; LOCK has no dnf5 equivalent; the
-# base image's labels are inherited, so CI sets every dynamic label at rechunk time.
+# The fallback for when build-rootfs does not converge. Excludes do not reach into the base,
+# so excluded packages are removed first; LOCK has no dnf5 equivalent.
 FROM ${BASE} AS rootfs-dnf
 RUN --mount=type=bind,from=repos,src=/,dst=/repos \
     --mount=type=bind,source=image/packages,target=/run/apex-packages \
@@ -210,16 +193,8 @@ ARG APEX_VERSION
 ARG APEX_REVISION
 ARG RELEASE_BUILD
 COPY image/system_files/ /
-# /run/systemd is a tmpfs: systemd-analyze verify writes systemd-units-load there,
-# which the nonempty-run-tmp lint rejects, and podman's resolv.conf mount blocks rm.
-# bootupd's BIOS component is removed: bootc install would otherwise run
-# grub2-install --target i386-pc onto the laptop's disk, which Apex shares with Ubuntu.
-# A preset cannot undo an enablement symlink under /usr, so the auto-rebooting
-# bootc-fetch-apply-updates.timer loses its symlink and is masked.
-# The schema cache is compiled non-strict, so an upstream override for a schema that
-# is not installed cannot break the build; only the Apex override must pass --strict.
-# snd_hda_intel stays out of the initramfs: it must load from the root, where the
-# ALC294 patch firmware is.
+# /run/systemd is a tmpfs: systemd-analyze verify writes there, which the nonempty-run-tmp
+# lint rejects, and podman's resolv.conf mount blocks rm.
 RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     --mount=type=bind,source=image,target=/run/apex-image \
     --mount=type=bind,from=repos,src=/apex,target=/run/apex-rpms \
@@ -262,7 +237,7 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     for f in $(awk '$1 == "family" && ($3 == "stock" || $3 == "degraded") { print $2 }' /run/apex-rpms/rpms.lock); do \
         case $f in \
             gnome-shell) echo "NOTE: the gnome-shell family is Fedora's build: degraded=shell"; echo shell >>"$degraded" ;; \
-            *) echo "ERROR: the lane family $f is stock or degraded, but has no degraded name (docs/specs/M1-IMPLEMENTATION.md section 3)" >&2; exit 1 ;; \
+            *) echo "ERROR: the lane family $f is stock or degraded, but has no degraded name" >&2; exit 1 ;; \
         esac; \
     done; \
     sort -u "$degraded" >/tmp/apex-degraded.sorted; \
@@ -338,7 +313,7 @@ RUN set -eu; \
     rm -f /usr/lib/apex-build-lint-skips; \
     bootc container lint --fatal-warnings "$@"
 
-# CI adds the version, revision, created and apex.* labels at rechunk time.
+# CI sets the version, revision, created and apex.* labels at rechunk time, over inherited ones.
 LABEL containers.bootc="1" \
       ostree.bootable="1" \
       org.opencontainers.image.source="https://github.com/SekiroKenjii/apex-fedora"

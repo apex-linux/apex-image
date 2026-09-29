@@ -1,6 +1,4 @@
 #!/bin/sh
-# Every installed GTK2, GTK3 or Xorg consumer or provider, X11 session tool and banned
-# package must be in image/audit/legacy-allowlist.txt.
 set -eu
 CHECK_NAME=legacy
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -12,13 +10,12 @@ GTK3_CAPS='libgtk-3.so.0()(64bit) libgdk-3.so.0()(64bit) gtk3 gtk3(x86-64)'
 GTK2_CAPS='libgtk-x11-2.0.so.0()(64bit) libgdk-x11-2.0.so.0()(64bit) gtk2 gtk2(x86-64)'
 # Xwayland provides none of these.
 XORG_CAPS='Xorg xorg-x11-server-Xorg xorg-x11-server-Xorg(x86-64) xorg-x11-server-common /usr/bin/Xorg /usr/libexec/Xorg'
-# gdm hard-requires xorg-x11-xinit, which requires the rest: flagged so each one stays
-# allowlisted with its reason.
+# gdm hard-requires xorg-x11-xinit, which requires the rest: flagged so each keeps its allowlist reason.
 X11_USERLAND='xorg-x11-xinit xorg-x11-xauth xhost xmodmap xrdb setxkbmap'
 BANNED='gnome-terminal gedit eog evince totem cheese rhythmbox seahorse gnome-keyring gnome-classic-session xorg-x11-server-Xorg PackageKit gnome-software greenboot'
 
 make_tmpdir
-flagged=$TMPD/flagged      # name<TAB>why, possibly repeated
+flagged=$TMPD/flagged
 allowlisted=$TMPD/allowlisted
 
 command -v rpm >/dev/null 2>&1 || { fail "rpm not found"; finish; }
@@ -27,8 +24,7 @@ if ! root_rpm -q rpm >/dev/null 2>&1; then
     finish
 fi
 
-# rpm headers keep requirements a package satisfies itself (gtk3 "requires" libgtk-3);
-# such a package is flagged as the provider, not as a consumer.
+# rpm keeps requirements a package satisfies itself (gtk3 "requires" libgtk-3): flag it only as provider.
 self_provides() {
     case $2 in
         /*) root_rpm -qf --qf '%{NAME}\n' "$2" 2>/dev/null | grep -Fxq -- "$1" ;;

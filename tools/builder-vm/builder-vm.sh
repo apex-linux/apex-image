@@ -1,43 +1,47 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Local Fedora 45 builder VM (ADR 0013): user-mode QEMU with KVM, no root on the host.
-# The VM runs what this Ubuntu host cannot: rootful podman, build-rootfs, rpmbuild and
-# (with nested KVM) the qualification boots. The repository is copied in with rsync; the
-# VM never mounts host directories.
-#
-#   builder-vm.sh create        download and verify Fedora Cloud 45, create the disk,
-#                               first boot with cloud-init, provision the tools
-#   builder-vm.sh start|stop    boot in the background / clean ACPI shutdown
-#   builder-vm.sh status        running or not, uptime, disk and memory use
-#   builder-vm.sh ssh [CMD...]  a shell (or CMD) in the VM as user "builder"
-#   builder-vm.sh running       exit 0 when the VM runs, 1 when not (no output)
-#   builder-vm.sh sync          rsync the repository to ~/apex-fedora in the VM
-#   builder-vm.sh fetch REMOTE LOCAL
-#                               copy the file REMOTE (relative to the builder user's home
-#                               in the VM) to LOCAL on the host; resumes a partial copy
-#   builder-vm.sh run CMD...    sync, then run CMD in ~/apex-fedora in the VM
-#   builder-vm.sh image [--image-only]
-#                               sync, then build the RPM inputs and the image in the VM
-#                               (--image-only reuses the RPMs of the previous run)
-#   builder-vm.sh provision     re-run the guest provisioning (idempotent)
-#   builder-vm.sh console       follow the serial console log
-#   builder-vm.sh destroy --yes delete the VM disk, firmware vars and keys (keeps the
-#                               verified base image cache)
-#
-# Environment (defaults in brackets):
-#   APEX_VM_DIR       [${XDG_DATA_HOME:-~/.local/share}/apex/builder] VM files
-#   APEX_VM_MEM       [6G]    guest RAM; a free-page-reporting balloon returns unused
-#                             pages to the host, and the guest has zram swap
-#   APEX_VM_CPUS      [8]     vCPUs (the host has 12 threads)
-#   APEX_VM_DISK      [120G]  virtual disk size (qcow2, grows on demand)
-#   APEX_VM_SSH_PORT  [2222]  host port forwarded to the guest's sshd, bound to 127.0.0.1
-#
-# Trust: the base image is Fedora-Cloud-Base-Generic 45 Beta. Its CHECKSUM file is
-# verified with gpgv against the Fedora 45 primary key, whose fingerprint is pinned
-# below (cross-checked on 2026-09-24 between https://fedoraproject.org/fedora.gpg and
-# src.fedoraproject.org/rpms/fedora-repos f45), then the image's SHA-256 is checked.
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Local Fedora 45 builder VM (ADR 0013): user-mode QEMU with KVM, no root on the host.
+The VM runs what this Ubuntu host cannot: rootful podman, build-rootfs, rpmbuild and
+(with nested KVM) the qualification boots. The repository is copied in with rsync; the
+VM never mounts host directories.
+
+  builder-vm.sh create        download and verify Fedora Cloud 45, create the disk,
+                              first boot with cloud-init, provision the tools
+  builder-vm.sh start|stop    boot in the background / clean ACPI shutdown
+  builder-vm.sh status        running or not, uptime, disk and memory use
+  builder-vm.sh ssh [CMD...]  a shell (or CMD) in the VM as user "builder"
+  builder-vm.sh running       exit 0 when the VM runs, 1 when not (no output)
+  builder-vm.sh sync          rsync the repository to ~/apex-fedora in the VM
+  builder-vm.sh fetch REMOTE LOCAL
+                              copy the file REMOTE (relative to the builder user's home
+                              in the VM) to LOCAL on the host; resumes a partial copy
+  builder-vm.sh run CMD...    sync, then run CMD in ~/apex-fedora in the VM
+  builder-vm.sh image [--image-only]
+                              sync, then build the RPM inputs and the image in the VM
+                              (--image-only reuses the RPMs of the previous run)
+  builder-vm.sh provision     re-run the guest provisioning (idempotent)
+  builder-vm.sh console       follow the serial console log
+  builder-vm.sh destroy --yes delete the VM disk, firmware vars and keys (keeps the
+                              verified base image cache)
+
+Environment (defaults in brackets):
+  APEX_VM_DIR       [${XDG_DATA_HOME:-~/.local/share}/apex/builder] VM files
+  APEX_VM_MEM       [6G]    guest RAM; a free-page-reporting balloon returns unused
+                            pages to the host, and the guest has zram swap
+  APEX_VM_CPUS      [8]     vCPUs (the host has 12 threads)
+  APEX_VM_DISK      [120G]  virtual disk size (qcow2, grows on demand)
+  APEX_VM_SSH_PORT  [2222]  host port forwarded to the guest's sshd, bound to 127.0.0.1
+
+Trust: the base image is Fedora-Cloud-Base-Generic 45 Beta. Its CHECKSUM file is
+verified with gpgv against the Fedora 45 primary key, whose fingerprint is pinned
+below (cross-checked on 2026-09-24 between https://fedoraproject.org/fedora.gpg and
+src.fedoraproject.org/rpms/fedora-repos f45), then the image's SHA-256 is checked.
+EOF
+}
 
 readonly FEDORA_KEY_FPR=4F50A6114CD5C6976A7F1179655A4B02F577861E
 readonly FEDORA_KEY_URL=https://src.fedoraproject.org/rpms/fedora-repos/raw/f45/f/RPM-GPG-KEY-fedora-45-primary
@@ -46,6 +50,8 @@ readonly IMAGE_NAME=Fedora-Cloud-Base-Generic-45_Beta-1.3.x86_64.qcow2
 readonly CHECKSUM_NAME=Fedora-Cloud-images-45_Beta-1.3-x86_64-CHECKSUM
 readonly OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
 readonly OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS_4M.fd
+readonly QEMU_PROCESS_NAME=apex-builder
+readonly HOST_LOOPBACK_FROM_GUEST=10.0.2.2
 
 VM_DIR=${APEX_VM_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/apex/builder}
 MEM=${APEX_VM_MEM:-6G}
@@ -76,12 +82,10 @@ require_tools() {
     ((${#missing[@]} == 0)) || die "missing host tools: ${missing[*]}"
 }
 
-# is_vm PID: PID is the builder's QEMU (`-name ...,process=apex-builder` sets its comm).
-is_vm() { [[ $(cat "/proc/$1/comm" 2>/dev/null) == apex-builder ]]; }
+is_vm() { [[ $(cat "/proc/$1/comm" 2>/dev/null) == "$QEMU_PROCESS_NAME" ]]; }
 
-# running: true while the QEMU of the pidfile runs. QEMU removes the pidfile only when it
-# exits cleanly; a stale one is dropped here, so its PID, which another process may have
-# by now, is never signalled.
+# QEMU removes its pidfile only when it exits cleanly. A stale one is dropped, so its PID,
+# which another process may have by now, is never signalled.
 running() {
     local pid
     [[ -s $PIDFILE ]] || return 1
@@ -105,11 +109,10 @@ vm_ssh() {
     ssh "${ssh_opts[@]}" builder@127.0.0.1 "$@"
 }
 
-# ---- base image ---------------------------------------------------------------------
-
-fetch() { # URL DEST
-    curl -fL --retry 5 --retry-delay 3 --retry-all-errors -C - -o "$2.part" "$1"
-    mv -f "$2.part" "$2"
+fetch() {
+    local url=$1 dest=$2
+    curl -fL --retry 5 --retry-delay 3 --retry-all-errors -C - -o "$dest.part" "$url"
+    mv -f "$dest.part" "$dest"
 }
 
 verify_base() {
@@ -139,17 +142,12 @@ ensure_base() {
     chmod a-w "$BASE_DIR/$IMAGE_NAME"
 }
 
-# ---- QEMU ---------------------------------------------------------------------------
-
-# launch [SEED_URL]: start QEMU in the background. SEED_URL, only on the first boot,
-# points cloud-init's NoCloud datasource at the host through SMBIOS (the host's
-# loopback is 10.0.2.2 on the user-mode network).
 launch() {
-    local seed=${1:-} args
+    local seed_url=${1:-} args
     running && die "the VM is already running (pid $(cat "$PIDFILE"))"
     [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable by $(id -un)"
     # shellcheck disable=SC2054 # QEMU option values are comma-separated key=value lists
-    args=(-name apex-builder,process=apex-builder
+    args=(-name "apex-builder,process=$QEMU_PROCESS_NAME"
         -machine q35,accel=kvm -cpu host -smp "$CPUS" -m "$MEM"
         -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
         -drive "if=pflash,format=raw,file=$VARS"
@@ -161,17 +159,18 @@ launch() {
         -display none -serial "file:$SERIAL"
         -monitor "unix:$MONITOR,server=on,wait=off"
         -pidfile "$PIDFILE" -daemonize)
-    [[ -n $seed ]] && args+=(-smbios "type=1,serial=ds=nocloud;s=$seed")
+    [[ -n $seed_url ]] && args+=(-smbios "type=1,serial=ds=nocloud;s=$seed_url")
     : >"$SERIAL"
     qemu-system-x86_64 "${args[@]}"
     log "started (pid $(cat "$PIDFILE")), ssh on 127.0.0.1:$SSH_PORT, console log $SERIAL"
 }
 
-wait_for_ssh() { # TIMEOUT_SECONDS
-    local deadline=$((SECONDS + $1))
+wait_for_ssh() {
+    local timeout_seconds=$1
+    local deadline=$((SECONDS + timeout_seconds))
     until vm_ssh true 2>/dev/null; do
         running || die "QEMU exited during boot; see $SERIAL"
-        ((SECONDS < deadline)) || die "no ssh after $1 s; see $SERIAL"
+        ((SECONDS < deadline)) || die "no ssh after $timeout_seconds s; see $SERIAL"
         sleep 3
     done
 }
@@ -193,8 +192,6 @@ stop_vm() {
     done
     rm -f "$PIDFILE"
 }
-
-# ---- create / provision -------------------------------------------------------------
 
 write_seed() {
     local pub
@@ -248,7 +245,7 @@ create() {
     python3 -m http.server --bind 127.0.0.1 --directory "$SEED_DIR" "$port" >"$VM_DIR/seed-http.log" 2>&1 &
     http_pid=$!
     trap 'kill "$http_pid" 2>/dev/null || true' EXIT
-    launch "http://10.0.2.2:$port/"
+    launch "http://$HOST_LOOPBACK_FROM_GUEST:$port/"
     log "first boot: waiting for cloud-init and ssh (a few minutes)"
     wait_for_ssh 600
     vm_ssh 'sudo cloud-init status --wait >/dev/null; cloud-init status --long | sed -n 1,3p' >&2 || true
@@ -277,12 +274,13 @@ sync_repo() {
         -e "$rsh" "$REPO/" builder@127.0.0.1:apex-fedora/
 }
 
-fetch_file() { # REMOTE LOCAL
+fetch_file() {
+    local remote=$1 destination=$2
     running || die "the VM is not running ($0 start)"
-    [[ $1 != /* && $1 != *..* ]] || die "fetch: REMOTE must be relative to the builder's home, got '$1'"
+    [[ $remote != /* && $remote != *..* ]] || die "fetch: REMOTE must be relative to the builder's home, got '$remote'"
     init_ssh_opts
     local rsh="ssh ${ssh_opts[*]}"
-    rsync --partial --info=progress2 -e "$rsh" "builder@127.0.0.1:$1" "$2"
+    rsync --partial --info=progress2 -e "$rsh" "builder@127.0.0.1:$remote" "$destination"
 }
 
 run_in_repo() {
@@ -292,9 +290,10 @@ run_in_repo() {
     vm_ssh -t "cd ~/apex-fedora && $cmd"
 }
 
-image() { # [--image-only]
+image() {
+    local image_only_flag=${1:-}
     sync_repo
-    vm_ssh "bash -s -- ${1:-}" <"$HERE/build-image.sh"
+    vm_ssh "bash -s -- $image_only_flag" <"$HERE/build-image.sh"
 }
 
 destroy() {
@@ -326,7 +325,7 @@ main() {
         provision) running || die "the VM is not running ($0 start)"; provision ;;
         console) exec tail -f "$SERIAL" ;;
         destroy) destroy "$@" ;;
-        help | -h | --help) sed -n '/^# Local Fedora/,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' ;;
+        help | -h | --help) usage ;;
         *) die "unknown command '$cmd' ($0 help)" ;;
     esac
 }

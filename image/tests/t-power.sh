@@ -1,5 +1,4 @@
 #!/bin/sh
-# image/checks/power.sh on roots with the overlay's tuned files.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
@@ -7,8 +6,7 @@ command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
 PPD=etc/tuned/ppd.conf
 PERF=usr/lib/tuned/profiles/apex-performance/tuned.conf
 
-# mkroot NAME: prints the path of a root with the overlay's tuned files, a tuned-ppd and
-# stand-ins for the stock profiles the mapping names (their shape, not their content).
+# The stock profiles the mapping names are stand-ins: their shape, not their content.
 mkroot() {
     r=$T/$1
     mkdir -p "$r/usr/bin" "$r/usr/lib/tuned/profiles" "$r/etc/tuned"
@@ -34,8 +32,7 @@ power() {
     run env ROOT="$1" "$SH" "$CHECKS/power.sh"
 }
 
-# bad NAME ERE SH-SNIPPET: a root edited by SNIPPET (run in it) fails with a line
-# matching ERE.
+# bad NAME ERE SNIPPET: the root edited by SNIPPET, run inside it, fails with a line matching ERE.
 bad() {
     r=$(mkroot "$1")
     (cd "$r" && eval "$3")

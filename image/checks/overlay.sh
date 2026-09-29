@@ -1,7 +1,5 @@
 #!/bin/sh
-# The overlay's units, drop-ins, udev rules and tmpfiles.d files validate as installed
-# under ROOT. Any warning about them fails: at boot, systemd and udev only log a bad
-# line and ignore it.
+# Any warning about an overlay file fails: at boot, systemd and udev log a bad line and ignore it.
 set -eu
 CHECK_NAME=overlay
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -31,8 +29,7 @@ verify_rules() {
         udevadm verify --no-summary --root="$ROOT" "$1"
     fi
 }
-# Even with --root, systemd-tmpfiles reads a file named on the command line from the
-# host path.
+# Even with --root, systemd-tmpfiles reads a file named on the command line from the host path.
 dry_run_tmpfiles() {
     if [ "$ROOT" = / ]; then
         systemd-tmpfiles --dry-run --create "$1"

@@ -1,9 +1,6 @@
-# Exact names, one per line ('#' starts a comment): rpm-ostree matches exclude-packages
-# by name. Never list a hard requirement, conditional ones included, of anything
-# installed: the depsolve would fail. Such packages go into the legacy allowlist.
-# Names F45 no longer has (cheese) guard nothing; image/checks/legacy.sh bans them.
+# Exact names: rpm-ostree matches exclude-packages by name. A hard requirement of anything
+# installed, conditional ones included, fails the depsolve: it goes into the legacy allowlist.
 
-# Xwayland stays; the Xorg server never ships.
 xorg-x11-server-Xorg
 xorg-x11-drv-libinput
 xorg-x11-drv-amdgpu
@@ -16,22 +13,18 @@ xorg-x11-drv-vmware
 
 gnome-classic-session
 
-# Package managers do not belong on an image-based OS.
 PackageKit
 PackageKit-gtk3-module
 PackageKit-command-not-found
 gnome-software
 gnome-software-rpm-ostree
 
-# oo7 replaces gnome-keyring.
 gnome-keyring
 gnome-keyring-pam
 
-# apex-boot-assess replaces greenboot.
 greenboot
 greenboot-default-health-checks
 
-# GTK3 applications with GTK4 replacements.
 gnome-terminal
 gnome-terminal-nautilus
 gedit
@@ -46,7 +39,6 @@ gnome-connections
 gnome-color-manager
 
 qt5-qtbase
-# GTK2 has no Wayland backend; ibus only has (ibus-gtk2 if gtk2).
 gtk2
 ibus-gtk2
 ibus-xinit
@@ -54,9 +46,5 @@ ibus-setup
 imsettings
 im-chooser
 
-# grub2-pc cannot be excluded: the minimal manifest's grub2 is only in it. The image
-# removes bootupd's BIOS component instead.
-
-# tuned-ppd provides ppd-service; this keeps the choice deterministic.
 power-profiles-daemon
 iptables-legacy

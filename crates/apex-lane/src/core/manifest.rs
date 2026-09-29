@@ -91,9 +91,8 @@ pub fn is_signed_kind(kind: &[u8]) -> bool {
 
 const SIG_LINE: &[u8] = b"# sig=";
 
-/// `manifest` after the files of `signed` (name, new sha256) were signed with the key
-/// `fingerprint`: their entries carry the new digests and one `# sig=` line names the
-/// key. `None` when no entry names any of them.
+/// `manifest` after `signed` (name, new sha256) were signed with `fingerprint`: their entries get
+/// the new digests and one `# sig=` line names the key. `None` when no entry names any of them.
 pub fn resigned(
     manifest: &[u8],
     signed: &[(String, String)],

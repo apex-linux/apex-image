@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Guest-side image build for `builder-vm.sh image`, run in ~/apex-fedora inside the
-# builder VM. The Apex RPM key signs every RPM; nothing is pushed, the image is not
-# signed, and nothing promotes the lane's lock.
-#
-#   build-image.sh [--image-only]
-#
-# --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
-# or image/ changes).
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: build-image.sh [--image-only]
+
+Guest-side image build for `builder-vm.sh image`, run in ~/apex-fedora inside the
+builder VM. The Apex RPM key signs every RPM; nothing is pushed, the image is not
+signed, and nothing promotes the lane's lock.
+
+--image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
+or image/ changes).
+EOF
+}
 
 image_only=0
 case ${1:-} in
     --image-only) image_only=1 ;;
+    -h | --help) usage; exit 0 ;;
     '') ;;
-    *) echo "usage: build-image.sh [--image-only]" >&2; exit 2 ;;
+    *) usage >&2; exit 2 ;;
 esac
 
 cd "$HOME/apex-fedora"
@@ -36,8 +41,7 @@ mkdir -p _build
 
 in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
 
-# In the VM, after the container: the Apex RPM key never meets a build script. The lane
-# signs its own builds the same way.
+# After the container exits, so the Apex RPM key never meets a build script.
 sign_rpms() {
     local dir=$1
     sudo chown -R "$(id -u):$(id -g)" -- "$dir"
@@ -45,8 +49,7 @@ sign_rpms() {
     (cd "$dir" && sha256sum -- *.rpm >SHA256SUMS)
 }
 
-# rpms.sh, apex-lane and image.sh build from git HEAD: uncommitted host changes become a
-# throwaway snapshot commit in this VM copy of the checkout (snapshot.sh).
+# rpms.sh, apex-lane and image.sh build from git HEAD, not from the working tree.
 tools/builder-vm/snapshot.sh
 
 libfprint_args=(--libfprint-dir _build/libfprint)

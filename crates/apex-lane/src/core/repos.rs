@@ -86,9 +86,8 @@ pub fn testing_includepkgs(allowlist: Option<&[u8]>) -> String {
     entries.join(",")
 }
 
-/// Every subpackage of the allowlisted builds, so the buildroot also gets the -devel
-/// packages the runtime allowlist leaves out. `builds`: one source RPM per line; `all`:
-/// `NVR SOURCERPM` lines.
+/// Every subpackage of the allowlisted `builds` (a source RPM per line; `all` has `NVR SOURCERPM`
+/// lines), so the buildroot also gets the -devel packages the runtime allowlist leaves out.
 pub fn admitted(builds: &[u8], all: &[u8]) -> String {
     let wanted: BTreeSet<&[u8]> = text::lines(builds)
         .into_iter()

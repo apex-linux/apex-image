@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# apex-lane, the rebuild lane (packaging/README.md), for this checkout's HEAD: built in the
-# builder VM with Fedora's rust in a container of image/Containerfile's REPOS_BASE, so it
-# links against the glibc it also runs with in the lane's build containers, and cached
-# by its inputs in ~/.cache/apex-lane.
-#
-#   lane.sh ARGS...   run apex-lane ARGS in the checkout (build, key, prep, export,
-#                     status, promote, stock, sign)
-#   lane.sh --path    print the binary's path, building it when needed
+# apex-lane is built on REPOS_BASE: it runs on the glibc of the lane's build containers.
 set -eEuo pipefail
 # A failure of lane.sh itself exits 1, never a child's status: 3 means a held family.
 trap 'exit 1' ERR
@@ -36,8 +29,6 @@ id=$({
 } | sha256sum | cut -c1-16)
 bin=$CACHE/$id/apex-lane
 
-# builder_image: REPOS_BASE with Fedora's rust, cargo and gcc from the compose's
-# repositories (rpms.sh toolchain), made once per REPOS_BASE digest.
 builder_image() {
     local digest=${base##*@sha256:} image old
     image=$BUILDER:${digest:0:12}

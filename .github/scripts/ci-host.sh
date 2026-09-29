@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Prepare a GitHub-hosted Ubuntu runner for image work. The subcommands that change the
-# host run only on GitHub Actions.
-#
-#   ci-host.sh free-disk                  delete preinstalled toolchains we never use
-#   ci-host.sh storage                    btrfs (zstd) loopback as rootful podman storage,
-#                                         and APEX_SCRATCH on the other disk
-#   ci-host.sh podman-conf                rootful podman: sqlite database, temp in the store
-#   ci-host.sh kvm                        make /dev/kvm usable by the runner user
-#   ci-host.sh preflight STORE_GB SCRATCH_GB
-#                                         fail fast unless that much space is free
-#   ci-host.sh usage STEP                 add a df/du row for STEP to the job summary
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    cat >&2 <<'EOF'
+
+Prepare a GitHub-hosted Ubuntu runner for image work. The subcommands that change the
+host run only on GitHub Actions.
+
+  ci-host.sh free-disk                  delete preinstalled toolchains we never use
+  ci-host.sh storage                    btrfs (zstd) loopback as rootful podman storage,
+                                        and APEX_SCRATCH on the other disk
+  ci-host.sh podman-conf                rootful podman: sqlite database, temp in the store
+  ci-host.sh kvm                        make /dev/kvm usable by the runner user
+  ci-host.sh preflight STORE_GB SCRATCH_GB
+                                        fail fast unless that much space is free
+  ci-host.sh usage STEP                 add a df/du row for STEP to the job summary
+EOF
+    exit 2
+}
 
 readonly STORE=${APEX_CI_STORE:-/var/lib/containers}
 # GITHUB_ENV reaches only later steps; preflight and usage in the same step read this.

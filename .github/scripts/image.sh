@@ -1,37 +1,43 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Assemble, inspect, rechunk and push the Apex image, with rootful podman (sudo when not
-# root).
-#
-#   image.sh context [--rpms-ref REF|--rpms-dir DIR] [--libfprint-ref REF|--libfprint-dir DIR]
-#                    --lane-lock LANE [--lock FILE]
-#                                     put the RPM inputs into the context; LANE is the rebuild
-#                                     lane's lock in its store (the builder VM's
-#                                     ~/apex-store/rpms.lock.next); FILE (a lock.txt of an
-#                                     earlier build) is replayed through --build-arg LOCK
-#   image.sh build                    podman build image/Containerfile -> localhost/apex:build
-#   image.sh inspect                  manifest.json, lock list, degraded, held, content key
-#   image.sh unchanged                exit 0 when the content key equals apex-testing:45's
-#   image.sh rechunk                  rpm-ostree build-chunked-oci into an OCI layout
-#   image.sh push                     push the layout as apex-testing:sha-<git12>-<run>
-#   image.sh replay-check RUN_ID      exit 0 only when image.yml run RUN_ID may supply a
-#                                     lock list (needs gh, GH_TOKEN)
-#
-# Environment:
-#   APEX_WORK         the state: build.env, manifest.json, lock.txt, image.env, digest
-#                     (default _build/image)
-#   APEX_SCRATCH      the OCI layout and the rechunk work tree (default APEX_WORK)
-#   APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
-#   APEX_RPMS_KEY, APEX_DESKTOP_KEY, APEX_LIBFPRINT_KEY   input keys for the content
-#                     key (the context step records them from the artifacts when unset)
-#   APEX_COMPOSE      passed as --build-arg COMPOSE (build-rootfs or dnf)
-#   APEX_TARGET       podman build --target (a stage of image/Containerfile)
-#   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0); 1 for an image that will
-#                     be pushed, which then requires the real public keys
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    cat >&2 <<'EOF'
+
+Assemble, inspect, rechunk and push the Apex image, with rootful podman (sudo when not
+root).
+
+  image.sh context --rpms-ref REF|--rpms-dir DIR [--libfprint-ref REF|--libfprint-dir DIR]
+                   --lane-lock LANE [--lock FILE]
+                                    put the RPM inputs into the context; LANE is the rebuild
+                                    lane's lock in its store (the builder VM's
+                                    ~/apex-store/rpms.lock.next); FILE (a lock.txt of an
+                                    earlier build) is replayed through --build-arg LOCK
+  image.sh build                    podman build image/Containerfile -> localhost/apex:build
+  image.sh inspect                  manifest.json, lock list, degraded, held, content key
+  image.sh unchanged                exit 0 when the content key equals apex-testing:45's
+  image.sh rechunk                  rpm-ostree build-chunked-oci into an OCI layout
+  image.sh push                     push the layout as apex-testing:sha-<git12>-<run>
+  image.sh replay-check RUN_ID      exit 0 only when image.yml run RUN_ID may supply a
+                                    lock list (needs gh, GH_TOKEN)
+
+Environment:
+  APEX_WORK         the state: build.env, manifest.json, lock.txt, image.env, digest
+                    (default _build/image)
+  APEX_SCRATCH      the OCI layout and the rechunk work tree (default APEX_WORK)
+  APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
+  APEX_RPMS_KEY, APEX_DESKTOP_KEY, APEX_LIBFPRINT_KEY   input keys for the content
+                    key (the context step records them from the artifacts when unset)
+  APEX_COMPOSE      passed as --build-arg COMPOSE (build-rootfs or dnf)
+  APEX_TARGET       podman build --target (a stage of image/Containerfile)
+  APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0); 1 for an image that will
+                    be pushed, which then requires the real public keys
+EOF
+    exit 2
+}
 
 : "${APEX_WORK:=$APEX_ROOT/_build/image}"
 : "${APEX_SCRATCH:=$APEX_WORK}"
@@ -59,8 +65,7 @@ lane_families() {
     done | LC_ALL=C sort -u
 }
 
-# lane_lock_check LOCK FAMILY...: prints "PATH SHA256" per rpm line of a valid LOCK that
-# records every FAMILY.
+# Prints "PATH SHA256" per rpm line, and only when the lock is valid and records every family.
 lane_lock_check() {
     local lock=$1
     shift
@@ -303,7 +308,7 @@ cmd_inspect() {
          and (.packages | type == "array" and length > 0) and (.degraded | type == "array")
          and (.held | type == "array")' \
         "$APEX_WORK/manifest.json" >/dev/null ||
-        die "manifest.json does not match the build ($APEX_VERSION, $APEX_REVISION) or the contract (M1 §3)"
+        die "manifest.json does not match the build ($APEX_VERSION, $APEX_REVISION) or manifest schema 1"
 
     local degraded held key
     degraded=$(jq -r '.degraded | sort | join(",")' "$APEX_WORK/manifest.json")

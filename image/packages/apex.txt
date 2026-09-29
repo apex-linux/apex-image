@@ -1,13 +1,9 @@
-# Apex's own packages, one per line ('#' starts a comment), from the priority-1 local
-# repository the repos stage makes of rpms/. The Fedora packages the rebuild lane
-# rebuilds (gnome-shell, and the mutter it is pinned to) come through its lock instead.
+# Lane packages (gnome-shell and the mutter it is pinned to) come through rpms.lock, not this list.
 
 apex
 
-# The layer's GSettings schema (without it the shell runs in safe mode) and the shell's
-# crash guard.
+# The layer's GSettings schema (without it the shell runs in safe mode) and the crash guard.
 apex-desktop
 
-# The ELAN 04f3:0c6e fix. When its rebuild degrades, rpms/ has none and Fedora's build
-# is installed (degraded=fingerprint).
+# The ELAN 04f3:0c6e fix. When its rebuild degrades, Fedora's build is installed instead.
 libfprint

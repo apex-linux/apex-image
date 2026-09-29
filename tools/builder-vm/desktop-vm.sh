@@ -1,70 +1,75 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Desktop VM: try the Apex image the builder VM built, in a window on this host. The
-# image is installed with the qualification's install code onto a disk laid out like the
-# laptop minus LUKS (ESP + ext4 /boot + btrfs root), and boots with UEFI, KVM,
-# virtio-gpu with OpenGL (virgl) and PipeWire sound (playback only by default). The
-# first boot runs gnome-initial-setup, where you create your user. QEMU runs as your
-# normal user; nothing needs root on the host.
-#
-#   desktop-vm.sh install [--replace] [IMAGE]
-#                          install IMAGE (default localhost/apex:build, the result of
-#                          builder-vm.sh image) onto a new disk in the builder VM, then
-#                          copy the disk here. The builder VM is started for this and
-#                          stopped again if it was not running. --replace discards an
-#                          existing desktop disk and everything done in it
-#   desktop-vm.sh start    open the VM window (QEMU runs in the background)
-#   desktop-vm.sh stop     shut the guest down: systemctl poweroff over SSH (it finalizes
-#                          staged updates), else the ACPI power button; after 180 s QEMU
-#                          is stopped hard, like pulling the power
-#   desktop-vm.sh status   running or not, the installed image, disk use
-#   desktop-vm.sh ssh [CMD...]
-#                          root shell (or CMD) in the guest: key-only, 127.0.0.1 only
-#   desktop-vm.sh screenshot [FILE]
-#                          save the guest screen as PNG (default: a timestamped file in
-#                          the VM directory) and print its path; needs APEX_DESKTOP_GL=off
-#   desktop-vm.sh destroy --yes
-#                          delete the desktop disk, firmware variables and SSH key
-#
-# In the window (titled "QEMU (Apex desktop)"): Ctrl+Alt+G grabs keyboard and mouse, so
-# Super and other shortcuts reach the guest; press it again to release. Ctrl+Alt+F
-# toggles full screen. The close button is disabled, because closing the window would
-# cut the power; Machine > Quit (Ctrl+Alt+Q) and Machine > Reset still do, so avoid
-# them. Shut down from GNOME, with Machine > Power Down, or with `desktop-vm.sh stop`.
-#
-# Environment (defaults in brackets):
-#   APEX_DESKTOP_DIR       [${XDG_DATA_HOME:-~/.local/share}/apex/desktop] VM files
-#   APEX_DESKTOP_MEM       [4G]   guest RAM; free pages go back to the host (balloon)
-#   APEX_DESKTOP_CPUS      [4]    vCPUs
-#   APEX_DESKTOP_DISK_GB   [64]   virtual disk size at install (qcow2, grows on demand)
-#   APEX_DESKTOP_SSH_PORT  [2223] host port for the guest's sshd, bound to 127.0.0.1
-#   APEX_DESKTOP_GL        [on]   off: virtio-vga without OpenGL (software rendering)
-#   APEX_DESKTOP_AUDIO     [pipewire] pipewire, pa, alsa or none
-#   APEX_DESKTOP_MIC       [0]    1: also give the guest the host's default microphone
-#   APEX_DESKTOP_SHARP     [0]    1: render the guest at the window's device pixels on a
-#                                 HiDPI or fractionally scaled host (see "Sharpness")
-#
-# Sharpness: QEMU's GTK window reports its size to the guest in logical pixels. On a
-# scaled host (this laptop: 166 %, which GTK 3 draws at 2x) the guest image is then
-# stretched, so text is soft. APEX_DESKTOP_SHARP=1 sets the window's zoom to 1/scale
-# (QEMU `-display gtk,scale=`, zoom-to-fit off): the guest renders at the resolution of
-# GTK's 2x window buffer, and QEMU does not stretch it. GNOME still scales the window to
-# 166 %, as it does every GTK 3 app. In this mode the window follows the guest's mode, so
-# it opens small and shrinks back at every guest reboot: maximize it (the guest follows
-# within a second) and keep it maximized, then set Settings > Displays > Scale to 200 %
-# in the guest once. Full screen gives the guest logical pixels again.
-#
-# The guest's sshd accepts only the key made here for root (password logins stay as the
-# image ships them), and QEMU forwards it on the host's loopback only. User-mode
-# networking lets the guest reach the internet, and also every service listening on the
-# host's 127.0.0.1, at 10.0.2.2.
 set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Desktop VM: try the Apex image the builder VM built, in a window on this host. The
+image is installed with the qualification's install code onto a disk laid out like the
+laptop minus LUKS (ESP + ext4 /boot + btrfs root), and boots with UEFI, KVM,
+virtio-gpu with OpenGL (virgl) and PipeWire sound (playback only by default). The
+first boot runs gnome-initial-setup, where you create your user. QEMU runs as your
+normal user; nothing needs root on the host.
+
+  desktop-vm.sh install [--replace] [IMAGE]
+                         install IMAGE (default localhost/apex:build, the result of
+                         builder-vm.sh image) onto a new disk in the builder VM, then
+                         copy the disk here. The builder VM is started for this and
+                         stopped again if it was not running. --replace discards an
+                         existing desktop disk and everything done in it
+  desktop-vm.sh start    open the VM window (QEMU runs in the background)
+  desktop-vm.sh stop     shut the guest down: systemctl poweroff over SSH (it finalizes
+                         staged updates), else the ACPI power button; after 180 s QEMU
+                         is stopped hard, like pulling the power
+  desktop-vm.sh status   running or not, the installed image, disk use
+  desktop-vm.sh ssh [CMD...]
+                         root shell (or CMD) in the guest: key-only, 127.0.0.1 only
+  desktop-vm.sh screenshot [FILE]
+                         save the guest screen as PNG (default: a timestamped file in
+                         the VM directory) and print its path; needs APEX_DESKTOP_GL=off
+  desktop-vm.sh destroy --yes
+                         delete the desktop disk, firmware variables and SSH key
+
+In the window (titled "QEMU (Apex desktop)"): Ctrl+Alt+G grabs keyboard and mouse, so
+Super and other shortcuts reach the guest; press it again to release. Ctrl+Alt+F
+toggles full screen. The close button is disabled, because closing the window would
+cut the power; Machine > Quit (Ctrl+Alt+Q) and Machine > Reset still do, so avoid
+them. Shut down from GNOME, with Machine > Power Down, or with `desktop-vm.sh stop`.
+
+Environment (defaults in brackets):
+  APEX_DESKTOP_DIR       [${XDG_DATA_HOME:-~/.local/share}/apex/desktop] VM files
+  APEX_DESKTOP_MEM       [4G]   guest RAM; free pages go back to the host (balloon)
+  APEX_DESKTOP_CPUS      [4]    vCPUs
+  APEX_DESKTOP_DISK_GB   [64]   virtual disk size at install (qcow2, grows on demand)
+  APEX_DESKTOP_SSH_PORT  [2223] host port for the guest's sshd, bound to 127.0.0.1
+  APEX_DESKTOP_GL        [on]   off: virtio-vga without OpenGL (software rendering)
+  APEX_DESKTOP_AUDIO     [pipewire] pipewire, pa, alsa or none
+  APEX_DESKTOP_MIC       [0]    1: also give the guest the host's default microphone
+  APEX_DESKTOP_SHARP     [0]    1: render the guest at the window's device pixels on a
+                                HiDPI or fractionally scaled host (see "Sharpness")
+
+Sharpness: QEMU's GTK window reports its size to the guest in logical pixels. On a
+scaled host (this laptop: 166 %, which GTK 3 draws at 2x) the guest image is then
+stretched, so text is soft. APEX_DESKTOP_SHARP=1 sets the window's zoom to 1/scale
+(QEMU `-display gtk,scale=`, zoom-to-fit off): the guest renders at the resolution of
+GTK's 2x window buffer, and QEMU does not stretch it. GNOME still scales the window to
+166 %, as it does every GTK 3 app. In this mode the window follows the guest's mode, so
+it opens small and shrinks back at every guest reboot: maximize it (the guest follows
+within a second) and keep it maximized, then set Settings > Displays > Scale to 200 %
+in the guest once. Full screen gives the guest logical pixels again.
+
+The guest's sshd accepts only the key made here for root (password logins stay as the
+image ships them), and QEMU forwards it on the host's loopback only. User-mode
+networking lets the guest reach the internet, and also every service listening on the
+host's 127.0.0.1, at 10.0.2.2.
+EOF
+}
 
 readonly OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
 readonly OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS_4M.fd
 readonly DEFAULT_IMAGE=localhost/apex:build
-# Where desktop-disk.sh leaves its output in the builder VM (relative to ~builder).
+readonly QEMU_PROCESS_NAME=apex-desktop
+# desktop-disk.sh's output, relative to the builder's home as builder-vm.sh fetch wants.
 readonly REMOTE_OUT=apex-fedora/_build/desktop
 
 VM_DIR=${APEX_DESKTOP_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/apex/desktop}
@@ -100,12 +105,10 @@ require_tools() {
     ((${#missing[@]} == 0)) || die "missing host tools: ${missing[*]}"
 }
 
-# is_vm PID: PID is this VM's QEMU (`-name ...,process=apex-desktop` sets its comm).
-is_vm() { [[ $(cat "/proc/$1/comm" 2>/dev/null) == apex-desktop ]]; }
+is_vm() { [[ $(cat "/proc/$1/comm" 2>/dev/null) == "$QEMU_PROCESS_NAME" ]]; }
 
-# running: true while the QEMU of the pidfile runs. QEMU removes the pidfile only when it
-# exits cleanly; a stale one (QEMU killed, host session ended) is dropped here, so its
-# PID, which another process may have by now, is never signalled.
+# QEMU removes its pidfile only when it exits cleanly. A stale one is dropped, so its PID,
+# which another process may have by now, is never signalled.
 running() {
     local pid
     [[ -s $PIDFILE ]] || return 1
@@ -115,8 +118,7 @@ running() {
     return 1
 }
 
-# lock: one install or start at a time. install holds it to the end, so no VM can boot
-# the disk it is about to replace.
+# install holds the lock to the end, so no VM can boot the disk it is about to replace.
 lock() {
     mkdir -p "$VM_DIR"
     exec 9>"$LOCK"
@@ -125,8 +127,6 @@ lock() {
 
 monitor() { printf '%s\n' "$1" | socat - "UNIX-CONNECT:$MONITOR"; }
 
-# gtk_scale: the integer scale GTK 3 renders QEMU's window with (the largest of the
-# host's monitors; 2 for a fractional 166 %), or 1 when it cannot be told.
 gtk_scale() {
     local s
     s=$(python3 -c 'import gi
@@ -144,8 +144,6 @@ vm_ssh() {
         -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o ServerAliveInterval=30 \
         -o LogLevel=ERROR root@127.0.0.1 "$@"
 }
-
-# ---- install ------------------------------------------------------------------------
 
 install() {
     local replace=0 image=$DEFAULT_IMAGE
@@ -194,8 +192,6 @@ install() {
     log "disk: $(du -h "$DISK" | cut -f1) used of ${DISK_GB} GiB; start it with: $0 start"
 }
 
-# ---- start / stop -------------------------------------------------------------------
-
 start() {
     require_tools qemu-system-x86_64 socat flock
     lock
@@ -212,17 +208,15 @@ start() {
         off) gpu=virtio-vga display=gtk,gl=off ;;
         *) die "APEX_DESKTOP_GL must be on or off" ;;
     esac
-    # A click on the close button would stop QEMU like a power cut; the guest shuts
-    # down from GNOME, the Machine menu or `desktop-vm.sh stop` instead.
+    # The close button would stop QEMU like a power cut.
     display+=,window-close=off
     case $SHARP in
         0) ;;
         1)
             local gs zoom
             gs=$(gtk_scale)
-            # Zoom 1/gs: a window W logical pixels wide asks the guest for W*gs pixels and
-            # draws them unscaled into GTK's buffer (QEMU ui/gtk.c gd_resize_event). The
-            # values are literal: printf would follow LC_NUMERIC and write 0,5.
+            # At zoom 1/gs a window W wide asks the guest for W*gs pixels, drawn unscaled
+            # (ui/gtk.c gd_resize_event). Literals: printf would follow LC_NUMERIC (0,5).
             case $gs in
                 2) zoom=0.5 ;;
                 3) zoom=0.333333 ;;
@@ -238,8 +232,7 @@ start() {
             ;;
         *) die "APEX_DESKTOP_SHARP must be 0 or 1" ;;
     esac
-    # hda-output is playback only; hda-micro adds a microphone fed by the host's default
-    # source, so the guest can record the room only when asked to.
+    # Only hda-micro lets the guest record the room, from the host's default source.
     local codec
     case $MIC in
         0) codec=hda-output ;;
@@ -254,7 +247,7 @@ start() {
     esac
 
     # shellcheck disable=SC2054 # QEMU option values are comma-separated key=value lists
-    local args=(-name "Apex desktop,process=apex-desktop"
+    local args=(-name "Apex desktop,process=$QEMU_PROCESS_NAME"
         -machine q35,accel=kvm,vmport=off -cpu host -smp "$CPUS" -m "$MEM"
         -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
         -drive "if=pflash,format=raw,file=$VARS"
@@ -276,9 +269,10 @@ start() {
     log "first boot: gnome-initial-setup creates your user; Flathub apps install in the background"
 }
 
-wait_exit() { # PID SECONDS
-    local deadline=$((SECONDS + $2))
-    while is_vm "$1"; do
+wait_exit() {
+    local pid=$1 seconds=$2
+    local deadline=$((SECONDS + seconds))
+    while is_vm "$pid"; do
         ((SECONDS < deadline)) || return 1
         sleep 2
     done
@@ -288,10 +282,8 @@ stop_vm() {
     running || { log "not running"; rm -f "$PIDFILE"; return 0; }
     local pid
     pid=$(cat "$PIDFILE")
-    # systemctl poweroff runs the whole shutdown (ostree finalizes a staged update there).
-    # Without SSH, the ACPI power button, which powers a VM off at once: in a VM
-    # gnome-settings-daemon honours only power-button-action 'nothing', and logind acts
-    # where no session holds the key.
+    # poweroff lets ostree finalize a staged update. The ACPI button powers the VM off
+    # at once: in a VM gnome-settings-daemon leaves the power key to logind.
     if vm_ssh true >/dev/null 2>&1; then
         log "shutting down (systemctl poweroff)"
         # The connection drops while the guest goes down; that is not a failure.
@@ -308,8 +300,6 @@ stop_vm() {
     rm -f "$PIDFILE"
     log "stopped"
 }
-
-# ---- status / screenshot / destroy --------------------------------------------------
 
 status() {
     if running; then
@@ -335,8 +325,6 @@ screenshot() {
     rm -f -- "$file"
     local reply i
     reply=$(monitor "screendump $file -f png" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g')
-    # QEMU cannot read back an OpenGL scanout; the guest's own screenshot (Print Screen
-    # in GNOME) works in every mode.
     [[ $reply != *"no surface"* ]] ||
         die "QEMU cannot capture an OpenGL display; start with APEX_DESKTOP_GL=off, or use Print Screen in the guest"
     for ((i = 0; i < 20; i++)); do [[ -s $file ]] && break; sleep 0.25; done
@@ -364,7 +352,7 @@ main() {
         ssh) running || die "the desktop VM is not running ($0 start)"; vm_ssh "$@" ;;
         screenshot) screenshot "$@" ;;
         destroy) destroy "$@" ;;
-        help | -h | --help) sed -n '/^# Desktop VM/,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//' ;;
+        help | -h | --help) usage ;;
         *) die "unknown command '$cmd' ($0 help)" ;;
     esac
 }

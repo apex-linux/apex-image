@@ -1,10 +1,29 @@
 #!/bin/sh
-# Tests of image/, as TAP. rpm, dnf5 and createrepo_c are faked; a file whose tool is
-# missing is skipped, or fails under APEX_IMAGE_TESTS_NO_SKIP=1.
-#
-#   image/tests/run.sh             every t-*.sh, with sh, dash and bash
-#   image/tests/run.sh t-keys.sh   one file
 set -eu
+
+usage() {
+    cat <<'EOF'
+Tests of image/, as TAP. rpm, dnf5 and createrepo_c are faked; a file whose tool is
+missing is skipped, or fails under APEX_IMAGE_TESTS_NO_SKIP=1.
+
+  image/tests/run.sh                 every t-*.sh, with sh, dash and bash
+  image/tests/run.sh t-keys.sh ...   the named files
+EOF
+}
+
+for arg in "$@"; do
+    case $arg in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -*)
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
 dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 if [ "$#" -gt 0 ]; then

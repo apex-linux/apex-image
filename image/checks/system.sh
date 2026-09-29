@@ -1,6 +1,5 @@
 #!/bin/sh
-# What the install and recovery runbooks rely on: a persistent journal, exactly one NTP
-# client, a UEFI-only bootupd and the commands they run.
+# The install and recovery runbooks rely on everything checked here.
 set -eu
 CHECK_NAME=system
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -13,8 +12,7 @@ CONF_DIRS='/etc/systemd /usr/local/lib/systemd /usr/lib/systemd'
 
 make_tmpdir
 
-# The first journald.conf, then every journald.conf.d drop-in by file name; a name in a
-# higher-priority directory hides the same name in a lower one.
+# systemd reads the first journald.conf, then each drop-in name from the highest directory that has it.
 : >"$TMPD/journald-files"
 for d in $CONF_DIRS; do
     f=$(rootpath "$d/journald.conf")

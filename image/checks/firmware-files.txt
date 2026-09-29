@@ -1,5 +1,5 @@
-# Globs under /usr/lib/firmware. Must equal hardware/m7400qc/profile.toml
-# [firmware].required_files, in the same order (crates/apexctl tests the sync).
+# Mirrors hardware/m7400qc/profile.toml [firmware].required_files, in order.
+
 # Cezanne iGPU
 amdgpu/green_sardine_*
 # AX200 Wi-Fi

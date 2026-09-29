@@ -1,15 +1,15 @@
-# rhgb: Plymouth's graphical splash and LUKS prompt need it.
-# panic=10: boot counting rolls an update back only if a panicked boot reaches GRUB.
-# No rd.shell=0: on the only machine the dracut rescue shell beats a faster fallback.
-# The blacklists keep nouveau off the dGPU in the initramfs too; libkmod does not
-# normalise names here, so nova_core needs its '_'.
-# systemd.ssh_auto=no: systemd's ssh generator would socket-activate the installed sshd.
+# No rd.shell=0: on the only machine, the dracut rescue shell beats a faster fallback.
 kargs = [
+  # Plymouth's graphical splash and LUKS prompt need it.
   "rhgb",
   "quiet",
+  # Boot counting rolls an update back only if a panicked boot reaches GRUB.
   "panic=10",
+  # Keeps nouveau off the dGPU in the initramfs too. libkmod does not normalise names
+  # here, so nova_core needs its '_'.
   "modprobe.blacklist=nouveau,nova_core",
   "rd.driver.blacklist=nouveau,nova_core",
+  # Otherwise systemd's ssh generator socket-activates the installed sshd.
   "systemd.ssh_auto=no",
 ]
 # Rust's std::env::consts::ARCH names.

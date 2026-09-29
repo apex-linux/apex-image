@@ -1,6 +1,5 @@
-# asus-nb-wmi adds BAT0's charge_control_end_threshold without a uevent, so UPower's
-# 60-upower-battery.rules never sees it: a "change" event on BAT0 after the driver's
-# "bind" runs it again. udevadm trigger returns at once, and the event is not platform's.
+# asus-nb-wmi adds BAT0's charge_control_end_threshold without a uevent: a "change" on BAT0
+# reruns 60-upower-battery.rules. The trigger returns at once and cannot match this rule again.
 
 ACTION=="bind", SUBSYSTEM=="platform", DRIVER=="asus-nb-wmi", \
   TEST=="/sys/class/power_supply/BAT0", \

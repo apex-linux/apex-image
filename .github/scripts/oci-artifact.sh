@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# RPM artifacts on ghcr.io: a FROM scratch image whose only layer holds /rpms/*.rpm and
-# /rpms/SHA256SUMS.
-#
-#   oci-artifact.sh digest REF          print the digest of REF; exit 3 when it is absent,
-#                                       4 when access is denied (a cache miss to callers)
-#   oci-artifact.sh lookup REPO KEY WORKFLOW
-#                                       the cache lookup: print the digest of REPO:KEY only
-#                                       when WORKFLOW (a workflow file name) on main
-#                                       attested it and it carries content-key=KEY; exit 3
-#                                       absent, 4 access denied, 5 not attested (all three
-#                                       are cache misses: rebuild and publish again)
-#   oci-artifact.sh push DIR REPO TAG   push DIR/*.rpm as REPO:TAG, print REPO@DIGEST
-#   oci-artifact.sh pull REF DEST       copy the RPMs of REF into DEST and verify them
-#
-# Environment: REGISTRY_AUTH_FILE for every registry call; GH_TOKEN (attestations: read)
-# for lookup.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    cat >&2 <<'EOF'
+
+RPM artifacts on ghcr.io: a FROM scratch image whose only layer holds /rpms/*.rpm and
+/rpms/SHA256SUMS.
+
+  oci-artifact.sh digest REF          print the digest of REF; exit 3 when it is absent,
+                                      4 when access is denied (a cache miss to callers)
+  oci-artifact.sh lookup REPO KEY WORKFLOW
+                                      the cache lookup: print the digest of REPO:KEY only
+                                      when WORKFLOW (a workflow file name) on main
+                                      attested it and it carries content-key=KEY; exit 3
+                                      absent, 4 access denied, 5 not attested (all three
+                                      are cache misses: rebuild and publish again)
+  oci-artifact.sh push DIR REPO TAG   push DIR/*.rpm as REPO:TAG, print REPO@DIGEST
+  oci-artifact.sh pull REF DEST       copy the RPMs of REF into DEST and verify them
+
+Environment: REGISTRY_AUTH_FILE for every registry call; GH_TOKEN (attestations: read)
+for lookup.
+EOF
+    exit 2
+}
 
 readonly UNVERIFIED=5
 

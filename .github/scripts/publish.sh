@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Sign, tag and promote Apex images. Only digests move; nothing is rebuilt.
-#
-#   publish.sh sign REPO DIGEST             cosign-sign REPO@DIGEST (legacy .sig format)
-#   publish.sh tag-testing DIGEST VERSION   move apex-testing:45 to DIGEST
-#   publish.sh promote-copy DIGEST          copy apex-testing@DIGEST to apex:<version>
-#   publish.sh promote-tag DIGEST           move apex:45 to DIGEST
-#   publish.sh version DIGEST               print the candidate's version label
-#
-# A tag moves only to a digest that passes the image's own committed policy, with a newer
-# version built from the same or a later commit of main (needs fetch-depth: 0).
-#
-# Environment: REGISTRY_AUTH_FILE (write access for tag moves); for sign also
-# COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GH_TOKEN and GITHUB_ACTOR, and cosign on PATH.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+usage() {
+    cat >&2 <<'EOF'
+
+Sign, tag and promote Apex images. Only digests move; nothing is rebuilt.
+
+  publish.sh sign REPO DIGEST             cosign-sign REPO@DIGEST (legacy .sig format)
+  publish.sh tag-testing DIGEST VERSION   move apex-testing:45 to DIGEST
+  publish.sh promote-copy DIGEST          copy apex-testing@DIGEST to apex:<version>
+  publish.sh promote-tag DIGEST           move apex:45 to DIGEST
+  publish.sh version DIGEST               print the candidate's version label
+
+A tag moves only to a digest that passes the image's own committed policy, with a newer
+version built from the same or a later commit of main (needs fetch-depth: 0).
+
+Environment: REGISTRY_AUTH_FILE (write access for tag moves); for sign also
+COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GH_TOKEN and GITHUB_ACTOR, and cosign on PATH.
+EOF
+    exit 2
+}
 
 readonly SYSTEM_FILES="$APEX_ROOT/image/system_files"
 readonly COMMITTED_POLICY="$SYSTEM_FILES/usr/share/apex/containers/policy.json"
@@ -69,7 +75,6 @@ verified_copy() {
     rm -rf "$policy" "$regd"
 }
 
-# candidate_labels DIGEST: prints "VERSION REVISION" of apex-testing@DIGEST.
 candidate_labels() {
     local digest=$1 json version fedora revision
     is_digest "$digest" || die "invalid digest '$digest'"

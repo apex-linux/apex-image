@@ -1,7 +1,4 @@
 #!/bin/sh
-# Fedora 45's rpm signature enforcement stays on: no rpm macro file and no dnf5
-# configuration, repository or override in the image weakens it. The image ships the
-# Apex RPM key, and every package Apex builds carries its signature.
 set -eu
 CHECK_NAME=signing
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -108,8 +105,7 @@ else
     fi
 fi
 
-# Apex builds apex.txt's packages and every .apexN release. Only libfprint has a Fedora
-# fallback: when its rebuild degrades, the image takes Fedora's (degraded=fingerprint).
+# Only libfprint has a Fedora fallback: when its rebuild degrades, the image takes Fedora's build.
 if ! root_rpm -qa --qf '%{NAME} %{RELEASE}\n' >"$TMPD/installed" 2>"$TMPD/rpm.err"; then
     fail "rpm -qa failed: $(head -n 3 "$TMPD/rpm.err" | paste -sd '|' -)"
 else

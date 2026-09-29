@@ -1,14 +1,10 @@
-# shellcheck shell=sh
-# Sourced by image/tests/t-*.sh, which end with done_testing; output is TAP. Everything a
-# test writes stays under $T, removed on exit.
+# shellcheck shell=sh disable=SC2034 # the t-*.sh files that source this read the variables
 
 set -eu
 
 TESTS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 IMAGE_DIR=$(dirname -- "$TESTS_DIR")
-# shellcheck disable=SC2034 # used by the t-*.sh files that source this
 REPO_ROOT=$(dirname -- "$IMAGE_DIR")
-# shellcheck disable=SC2034 # likewise
 CHECKS=$IMAGE_DIR/checks
 FAKE=$TESTS_DIR/fake
 T=$(mktemp -d "${TMPDIR:-/tmp}/apex-image-test.XXXXXX")
@@ -37,7 +33,6 @@ skip_all() {
     exit 0
 }
 
-# Leaves the output in $T/out and the exit status in RC for the expect_* assertions.
 run() {
     RC=0
     "$@" </dev/null >"$T/out" 2>&1 || RC=$?
@@ -68,8 +63,7 @@ done_testing() {
     [ "$_failed" -eq 0 ]
 }
 
-# The shell of run.sh's current pass: the checks run under dash and bash alike.
-# shellcheck disable=SC2034 # used by the t-*.sh files that source this
+# run.sh's shell for this pass: the checks must run under dash and bash alike.
 SH=${TEST_SHELL:-sh}
 
 fake_path() {

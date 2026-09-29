@@ -1,7 +1,5 @@
 #!/bin/sh
-# /etc/tuned/ppd.conf passes tuned-ppd's start-up checks (without them GNOME offers no
-# power modes) and maps the modes to the Apex TuneD profiles; apex-performance merges to
-# full CPU and platform performance without throughput-performance's server tunables.
+# tuned-ppd will not start on a ppd.conf that fails its checks, and GNOME then offers no power modes.
 set -eu
 CHECK_NAME=power
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -70,9 +68,8 @@ def known_profiles():
 
 
 def check_ppd():
-    """The checks of tuned/ppd/config.py PPDConfig.load_from_file (tuned 2.27, 2.28),
-    then the Apex values. Returns the TuneD profiles the file names (empty when
-    tuned-ppd would refuse it)."""
+    """The checks of tuned/ppd/config.py PPDConfig.load_from_file (tuned 2.27, 2.28), then the
+    Apex values. Returns the TuneD profiles the file names, none when tuned-ppd would refuse it."""
     path = rooted(PPD_CONF)
     if not os.path.isfile(path):
         bad("%s is missing: tuned-ppd does not start without it" % PPD_CONF)

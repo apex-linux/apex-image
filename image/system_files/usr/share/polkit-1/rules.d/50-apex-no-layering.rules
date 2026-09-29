@@ -1,6 +1,5 @@
 // rpmostreed authorizes uid 0 without polkit, so `sudo rpm-ostree` is not blocked here.
-// Action ids of rpm-ostree 2026.2's org.projectatomic.rpmostree1.policy. ES5 only:
-// polkit's JavaScript engine.
+// ES5 only, for polkit's engine; action ids of rpm-ostree 2026.2's policy.
 
 (function () {
     "use strict";

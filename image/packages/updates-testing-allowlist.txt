@@ -1,16 +1,12 @@
-# Builds admitted from updates-testing before F45 GA, as name-version-release, one per
-# line ('#' starts a comment): Bodhi FEDORA-2026-48a7996f9c, GNOME 51.0. The repos stage
-# fails unless updates-testing offers exactly these builds. List every installed
-# subpackage of a build, or the depsolve mixes 51.0 with 51~rc and fails.
+# Bodhi FEDORA-2026-48a7996f9c (GNOME 51.0) until F45 GA. List every installed subpackage
+# of a build, or the depsolve mixes 51.0 with 51~rc and fails.
 
-# adwaita-icon-theme-51.0-1.fc45
 adwaita-icon-theme-51.0-1.fc45
 adwaita-cursor-theme-51.0-1.fc45
 dconf-51.0-1.fc45
-# epiphany-51.0-2.fc45, a security rebuild from FEDORA-2026-91259c13b9
+# The -2 epiphany and gnome-control-center are security rebuilds from FEDORA-2026-91259c13b9.
 epiphany-51.0-2.fc45
 epiphany-runtime-51.0-2.fc45
-# gcr-4.4.1-1.fc45
 gcr-4.4.1-1.fc45
 gcr-libs-4.4.1-1.fc45
 gdm-51.0-1.fc45
@@ -22,15 +18,12 @@ gnome-calendar-51.0-1.fc45
 gnome-characters-51.0-1.fc45
 gnome-clocks-51.0-1.fc45
 gnome-contacts-51.0-1.fc45
-# gnome-control-center-51.0-2.fc45, a security rebuild from FEDORA-2026-91259c13b9
 gnome-control-center-51.0-2.fc45
 gnome-control-center-filesystem-51.0-2.fc45
-# gnome-desktop3-51.0-1.fc45 (gnome-desktop4 hard-requires gnome-desktop3)
 gnome-desktop3-51.0-1.fc45
 gnome-desktop4-51.0-1.fc45
 gnome-initial-setup-51.0-1.fc45
 gnome-settings-daemon-51.0-1.fc45
-# gnome-shell-51.0-1.fc45
 gnome-shell-51.0-1.fc45
 gnome-shell-common-51.0-1.fc45
 gnome-system-monitor-51.0-1.fc45
@@ -40,10 +33,8 @@ gsettings-desktop-schemas-51.0-1.fc45
 gtk4-4.24.0-1.fc45
 libadwaita-1.10.0-2.fc45
 libsecret-0.21.8.2-2.fc45
-# mutter-51.0-1.fc45
 mutter-51.0-1.fc45
 mutter-common-51.0-1.fc45
-# nautilus-51.0.1-1.fc45
 nautilus-51.0.1-1.fc45
 nautilus-extensions-51.0.1-1.fc45
 sushi-51.0-2.fc45

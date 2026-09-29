@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Guest-side disk build for `desktop-vm.sh install`, run in ~/apex-fedora inside the
-# builder VM. It installs a local image with the qualification's install_disk onto a
-# disk laid out like the laptop minus LUKS (ESP + ext4 /boot + btrfs root), then
-# converts the disk to qcow2 for the host.
-#
-#   desktop-disk.sh IMAGE AUTHORIZED_KEY
-#
-# IMAGE is an image in local container storage, e.g. localhost/apex:build from
-# `builder-vm.sh image`. AUTHORIZED_KEY is the desktop VM's SSH public key (one
-# ssh-ed25519 line). It becomes root's only key, and a kernel argument starts sshd,
-# which the image ships disabled; the host forwards it on 127.0.0.1 only. Unlike the
-# qualification, the Flatpak units are not masked and there is no serial console: the
-# first boot runs the Flatpak preinstall as on the laptop.
-#
-# Output in _build/desktop: desktop.qcow2, desktop.json (image, digest, version,
-# disk_gb) and authorized_keys.
-# Environment: DESKTOP_DISK_GB (default 64), the virtual size; the qcow2 grows on
-# demand.
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+usage: desktop-disk.sh IMAGE AUTHORIZED_KEY
+
+Guest-side disk build for `desktop-vm.sh install`, run in ~/apex-fedora inside the
+builder VM. It installs a local image with the qualification's install_disk onto a
+disk laid out like the laptop minus LUKS (ESP + ext4 /boot + btrfs root), then
+converts the disk to qcow2 for the host.
+
+IMAGE is an image in local container storage, e.g. localhost/apex:build from
+`builder-vm.sh image`. AUTHORIZED_KEY is the desktop VM's SSH public key (one
+ssh-ed25519 line). It becomes root's only key, and a kernel argument starts sshd,
+which the image ships disabled; the host forwards it on 127.0.0.1 only. Unlike the
+qualification, the Flatpak units are not masked and there is no serial console: the
+first boot runs the Flatpak preinstall as on the laptop.
+
+Output in _build/desktop: desktop.qcow2, desktop.json (image, digest, version,
+disk_gb) and authorized_keys.
+Environment: DESKTOP_DISK_GB (default 64), the virtual size; the qcow2 grows on
+demand.
+EOF
+}
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+    usage
+    exit 0
+fi
 if (($# != 2)); then
-    echo "usage: desktop-disk.sh IMAGE AUTHORIZED_KEY" >&2
+    usage >&2
     exit 2
 fi
 image=$1
@@ -35,9 +43,8 @@ export QUALIFY_DISK_GB=${DESKTOP_DISK_GB:-64}
 # shellcheck source=SCRIPTDIR/../../.github/scripts/qualify.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../.github/scripts/qualify.sh"
 
-# The qualification's kernel arguments are for unattended test boots: a serial console
-# (it would take /dev/console from the boot splash) and masks for the Flatpak units. A
-# desktop keeps only sshd.
+# The qualification's serial console would take /dev/console from the boot splash, and
+# its Flatpak masks are for unattended test boots.
 install_kargs() { printf '%s\n' --karg systemd.wants=sshd.service; }
 
 [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
@@ -72,8 +79,6 @@ mkdir -p "$QUALIFY_OUT"
 rm -f -- "$out" "$QUALIFY_OUT/desktop.json"
 printf '%s\n' "$key" >"$QUALIFY_OUT/authorized_keys"
 
-# Later updates of this install follow the testing channel (apex-testing:45); a laptop
-# installed by docs/INSTALL.md follows apex:45.
 install_disk desktop "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
 
 group "Convert $disk to qcow2"

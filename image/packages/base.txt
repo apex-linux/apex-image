@@ -1,63 +1,44 @@
-# One package per line; '#' starts a comment. Weak dependencies are off: what the image
-# relies on is listed here or hard-required by something listed. The minimal manifest
-# already has the kernel, systemd, bootc, ostree, bootupd, dnf, SELinux and dracut.
-
-# Must include hardware/m7400qc/profile.toml [firmware].packages (crates/apexctl tests).
 linux-firmware
 amd-gpu-firmware
 amd-ucode-firmware
-# Hard-requires iwlbluetooth-firmware (AX200 Bluetooth).
 iwlwifi-mvm-firmware
-# No alsa-sof-firmware: the internal mic is the ALC294 DMIC, not the Cezanne ACP.
 
-# The admin and recovery tool for the LUKS2 root; its cryptsetup-libs is what
-# systemd-cryptsetup loads at run time.
 cryptsetup
-# Ships /usr/bin/systemd-cryptsetup on F45.
 systemd-udev
 btrfs-progs
 plymouth
-# Resolves to plymouth-theme-spinner, which also carries the bgrt (firmware logo) theme.
 plymouth-system-theme
 zram-generator-defaults
-# exFAT formatting from Disks and Files: udisks2 only recommends it.
 exfatprogs
 
 NetworkManager
 NetworkManager-wifi
 NetworkManager-bluetooth
-# NetworkManager-wifi accepts wpa_supplicant or iwd; name the one that is tested.
 wpa_supplicant
 bluez
 
-# The minimal manifest has no NTP client.
 chrony
 
 pipewire
 pipewire-pulseaudio
 pipewire-alsa
-# pipewiresrc and pipewiresink: Snapshot's camera and screen casting.
 pipewire-gstreamer
 wireplumber
 alsa-ucm
-# The ALC294 procedures in docs/hardware use amixer, alsactl and alsamixer.
 alsa-utils
 
-# Provides ppd-service, the power-profiles D-Bus API GNOME uses.
 tuned-ppd
 switcheroo-control
 upower
 iio-sensor-proxy
 fwupd
-# Signed EFI helper for capsule updates through shim.
 fwupd-efi
-# Deliberately not fprintd-pam: no fingerprint in PAM yet.
+# Not fprintd-pam: no fingerprint in PAM yet.
 fprintd
 
 flatpak
 podman
 toolbox
-# Weak dependencies of toolbox worth keeping: host CA trust and image inspection.
 p11-kit-server
 skopeo
 
@@ -65,17 +46,14 @@ glibc-langpack-en
 glibc-langpack-vi
 hunspell-en-US
 hunspell-vi
-# libpwquality only recommends it, and its dictionary check fails without it.
 cracklib-dicts
 
-# libcanberra only recommends a backend: without one, event sounds are silent.
 libcanberra-backend-pulse
 
 orca
 
-# fedora-release only recommends an identity; this keeps the compose deterministic.
 fedora-release-identity-basic
-# system-logos without Fedora trademarks, which published images must not carry.
+# Published images must not carry Fedora's trademarks.
 generic-logos
 
 sudo
@@ -83,11 +61,8 @@ bash-completion
 man-db
 less
 vim-minimal
-# Not in the minimal manifest; the install runbook backs up the ESP with it. passwd
-# needs no entry: shadow-utils ships it.
 tar
 iputils
-# Without these drop-ins systemd-oomd manages nothing.
 systemd-oomd-defaults
 openssh-clients
 # For the KVM qualification only: presets and systemd.ssh_auto=no keep sshd off.

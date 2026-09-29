@@ -1,6 +1,4 @@
-# shellcheck shell=sh
-# Sourced by image/checks/*.sh after `set -eu` and CHECK_NAME. Each check prints one PASS,
-# FAIL, WARN or SKIP line per assertion and ends with `finish`, which exits 1 on a FAIL.
+# shellcheck shell=sh disable=SC2034 # the checks that source this read the variables
 
 ROOT=${ROOT:-/}
 while [ "$ROOT" != / ] && [ "${ROOT%/}" != "$ROOT" ]; do
@@ -15,13 +13,10 @@ APEX_IMAGE_DIR=${APEX_IMAGE_DIR:-$APEX_CHECKS_DIR/..}
 # Named explicitly so that a host rpm with other defaults reads ROOT's database.
 FEDORA_RPMDB=/usr/lib/sysimage/rpm
 
-# Fedora 45's signing key, fingerprint 4F50 A611 4CD5 C697 6A7F 1179 655A 4B02 F577 861E.
-# shellcheck disable=SC2034 # used by the checks that source this
-FEDORA_KEYID=655a4b02f577861e
-# The Apex RPM key (packaging/README.md, Signing). A rotation changes this pin and the
-# public key the image ships in one reviewed change.
+FEDORA_45_KEY_FPR=4f50a6114cd5c6976a7f1179655a4b02f577861e
+FEDORA_KEYID=${FEDORA_45_KEY_FPR#????????????????????????}
+# A rotation changes this pin and the public key the image ships in one reviewed change.
 APEX_RPM_KEY_FPR=553A938903DFFEEA647F7CC4ABEF111D1FCF882B
-# shellcheck disable=SC2034 # likewise
 APEX_RPM_KEYID=${APEX_RPM_KEY_FPR#????????????????????????}
 
 _apex_failures=0
@@ -67,8 +62,7 @@ root_rpm() {
     fi
 }
 
-# signed_by KEYID NAME: the installed NAME carries a signature by KEYID. The Signature
-# field of rpm -qi is one line in rpm 4 and indented lines after "Signature :" in rpm 6.
+# rpm -qi's Signature field is one line in rpm 4, and indented lines after "Signature :" in rpm 6.
 signed_by() {
     root_rpm -qi "$2" 2>/dev/null |
         awk '/^Signature[[:space:]]*:/ { on = 1; print; next } on && /^[[:space:]]/ { print; next } { on = 0 }' |
@@ -79,7 +73,6 @@ read_list() {
     sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$1"
 }
 
-# Sets TMPD to a private scratch directory, removed on exit.
 make_tmpdir() {
     TMPD=$(mktemp -d "${TMPDIR:-/tmp}/apex-check.XXXXXX")
     # shellcheck disable=SC2064 # expand now: the path is fixed

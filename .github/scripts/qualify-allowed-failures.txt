@@ -1,3 +1,2 @@
 # Units allowed to be failed in the qualification VM, one per line, each with its reason.
-# The list should only shrink: a unit that fails in the VM usually fails on the laptop
-# too, except hardware units that lack their device there (sound, fingerprint, battery).
+# Only shrink it: what fails in the VM usually fails on the laptop too, unless the VM lacks its device.

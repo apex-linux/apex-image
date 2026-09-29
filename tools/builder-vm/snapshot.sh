@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Guest side, in the builder VM's checkout (~/apex-fedora): commit a dirty checkout as a
-# throwaway snapshot, so that the tools that build from git HEAD (rpms.sh, image.sh,
-# apex-lane, and lane.sh, which builds it) see the host's working tree. The checkout is
-# an rsync copy whose .git is independent of the host repository, so the snapshot never
-# leaves the VM: the next `builder-vm.sh sync` replaces this .git with the host's.
-#
-#   snapshot.sh [CMD [ARGS...]]   snapshot when needed, then run CMD in the checkout
+# The tools that build from git HEAD see the host's working tree through this commit. It
+# never leaves the VM: the next `builder-vm.sh sync` replaces this .git with the host's.
 set -euo pipefail
 
 checkout=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
