@@ -57,7 +57,7 @@ if cmp -s "$T/preset-enable" "$T/explicit"; then
 else
     not_ok "80-apex.preset and the Containerfile's units differ: $(comm -3 "$T/preset-enable" "$T/explicit" | paste -sd ' ' -)"
 fi
-for u in chronyd.service apex-flatpak-preinstall.timer; do
+for u in chronyd.service apex-flatpak-preinstall.timer bootloader-update.service; do
     if grep -Fxq "$u" "$T/preset-enable"; then ok "preset enables $u"; else not_ok "preset enables $u"; fi
 done
 expect_file "preset keeps systemd-timesyncd off" '^disable systemd-timesyncd\.service$' "$PRESET"

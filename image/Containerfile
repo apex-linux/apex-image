@@ -213,7 +213,7 @@ COPY image/system_files/ /
 # /run/systemd is a tmpfs: systemd-analyze verify writes systemd-units-load there,
 # which the nonempty-run-tmp lint rejects, and podman's resolv.conf mount blocks rm.
 # bootupd's BIOS component is removed: bootc install would otherwise run
-# grub2-install --target i386-pc onto the disk shared with Windows.
+# grub2-install --target i386-pc onto the laptop's disk, which Apex shares with Ubuntu.
 # A preset cannot undo an enablement symlink under /usr, so the auto-rebooting
 # bootc-fetch-apply-updates.timer loses its symlink and is masked.
 # The schema cache is compiled non-strict, so an upstream override for a schema that
@@ -271,7 +271,7 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     systemctl --user --global preset-all; \
     rm -f /usr/lib/systemd/system/default.target.wants/bootc-fetch-apply-updates.timer; \
     systemctl mask bootc-fetch-apply-updates.timer; \
-    units="apex-boot-assess.service apex-update-auto.timer apex-flatpak-preinstall.service apex-flatpak-preinstall.timer apex-flatpak-update.timer chronyd.service gdm.service"; \
+    units="apex-boot-assess.service apex-update-auto.timer apex-flatpak-preinstall.service apex-flatpak-preinstall.timer apex-flatpak-update.timer bootloader-update.service chronyd.service gdm.service"; \
     systemctl enable $units; \
     systemctl set-default graphical.target; \
     for u in $units; do systemctl is-enabled --quiet "$u" || { echo "ERROR: $u is not enabled" >&2; exit 1; }; done; \

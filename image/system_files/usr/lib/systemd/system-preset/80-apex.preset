@@ -19,9 +19,9 @@ disable bootc-fetch-apply-updates.timer
 disable greenboot-healthcheck.service
 disable greenboot-set-rollback-trigger.service
 
-# It rewrites shim and GRUB on the ESP, shared with Windows, outside the rollback
-# envelope: bootc rollback cannot undo a bad write.
-disable bootloader-update.service
+# bootc rollback cannot undo its ESP writes, but an outdated shim or GRUB is the larger
+# risk (SBAT); the ESP backups of docs/INSTALL.md are the way back.
+enable bootloader-update.service
 
 # sshd is for the KVM qualification only, whose guest starts it with a kernel argument.
 disable sshd.service
