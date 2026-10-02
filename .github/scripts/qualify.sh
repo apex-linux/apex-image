@@ -28,11 +28,35 @@ the digest that will be published.
                                      denylist CANDIDATE and leave grubenv disarmed
   qualify.sh all CANDIDATE           fresh, then upgrade and red from apex:45 when it
                                      exists and differs from CANDIDATE
-  qualify.sh local IMAGE             smoke test of an unpublished image in local
-                                     container storage (localhost/NAME:TAG, e.g.
-                                     image.sh's localhost/apex:build): install, boot and
-                                     assert green like `fresh`, without the signature
-                                     tests (a local image carries no signature)
+  qualify.sh local IMAGE             G4 for an unpublished image in local container
+                                     storage (localhost/NAME:TAG, e.g. image.sh's
+                                     localhost/apex:build), without the signature tests
+                                     (a local image carries no signature): install, boot
+                                     green on composefs; the counted rollback of a newer
+                                     image derived from it in the guest; GDM's greeter;
+                                     the login of a user made only in the guest through
+                                     the greeter (its password typed over QEMU's QMP),
+                                     with the Apex layer on and its crash guard armed;
+                                     lock, and unlock by the password typed into the
+                                     unlock dialog and by loginctl, with no JS ERROR;
+                                     a login with APEX_SHELL_TEST_FAULT=abort-after-enable
+                                     that trips the crash guard, then a login in safe
+                                     mode; bootloader-update.service after every green
+                                     boot and on no red one. Only a pass with no SKIP or
+                                     WARN row records the image's G4 key, the time and
+                                     the image ID
+  qualify.sh g4-key IMAGE            print the G4 key of a local image: the NEVRAs of
+                                     gdm, gnome-shell, mutter, gjs, gnome-session,
+                                     accountsservice, pam, systemd, the kernel, shim,
+                                     GRUB and bootupd, the digest of every file of apex
+                                     and apex-desktop, of every /usr file of the image
+                                     overlay (image/system_files) and of the kargs
+  qualify.sh g4-due KEY              exit 0 when G4 is due for the image whose key
+                                     (g4-key's output) is in the file KEY: it differs
+                                     from the last local pass, that pass is more than 7
+                                     days old, or none is recorded; exit 3 when it is not
+                                     due, after printing the pass's passed-at and
+                                     image-id lines on stdout
 
 CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
 ghcr.io/sekirokenjii/apex-testing@sha256:...). It needs nested KVM, and sudo for
@@ -51,6 +75,11 @@ Environment (all optional):
   QUALIFY_ATTEMPT_TIMEOUT  seconds an armed, failing boot may take until it has
                         rebooted itself (default QUALIFY_BOOT_TIMEOUT + 300)
   QUALIFY_POLL          seconds between checks while waiting for QEMU (default 5)
+  QUALIFY_LOGIN_TIMEOUT seconds to wait for GDM's greeter, for the login through it, and
+                        for the user's gnome-shell to answer (default 300)
+  QUALIFY_LOCK_TIMEOUT  seconds loginctl lock-session and unlock-session may take to show
+                        in gnome-shell's state (default 60)
+  QUALIFY_G4_RECORD     the G4 key of the last local pass (default _build/g4-passed.txt)
   QUALIFY_KEEP_DISKS    1 keeps the VM disks after each scenario
   OVMF_CODE, OVMF_VARS, OVMF_FORMAT  firmware files (auto-detected on Ubuntu, Fedora)
 EOF
@@ -68,6 +97,9 @@ EOF
 : "${QUALIFY_BOOT_TIMEOUT:=900}"
 : "${QUALIFY_ATTEMPT_TIMEOUT:=$((QUALIFY_BOOT_TIMEOUT + 300))}"
 : "${QUALIFY_POLL:=5}"
+: "${QUALIFY_LOGIN_TIMEOUT:=300}"
+: "${QUALIFY_LOCK_TIMEOUT:=60}"
+: "${QUALIFY_G4_RECORD:=$APEX_ROOT/_build/g4-passed.txt}"
 
 readonly STRICT_POLICY=/usr/share/apex/containers/policy.json
 readonly GRUBENV=/boot/grub2/grubenv
@@ -77,9 +109,34 @@ readonly APEX_STATE=/var/lib/apex
 # Must match crate apex-boot: checks::force_red::FORCE_RED_PATH, checks::names::FORCED_RED.
 readonly FORCE_RED=$APEX_STATE/force-red
 readonly FORCED_RED_CHECK=forced-red
+readonly MANIFEST=/usr/share/apex/manifest.json
+readonly ASSESS_UNIT=apex-boot-assess.service
+readonly BOOTLOADER_UNIT=bootloader-update.service
+readonly BOOTLOADER_GATE=/usr/lib/systemd/system/bootloader-update.service.d/10-apex-after-green-boot.conf
+readonly TEST_USER=apexqa
+readonly LOCAL_CANDIDATE=localhost/apex-qualify:candidate
+readonly G4_TRIGGER_PACKAGES=(gdm gnome-shell mutter gjs gnome-session accountsservice pam systemd
+    kernel shim-x64 grub2-efi-x64 bootupd)
+# Their releases carry the commit, so their files, not their NEVRAs, key G4.
+readonly G4_PACKAGES_KEYED_BY_FILE_DIGEST=(apex apex-desktop)
+readonly G4_TRIGGER_DIRS=(/usr/lib/bootc/kargs.d)
+readonly G4_OVERLAY=$APEX_ROOT/image/system_files
+readonly G4_MAX_AGE_DAYS=7
+readonly G4_NOT_DUE=3
+readonly APEX_SCHEMA=io.github.sekirokenjii.Apex.Desktop
+readonly CRASH_GUARD_MARKER=apex-shell-starting
+readonly CRASH_GUARD_TRIPPED=.local/state/apex/shell-guard-tripped
+readonly TEST_FAULT_FILE=.config/environment.d/90-apex-qualify-fault.conf
+readonly APEX_FAILURE='Apex: (the layer did not load|hook .* threw|enable failed|feature .* off for this session|safe mode)'
 
 VM_NAME=
 VM_SERIAL=
+QMP_SOCKET=
+SESSION_ID=
+SESSION_UID=
+SESSION_TYPE=
+TEST_PASSWORD=
+LOCAL_CANDIDATE_DIGEST=
 declare -a LOOPS=() MOUNTS=()
 
 result() {
@@ -250,7 +307,11 @@ start_vm() {
     require_kvm
     VM_NAME=$name
     VM_SERIAL="$QUALIFY_OUT/logs/$log.serial.log"
-    rm -f "$QUALIFY_OUT/$name.pid"
+    # A socket, not a TCP port: user networking lets the guest reach the host's loopback,
+    # and QMP runs commands as the QEMU user.
+    install -d -m 0700 "$QUALIFY_OUT/qmp"
+    QMP_SOCKET=$QUALIFY_OUT/qmp/$name.sock
+    rm -f "$QUALIFY_OUT/$name.pid" "$QMP_SOCKET"
     qemu-system-x86_64 -name "apex-$name" -machine q35,accel=kvm -cpu host \
         -m "$QUALIFY_MEM" -smp "$QUALIFY_SMP" \
         -drive "if=pflash,format=$OVMF_FORMAT,unit=0,readonly=on,file=$OVMF_CODE" \
@@ -260,6 +321,7 @@ start_vm() {
         -device virtio-net-pci,netdev=net0 -device virtio-rng-pci \
         -device virtio-vga -display none \
         -serial "file:$VM_SERIAL" -monitor none \
+        -qmp "unix:$QMP_SOCKET,server=on,wait=off" \
         -pidfile "$QUALIFY_OUT/$name.pid" -daemonize "$@"
     log "started VM $name (pid $(cat "$QUALIFY_OUT/$name.pid"))${*:+ with $*}; console: $VM_SERIAL"
 }
@@ -370,16 +432,19 @@ save_bootc_status_fixture() {
     jq -e . "$dir/$name.json" >/dev/null || fail "fixture $name" "bootc status is not JSON"
 }
 
+unexpected_failures() {
+    comm -23 <(awk '{print $1}' | sed '/^$/d' | sort) \
+        <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$ALLOWED_FAILURES" | sed '/^$/d' | sort)
+}
+
 assert_running() {
-    local test=$1 state failed unexpected
+    local test=$1 state unexpected
     state=$(vm_ssh 'timeout 900 systemctl is-system-running --wait' 2>/dev/null || true)
     case $state in
         running) ;;
         degraded)
-            failed=$(vm_ssh 'systemctl list-units --state=failed --plain --no-legend --no-pager' |
-                awk '{print $1}' | sort)
-            unexpected=$(comm -23 <(printf '%s\n' "$failed" | sed '/^$/d') \
-                <(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$ALLOWED_FAILURES" | sed '/^$/d' | sort))
+            unexpected=$(vm_ssh 'systemctl list-units --state=failed --plain --no-legend --no-pager' |
+                unexpected_failures)
             if [[ -n $unexpected ]]; then
                 save_journal "$test"
                 fail "$test" "system degraded; failed units: $(tr '\n' ' ' <<<"$unexpected")"
@@ -426,13 +491,16 @@ assert_green() {
     status=$(status_json)
     booted=$(jq -r '.status.booted.image.imageDigest // empty' <<<"$status")
     [[ $booted == "$expected" ]] || fail "$test" "booted digest is '$booted', expected $expected"
+    local root_mount
+    root_mount=$(vm_ssh 'findmnt -n -o FSTYPE,SOURCE /' | awk '{ print $1, $2 }')
+    [[ $root_mount == "overlay composefs" ]] || fail "$test" "/ is '$root_mount', not composefs's overlay"
 
     local apexctl
     apexctl=$(vm_ssh 'apexctl status --json') || fail "$test" "apexctl status --json failed"
     jq -e 'type == "object"' <<<"$apexctl" >/dev/null || fail "$test" "apexctl status --json is not a JSON object"
     printf '%s\n' "$apexctl" >"$QUALIFY_OUT/fixtures/apexctl-status-$test.json"
 
-    result "$test" PASS "running, apex-boot-assess green, grubenv $grubstate, booted $expected"
+    result "$test" PASS "running, apex-boot-assess green, grubenv $grubstate, booted $expected on composefs"
 }
 
 expect_rejected() {
@@ -546,14 +614,14 @@ apply_candidate() {
 
 # apex-boot-assess ignores the hook unless it and its directory are writable by root only.
 set_force_red() {
-    local digest=$1 mode
+    local test=$1-hook digest=$2 mode
     is_digest "$digest" || die "set_force_red: invalid digest '$digest'"
     local hook_size=$((${#digest} + 1))
     vm_ssh "install -d -m 0700 $APEX_STATE && (umask 077 && printf '%s\n' $digest > $FORCE_RED.tmp) && mv -f $FORCE_RED.tmp $FORCE_RED" ||
-        fail red-hook "cannot write $FORCE_RED"
+        fail "$test" "cannot write $FORCE_RED"
     mode=$(vm_ssh "stat -c '%a %U %s' $FORCE_RED $APEX_STATE" | tr '\n' ' ')
-    [[ $mode == "600 root $hook_size 700 root "* ]] || fail red-hook "unexpected mode/owner/size of the hook: $mode"
-    result red-hook PASS "$FORCE_RED names $digest"
+    [[ $mode == "600 root $hook_size 700 root "* ]] || fail "$test" "unexpected mode/owner/size of the hook: $mode"
+    result "$test" PASS "$FORCE_RED names $digest"
 }
 
 # With -no-reboot every guest reboot ends QEMU, which counts the attempts. Nothing may log
@@ -571,11 +639,14 @@ armed_attempts() {
     endgroup
 }
 
+journal_boot_count() {
+    vm_ssh 'journalctl --list-boots --no-pager 2>/dev/null' | grep -cE '^[[:space:]]*-?[0-9]+[[:space:]]' || true
+}
+
 # Prints nothing, not 0, when the journal is not persistent, so the caller can tell unknown from none.
 forced_red_boots() {
-    local n=$1 listed count=0 b
-    listed=$(vm_ssh 'journalctl --list-boots --no-pager 2>/dev/null' | grep -cE '^[[:space:]]*-?[0-9]+[[:space:]]' || true)
-    ((listed > n)) || return 0
+    local n=$1 count=0 b
+    (($(journal_boot_count) > n)) || return 0
     for ((b = 1; b <= n; b++)); do
         if vm_ssh "journalctl -b -$b -u apex-boot-assess.service -o cat --no-pager -q | grep -q -- $FORCED_RED_CHECK"; then
             count=$((count + 1))
@@ -622,6 +693,527 @@ assert_counted_rollback() {
     result "$test" PASS "GRUB fell back after $APEX_BOOT_ATTEMPTS attempts; $previous is the default again, $target denylisted, grubenv disarmed${forced:+, forced-red in $forced journaled boots}"
 }
 
+unit_props() {
+    local cmd="systemctl show $1" p
+    for p in "${@:2}"; do cmd+=" -p $p"; done
+    vm_ssh "$cmd"
+}
+
+prop() { sed -n "s/^$1=//p"; }
+
+wait_no_job() {
+    local test=$1 unit=$2 deadline=$((SECONDS + 600))
+    while [[ -n $(vm_ssh "systemctl show -p Job --value $unit") ]]; do
+        ((SECONDS < deadline)) || fail "$test" "$unit still has a job after 600 s"
+        sleep "$QUALIFY_POLL"
+    done
+}
+
+bootloader_gated() { vm_ssh "test -f $BOOTLOADER_GATE"; }
+
+# Every run of `bootupctl update` logs at least one line, so no line means it did not run.
+bootupctl_lines() {
+    local boot=$1
+    vm_ssh "journalctl -b $boot _SYSTEMD_UNIT=$BOOTLOADER_UNIT SYSLOG_IDENTIFIER=bootupctl -o cat --no-pager -q"
+}
+
+save_unit_journal() {
+    local test=$1 unit=$2
+    vm_ssh "journalctl -b -u $unit -o short-monotonic --no-pager" >"$QUALIFY_OUT/logs/$test.journal.txt" 2>&1 || true
+}
+
+assert_bootloader_updated() {
+    local test=$1-bootloader props assessed started said cycle
+    bootloader_gated || fail "$test" "the booted image has no $BOOTLOADER_GATE"
+    wait_no_job "$test" "$BOOTLOADER_UNIT"
+    cycle=$(vm_ssh "journalctl -b 0 _PID=1 -o cat --no-pager -q | grep -m 2 'ordering cycle'") || true
+    [[ -z $cycle ]] || fail "$test" "systemd broke an ordering cycle at boot: $(tr '\n' ' ' <<<"$cycle")"
+    props=$(unit_props "$BOOTLOADER_UNIT" ActiveState Result ExecMainStatus ExecMainStartTimestampMonotonic) ||
+        fail "$test" "cannot read the state of $BOOTLOADER_UNIT"
+    assessed=$(unit_props "$ASSESS_UNIT" ExecMainExitTimestampMonotonic | prop ExecMainExitTimestampMonotonic) ||
+        fail "$test" "cannot read the state of $ASSESS_UNIT"
+    save_unit_journal "$test" "$BOOTLOADER_UNIT"
+    [[ $(prop ActiveState <<<"$props") == active && $(prop Result <<<"$props") == success &&
+        $(prop ExecMainStatus <<<"$props") == 0 ]] ||
+        fail "$test" "$BOOTLOADER_UNIT did not succeed after a green boot: $(tr '\n' ' ' <<<"$props")"
+    started=$(prop ExecMainStartTimestampMonotonic <<<"$props")
+    ((${started:-0} > 0 && ${assessed:-0} > 0 && started >= assessed)) ||
+        fail "$test" "bootupctl started at ${started:-?} us, apex-boot-assess finished at ${assessed:-?} us"
+    said=$(bootupctl_lines 0 | tail -n 1) || true
+    [[ -n $said ]] || fail "$test" "bootupctl left no line in this boot's journal, so a red boot's silence would prove nothing"
+    result "$test" PASS "bootupctl ran $(((started - assessed) / 1000)) ms after the green assessment and succeeded: $said"
+}
+
+# A skipped unit may have been unloaded since, so systemd's own log line counts too.
+assert_bootloader_skipped() {
+    local test=$1-bootloader props said
+    wait_no_job "$test" "$BOOTLOADER_UNIT"
+    props=$(unit_props "$BOOTLOADER_UNIT" ActiveState Result ExecMainStartTimestampMonotonic) ||
+        fail "$test" "cannot read the state of $BOOTLOADER_UNIT"
+    save_unit_journal "$test" "$BOOTLOADER_UNIT"
+    [[ $(prop ExecMainStartTimestampMonotonic <<<"$props") == 0 && -z $(bootupctl_lines 0) ]] ||
+        fail "$test" "bootupctl ran on a boot that apex-boot-assess did not judge green"
+    [[ $(prop Result <<<"$props") == exec-condition ||
+        -n $(vm_ssh "journalctl -b 0 UNIT=$BOOTLOADER_UNIT UNIT_RESULT=exec-condition -o cat --no-pager -q") ]] ||
+        fail "$test" "no sign that the green-boot condition skipped $BOOTLOADER_UNIT (Result=exec-condition): $(tr '\n' ' ' <<<"$props")"
+    said=$(vm_ssh "journalctl -b 0 _SYSTEMD_UNIT=$BOOTLOADER_UNIT SYSLOG_IDENTIFIER=sh -o cat --no-pager -q" | tail -n 1) || true
+    result "$test" PASS "skipped by its condition: ${said:-no line}"
+}
+
+save_attempt_journals() {
+    local name=$1 n=$2 b
+    for ((b = n; b >= 1; b--)); do
+        vm_ssh "journalctl -b -$b -o short-monotonic --no-pager _PID=1 + _SYSTEMD_UNIT=$ASSESS_UNIT" \
+            >"$QUALIFY_OUT/logs/$name-attempt$((n - b + 1)).boot.journal.txt" 2>&1 || true
+    done
+}
+
+assert_bootloader_quiet_before() {
+    local test=$1-bootloader n=$2 b ran=
+    if (($(journal_boot_count) <= n)); then
+        result "$test" SKIP "the journal is not persistent"
+        return 0
+    fi
+    for ((b = 1; b <= n; b++)); do
+        [[ -z $(bootupctl_lines "-$b") ]] || ran+=" -$b"
+    done
+    [[ -z $ran ]] || fail "$test" "bootupctl ran in the red boots$ran (journalctl -b)"
+    result "$test" PASS "bootupctl ran in none of the $n red boots, which reboot themselves after the assessment; the fallback row proves the green-boot condition"
+}
+
+# Before the counted boots too: without a user GDM starts gnome-initial-setup, not its greeter.
+create_test_user() {
+    local test=$1-user uid
+    vm_ssh "id -u $TEST_USER >/dev/null 2>&1 || useradd --create-home --comment 'Apex qualification' $TEST_USER" ||
+        fail "$test" "useradd $TEST_USER failed"
+    vm_ssh "runuser -u $TEST_USER -- sh -c 'mkdir -p ~/.config && echo yes > ~/.config/gnome-initial-setup-done'" ||
+        fail "$test" "cannot mark gnome-initial-setup done for $TEST_USER"
+    uid=$(vm_ssh "id -u $TEST_USER") || fail "$test" "$TEST_USER does not exist after useradd"
+    result "$test" PASS "$TEST_USER (uid $uid), made in this guest only, without a password"
+}
+
+find_session_script() {
+    cat <<'EOF'
+class=$1 name=${2:-}
+for id in $(loginctl list-sessions --no-legend | awk '{print $1}'); do
+    s=$(loginctl show-session "$id" -p Class -p Seat -p State -p Name -p User -p Type) || continue
+    grep -qx "Class=$class" <<<"$s" && grep -qx Seat=seat0 <<<"$s" && grep -qx State=active <<<"$s" || continue
+    [[ -z $name ]] || grep -qx "Name=$name" <<<"$s" || continue
+    printf '%s %s %s\n' "$id" "$(sed -n 's/^User=//p' <<<"$s")" "$(sed -n 's/^Type=//p' <<<"$s")"
+    exit 0
+done
+exit 1
+EOF
+}
+
+active_session() { vm_ssh bash -s -- "$@" < <(find_session_script); }
+
+wait_session() {
+    local test=$1 class=$2 name=${3:-} deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT)) found
+    until found=$(active_session "$class" "$name"); do
+        if ((SECONDS >= deadline)); then
+            vm_ssh 'loginctl list-sessions --no-pager; systemctl status --no-pager gdm.service' \
+                >"$QUALIFY_OUT/logs/$test.sessions.txt" 2>&1 || true
+            save_journal "$test"
+            fail "$test" "no active $class session${name:+ of $name} on seat0 after ${QUALIFY_LOGIN_TIMEOUT}s"
+        fi
+        sleep "$QUALIFY_POLL"
+    done
+    read -r SESSION_ID SESSION_UID SESSION_TYPE <<<"$found"
+}
+
+shell_pid() {
+    local uid=$1
+    vm_ssh "pgrep -u $uid -x gnome-shell"
+}
+
+assert_greeter() {
+    local test=$1-greeter
+    wait_session "$test" greeter
+    vm_ssh 'systemctl is-active --quiet gdm.service' || fail "$test" "gdm.service is not active"
+    shell_pid "$SESSION_UID" >/dev/null || fail "$test" "no gnome-shell runs for the greeter (uid $SESSION_UID)"
+    result "$test" PASS "GDM's greeter: session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell as uid $SESSION_UID"
+}
+
+# GDM's greeter lists no locked account, and useradd leaves one locked. The password lives
+# in this run only and never reaches a log.
+set_test_password() {
+    local test=$1-password
+    TEST_PASSWORD=$(openssl rand -hex 12) || fail "$test" "openssl rand failed"
+    vm_ssh chpasswd <<<"$TEST_USER:$TEST_PASSWORD" || fail "$test" "chpasswd for $TEST_USER failed"
+    result "$test" PASS "$TEST_USER has a password known to this run only, so GDM's greeter lists it from the next boot"
+}
+
+readonly QMP_CLIENT='
+import json, socket, sys
+with socket.socket(socket.AF_UNIX) as s:
+    s.settimeout(30)
+    s.connect(sys.argv[1])
+    stream = s.makefile("rw")
+    json.loads(stream.readline())
+    for command in ["{\"execute\":\"qmp_capabilities\"}"] + sys.stdin.read().splitlines():
+        stream.write(command + "\n")
+        stream.flush()
+        while True:
+            reply = json.loads(stream.readline())
+            if "return" in reply:
+                break
+            if "error" in reply:
+                sys.exit("QMP: %s" % reply["error"])
+'
+
+# On stdin, so that no key of the password reaches a process's arguments.
+qmp() { printf '%s\n' "$@" | python3 -c "$QMP_CLIENT" "$QMP_SOCKET"; }
+
+key_press() {
+    local key IFS=,
+    local -a keys=()
+    for key in "$@"; do keys+=("{\"type\":\"qcode\",\"data\":\"$key\"}"); done
+    printf '{"execute":"send-key","arguments":{"keys":[%s]}}\n' "${keys[*]}"
+}
+
+type_text() {
+    local i
+    local -a presses=()
+    [[ $1 =~ ^[0-9a-z]*$ ]] || die "type_text: only [0-9a-z] have a qcode of their own"
+    for ((i = 0; i < ${#1}; i++)); do presses+=("$(key_press "${1:i:1}")"); done
+    qmp "${presses[@]}"
+}
+
+screendump() {
+    qmp "$(jq -cn --arg f "$QUALIFY_OUT/logs/$1.png" '{execute: "screendump", arguments: {filename: $f, format: "png"}}')" ||
+        warn "QEMU wrote no screendump logs/$1.png"
+}
+
+# The logged-in session's GDM worker runs one, and another runs while a password is asked for.
+password_conversations() { vm_ssh "pgrep -c -f 'pam/gdm-passwor[d]'" || true; }
+
+type_password_after_enter() {
+    local test=$1 where=$2 before=$3 deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT))
+    until (($(password_conversations) > before)); do
+        if ((SECONDS >= deadline)); then
+            screendump "$test"
+            save_journal "$test"
+            fail "$test" "GDM started no password conversation ${QUALIFY_LOGIN_TIMEOUT}s into pressing Enter on $where (logs/$test.png)"
+        fi
+        qmp "$(key_press ret)" || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
+        sleep "$QUALIFY_POLL"
+    done
+    # The prompt takes keys only once the conversation has reached PAM.
+    sleep "$QUALIFY_POLL"
+    screendump "$test"
+    { type_text "$TEST_PASSWORD" && qmp "$(key_press ret)"; } ||
+        fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
+}
+
+# Enter picks the user GDM's greeter lists, which starts its password conversation.
+greeter_login() {
+    local test=$1-greeter-login
+    wait_session "$test" greeter
+    type_password_after_enter "$test" "GDM's greeter" 0
+    wait_session "$test" user "$TEST_USER"
+    result "$test" PASS "typed $TEST_USER's password into GDM's greeter (logs/$test.png): session $SESSION_ID ($SESSION_TYPE) on seat0"
+}
+
+user_run() {
+    local uid=$1
+    shift
+    vm_ssh "runuser -u $TEST_USER -- env XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus $*"
+}
+
+screensaver_active() {
+    local uid=$1
+    user_run "$uid" gdbus call --session --dest org.gnome.ScreenSaver --object-path /org/gnome/ScreenSaver \
+        --method org.gnome.ScreenSaver.GetActive 2>/dev/null
+}
+
+shell_answers() {
+    local uid=$1
+    [[ $(screensaver_active "$uid") == "("*",)" ]]
+}
+
+lockedhint_and_screensaver_agree() {
+    local session=$1 uid=$2 locked_hint=$3 screensaver_reply='(false,)'
+    [[ $locked_hint == no ]] || screensaver_reply='(true,)'
+    [[ $(vm_ssh "loginctl show-session $session -p LockedHint --value") == "$locked_hint" &&
+        $(screensaver_active "$uid") == "$screensaver_reply" ]]
+}
+
+wait_until() {
+    local test=$1 deadline=$((SECONDS + $2)) why=$3
+    until "${@:4}"; do
+        if ((SECONDS >= deadline)); then
+            save_journal "$test"
+            fail "$test" "$why"
+        fi
+        sleep "$QUALIFY_POLL"
+    done
+}
+
+js_errors() {
+    local log=$1
+    grep -c 'JS ERROR' "$log" || true
+}
+
+user_journal() {
+    local uid=$1 since=$2 out=$3
+    vm_ssh "journalctl -b _UID=$uid --since @$((since - 1)) -o short-monotonic --no-pager" >"$out" 2>&1
+}
+
+# The layer creates it at enable and removes it 60 s later.
+crash_guard_armed() {
+    local uid=$1
+    vm_ssh "test -e /run/user/$uid/$CRASH_GUARD_MARKER"
+}
+
+user_setting() {
+    local uid=$1 schema=$2 key=$3
+    user_run "$uid" gsettings get "$schema" "$key"
+}
+
+assert_apex_login() {
+    local test=$1 since=$2 pid log errors failure scheme agents status
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" \
+        "the layer never created /run/user/$SESSION_UID/$CRASH_GUARD_MARKER: it did not reach enable, so the crash guard was never armed" \
+        crash_guard_armed "$SESSION_UID"
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" \
+        "the gnome-shell of session $SESSION_ID never answered on org.gnome.ScreenSaver" shell_answers "$SESSION_UID"
+    pid=$(shell_pid "$SESSION_UID") || fail "$test" "no gnome-shell runs as $TEST_USER"
+    log=$QUALIFY_OUT/logs/$test.journal.txt
+    user_journal "$SESSION_UID" "$since" "$log" || fail "$test" "cannot read the journal of $TEST_USER"
+    failure=$(grep -Em 1 "$APEX_FAILURE" "$log") || true
+    [[ -z $failure ]] || fail "$test" "the layer did not run cleanly: $(cut -c1-200 <<<"$failure") (logs/${log##*/})"
+    scheme=$(user_setting "$SESSION_UID" org.gnome.desktop.interface color-scheme) ||
+        fail "$test" "cannot read $TEST_USER's color-scheme"
+    [[ $scheme == "'default'" ]] || fail "$test" "color-scheme is $scheme after login, not GNOME's 'default'"
+    agents=$(user_run "$SESSION_UID" systemctl --user list-units --state=active --plain --no-legend --no-pager "'apex*'") ||
+        fail "$test" "cannot list the user units of $TEST_USER"
+    [[ -z $agents ]] || fail "$test" "an Apex user unit runs: $(tr '\n' ' ' <<<"$agents")"
+    errors=$(js_errors "$log")
+    status=PASS
+    ((errors == 0)) || status=WARN
+    result "$test" "$status" "$TEST_USER's session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell pid $pid answers; the Apex layer armed its crash guard and logged no failure; color-scheme 'default', no Apex user unit; $errors JS ERROR line(s) since login (logs/${log##*/})"
+}
+
+lock_session() {
+    local test=$1
+    vm_ssh "loginctl lock-session $SESSION_ID" || fail "$test" "loginctl lock-session $SESSION_ID failed"
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" \
+        "session $SESSION_ID not locked ${QUALIFY_LOCK_TIMEOUT}s after loginctl lock-session" \
+        lockedhint_and_screensaver_agree "$SESSION_ID" "$SESSION_UID" yes
+    screendump "$test"
+}
+
+assert_unlocked() {
+    local test=$1 pid=$2 since=$3 how=$4 log errors
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" \
+        "session $SESSION_ID still locked ${QUALIFY_LOCK_TIMEOUT}s after $how" \
+        lockedhint_and_screensaver_agree "$SESSION_ID" "$SESSION_UID" no
+    # The unlock path goes on after LockedHint drops: the fade-out and its callbacks.
+    sleep "$QUALIFY_POLL"
+    [[ $(shell_pid "$SESSION_UID") == "$pid" ]] ||
+        fail "$test" "gnome-shell (pid $pid) did not survive the lock and unlock"
+    log=$QUALIFY_OUT/logs/$test.journal.txt
+    user_journal "$SESSION_UID" "$since" "$log" || fail "$test" "cannot read the journal of $TEST_USER"
+    errors=$(js_errors "$log")
+    ((errors == 0)) ||
+        fail "$test" "$errors JS ERROR line(s) from lock to unlock (logs/${log##*/}), first: $(grep -m 1 'JS ERROR' "$log" | cut -c1-200)"
+    screendump "$test-unlocked"
+    result "$test" PASS "$how: LockedHint=no, org.gnome.ScreenSaver inactive, the same gnome-shell, no JS ERROR (logs/$test.png, logs/$test-unlocked.png)"
+}
+
+login_lock_unlock() {
+    local name=$1 pid since failed unexpected
+    since=$(vm_ssh 'date +%s') || fail "$name-login" "cannot read the guest's clock"
+    wait_session "$name-login" user "$TEST_USER"
+    assert_apex_login "$name-login" "$since"
+    pid=$(shell_pid "$SESSION_UID")
+
+    since=$(vm_ssh 'date +%s') || fail "$name-lock" "cannot read the guest's clock"
+    lock_session "$name-lock"
+    result "$name-lock" PASS "loginctl lock-session: LockedHint=yes, org.gnome.ScreenSaver active (logs/$name-lock.png)"
+    type_password_after_enter "$name-unlock" "the lock screen" "$(password_conversations)"
+    assert_unlocked "$name-unlock" "$pid" "$since" "the password typed into the unlock dialog"
+
+    since=$(vm_ssh 'date +%s') || fail "$name-unlock-signal" "cannot read the guest's clock"
+    lock_session "$name-unlock-signal"
+    vm_ssh "loginctl unlock-session $SESSION_ID" ||
+        fail "$name-unlock-signal" "loginctl unlock-session $SESSION_ID failed"
+    assert_unlocked "$name-unlock-signal" "$pid" "$since" "loginctl unlock-session"
+
+    failed=$(user_run "$SESSION_UID" systemctl --user list-units --state=failed --plain --no-legend --no-pager) ||
+        fail "$name-user-units" "cannot list the user units of $TEST_USER"
+    unexpected=$(unexpected_failures <<<"$failed")
+    [[ -z $unexpected ]] || fail "$name-user-units" "failed user units of $TEST_USER: $(tr '\n' ' ' <<<"$unexpected")"
+    result "$name-user-units" PASS "no failed user unit"
+}
+
+user_manager_gone() {
+    local uid=$1
+    ! vm_ssh "systemctl -q is-active user@$uid.service"
+}
+
+log_out() {
+    local test=$1 uid=$2
+    vm_ssh "loginctl terminate-user $TEST_USER" >/dev/null 2>&1 || true
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" "$TEST_USER's user manager still runs after loginctl terminate-user" \
+        user_manager_gone "$uid"
+}
+
+crash_guard_logins() {
+    local name=$1 uid since log errors
+    uid=$(vm_ssh "id -u $TEST_USER") || fail "$name-crash-guard" "$TEST_USER does not exist"
+    log_out "$name-crash-guard" "$uid"
+    vm_ssh "runuser -u $TEST_USER -- sh -c 'mkdir -p ~$TEST_USER/${TEST_FAULT_FILE%/*} && echo APEX_SHELL_TEST_FAULT=abort-after-enable >~$TEST_USER/$TEST_FAULT_FILE'" ||
+        fail "$name-crash-guard" "cannot write ~$TEST_USER/$TEST_FAULT_FILE"
+    since=$(vm_ssh 'date +%s') || fail "$name-crash-guard" "cannot read the guest's clock"
+    wait_session "$name-crash-guard" greeter
+    type_password_after_enter "$name-crash-guard" "GDM's greeter" 0
+    wait_until "$name-crash-guard" "$QUALIFY_LOGIN_TIMEOUT" \
+        "no ~$TEST_USER/$CRASH_GUARD_TRIPPED: the crash guard did not trip" vm_ssh "test -e ~$TEST_USER/$CRASH_GUARD_TRIPPED"
+    log=$QUALIFY_OUT/logs/$name-crash-guard.journal.txt
+    user_journal "$uid" "$since" "$log" || fail "$name-crash-guard" "cannot read the journal of $TEST_USER"
+    grep -q 'aborting the shell' "$log" || fail "$name-crash-guard" "the shell did not abort (logs/${log##*/})"
+    grep -q 'Finished apex-shell-safe.service' "$log" ||
+        fail "$name-crash-guard" "apex-shell-safe.service did not finish (logs/${log##*/})"
+    result "$name-crash-guard" PASS "a login with APEX_SHELL_TEST_FAULT=abort-after-enable in ~/$TEST_FAULT_FILE: the shell aborted, apex-shell-safe.service ran and left ~/$CRASH_GUARD_TRIPPED (logs/${log##*/})"
+
+    log_out "$name-safe-login" "$uid"
+    vm_ssh "rm -f ~$TEST_USER/$TEST_FAULT_FILE" || fail "$name-safe-login" "cannot remove ~$TEST_USER/$TEST_FAULT_FILE"
+    since=$(vm_ssh 'date +%s') || fail "$name-safe-login" "cannot read the guest's clock"
+    greeter_login "$name-safe"
+    wait_until "$name-safe-login" "$QUALIFY_LOGIN_TIMEOUT" \
+        "the gnome-shell of session $SESSION_ID never answered on org.gnome.ScreenSaver" shell_answers "$SESSION_UID"
+    log=$QUALIFY_OUT/logs/$name-safe-login.journal.txt
+    user_journal "$SESSION_UID" "$since" "$log" || fail "$name-safe-login" "cannot read the journal of $TEST_USER"
+    grep -q 'Apex: safe mode (layer-enabled is false)' "$log" ||
+        fail "$name-safe-login" "the next login did not start in safe mode (logs/${log##*/})"
+    [[ $(user_setting "$SESSION_UID" "$APEX_SCHEMA" layer-enabled) == false ]] ||
+        fail "$name-safe-login" "$TEST_USER's layer-enabled is not false"
+    errors=$(js_errors "$log")
+    ((errors == 0)) ||
+        fail "$name-safe-login" "$errors JS ERROR line(s) in the safe login (logs/${log##*/}), first: $(grep -m 1 'JS ERROR' "$log" | cut -c1-200)"
+    result "$name-safe-login" PASS "the next login logged 'Apex: safe mode (layer-enabled is false)' with layer-enabled false and no JS ERROR (logs/${log##*/}); G2's guard phase 'next' proves that this start loads upstream's sheet"
+}
+
+# Apply arms only for another digest whose manifest version is higher.
+stage_local_candidate() {
+    local test=$1 booted=$2 manifest version status dir=$GUEST_TMP/candidate
+    manifest=$(vm_ssh "cat $MANIFEST") || fail "$test" "cannot read $MANIFEST"
+    version=$(jq -er '.version' <<<"$manifest").1 || fail "$test" "$MANIFEST has no version"
+    vm_ssh "rm -rf $dir && mkdir -p $dir" || fail "$test" "cannot make $dir"
+    jq --arg v "$version" '.version = $v' <<<"$manifest" |
+        vm_ssh "cat > $dir/manifest.json && chmod 0644 $dir/manifest.json" || fail "$test" "cannot write $dir/manifest.json"
+    printf 'FROM localhost/bootc\nCOPY manifest.json %s\n' "$MANIFEST" | vm_ssh "cat > $dir/Containerfile" ||
+        fail "$test" "cannot write $dir/Containerfile"
+    vm_ssh 'timeout 1800 bootc image copy-to-storage' || fail "$test" "bootc image copy-to-storage failed"
+    vm_ssh "timeout 1800 podman build --pull=never --tag $LOCAL_CANDIDATE $dir" || fail "$test" "podman build of $LOCAL_CANDIDATE failed"
+    vm_ssh "timeout 3600 bootc switch --transport containers-storage --download-only $LOCAL_CANDIDATE" ||
+        fail "$test" "bootc switch --download-only to $LOCAL_CANDIDATE failed"
+    vm_ssh "podman rmi $LOCAL_CANDIDATE localhost/bootc >/dev/null" || warn "$test: could not remove the candidate's container images"
+    status=$(status_json)
+    LOCAL_CANDIDATE_DIGEST=$(jq -r '.status.staged.image.imageDigest // empty' <<<"$status")
+    is_digest "$LOCAL_CANDIDATE_DIGEST" || fail "$test" "bootc names no staged image digest"
+    [[ $LOCAL_CANDIDATE_DIGEST != "$booted" ]] || fail "$test" "the candidate has the booted digest $booted"
+    jq -e '.status.staged.downloadOnly == true' <<<"$status" >/dev/null ||
+        fail "$test" "the staged deployment is not download-only"
+    assert_grubenv "$test" disarmed
+    result "$test" PASS "staged $LOCAL_CANDIDATE ($LOCAL_CANDIDATE_DIGEST, version $version) download-only"
+}
+
+counted_rollback() {
+    local name=$1 from_digest=$2 digest=$3 status
+    create_test_user "$name"
+    set_force_red "$name" "$digest"
+    apply_candidate "$name-apply" "$digest" "$name-staged-applied"
+    save_journal baseline
+    # Powered off, not rebooted: the counted boots start under -no-reboot.
+    poweroff_vm "$name-apply"
+
+    armed_attempts "$name" "$APEX_BOOT_ATTEMPTS"
+    wait_ssh "the VM rebooted a $((APEX_BOOT_ATTEMPTS + 1))th time; GRUB did not fall back to $from_digest after $APEX_BOOT_ATTEMPTS attempts"
+    assert_counted_rollback "$name-fallback" "$from_digest" "$digest"
+    save_attempt_journals "$name" "$APEX_BOOT_ATTEMPTS"
+    if bootloader_gated; then
+        assert_bootloader_quiet_before "$name-attempts" "$APEX_BOOT_ATTEMPTS"
+        assert_bootloader_skipped "$name-fallback"
+    else
+        result "$name-fallback-bootloader" SKIP "$from_digest predates $BOOTLOADER_GATE"
+    fi
+    save_journal fallback
+
+    if vm_ssh 'apexctl update acknowledge --help' >/dev/null 2>&1; then
+        vm_ssh 'apexctl update acknowledge' || fail "$name-acknowledge" "apexctl update acknowledge failed"
+        ! vm_ssh "test -e $APEX_STATE/health-failure.json" ||
+            fail "$name-acknowledge" "$APEX_STATE/health-failure.json is still there after acknowledge"
+        result "$name-acknowledge" PASS "apexctl update acknowledge cleared the health failure"
+    else
+        result "$name-acknowledge" SKIP "$from_digest's apexctl has no 'update acknowledge'"
+    fi
+
+    stop_vm
+    start_vm "$name" "$name-settled"
+    wait_ssh
+    assert_green "$name-settled" "$from_digest"
+    if bootloader_gated; then
+        assert_bootloader_updated "$name-settled"
+    fi
+    status=$(status_json)
+    [[ $(jq -r '.status.rollback.image.imageDigest // empty' <<<"$status") == "$digest" ]] ||
+        fail "$name-settled" "the failed target $digest is no longer the rollback deployment"
+    vm_ssh "rm -f $FORCE_RED" || true
+    assert_greeter "$name-settled"
+}
+
+g4_overlay_usr_files() {
+    (cd "$G4_OVERLAY" && find usr -type f -printf '/%p\n' | LC_ALL=C sort)
+}
+
+g4_key_script() {
+    local -a overlay_files
+    mapfile -t overlay_files < <(g4_overlay_usr_files)
+    ((${#overlay_files[@]})) || die "no /usr file in $G4_OVERLAY"
+    cat <<EOF
+set -eu
+rpm -q --qf 'package %{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' ${G4_TRIGGER_PACKAGES[*]}
+rpm -q --qf '[file %{FILEDIGESTS} %{FILENAMES}\n]' ${G4_PACKAGES_KEYED_BY_FILE_DIGEST[*]} | awk 'NF == 3'
+find ${G4_TRIGGER_DIRS[*]} -type f -exec sha256sum {} + | awk '{ print "file", \$1, \$2 }'
+sha256sum ${overlay_files[*]} | awk '{ print "file", \$1, \$2 }'
+EOF
+}
+
+g4_key_of_image() {
+    local image=$1
+    as_root podman run --rm -i --net=none --entrypoint /bin/sh "$image" -s < <(g4_key_script) | LC_ALL=C sort -u
+}
+
+g4_key_of_guest() { vm_ssh sh -s < <(g4_key_script) | LC_ALL=C sort -u; }
+
+g4_key_lines() {
+    local file=$1
+    grep -E '^(package|file) ' "$file" | LC_ALL=C sort -u
+}
+
+record_g4_pass() {
+    local test=$1-g4 image=$2 partial key image_id
+    [[ $QUALIFY_LAYOUT == separate-boot ]] ||
+        fail "$test" "QUALIFY_LAYOUT=$QUALIFY_LAYOUT skipped the counted rollback: no G4 pass is recorded"
+    partial=$(awk -F' [|] ' '$2 == "SKIP" || $2 == "WARN" { sub(/^[|] /, "", $1); print $1 }' \
+        "$QUALIFY_OUT/results.md" | paste -sd' ' -)
+    [[ -z $partial ]] || fail "$test" "SKIP or WARN rows ($partial): no G4 pass is recorded"
+    key=$(g4_key_of_guest) || fail "$test" "cannot compute the G4 key in the guest"
+    [[ -n $key ]] || fail "$test" "the guest's G4 key is empty"
+    image_id=$(as_root podman image inspect --format '{{.Id}}' "$image") || fail "$test" "cannot read the ID of $image"
+    mkdir -p "$(dirname "$QUALIFY_G4_RECORD")"
+    {
+        printf '%s\n' "$key"
+        printf 'passed-at %s\n' "$(date -u +%FT%TZ)"
+        printf 'image-id %s\n' "$image_id"
+    } >"$QUALIFY_G4_RECORD.tmp"
+    mv -f "$QUALIFY_G4_RECORD.tmp" "$QUALIFY_G4_RECORD"
+    result "$test" PASS "recorded the G4 key ($(grep -c '^package ' <<<"$key") packages, $(grep -c '^file ' <<<"$key") files) of image $image_id in $QUALIFY_G4_RECORD"
+}
+
 cmd_fresh() {
     (($# == 1)) || die "usage: qualify.sh fresh CANDIDATE"
     local candidate digest
@@ -632,6 +1224,7 @@ cmd_fresh() {
     start_vm fresh
     wait_ssh
     assert_green fresh-install "$digest"
+    assert_bootloader_updated fresh-install
     save_bootc_status_fixture booted
     negative_tests "$candidate"
     download_only_test "$candidate"
@@ -666,6 +1259,7 @@ cmd_upgrade() {
 
     vm_reboot
     assert_green upgrade-reboot "$digest" "$grubstate"
+    assert_bootloader_updated upgrade-reboot
     status=$(status_json)
     [[ $(jq -r '.status.rollback.image.imageDigest // empty' <<<"$status") == "$from_digest" ]] ||
         fail upgrade-reboot "rollback deployment is not the previous image $from_digest"
@@ -702,35 +1296,7 @@ cmd_red() {
     fi
 
     stage_candidate red-stage "$candidate"
-    set_force_red "$digest"
-    apply_candidate red-apply "$digest" red-staged-applied
-    save_journal baseline
-    # Powered off, not rebooted: the counted boots start under -no-reboot.
-    poweroff_vm red-apply
-
-    armed_attempts red "$APEX_BOOT_ATTEMPTS"
-    wait_ssh "the VM rebooted a $((APEX_BOOT_ATTEMPTS + 1))th time; GRUB did not fall back to $from_digest after $APEX_BOOT_ATTEMPTS attempts"
-    assert_counted_rollback red-fallback "$from_digest" "$digest"
-    save_journal fallback
-
-    if vm_ssh 'apexctl update acknowledge --help' >/dev/null 2>&1; then
-        vm_ssh 'apexctl update acknowledge' || fail red-acknowledge "apexctl update acknowledge failed"
-        ! vm_ssh "test -e $APEX_STATE/health-failure.json" ||
-            fail red-acknowledge "$APEX_STATE/health-failure.json is still there after acknowledge"
-        result red-acknowledge PASS "apexctl update acknowledge cleared the health failure"
-    else
-        result red-acknowledge SKIP "$from's apexctl has no 'update acknowledge'"
-    fi
-
-    stop_vm
-    start_vm red red-settled
-    wait_ssh
-    assert_green red-settled "$from_digest"
-    local status
-    status=$(status_json)
-    [[ $(jq -r '.status.rollback.image.imageDigest // empty' <<<"$status") == "$digest" ]] ||
-        fail red-settled "the failed target $digest is no longer the rollback deployment"
-    vm_ssh "rm -f $FORCE_RED" || true
+    counted_rollback red "$from_digest" "$digest"
     save_journal final
     stop_vm
     drop_disk red
@@ -748,10 +1314,73 @@ cmd_local() {
     start_vm local
     wait_ssh
     assert_green local-install "$digest"
+    assert_bootloader_updated local-install
     save_bootc_status_fixture booted
+    vm_ssh 'command -v apexctl' >/dev/null || fail local-install "$image has no apexctl, so nothing can arm the boot counter"
+
+    if [[ $QUALIFY_LAYOUT == separate-boot ]]; then
+        stage_local_candidate local-stage "$digest"
+        counted_rollback local "$digest" "$LOCAL_CANDIDATE_DIGEST"
+    else
+        result local-red SKIP "QUALIFY_LAYOUT=$QUALIFY_LAYOUT: GRUB cannot save the counter on a btrfs /boot"
+        create_test_user local
+        vm_reboot
+        assert_green local-rebooted "$digest"
+        assert_greeter local
+    fi
+
+    set_test_password local
+    vm_reboot
+    assert_green local-login-boot "$digest"
+    assert_bootloader_updated local-login-boot
+    greeter_login local
+    login_lock_unlock local
+    crash_guard_logins local
+    record_g4_pass local "$image"
     save_journal final
     stop_vm
     drop_disk local
+}
+
+cmd_g4_key() {
+    (($# == 1)) || die "usage: qualify.sh g4-key localhost/NAME:TAG"
+    local image=$1 key
+    key=$(g4_key_of_image "$image") || die "cannot compute the G4 key of $image"
+    [[ -n $key ]] || die "the G4 key of $image is empty"
+    printf '%s\n' "$key"
+}
+
+cmd_g4_due() {
+    (($# == 1)) || die "usage: qualify.sh g4-due KEY"
+    local key_file=$1 now recorded passed_at passed_epoch image_id age_days
+    [[ -s $key_file ]] || die "no G4 key in $key_file (qualify.sh g4-key writes one)"
+    now=$(g4_key_lines "$key_file")
+    [[ -n $now ]] || die "no G4 key in $key_file (qualify.sh g4-key writes one)"
+    if [[ ! -s $QUALIFY_G4_RECORD ]]; then
+        log "G4 is due: no local pass is recorded in $QUALIFY_G4_RECORD"
+        return 0
+    fi
+    recorded=$(g4_key_lines "$QUALIFY_G4_RECORD")
+    if [[ $now != "$recorded" ]]; then
+        log "G4 is due; new since the last pass:" \
+            "$(LC_ALL=C comm -13 <(printf '%s\n' "$recorded") <(printf '%s\n' "$now") | head -n 5 | paste -sd ';' -)" \
+            "(gone: $(LC_ALL=C comm -23 <(printf '%s\n' "$recorded") <(printf '%s\n' "$now") | wc -l) line(s))"
+        return 0
+    fi
+    passed_at=$(sed -n 's/^passed-at //p' "$QUALIFY_G4_RECORD")
+    image_id=$(sed -n 's/^image-id //p' "$QUALIFY_G4_RECORD")
+    if ! passed_epoch=$(date -u -d "$passed_at" +%s 2>/dev/null) || [[ -z $passed_at ]]; then
+        log "G4 is due: the last pass in $QUALIFY_G4_RECORD records no time"
+        return 0
+    fi
+    age_days=$((($(date -u +%s) - passed_epoch) / 86400))
+    if ((age_days >= G4_MAX_AGE_DAYS)); then
+        log "G4 is due: this key passed on $passed_at, $age_days days ago (G4 runs at least every $G4_MAX_AGE_DAYS days)"
+        return 0
+    fi
+    log "G4 is not due: this key passed on $passed_at for image ${image_id:-unknown} ($QUALIFY_G4_RECORD)"
+    printf 'passed-at %s\nimage-id %s\n' "$passed_at" "${image_id:-unknown}"
+    return "$G4_NOT_DUE"
 }
 
 cmd_all() {
@@ -805,11 +1434,16 @@ main() {
     shift || true
     case $cmd in
         host-setup) cmd_host_setup; return ;;
+        g4-key) cmd_g4_key "$@"; return ;;
+        g4-due) cmd_g4_due "$@"; return ;;
         fresh | upgrade | red | all | local) ;;
         *) usage ;;
     esac
     require qemu-system-x86_64 ssh ssh-keygen jq openssl skopeo podman truncate sfdisk \
         losetup mkfs.vfat mkfs.ext4 mkfs.btrfs comm
+    mkdir -p "$QUALIFY_OUT"
+    rm -rf "$QUALIFY_OUT/logs.previous"
+    if [[ -d $QUALIFY_OUT/logs ]]; then mv "$QUALIFY_OUT/logs" "$QUALIFY_OUT/logs.previous"; fi
     mkdir -p "$QUALIFY_OUT/logs" "$QUALIFY_OUT/fixtures"
     : >"$QUALIFY_OUT/results.md"
     trap cleanup EXIT

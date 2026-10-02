@@ -14,6 +14,7 @@ readonly checkout
 readonly CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/apex-lane
 readonly CARGO_VOLUME=apex-lane-cargo
 readonly BUILDER=localhost/apex-lane-builder
+readonly GATES_PASSED=$checkout/_build/gates-passed.txt
 
 git_() { git -c safe.directory="$checkout" -C "$checkout" "$@"; }
 
@@ -73,10 +74,19 @@ build() {
         sort -rn | tail -n +4 | cut -d' ' -f2- | while IFS= read -r old; do rm -rf -- "$old"; done
 }
 
+next_lock_passed_gates() {
+    local next=${APEX_STORE:-$HOME/apex-store}/rpms.lock.next passed
+    passed=$(sed -n 's/^lock-sha256 //p' "$GATES_PASSED" 2>/dev/null)
+    [[ -s $next && -n $passed && $passed == "$(sha256sum <"$next" | cut -d' ' -f1)" ]]
+}
+
 [[ -x $bin ]] || build
 if [[ ${1:-} == --path ]]; then
     printf '%s\n' "$bin"
     exit 0
+fi
+if [[ ${1:-} == promote ]] && ! next_lock_passed_gates; then
+    die "no image built from rpms.lock.next has passed G1, G2 and G4 (_build/gates-passed.txt): run just vm-image"
 fi
 cd -- "$checkout"
 exec "$bin" "$@"

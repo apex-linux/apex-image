@@ -51,6 +51,9 @@ readonly CHECKSUM_NAME=Fedora-Cloud-images-45_Beta-1.3-x86_64-CHECKSUM
 readonly OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
 readonly OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS_4M.fd
 readonly QEMU_PROCESS_NAME=apex-builder
+# The guest's Linux 7.2 panicked in KVM's async page fault path during G4 (2026-09-29):
+# "Host injected async #PF in interrupt disabled region".
+readonly QEMU_CPU=host,kvm-asyncpf=off,kvm-asyncpf-int=off
 readonly HOST_LOOPBACK_FROM_GUEST=10.0.2.2
 
 VM_DIR=${APEX_VM_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/apex/builder}
@@ -148,7 +151,7 @@ launch() {
     [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable by $(id -un)"
     # shellcheck disable=SC2054 # QEMU option values are comma-separated key=value lists
     args=(-name "apex-builder,process=$QEMU_PROCESS_NAME"
-        -machine q35,accel=kvm -cpu host -smp "$CPUS" -m "$MEM"
+        -machine q35,accel=kvm -cpu "$QEMU_CPU" -smp "$CPUS" -m "$MEM"
         -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
         -drive "if=pflash,format=raw,file=$VARS"
         -drive "file=$DISK,if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,cache=writeback"
@@ -293,7 +296,8 @@ run_in_repo() {
 image() {
     local image_only_flag=${1:-}
     sync_repo
-    vm_ssh "bash -s -- $image_only_flag" <"$HERE/build-image.sh"
+    # Run by path, not fed through `bash -s`: G4's ssh (qualify.sh, no -n) would read the rest of the script.
+    vm_ssh "bash ~/apex-fedora/tools/builder-vm/build-image.sh $image_only_flag" </dev/null
 }
 
 destroy() {

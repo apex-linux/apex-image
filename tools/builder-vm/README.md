@@ -34,7 +34,24 @@ just vm-image
 - the apex and apex-desktop RPMs;
 - the patched libfprint;
 - the rebuild lane's packages (gnome-shell), into `rpms.lock.next` of the store below;
-- the image, from those RPMs and that lock.
+- the image, from those RPMs and that lock;
+- G2 (`tests/shots/run.sh`, always twice, as `just vm-g2`), which stops the build when
+  it fails;
+- G4 (`qualify.sh local`, below), when `qualify.sh g4-due` says it is due: the image's
+  G4 key differs from the last G4 pass, or that pass is 7 days old. The key
+  (`qualify.sh g4-key`) holds the NEVRAs of gdm, gnome-shell, mutter, gjs,
+  gnome-session, accountsservice, pam, systemd, the kernel, shim, GRUB and bootupd, and
+  the digest of every file of apex and apex-desktop, of every `/usr` file of the image
+  overlay (`image/system_files`: the install config, the schema override, the presets,
+  the polkit rules, the bootloader-update drop-in) and of the kargs. When G4 is not due,
+  the build says which image passed it and when. `just vm-image-only` only says whether
+  G4 is due.
+
+When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
+lock the image carries (from G2's `result.txt`), the image, and G4's verdict: `passed
+for image ID`, or `not due: its key passed on DATE for image ID`. It is not written when
+`rpms.lock.next` changed while the gates ran. `just pkg-promote` refuses a lock it does
+not name.
 
 The Apex RPM key signs every RPM; nothing pushes or signs the image.
 
@@ -49,6 +66,7 @@ The other recipes:
 | `just vm-ssh [CMD…]` | Open a shell in the VM, or run `CMD`. |
 | `just vm-sync` | Copy the checkout to `~/apex-fedora` in the VM. |
 | `just vm-image-only` | Rebuild only the image, reusing the RPMs and the lane's `rpms.lock.next` of the last `just vm-image`. |
+| `just vm-g2 [IMAGE]` | G2 on the last build: its headless shell, run twice and asserted ([tests/shots](../../tests/shots/README.md)). |
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
 serial log) and `destroy --yes`. `destroy` deletes the Apex RPM key with the disk; a new
@@ -97,17 +115,42 @@ The VM has nested KVM, `qemu-kvm` and OVMF.
 just vm-qualify
 ```
 
-`just vm-qualify` runs `qualify.sh local`. It takes the image that `just vm-image` just
-built, installs it on a disk laid out like the laptop (ESP, ext4 `/boot`, btrfs root),
-boots it with UEFI, and requires:
+`just vm-qualify` runs `qualify.sh local`, G4 for a local build. It takes the image that
+`just vm-image` just built, installs it on a disk laid out like the laptop (ESP, ext4
+`/boot`, btrfs root), boots it with UEFI, and requires:
 
-- a running system;
-- a green `apex-boot-assess`;
-- a disarmed boot counter;
-- the expected booted digest;
-- a working `apexctl status --json`.
+- a running system, a green `apex-boot-assess`, a disarmed boot counter, the expected
+  booted digest and a working `apexctl status --json`, after every boot that is meant
+  to stay up;
+- `bootloader-update.service` run after the assessment of every green boot, and in no
+  red one;
+- the counted rollback: the guest derives a newer image from the booted one (its
+  manifest version plus `.1`), stages it, forces it red and applies it; it must reboot
+  itself 3 times, GRUB must fall back, and the image under test must roll it back;
+- GDM's greeter, once the user `apexqa` exists (made only in the guest);
+- the login of `apexqa` through GDM's greeter: its password, made for the run, is typed
+  over QEMU's QMP socket (a Unix socket in `_build/qualify/qmp/`); the Apex layer arms
+  its crash guard and logs no failure, `color-scheme` is `'default'`, and no Apex user
+  unit runs;
+- `loginctl lock-session` and an unlock by the password typed into the unlock dialog,
+  then a second lock and `loginctl unlock-session`: each time gnome-shell's
+  `LockedHint` and `org.gnome.ScreenSaver` follow, the shell survives, and it logs no
+  `JS ERROR` from lock to unlock; no failed user unit;
+- the crash guard: a login with `APEX_SHELL_TEST_FAULT=abort-after-enable` in
+  `apexqa`'s `~/.config/environment.d/` aborts the shell, `apex-shell-safe.service`
+  turns the layer off, and the next login runs in safe mode.
 
-The nested guest gets 3 GiB of RAM.
+The bootloader rows prove the order after the assessment and the green-boot condition
+(the fallback boot's row); in the builder VM `bootupctl` finds no update, so they
+exercise no ESP write. The safe-mode login's row checks the log line, `layer-enabled` and
+that no `JS ERROR` is logged; G2's guard phase `next` proves that such a start loads
+upstream's sheet.
+
+`logs/` keeps a screendump of every password prompt and of the unlocked session. A pass
+with no SKIP or WARN row records the image's G4 key, the time and the image ID in
+`~/apex-fedora/_build/g4-passed.txt`, which `just vm-image` compares against. The
+results are in `~/apex-fedora/_build/qualify/` (`results.md`, `logs/`). The nested
+guest gets 3 GiB of RAM; the run takes seven boots, about 20 minutes.
 
 `just qualify-local` prints how to run the other scenarios (fresh, upgrade, counted
 rollback) against published digests.
@@ -130,6 +173,12 @@ just desktop           # open the window
    LUKS (ESP, ext4 `/boot`, btrfs root), with the same `install_disk` code as
    `qualify.sh`.
 3. Copies the disk to `~/.local/share/apex/desktop` as a qcow2 of about 5 GiB.
+
+It refuses an image that has passed no G2 in the builder VM: neither
+`_build/gates-passed.txt` nor a passed `_build/g2/*/result.txt` names its ID.
+`APEX_DESKTOP_UNGATED=1` takes it anyway, with a warning. Each desktop VM's install
+writes to its own directory under `_build/desktop/` in the builder VM, so two installs
+never share a disk or a key.
 
 To install a newer build over an existing VM, run `just desktop-install --replace`. It
 discards the old disk and everything you did in it. While an install runs, `just desktop`
@@ -177,8 +226,73 @@ from GNOME, from the Machine menu, or with `just desktop-stop`.
 | `just desktop-stop` | Runs `systemctl poweroff` over SSH, or presses the ACPI power button without SSH. After 180 s it stops QEMU hard, like pulling the power. |
 | `just desktop-status` | Whether it runs, the installed image and digest, and disk use. |
 | `just desktop-ssh ['CMD']` | A root shell in the guest, or `CMD` run by the guest's shell. |
+| `just desktop-update [IMAGE]` | Stages the last `just vm-image` build in the running guest, keeping `/var/home` and `/etc` (below). |
+| `just shell-dev`, `just shell-c` | The shell's dev loop in this VM ([desktop/README.md](../../desktop/README.md#the-dev-loop)). |
 
-The shell uses a key made for this VM. sshd is forwarded on `127.0.0.1:2223` only.
+The shell uses a key made for this VM. sshd is forwarded on `127.0.0.1:2223` only. A
+running VM is reached on the port it was started with, which `desktop-vm.sh` records in
+the VM directory, whatever `APEX_DESKTOP_SSH_PORT` says later.
+
+**Which VM a command targets**
+
+Every recipe that targets a desktop VM takes its directory from `APEX_DESKTOP_DIR`
+(default `~/.local/share/apex/desktop`, the owner's VM) and prints it before it changes
+anything:
+
+```
+[desktop-vm] target: the owner's desktop VM in /home/you/.local/share/apex/desktop, ssh 127.0.0.1:2223
+```
+
+Every command but `running` refuses the owner's VM when stdin is not a terminal (a
+script) or `CLAUDECODE` is set (an agent), unless `APEX_DESKTOP_THROWAWAY` is set;
+`APEX_DESKTOP_THROWAWAY=0` names the owner's VM on purpose. A VM is running only when a
+QEMU of this name was started with this directory's pidfile, so a stale pidfile never
+adopts another desktop VM's QEMU.
+
+Tests and agents work on a throwaway VM with `APEX_DESKTOP_THROWAWAY=1`. It refuses the
+owner's directory, the owner's SSH port (2223, or the port the owner's VM last started
+with), and every directory without the `throwaway` marker. Only `install` into a
+directory with no disk yet creates the marker:
+
+```bash
+export APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_DIR=$HOME/.local/share/apex/desktop-throwaway APEX_DESKTOP_SSH_PORT=2231
+just desktop-install && just desktop     # window title: "QEMU (Apex desktop (throwaway))"
+just desktop-update
+tools/builder-vm/desktop-vm.sh destroy --yes
+```
+
+**Image changes without a reinstall**
+
+```bash
+just vm-image          # build the image in the builder VM
+just desktop-update    # stage it in the running desktop VM (about 2 minutes for a 3.3 GB image)
+```
+
+`just desktop-update [IMAGE]` (default `localhost/apex:build`):
+
+1. Refuses a guest whose `/usr/lib/os-release` does not say `VARIANT_ID=apex`, and prints
+   the booted image and digest.
+2. Starts the builder VM if it is not running, and stops it again afterwards. Both VMs
+   then run at once.
+3. Refuses an image without the labels `containers.bootc=1` and
+   `org.opencontainers.image.source=https://github.com/SekiroKenjii/apex-fedora`, an
+   image that has passed no G2 (as `desktop-install`; `APEX_DESKTOP_UNGATED=1` takes it
+   anyway), and a guest with less than twice the image's size plus 2 GiB free in `/var`.
+4. Streams `sudo podman save --format oci-archive` in the builder VM into `podman load`
+   in the guest, over both VMs' ssh, and tags the loaded image ID as `IMAGE`.
+5. Runs `bootc switch --transport containers-storage IMAGE`, or `bootc upgrade` when the
+   guest follows that image already. Nothing changes until the guest restarts. bootc
+   keeps `/var`, so `/var/home` too, and merges the guest's `/etc` changes.
+6. Prints the old (booted) and new (staged) digests, and how to boot it and roll back:
+   `just desktop-ssh 'bootc rollback && systemctl reboot'` after that boot brings the
+   old digest back.
+
+Afterwards the guest follows `localhost/apex:build` in its own container storage, and
+the switch does not pass `--enforce-container-sigpolicy`. `apex-updated` checks updates
+against the Apex signature policy, which has no `containers-storage` scope, so its checks
+should fail, as they do for `apex-testing:45` until CI publishes it. The boot assessment
+of such a boot warns `image-source: fail` and still reports the boot green.
+`just desktop-install --replace` returns to a fresh install.
 
 `tools/builder-vm/desktop-vm.sh help` lists everything else, including `screenshot` and
 `destroy --yes`. `screenshot` only works with `APEX_DESKTOP_GL=off`, because QEMU cannot
@@ -229,3 +343,5 @@ at 200 % everything is then twice as large, so set it back to 100 %.
 | `APEX_DESKTOP_MIC` | `0` |
 | `APEX_DESKTOP_SHARP` | `0` |
 | `APEX_DESKTOP_DIR` | `~/.local/share/apex/desktop` |
+| `APEX_DESKTOP_THROWAWAY` | `0` (`1`: only a throwaway VM, above) |
+| `APEX_DESKTOP_UNGATED` | `0` (`1`: install or update with an image that has passed no G2) |
