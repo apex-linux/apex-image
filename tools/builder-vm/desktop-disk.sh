@@ -18,10 +18,11 @@ which the image ships disabled; the host forwards it on 127.0.0.1 only. Unlike t
 qualification, the Flatpak units are not masked and there is no serial console: the
 first boot runs the Flatpak preinstall as on the laptop.
 
-Output in _build/desktop: desktop.qcow2, desktop.json (image, digest, version,
-disk_gb) and authorized_keys.
+Output in _build/desktop/DESKTOP_OUT: desktop.qcow2, desktop.json (image, digest,
+version, disk_gb) and authorized_keys.
 Environment: DESKTOP_DISK_GB (default 64), the virtual size; the qcow2 grows on
-demand.
+demand. DESKTOP_OUT (default: default), the output directory's name, [0-9a-z-]; each
+desktop VM has its own, so that two installs never share a disk or a key.
 EOF
 }
 
@@ -36,7 +37,8 @@ fi
 image=$1
 key=$2
 
-export QUALIFY_OUT="$HOME/apex-fedora/_build/desktop"
+readonly DESKTOP_OUT=${DESKTOP_OUT:-default}
+export QUALIFY_OUT="$HOME/apex-fedora/_build/desktop/$DESKTOP_OUT"
 export QUALIFY_LAYOUT=separate-boot
 export QUALIFY_DISK_GB=${DESKTOP_DISK_GB:-64}
 # qualify.sh only runs its main when executed; sourced, it provides install_disk.
@@ -51,6 +53,7 @@ install_kargs() { printf '%s\n' --karg systemd.wants=sshd.service; }
     die "expected a local image reference localhost/NAME[:TAG], got '$image'"
 [[ $key =~ ^ssh-ed25519\ [A-Za-z0-9+/]+={0,2}(\ [[:print:]]*)?$ ]] ||
     die "AUTHORIZED_KEY must be a single ssh-ed25519 public key line"
+[[ $DESKTOP_OUT =~ ^[0-9a-z-]+$ ]] || die "DESKTOP_OUT must be a directory name of [0-9a-z-], got '$DESKTOP_OUT'"
 if [[ ! $QUALIFY_DISK_GB =~ ^[1-9][0-9]*$ ]] || ((QUALIFY_DISK_GB < 20)); then
     die "DESKTOP_DISK_GB must be a whole number of GiB, at least 20 (got '$QUALIFY_DISK_GB')"
 fi
