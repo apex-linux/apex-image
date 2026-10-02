@@ -257,6 +257,9 @@ cmd_build() {
         --build-arg "APEX_REVISION=$revision"
         --build-arg "GA_REACHED=$ga"
         --build-arg "RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}"
+        # bootc install copies this label into its aleph, and bootupd 0.3 fails
+        # `bootupctl update` on an aleph without a version.
+        --label "org.opencontainers.image.version=$version"
     )
     [[ ${APEX_RELEASE_BUILD:-0} == 0 || ${APEX_RELEASE_BUILD:-0} == 1 ]] || die "APEX_RELEASE_BUILD must be 0 or 1"
     if [[ -f $APEX_WORK/replay.lock ]]; then

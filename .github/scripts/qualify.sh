@@ -1104,7 +1104,8 @@ stage_local_candidate() {
     vm_ssh "rm -rf $dir && mkdir -p $dir" || fail "$test" "cannot make $dir"
     jq --arg v "$version" '.version = $v' <<<"$manifest" |
         vm_ssh "cat > $dir/manifest.json && chmod 0644 $dir/manifest.json" || fail "$test" "cannot write $dir/manifest.json"
-    printf 'FROM localhost/bootc\nCOPY manifest.json %s\n' "$MANIFEST" | vm_ssh "cat > $dir/Containerfile" ||
+    printf 'FROM localhost/bootc\nCOPY manifest.json %s\nLABEL org.opencontainers.image.version=%s\n' "$MANIFEST" "$version" |
+        vm_ssh "cat > $dir/Containerfile" ||
         fail "$test" "cannot write $dir/Containerfile"
     vm_ssh 'timeout 1800 bootc image copy-to-storage' || fail "$test" "bootc image copy-to-storage failed"
     vm_ssh "timeout 1800 podman build --pull=never --tag $LOCAL_CANDIDATE $dir" || fail "$test" "podman build of $LOCAL_CANDIDATE failed"

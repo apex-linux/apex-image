@@ -120,7 +120,12 @@ def main(argv):
         if flag("fail-stable"):
             print("Failed to download metadata for repository 'fedora'", file=sys.stderr)
             return 1
-        pkgs = packages("stable.txt")
+        cfg = repo_sections()
+        excluded = set()
+        for repo in repos:
+            if "--setopt=%s.excludepkgs=" % repo not in opts:
+                excluded.update(s for s in re.split(r"[,\s]+", cfg.get(repo, "excludepkgs", fallback="")) if s)
+        pkgs = [p for p in packages("stable.txt") if p["name"] not in excluded]
     else:
         sys.exit("fake dnf5: unsupported repositories %r" % repos)
 

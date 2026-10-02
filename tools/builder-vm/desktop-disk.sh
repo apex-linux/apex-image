@@ -61,7 +61,7 @@ require podman jq qemu-img truncate sfdisk losetup partx mkfs.vfat mkfs.ext4 mkf
 
 digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
     die "$image is not in local container storage (build it with: builder-vm.sh image)"
-# CI sets the version label when it publishes; a local build has none.
+# An image built before image.sh labelled its builds has no version.
 version=$(as_root podman image inspect \
     --format '{{index .Labels "org.opencontainers.image.version"}}' "$image")
 version=${version:-unversioned}

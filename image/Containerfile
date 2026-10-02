@@ -101,42 +101,45 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
         sort -u -o /tmp/ut-specs /tmp/ut-specs; \
         src=$(grep -l '^\[updates-testing\]$' $(reposfiles) | head -n 1); \
         if [ -z "$src" ]; then echo "ERROR: no [updates-testing] definition to derive apex-gnome51 from" >&2; exit 1; fi; \
-        { printf '%s\n' '[apex-gnome51]' 'name=Fedora $releasever updates-testing, restricted to GNOME 51.0 (FEDORA-2026-48a7996f9c)' 'enabled=1' 'skip_if_unavailable=False' "includepkgs=$allow"; \
+        { printf '%s\n' '[apex-gnome51]' 'name=Fedora $releasever updates-testing, restricted to the pinned builds' 'enabled=1' 'skip_if_unavailable=False' "includepkgs=$allow"; \
           sed -n '/^\[updates-testing\]$/,/^\[/p' "$src" | sed -e '/^\[/d' -e '/^[[:space:]]*\(name\|enabled\|countme\|includepkgs\|excludepkgs\|skip_if_unavailable\)[[:space:]]*=/d'; \
         } >/etc/yum.repos.d/apex-gnome51.repo; \
         if ! dnf5 -q --repo=apex-gnome51 repoquery --available --arch="$arch,noarch" --queryformat '%{name} %{name}-%{version}-%{release}\n' >/tmp/ut-raw; then \
-            echo "ERROR: cannot query apex-gnome51 (updates-testing); not guessing whether FEDORA-2026-48a7996f9c is still there" >&2; exit 1; \
+            echo "ERROR: cannot query apex-gnome51 (updates-testing); not guessing whether the pinned builds are still there" >&2; exit 1; \
         fi; \
         sort -u /tmp/ut-raw >/tmp/ut-avail; \
-        if [ -s /tmp/ut-avail ]; then \
-            extra=$(while read -r n nvr; do grep -Fxq "$nvr" /tmp/ut-specs || printf ' %s' "$nvr"; done </tmp/ut-avail); \
-            if [ -n "$extra" ]; then echo "ERROR: includepkgs did not restrict apex-gnome51; it would admit:$extra" >&2; exit 1; fi; \
-            cut -d' ' -f2 /tmp/ut-avail >/tmp/ut-known; \
-            missing=$(while read -r s; do grep -Fxq "$s" /tmp/ut-known || printf ' %s' "$s"; done </tmp/ut-specs); \
-            if [ -n "$missing" ]; then echo "ERROR: allowlisted builds not in updates-testing (update edited, or a build superseded; review image/packages/updates-testing-allowlist.txt):$missing" >&2; exit 1; fi; \
-            echo "apex-gnome51 admits $(wc -l </tmp/ut-avail) pinned build(s) from updates-testing"; \
+        extra=$(while read -r n nvr; do grep -Fxq "$nvr" /tmp/ut-specs || printf ' %s' "$nvr"; done </tmp/ut-avail); \
+        if [ -n "$extra" ]; then echo "ERROR: includepkgs did not restrict apex-gnome51; it would admit:$extra" >&2; exit 1; fi; \
+        cut -d' ' -f2 /tmp/ut-avail >/tmp/ut-known; \
+        if ! dnf5 -q --repo=fedora --repo=updates --setopt=fedora.skip_if_unavailable=False --setopt=updates.skip_if_unavailable=False --setopt=fedora.excludepkgs= --setopt=updates.excludepkgs= repoquery --available --latest-limit=1 --arch="$arch,noarch" --queryformat '%{name} %{evr}\n' $(sed 's/-[^-]*-[^-]*$//' /tmp/ut-specs) >/tmp/ut-stable; then \
+            echo "ERROR: cannot query the stable repositories (fedora, updates)" >&2; exit 1; \
+        fi; \
+        behind=""; instable=""; fromtesting=0; \
+        while read -r s; do \
+            n=${s%-*-*}; vr=${s#"$n"-}; \
+            awk -v n="$n" '$1 == n { print $2 }' /tmp/ut-stable >/tmp/ut-one; \
+            older=""; \
+            if [ ! -s /tmp/ut-one ]; then older="not in fedora/updates"; fi; \
+            while read -r evr; do \
+                case $evr in *:*) e=${evr%%:*}; svr=${evr#*:} ;; *) e=0; svr=$evr ;; esac; \
+                if ! printf '%s\n' "$e:$svr" | grep -Eqx '[0-9]+:[A-Za-z0-9._+~^]+-[A-Za-z0-9._+~^]+'; then echo "ERROR: unexpected version '$evr' of $n in the stable repodata" >&2; exit 1; fi; \
+                c=$(vercmp "$e:$svr" "$e:$vr"); \
+                case $c in 0 | 1) ;; -1) older="$svr < $vr" ;; *) echo "ERROR: rpm.vercmp printed '$c'" >&2; exit 1 ;; esac; \
+            done </tmp/ut-one; \
+            if [ -z "$older" ]; then instable="$instable $s"; \
+            elif grep -Fxq "$s" /tmp/ut-known; then fromtesting=$((fromtesting + 1)); \
+            else behind="$behind $n ($older)"; fi; \
+        done </tmp/ut-specs; \
+        if [ -n "$behind" ]; then \
+            echo "ERROR: pinned builds are not in updates-testing, and the stable repositories carry them older or not at all:$behind. Fedora unpushed or replaced them, or they went stable and the stable repodata has not caught up; composing now would install the older builds. Retry later, or review image/packages/updates-testing-allowlist.txt." >&2; \
+            exit 1; \
+        fi; \
+        if [ -n "$instable" ]; then echo "WARNING: fedora/updates carry these pinned builds at the same or newer versions; drop them from image/packages/updates-testing-allowlist.txt:$instable" >&2; fi; \
+        if [ "$fromtesting" -gt 0 ]; then \
+            echo "apex-gnome51 admits $(wc -l </tmp/ut-avail) pinned build(s) from updates-testing; fedora/updates lack $fromtesting of them"; \
             if [ -n "$excludes" ]; then printf '%s\n' "excludepkgs=$excludes" >>/etc/yum.repos.d/apex-gnome51.repo; echo "apex-gnome51 excludes: $excludes"; fi; \
         else \
-            if ! dnf5 -q --repo=fedora --repo=updates --setopt=fedora.skip_if_unavailable=False --setopt=updates.skip_if_unavailable=False repoquery --available --latest-limit=1 --arch="$arch,noarch" --queryformat '%{name} %{evr}\n' $(sed 's/-[^-]*-[^-]*$//' /tmp/ut-specs) >/tmp/ut-stable; then \
-                echo "ERROR: cannot query the stable repositories (fedora, updates)" >&2; exit 1; \
-            fi; \
-            behind=""; \
-            while read -r s; do \
-                n=${s%-*-*}; vr=${s#"$n"-}; \
-                awk -v n="$n" '$1 == n { print $2 }' /tmp/ut-stable >/tmp/ut-one; \
-                if [ ! -s /tmp/ut-one ]; then behind="$behind $n (not in fedora/updates)"; continue; fi; \
-                while read -r evr; do \
-                    case $evr in *:*) e=${evr%%:*}; svr=${evr#*:} ;; *) e=0; svr=$evr ;; esac; \
-                    if ! printf '%s\n' "$e:$svr" | grep -Eqx '[0-9]+:[A-Za-z0-9._+~^]+-[A-Za-z0-9._+~^]+'; then echo "ERROR: unexpected version '$evr' of $n in the stable repodata" >&2; exit 1; fi; \
-                    c=$(vercmp "$e:$svr" "$e:$vr"); \
-                    case $c in 0 | 1) ;; -1) behind="$behind $n ($svr < $vr)" ;; *) echo "ERROR: rpm.vercmp printed '$c'" >&2; exit 1 ;; esac; \
-                done </tmp/ut-one; \
-            done </tmp/ut-specs; \
-            if [ -n "$behind" ]; then \
-                echo "ERROR: no pinned build is in updates-testing any more, and the stable repositories do not carry them yet:$behind. FEDORA-2026-48a7996f9c was unpushed or withdrawn, or it went stable and the stable repodata has not caught up; composing now would downgrade GNOME. Retry later, or review image/packages/updates-testing-allowlist.txt." >&2; \
-                exit 1; \
-            fi; \
-            echo "WARNING: FEDORA-2026-48a7996f9c left updates-testing and fedora/updates carry all $(wc -l </tmp/ut-specs) pinned packages at the same or newer versions; dropping apex-gnome51. Empty image/packages/updates-testing-allowlist.txt." >&2; \
+            echo "fedora/updates carry every pinned build; dropping apex-gnome51"; \
             rm -f /etc/yum.repos.d/apex-gnome51.repo; \
         fi; \
     fi; \
@@ -313,7 +316,8 @@ RUN set -eu; \
     rm -f /usr/lib/apex-build-lint-skips; \
     bootc container lint --fatal-warnings "$@"
 
-# CI sets the version, revision, created and apex.* labels at rechunk time, over inherited ones.
+# image.sh labels the build with its version; the revision, created and apex.* labels come
+# at rechunk time, over inherited ones.
 LABEL containers.bootc="1" \
       ostree.bootable="1" \
       org.opencontainers.image.source="https://github.com/SekiroKenjii/apex-fedora"
