@@ -17,7 +17,7 @@ EOF
 }
 
 (($# == 0)) || usage
-require python3
+require python3 cmp
 
 python3 - "$APEX_SYSTEM_SRC/hardware/m7400qc/profile.toml" "$APEX_ROOT/image" <<'EOF' || die "contracts: see above"
 import pathlib
