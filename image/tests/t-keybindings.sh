@@ -92,8 +92,8 @@ expect_out "as a schema whose bindings were not checked" '^FAIL keybindings: no 
 if grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && command -v dnf5 >/dev/null 2>&1; then
     r=$T/fedora
     mkdir -p "$r/rpms" "$r/$SCHEMAS"
-    run dnf5 -q download --repo=fedora --repo=updates --destdir="$r/rpms" \
-        gsettings-desktop-schemas mutter-common gnome-shell gnome-settings-daemon
+    run dnf5 -q download --repo=fedora --repo=updates --arch=x86_64 --arch=noarch --destdir="$r/rpms" \
+        gsettings-desktop-schemas mutter-common gnome-shell-common gnome-settings-daemon
     expect_rc "dnf5 downloads Fedora's keybinding schema packages" 0
     for p in "$r"/rpms/*.rpm; do
         (cd "$r" && rpm2cpio "$p" | cpio -idm --quiet "./$SCHEMAS/*")
