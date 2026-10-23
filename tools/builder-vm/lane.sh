@@ -88,5 +88,8 @@ fi
 if [[ ${1:-} == promote ]] && ! next_lock_passed_gates; then
     die "no image built from rpms.lock.next has passed G1, G2 and G4 (_build/gates-passed.txt): run just vm-image"
 fi
+if [[ ${1:-} == promote && -x $checkout/tools/components.sh ]] && ! "$checkout/tools/components.sh" promotable; then
+    die "a build from a dev-override component never promotes: unset APEX_SRC_*, then components.sh fetch and just vm-image"
+fi
 cd -- "$checkout"
 exec "$bin" "$@"
