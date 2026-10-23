@@ -22,13 +22,14 @@ mkdir "$TMPD/schemas" "$TMPD/nodata"
 for f in "$(rootpath "$SCHEMAS")"/*.gschema.xml "$(rootpath "$SCHEMAS")"/*.gschema.override; do
     if [ -f "$f" ]; then cp "$f" "$TMPD/schemas/"; fi
 done
-if ! glib-compile-schemas "$TMPD/schemas" >"$TMPD/out" 2>&1; then
-    fail "the schemas under $SCHEMAS do not compile: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
+if ! glib-compile-schemas "$TMPD/schemas" >"$TMPD/compile" 2>&1; then
+    fail "the schemas under $SCHEMAS do not compile: $(head -n 3 "$TMPD/compile" | paste -sd '|' -)"
     finish
 fi
 if ! theme=$(env -i PATH="$PATH" GSETTINGS_SCHEMA_DIR="$TMPD/schemas" GSETTINGS_BACKEND=memory \
     XDG_DATA_DIRS="$TMPD/nodata" gsettings get org.gnome.desktop.interface icon-theme 2>"$TMPD/out" </dev/null); then
-    fail "no default for org.gnome.desktop.interface icon-theme under $SCHEMAS: $(head -n 1 "$TMPD/out")"
+    fail "no default for org.gnome.desktop.interface icon-theme under $SCHEMAS: $(head -n 1 "$TMPD/out")$(
+        if [ -s "$TMPD/compile" ]; then printf '; glib-compile-schemas: %s' "$(head -n 3 "$TMPD/compile" | paste -sd '|' -)"; fi)"
     finish
 fi
 theme=${theme#\'}

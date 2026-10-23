@@ -178,6 +178,13 @@ icons noschema
 expect_rc "no icon-theme key fails" 1
 expect_out "and names the key" '^FAIL icons: no default for org\.gnome\.desktop\.interface icon-theme under '
 
+# glib-compile-schemas skips a file it cannot parse and exits 0.
+mkroot broken
+printf '<schemalist><schema id="org.gnome.desktop.interface">\n' >"$r/$SCHEMAS/org.gnome.desktop.interface.gschema.xml"
+icons broken
+expect_rc "an interface schema that does not parse fails" 1
+expect_out "with glib-compile-schemas' warning" '^FAIL icons: no default for org\.gnome\.desktop\.interface icon-theme under .*; glib-compile-schemas: .*org\.gnome\.desktop\.interface\.gschema\.xml'
+
 # Fedora's themes and the desktop files of a few of the image's apps, unpacked.
 if grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && command -v dnf5 >/dev/null 2>&1; then
     r=$T/fedora
@@ -196,6 +203,7 @@ if grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && command -v dnf5 >/dev/nul
     run env ROOT="$r" "$SH" "$CHECKS/icons.sh"
     expect_true "the downloads hold Fedora's Adwaita theme" test -f "$r/$ICONS/Adwaita/index.theme"
     sed -En 's/^(PASS|WARN|FAIL) icons: /# fedora: &/p' "$T/out"
+    printf '# fedora: %s\n' "$(find "$r/$SCHEMAS" -maxdepth 1 -type f -name '*.gschema.*' | sed 's|.*/||' | sort | paste -sd ' ' -)"
     expect_rc "the apps' icons resolve in Fedora's themes with apex-desktop's override and theme" 0
 fi
 
