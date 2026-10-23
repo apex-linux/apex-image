@@ -37,7 +37,7 @@ jobs:
     if: >-
       github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
       && github.event_name == 'workflow_dispatch' && inputs.sha != ''
-    runs-on: [self-hosted, apex-kvm]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: vm-dispatch
     permissions: {}
