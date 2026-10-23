@@ -550,6 +550,86 @@ check "a failed build exits with its status and promotes nothing" "1:no promotio
 check "and still returns its results" "build-image 1|exit 1" \
     "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -E '^(build-image|exit) ' | paste -sd'|')"
 
+# --- tools/components.sh: pinned full clones of components.lock, and the dev override ------
+CO="$TMP/components"
+mkdir -p "$CO/work/tools" "$CO/src"
+cp "$APEX_ROOT/tools/components.sh" "$CO/work/tools/"
+co_git() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
+co_repo() {
+    local name=$1
+    co_git init -q "$CO/src/$name"
+    echo one >"$CO/src/$name/a"
+    co_git -C "$CO/src/$name" add a && co_git -C "$CO/src/$name" commit -qm one
+    if [[ $name == apex-desktop ]]; then
+        mkdir -p "$CO/src/$name/packaging/pkgs/gnome-shell"
+        echo family=shell >"$CO/src/$name/packaging/pkgs/gnome-shell/pkg.env"
+        co_git -C "$CO/src/$name" add packaging
+    fi
+    echo two >"$CO/src/$name/a"
+    co_git -C "$CO/src/$name" commit -qam two
+    co_git clone -q --bare "$CO/src/$name" "$CO/$name.git"
+}
+co_repo apex-system
+co_repo apex-desktop
+CO_SYS=$(git -C "$CO/src/apex-system" rev-parse HEAD)
+CO_SYS_OLD=$(git -C "$CO/src/apex-system" rev-parse HEAD~1)
+CO_DESK=$(git -C "$CO/src/apex-desktop" rev-parse HEAD)
+components() { (cd "$CO/work" && rc_of tools/components.sh "$@"); }
+co_out() { (cd "$CO/work" && tools/components.sh "$@" 2>/dev/null); }
+co_lock() { printf '%s\n' "$@" >"$CO/work/components.lock"; }
+
+check "no components.lock: fetch records none" 0 "$(components fetch)"
+check "env: this checkout holds the recipes, nothing overridden" \
+    "export APEX_LANE_RECIPES=$(printf '%q' "$CO/work")|export APEX_COMPONENTS=pinned" "$(co_out env | paste -sd'|')"
+check "and promotable" 0 "$(components promotable)"
+
+co_lock '# components' '' "apex-system $CO/apex-system.git $CO_SYS_OLD" "apex-desktop $CO/apex-desktop.git $CO_DESK"
+check "env refuses a state older than components.lock" 1 "$(components env)"
+check "fetch clones each component at its commit" 0 "$(components fetch)"
+check "apex-system is at its pinned commit" "$CO_SYS_OLD" "$(git -C "$CO/work/_build/components/apex-system" rev-parse HEAD)"
+check "with the full history the lane counts" "2:false" \
+    "$(git -C "$CO/work/_build/components/apex-system" rev-list --count --all):$(git -C "$CO/work/_build/components/apex-system" rev-parse --is-shallow-repository)"
+check "env points at the clones, and at the recipes of apex-desktop" \
+    "export APEX_SYSTEM_SRC=$CO/work/_build/components/apex-system|export APEX_DESKTOP_SRC=$CO/work/_build/components/apex-desktop|export APEX_LANE_RECIPES=$CO/work:$CO/work/_build/components/apex-desktop|export APEX_COMPONENTS=pinned" \
+    "$(co_out env | paste -sd'|')"
+check "a pinned fetch is promotable" 0 "$(components promotable)"
+
+echo stray >"$CO/work/_build/components/apex-system/stray"
+co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-desktop $CO/apex-desktop.git $CO_DESK"
+check "a new pin moves the clone and cleans it" "0:$CO_SYS:clean" \
+    "$(components fetch):$(git -C "$CO/work/_build/components/apex-system" rev-parse HEAD):$([[ -e $CO/work/_build/components/apex-system/stray ]] && echo stray || echo clean)"
+
+rm -rf "$CO/work/_build/components/apex-system"
+git clone -q --depth 1 "file://$CO/apex-system.git" "$CO/work/_build/components/apex-system"
+git -C "$CO/work/_build/components/apex-system" remote set-url origin "$CO/apex-system.git"
+check "a shallow clone is deepened" "0:false" \
+    "$(components fetch):$(git -C "$CO/work/_build/components/apex-system" rev-parse --is-shallow-repository)"
+
+co_lock "apex-system $CO/apex-system.git $(printf 'c%.0s' {1..40})"
+check "a commit the remote does not have fails" 1 "$(components fetch)"
+check "and env refuses the state of the old lock" 1 "$(components env)"
+for bad in "apex-system $CO/apex-system.git" "apex-system $CO/apex-system.git $CO_SYS extra" \
+    "Apex-System $CO/apex-system.git $CO_SYS" "apex-system $CO/apex-system.git ${CO_SYS^^}" \
+    "apex-system $CO/apex-system.git ${CO_SYS:1}" "apex-system --upload-pack=touch $CO_SYS" \
+    "../x $CO/apex-system.git $CO_SYS"; do
+    co_lock "$bad"
+    check "components.lock line refused: $bad" 2 "$(components fetch)"
+done
+co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-system $CO/apex-system.git $CO_SYS"
+check "a component listed twice is refused" 2 "$(components fetch)"
+check "usage" 2 "$(components)"
+
+co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-desktop $CO/apex-desktop.git $CO_DESK"
+check "APEX_SRC_APEX_DESKTOP uses a sibling checkout" 0 \
+    "$(cd "$CO/work" && APEX_SRC_APEX_DESKTOP=../src/apex-desktop rc_of tools/components.sh fetch)"
+check "env names it and records dev-override" \
+    "export APEX_DESKTOP_SRC=$CO/src/apex-desktop|export APEX_COMPONENTS=dev-override" \
+    "$(co_out env | grep -E 'APEX_DESKTOP_SRC|APEX_COMPONENTS' | paste -sd'|')"
+check "a dev-override is not promotable" 1 "$(components promotable)"
+check "an override that is no directory fails" 1 \
+    "$(cd "$CO/work" && APEX_SRC_APEX_SYSTEM=../nowhere rc_of tools/components.sh fetch)"
+check "a pinned fetch makes it promotable again" "0:0" "$(components fetch):$(components promotable)"
+
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
 mkdir -p "$QMP_DIR"
