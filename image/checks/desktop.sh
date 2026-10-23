@@ -1,6 +1,6 @@
 #!/bin/sh
-# The rebuilt shell as the rebuild lane locked it, its theme, schema and crash guard, and
-# no dev-loop or fault-injection setting in the image.
+# The rebuilt shell as the rebuild lane locked it, its theme, schema, vendor override and
+# crash guard, and no dev-loop or fault-injection setting in the image.
 set -eu
 CHECK_NAME=desktop
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -8,7 +8,9 @@ APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 LOCK=${APEX_RPMS_LOCK:-$(rootpath /usr/share/apex/rpms.lock)}
 THEME=/usr/share/gnome-shell/gnome-shell-theme.gresource
-SCHEMA=/usr/share/glib-2.0/schemas/io.github.apex_linux.Apex.Desktop.gschema.xml
+SCHEMAS=/usr/share/glib-2.0/schemas
+SCHEMA=$SCHEMAS/io.github.apex_linux.Apex.Desktop.gschema.xml
+OVERRIDE=$SCHEMAS/90_apex.gschema.override
 USERUNITS=/usr/lib/systemd/user
 MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */
@@ -186,7 +188,7 @@ fi
 if [ ! -f "$(rootpath "$SCHEMA")" ]; then
     fail "no $SCHEMA: the layer would run in safe mode (apex-desktop)"
 else
-    for k in layer-enabled disabled-features; do
+    for k in layer-enabled disabled-features toggle-spotlight; do
         if grep -q "<key name=\"$k\"" "$(rootpath "$SCHEMA")"; then
             pass "the Apex schema has $k"
         else
@@ -203,6 +205,26 @@ else
         else
             fail "the Apex schema fails --strict: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
         fi
+    fi
+fi
+
+if [ ! -f "$(rootpath "$OVERRIDE")" ]; then
+    fail "no $OVERRIDE: the vendor defaults are missing (apex-desktop)"
+elif grep -Eq '^[[:space:]]*color-scheme[[:space:]]*=' "$(rootpath "$OVERRIDE")"; then
+    fail "$OVERRIDE sets color-scheme: the rebuilt shell draws GNOME's 'default' light"
+elif command -v glib-compile-schemas >/dev/null 2>&1; then
+    mkdir "$TMPD/all"
+    cp "$(rootpath "$SCHEMAS")"/*.gschema.xml "$TMPD/all/"
+    if glib-compile-schemas --strict --dry-run "$TMPD/all" >/dev/null 2>&1; then
+        cp "$(rootpath "$OVERRIDE")" "$TMPD/all/"
+        if glib-compile-schemas --strict --dry-run "$TMPD/all" >"$TMPD/out" 2>&1; then
+            pass "$OVERRIDE sets no color-scheme and compiles with --strict against the installed schemas"
+        else
+            fail "$OVERRIDE fails --strict: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
+        fi
+    else
+        # image/Containerfile only warns here too: upstream schemas are not Apex's to fix.
+        warn "the installed schemas fail --strict without the Apex override: $OVERRIDE was not validated"
     fi
 fi
 

@@ -29,7 +29,7 @@ else
     ok "apex.txt names no lane package"
 fi
 # The rebuilt shell draws GNOME's 'default' colour scheme light.
-OVERRIDE=$IMAGE_DIR/system_files/usr/share/glib-2.0/schemas/90_apex.gschema.override
+OVERRIDE=$APEX_DESKTOP_SRC/desktop/schemas/90_apex.gschema.override
 if grep -Eq '^[[:space:]]*color-scheme[[:space:]]*=' "$OVERRIDE"; then
     not_ok "the vendor override sets no color-scheme"
 else
