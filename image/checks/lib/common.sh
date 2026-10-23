@@ -73,6 +73,19 @@ read_list() {
     sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$1"
 }
 
+# copy_schemas DIR [overrides]: the root's schemas with the enums files they take types
+# from, which glib-compile-schemas needs or it skips the schema and still exits 0.
+copy_schemas() {
+    for _f in "$(rootpath /usr/share/glib-2.0/schemas)"/*.gschema.xml "$(rootpath /usr/share/glib-2.0/schemas)"/*.enums.xml; do
+        if [ -f "$_f" ]; then cp "$_f" "$1/"; fi
+    done
+    if [ "${2:-}" = overrides ]; then
+        for _f in "$(rootpath /usr/share/glib-2.0/schemas)"/*.gschema.override; do
+            if [ -f "$_f" ]; then cp "$_f" "$1/"; fi
+        done
+    fi
+}
+
 make_tmpdir() {
     TMPD=$(mktemp -d "${TMPDIR:-/tmp}/apex-check.XXXXXX")
     # shellcheck disable=SC2064 # expand now: the path is fixed

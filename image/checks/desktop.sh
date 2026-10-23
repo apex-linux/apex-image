@@ -217,7 +217,7 @@ elif grep -Eq '^[[:space:]]*color-scheme[[:space:]]*=' "$(rootpath "$OVERRIDE")"
     fail "$OVERRIDE sets color-scheme: the rebuilt shell draws GNOME's 'default' light"
 elif command -v glib-compile-schemas >/dev/null 2>&1; then
     mkdir "$TMPD/all"
-    cp "$(rootpath "$SCHEMAS")"/*.gschema.xml "$TMPD/all/"
+    copy_schemas "$TMPD/all"
     if glib-compile-schemas --strict --dry-run "$TMPD/all" >/dev/null 2>&1; then
         cp "$(rootpath "$OVERRIDE")" "$TMPD/all/"
         if glib-compile-schemas --strict --dry-run "$TMPD/all" >"$TMPD/out" 2>&1; then
@@ -260,7 +260,7 @@ find "$keyfiles" -maxdepth 1 -type f -exec awk '/^\[/ { path = substr($0, 2, len
     { k = $0; sub(/[[:space:]]*=.*/, "", k); v = $0; sub(/^[^=]*=[[:space:]]*/, "", v)
       printf "%s\t%s\t%s\t%s\n", FILENAME, path, k, v }' {} + >"$TMPD/dconf-keys" 2>/dev/null || true
 mkdir "$TMPD/compiled" "$TMPD/nodata"
-cp "$(rootpath "$SCHEMAS")"/*.gschema.xml "$(rootpath "$SCHEMAS")"/*.gschema.override "$TMPD/compiled/" 2>/dev/null || true
+copy_schemas "$TMPD/compiled" overrides
 glib-compile-schemas "$TMPD/compiled" >/dev/null 2>&1 || true
 gs() {
     env -i PATH="$PATH" GSETTINGS_SCHEMA_DIR="$TMPD/compiled" GSETTINGS_BACKEND=memory XDG_DATA_DIRS="$TMPD/nodata" \
