@@ -67,6 +67,7 @@ The other recipes:
 | `just vm-sync` | Copy the checkout to `~/apex-fedora` in the VM. |
 | `just vm-image-only` | Rebuild only the image, reusing the RPMs and the lane's `rpms.lock.next` of the last `just vm-image`. |
 | `just vm-g2 [IMAGE]` | G2 on the last build: its headless shell, run twice and asserted ([tests/shots](../../tests/shots/README.md)). |
+| `just vm-ci-install` | Install `ci-build`, the self-hosted runner's only entry point, and bind the runner's key to it ([tools/runner](../runner/README.md)). |
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
 serial log) and `destroy --yes`. `destroy` deletes the Apex RPM key with the disk; a new
@@ -77,6 +78,17 @@ The tools that build from git HEAD see uncommitted host changes through
 `snapshot.sh`, which commits a dirty VM copy of the checkout as a throwaway snapshot.
 The next sync replaces that copy's `.git` with the host's, so the snapshot never leaves
 the VM.
+
+## From GitHub
+
+`vm.yml` in `apex-linux/apex-image` runs this build from a self-hosted runner on this
+host ([tools/runner/README.md](../runner/README.md)). The runner's SSH key may only run
+`ci-build <sha>` (`ci-build.sh`, installed in the VM as
+`/usr/local/libexec/apex/ci-build`). `ci-build` checks out a commit of `main` in
+`~/apex-fedora`, runs `build-image.sh` and `lane.sh promote`, and returns the gate
+results as a tar. A CI build and `just vm-sync`, `vm-image` or any `builder-vm.sh run`
+recipe never overlap: all of them take `~/.apex-build.lock` in the VM, and the sync
+refuses while a CI build holds it.
 
 ## Rebuild lane
 
