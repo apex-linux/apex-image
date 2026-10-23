@@ -15,6 +15,9 @@ old. When G2 passed and G4 passed or was not due, _build/gates-passed.txt names 
 lock the image carries, the image, and G4's verdict; `lane.sh promote` requires it. The
 record is not written when the lane lock moved while the gates ran.
 
+With a components.lock, tools/components.sh fetch and env run before the first build
+step, and libfprint is built from the packaging/libfprint of APEX_KERNEL_SRC.
+
 --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
 or image/ changes), and only says whether G4 is due.
 EOF
@@ -31,7 +34,23 @@ readonly G4_NOT_DUE=3
 
 G4_VERDICT=
 
-in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" -w /src "$FEDORA" "$@"; }
+in_fedora() { sudo podman run --rm --pull=newer -v "$PWD:/src:z" "${FEDORA_MOUNTS[@]}" -w /src "$FEDORA" "$@"; }
+FEDORA_MOUNTS=()
+
+# libfprint.sh runs the build.sh and series of the component that holds packaging/libfprint.
+libfprint_mounts() {
+    local src=${APEX_KERNEL_SRC:-$PWD}
+    [[ ! $src -ef $PWD ]] || return 0
+    [[ -d $src/packaging/libfprint ]] || { echo "APEX_KERNEL_SRC=$src has no packaging/libfprint" >&2; return 1; }
+    printf '%s\n' -v "$src/packaging/libfprint:/src/packaging/libfprint:ro,z"
+}
+
+use_components() {
+    [[ -f components.lock ]] || return 0
+    echo "== components (components.lock)"
+    tools/components.sh fetch
+    eval "$(tools/components.sh env)"
+}
 
 # After the container exits, so the Apex RPM key never meets a build script.
 sign_rpms() {
@@ -53,8 +72,12 @@ build_inputs() {
     sign_rpms _build/rpms
 
     echo "== 2/4 libfprint"
-    local rc=0
+    local rc=0 mounts
+    mounts=$(libfprint_mounts)
+    mapfile -t FEDORA_MOUNTS <<<"$mounts"
+    [[ -n $mounts ]] || FEDORA_MOUNTS=()
     in_fedora .github/scripts/libfprint.sh build /src/_build/libfprint || rc=$?
+    FEDORA_MOUNTS=()
     case $rc in
         0) sign_rpms _build/libfprint ;;
         3) echo "libfprint: patches do not apply; the image uses Fedora's libfprint (degraded=fingerprint)"
@@ -154,6 +177,7 @@ main() {
 
     # rpms.sh, apex-lane and image.sh build from git HEAD, not from the working tree.
     tools/builder-vm/snapshot.sh
+    use_components
 
     libfprint_args=(--libfprint-dir _build/libfprint)
     if ((image_only)); then
