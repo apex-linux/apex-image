@@ -560,7 +560,11 @@ co_repo() {
     co_git init -q "$CO/src/$name"
     echo one >"$CO/src/$name/a"
     co_git -C "$CO/src/$name" add a && co_git -C "$CO/src/$name" commit -qm one
-    if [[ $name == apex-desktop ]]; then
+    if [[ $name == apex-kernel ]]; then
+        mkdir -p "$CO/src/$name/packaging/libfprint"
+        echo patch.patch >"$CO/src/$name/packaging/libfprint/series"
+        co_git -C "$CO/src/$name" add packaging
+    elif [[ $name == apex-desktop ]]; then
         mkdir -p "$CO/src/$name/packaging/pkgs/gnome-shell"
         echo family=shell >"$CO/src/$name/packaging/pkgs/gnome-shell/pkg.env"
         co_git -C "$CO/src/$name" add packaging
@@ -571,6 +575,8 @@ co_repo() {
 }
 co_repo apex-system
 co_repo apex-desktop
+co_repo apex-kernel
+CO_KERNEL=$(git -C "$CO/src/apex-kernel" rev-parse HEAD)
 CO_SYS=$(git -C "$CO/src/apex-system" rev-parse HEAD)
 CO_SYS_OLD=$(git -C "$CO/src/apex-system" rev-parse HEAD~1)
 CO_DESK=$(git -C "$CO/src/apex-desktop" rev-parse HEAD)
@@ -580,7 +586,7 @@ co_lock() { printf '%s\n' "$@" >"$CO/work/components.lock"; }
 
 check "no components.lock: fetch records none" 0 "$(components fetch)"
 check "env: this checkout holds the recipes, nothing overridden" \
-    "export APEX_LANE_RECIPES=$(printf '%q' "$CO/work")|export APEX_COMPONENTS=pinned" "$(co_out env | paste -sd'|')"
+    "export APEX_KERNEL_SRC=$CO/work|export APEX_LANE_RECIPES=$CO/work|export APEX_COMPONENTS=pinned" "$(co_out env | paste -sd'|')"
 check "and promotable" 0 "$(components promotable)"
 
 co_lock '# components' '' "apex-system $CO/apex-system.git $CO_SYS_OLD" "apex-desktop $CO/apex-desktop.git $CO_DESK"
@@ -590,7 +596,7 @@ check "apex-system is at its pinned commit" "$CO_SYS_OLD" "$(git -C "$CO/work/_b
 check "with the full history the lane counts" "2:false" \
     "$(git -C "$CO/work/_build/components/apex-system" rev-list --count --all):$(git -C "$CO/work/_build/components/apex-system" rev-parse --is-shallow-repository)"
 check "env points at the clones, and at the recipes of apex-desktop" \
-    "export APEX_SYSTEM_SRC=$CO/work/_build/components/apex-system|export APEX_DESKTOP_SRC=$CO/work/_build/components/apex-desktop|export APEX_LANE_RECIPES=$CO/work:$CO/work/_build/components/apex-desktop|export APEX_COMPONENTS=pinned" \
+    "export APEX_SYSTEM_SRC=$CO/work/_build/components/apex-system|export APEX_DESKTOP_SRC=$CO/work/_build/components/apex-desktop|export APEX_KERNEL_SRC=$CO/work|export APEX_LANE_RECIPES=$CO/work:$CO/work/_build/components/apex-desktop|export APEX_COMPONENTS=pinned" \
     "$(co_out env | paste -sd'|')"
 check "a pinned fetch is promotable" 0 "$(components promotable)"
 
@@ -629,6 +635,40 @@ check "a dev-override is not promotable" 1 "$(components promotable)"
 check "an override that is no directory fails" 1 \
     "$(cd "$CO/work" && APEX_SRC_APEX_SYSTEM=../nowhere rc_of tools/components.sh fetch)"
 check "a pinned fetch makes it promotable again" "0:0" "$(components fetch):$(components promotable)"
+co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-kernel $CO/apex-kernel.git $CO_KERNEL"
+check "APEX_KERNEL_SRC is the component that holds packaging/libfprint" \
+    "0:export APEX_KERNEL_SRC=$CO/work/_build/components/apex-kernel" \
+    "$(components fetch):$(co_out env | grep APEX_KERNEL_SRC)"
+
+# --- build-image.sh: components.lock's checkouts are in effect before the first build step ---
+BI="$TMP/build-image-components"
+mkdir -p "$BI/home/apex-fedora/tools/builder-vm" "$BI/kernel/packaging/libfprint"
+cat >"$BI/home/apex-fedora/tools/components.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "$1" >>"$FAKE/components.log"
+[[ $1 != env ]] || printf 'export APEX_KERNEL_SRC=%q\nexport APEX_SYSTEM_SRC=/pinned/system\n' "$FAKE/kernel"
+EOF
+printf '#!/usr/bin/env bash\n' >"$BI/home/apex-fedora/tools/builder-vm/snapshot.sh"
+chmod +x "$BI/home/apex-fedora/tools/components.sh" "$BI/home/apex-fedora/tools/builder-vm/snapshot.sh"
+bi_main() {
+    rm -f "$BI/components.log" "$BI/first-step"
+    HOME=$BI/home FAKE=$BI bash -c '
+        . "$1"
+        sudo() { :; }
+        build_inputs() { printf "%s|%s|%s\n" "${APEX_SYSTEM_SRC:-unset}" "${APEX_KERNEL_SRC:-unset}" "$(libfprint_mounts | paste -sd" ")" >"$FAKE/first-step"; }
+        build_image() { :; }
+        gate_g2() { :; }
+        gate_g4() { G4_VERDICT=due; }
+        main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >/dev/null 2>&1
+}
+(unset APEX_SYSTEM_SRC APEX_KERNEL_SRC; bi_main)
+check "no components.lock: no fetch, no env, no libfprint mount" "no calls|unset|unset|" \
+    "$([[ -e $BI/components.log ]] && paste -sd' ' "$BI/components.log" || echo 'no calls')|$(cat "$BI/first-step")"
+echo "apex-kernel /x $CO_KERNEL" >"$BI/home/apex-fedora/components.lock"
+(unset APEX_SYSTEM_SRC APEX_KERNEL_SRC; bi_main)
+check "with components.lock: fetch, then env, in effect at the first build step" \
+    "fetch env|/pinned/system|$BI/kernel|-v $BI/kernel/packaging/libfprint:/src/packaging/libfprint:ro,z" \
+    "$(paste -sd' ' "$BI/components.log")|$(cat "$BI/first-step")"
 
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"

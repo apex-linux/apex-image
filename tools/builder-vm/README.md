@@ -29,7 +29,11 @@ just vm-create
 just vm-image
 ```
 
-`just vm-image` copies this checkout into the VM and builds, in order:
+`just vm-image` copies this checkout into the VM. When the checkout has a
+`components.lock`, `tools/components.sh fetch` first clones each pinned component into
+`_build/components/`, and the build takes its sources from there. libfprint then comes
+from the component that holds `packaging/libfprint` (`APEX_KERNEL_SRC`). It builds, in
+order:
 
 - the apex and apex-desktop RPMs;
 - the patched libfprint;

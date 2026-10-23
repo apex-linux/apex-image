@@ -15,9 +15,11 @@ blank lines and lines starting with # are skipped.
               tree and a clone that is not shallow; record the result in
               _build/components/state.txt
   env         print, as shell assignments, APEX_SYSTEM_SRC (apex-system),
-              APEX_DESKTOP_SRC (apex-desktop), APEX_LANE_RECIPES (this checkout and
-              every component with packaging/pkgs, ':'-separated) and APEX_COMPONENTS
-              (pinned, or dev-override); refuses a state older than components.lock
+              APEX_DESKTOP_SRC (apex-desktop), APEX_KERNEL_SRC (the component holding
+              packaging/libfprint, default this checkout), APEX_LANE_RECIPES (this
+              checkout and every component with packaging/pkgs, ':'-separated) and
+              APEX_COMPONENTS (pinned, or dev-override); refuses a state older than
+              components.lock
   promotable  exit 0 when the last fetch used only pinned clones (or there is no
               components.lock), 1 otherwise
 
@@ -129,7 +131,7 @@ current_state() {
 
 cmd_env() {
     current_state
-    local kind name mode sha path recipes=$ROOT overall=pinned
+    local kind name mode sha path recipes=$ROOT overall=pinned kernel=$ROOT kernel_name=
     while read -r kind name mode sha path; do
         [[ $kind == component ]] || continue
         [[ $mode == pinned ]] || overall=dev-override
@@ -138,7 +140,12 @@ cmd_env() {
             apex-desktop) printf 'export APEX_DESKTOP_SRC=%q\n' "$path" ;;
         esac
         [[ ! -d $path/packaging/pkgs ]] || recipes+=:$path
+        if [[ -d $path/packaging/libfprint ]]; then
+            [[ -z $kernel_name ]] || die "both $kernel_name and $name hold packaging/libfprint"
+            kernel=$path kernel_name=$name
+        fi
     done <"$STATE"
+    printf 'export APEX_KERNEL_SRC=%q\n' "$kernel"
     printf 'export APEX_LANE_RECIPES=%q\n' "$recipes"
     printf 'export APEX_COMPONENTS=%q\n' "$overall"
 }
