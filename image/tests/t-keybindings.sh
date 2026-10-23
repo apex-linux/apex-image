@@ -85,6 +85,16 @@ keybindings broken
 expect_rc "a keybinding schema that does not parse fails" 1
 expect_out "as a schema whose bindings were not checked" '^FAIL keybindings: no schema org\.gnome\.shell\.keybindings under '
 
+# gsettings-desktop-schemas' schemas take enum types from org.gnome.desktop.enums.xml.
+r=$(mkroot enums)
+printf '<schemalist><enum id="org.gnome.test.Mode"><value nick="on" value="0"/><value nick="off" value="1"/></enum></schemalist>\n' \
+    >"$r/$SCHEMAS/org.gnome.test.enums.xml"
+printf '<schemalist><schema id="org.gnome.mutter.keybindings" path="/org/gnome/mutter/keybindings/"><key name="toggle-tiled-left" type="as"><default><![CDATA[[%s]]]></default></key><key name="mode" enum="org.gnome.test.Mode"><default>%s</default></key></schema></schemalist>\n' \
+    "'<Super>Left'" "'on'" >"$r/$SCHEMAS/org.gnome.mutter.keybindings.gschema.xml"
+keybindings enums
+expect_rc "a keybinding schema whose types come from an enums file is checked" 0
+expect_out "and every schema is read" '^PASS keybindings: [0-9]+ default bindings across 6 schemas share no combination$'
+
 # The schemas of the packages that ship keybindings, unpacked, not installed.
 if grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && command -v dnf5 >/dev/null 2>&1; then
     r=$T/fedora

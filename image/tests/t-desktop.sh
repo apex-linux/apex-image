@@ -297,6 +297,19 @@ sed -i 's/^cell-height-scale=.*/cell-height-scale=3.0/' "$r/$KEYFILE"
 desktop badvalue
 expect_rc "a value outside the key's range fails" 1
 expect_out "and names it" '^FAIL desktop: .*\] cell-height-scale=3\.0 is not a valid org\.gnome\.Ptyxis\.Profile setting'
+# A schema that takes a type from an enums file, as upstream's do: without the file
+# glib-compile-schemas skips the schema and still exits 0.
+r=$(mkroot enums)
+printf '<schemalist><enum id="org.gnome.Ptyxis.CursorShape"><value nick="block" value="0"/><value nick="beam" value="1"/></enum></schemalist>\n' \
+    >"$r/usr/share/glib-2.0/schemas/org.gnome.Ptyxis.enums.xml"
+sed -i "s|</schema>|<key name=\"cursor-shape\" enum=\"org.gnome.Ptyxis.CursorShape\"><default>'block'</default></key></schema>|" \
+    "$r/usr/share/glib-2.0/schemas/org.gnome.Ptyxis.Profile.gschema.xml"
+printf "cursor-shape='beam'\n" >>"$r/$KEYFILE"
+touch -d '2026-10-01 00:00' "$r/$KEYFILE"
+desktop enums
+expect_rc "schemas whose types come from an enums file pass" 0
+expect_out "the override is validated against them" '^PASS desktop: /usr/share/glib-2\.0/schemas/90_apex\.gschema\.override sets no color-scheme and compiles with --strict against the installed schemas$'
+expect_out "the profile key of the enum type is a valid setting" "^PASS desktop: the 3 dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile"
 r=$(mkroot fixedpath)
 printf "[org/gnome/desktop/interface]\nfont-hinting='none'\n" >"$r/$DISTRO/60-fixed"
 desktop fixedpath

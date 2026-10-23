@@ -22,9 +22,7 @@ if ! command -v glib-compile-schemas >/dev/null 2>&1 || ! command -v gsettings >
 fi
 
 mkdir "$TMPD/schemas" "$TMPD/nodata"
-for f in "$(rootpath "$SCHEMAS")"/*.gschema.xml "$(rootpath "$SCHEMAS")"/*.gschema.override; do
-    if [ -f "$f" ]; then cp "$f" "$TMPD/schemas/"; fi
-done
+copy_schemas "$TMPD/schemas" overrides
 if ! glib-compile-schemas "$TMPD/schemas" >"$TMPD/out" 2>&1; then
     fail "the schemas under $SCHEMAS do not compile: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
     finish
