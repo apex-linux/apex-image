@@ -87,4 +87,22 @@ keybindings broken
 expect_rc "a keybinding schema that does not parse fails" 1
 expect_out "as a schema whose bindings were not checked" '^FAIL keybindings: no schema org\.gnome\.shell\.keybindings under '
 
+# In fedora:45 (CI): the stock schemas of the four packages that ship keybindings, unpacked
+# without installing them, with the committed Apex schema and override.
+if grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && command -v dnf5 >/dev/null 2>&1; then
+    r=$T/fedora
+    mkdir -p "$r/rpms" "$r/$SCHEMAS"
+    run dnf5 -q download --repo=fedora --repo=updates --destdir="$r/rpms" \
+        gsettings-desktop-schemas mutter-common gnome-shell gnome-settings-daemon
+    expect_rc "dnf5 downloads Fedora's keybinding schema packages" 0
+    for p in "$r"/rpms/*.rpm; do
+        (cd "$r" && rpm2cpio "$p" | cpio -idm --quiet "./$SCHEMAS/*")
+    done
+    cp "$DESKTOP"/schemas/*.gschema.xml "$DESKTOP"/schemas/*.gschema.override "$r/$SCHEMAS/"
+    run env ROOT="$r" "$SH" "$CHECKS/keybindings.sh"
+    expect_true "the downloads hold Fedora's wm.keybindings schema" test -f "$r/$SCHEMAS/org.gnome.desktop.wm.keybindings.gschema.xml"
+    sed -En 's/^(PASS|FAIL) keybindings: /# fedora: &/p' "$T/out"
+    expect_rc "Fedora's stock keybindings with the Apex override share no combination" 0
+fi
+
 done_testing
