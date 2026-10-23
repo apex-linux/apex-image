@@ -4,8 +4,8 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-The shell dev loop (ADR 0014): this checkout's desktop/shell/ (the Apex JS, SCSS and
-assets) and the upstream JS and SCSS of the lane's gnome-shell work tree, run by a
+The shell dev loop (ADR 0014): apex-gnome's desktop/shell/ (the Apex JS, SCSS and
+assets; the checkout APEX_GNOME_SRC, default ../apex-gnome) and the upstream JS and SCSS of the lane's gnome-shell work tree, run by a
 nested `gnome-shell --devkit --unsafe-mode` in the desktop VM through
 G_RESOURCE_OVERLAYS. An edit shows within seconds, and none of it enters the image.
 
@@ -44,11 +44,11 @@ readonly HERE REPO
 readonly DESKTOP=$HERE/desktop-vm.sh
 readonly BUILDER=$HERE/builder-vm.sh
 readonly GUEST_SCRIPT=$HERE/shell-dev-guest.sh
-readonly SHELL_SOURCES=$REPO/desktop/shell
+readonly SHELL_SOURCES=${APEX_GNOME_SRC:-$REPO/../apex-gnome}/desktop/shell
 readonly GUEST_ROOT=/var/lib/apex-shell-dev
 readonly GUEST_SCRIPT_PATH=$GUEST_ROOT/bin/shell-dev-guest.sh
 readonly VM_LOCK=/usr/share/apex/rpms.lock
-readonly BUILDER_WORK_DIR=apex-fedora/_build/pkg/gnome-shell
+readonly BUILDER_WORK_DIR=apex-image/_build/pkg/gnome-shell
 readonly BUILDER_STORE_PKG=apex-store/pkgs/gnome-shell
 readonly BUILDER_LOCK_NEXT=apex-store/rpms.lock.next
 readonly POLL_SECONDS=1

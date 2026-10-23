@@ -15,11 +15,11 @@ blank lines and lines starting with # are skipped.
               tree and a clone that is not shallow; record the result in
               _build/components/state.txt
   env         print, as shell assignments, APEX_SYSTEM_SRC (apex-system),
-              APEX_DESKTOP_SRC (apex-desktop), APEX_KERNEL_SRC (the component holding
-              packaging/libfprint, default this checkout), APEX_LANE_RECIPES (this
-              checkout and every component with packaging/pkgs, ':'-separated) and
-              APEX_COMPONENTS (pinned, or dev-override); refuses a state older than
-              components.lock
+              APEX_DESKTOP_SRC (apex-desktop), APEX_GNOME_SRC (apex-gnome),
+              APEX_KERNEL_SRC (the component holding packaging/libfprint, default this
+              checkout), APEX_LANE_RECIPES (this checkout and every component with
+              packaging/pkgs, ':'-separated) and APEX_COMPONENTS (pinned, or
+              dev-override); refuses a state older than components.lock
   promotable  exit 0 when the last fetch used only pinned clones (or there is no
               components.lock), 1 otherwise
 
@@ -138,6 +138,7 @@ cmd_env() {
         case $name in
             apex-system) printf 'export APEX_SYSTEM_SRC=%q\n' "$path" ;;
             apex-desktop) printf 'export APEX_DESKTOP_SRC=%q\n' "$path" ;;
+            apex-gnome) printf 'export APEX_GNOME_SRC=%q\n' "$path" ;;
         esac
         [[ ! -d $path/packaging/pkgs ]] || recipes+=:$path
         if [[ -d $path/packaging/libfprint ]]; then

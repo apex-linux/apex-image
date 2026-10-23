@@ -5,9 +5,9 @@ set -eu
 TESTS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 IMAGE_DIR=$(dirname -- "$TESTS_DIR")
 REPO_ROOT=$(dirname -- "$IMAGE_DIR")
-# The component checkouts; until the split, this one holds them all.
-APEX_SYSTEM_SRC=${APEX_SYSTEM_SRC:-$REPO_ROOT}
-APEX_DESKTOP_SRC=${APEX_DESKTOP_SRC:-$REPO_ROOT}
+# The pinned component checkouts of tools/components.sh fetch, unless the caller names others.
+APEX_SYSTEM_SRC=${APEX_SYSTEM_SRC:-$REPO_ROOT/_build/components/apex-system}
+APEX_DESKTOP_SRC=${APEX_DESKTOP_SRC:-$REPO_ROOT/_build/components/apex-desktop}
 CHECKS=$IMAGE_DIR/checks
 FAKE=$TESTS_DIR/fake
 T=$(mktemp -d "${TMPDIR:-/tmp}/apex-image-test.XXXXXX")

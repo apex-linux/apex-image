@@ -132,7 +132,7 @@ SHELL_DEV_INPUTS=$VM_DIR/shell-dev
 # desktop-disk.sh's output for this VM, relative to the builder's home as builder-vm.sh
 # fetch wants: installs of different VMs never share it.
 REMOTE_OUT_NAME=$(printf '%s' "$VM_DIR" | sha256sum | cut -c1-12)
-REMOTE_OUT=apex-fedora/_build/desktop/$REMOTE_OUT_NAME
+REMOTE_OUT=apex-image/_build/desktop/$REMOTE_OUT_NAME
 
 log() { printf '[desktop-vm] %s\n' "$*" >&2; }
 die() { printf '[desktop-vm] error: %s\n' "$*" >&2; exit 1; }
@@ -465,7 +465,7 @@ builder_image_id_and_size() {
 
 # shellcheck disable=SC2016 # bash in the builder VM expands it
 readonly GATE_RECORDS_SCRIPT='
-cd apex-fedora/_build 2>/dev/null || exit 1
+cd apex-image/_build 2>/dev/null || exit 1
 if grep -qsx "image-id $1" gates-passed.txt; then
     echo "G1 and G2, and G4 $(sed -n "s/^g4 //p" gates-passed.txt) (_build/gates-passed.txt)"
     exit 0

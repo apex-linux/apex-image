@@ -2,7 +2,7 @@
 
 The development host is Ubuntu, so it cannot run rootful podman, `bootc-base-imagectl
 build-rootfs` or `rpmbuild` against Fedora 45. This VM runs them
-([ADR 0013](../../docs/adr/0013-build-pipeline.md)):
+([ADR 0013](https://github.com/apex-linux/apex/blob/main/docs/adr/0013-build-pipeline.md)):
 
 - QEMU with KVM, user-mode networking and UEFI (OVMF), started as your normal user.
 - **No root on the host.** `/dev/kvm` is usable through its ACL.
@@ -29,18 +29,19 @@ just vm-create
 just vm-image
 ```
 
-`just vm-image` copies this checkout into the VM. When the checkout has a
-`components.lock`, `tools/components.sh fetch` first clones each pinned component into
-`_build/components/`, and the build takes its sources from there. libfprint then comes
-from the component that holds `packaging/libfprint` (`APEX_KERNEL_SRC`). It builds, in
+`just vm-image` copies this checkout into the VM. `tools/components.sh fetch` first
+clones each component at its commit in `components.lock` into `_build/components/`, and
+each RPM is built in its component's clone, as root in a fresh `fedora:45`. It builds, in
 order:
 
-- the apex and apex-desktop RPMs;
-- the patched libfprint;
-- the rebuild lane's packages (gnome-shell), into `rpms.lock.next` of the store below;
+- the apex RPM (apex-system's `rpms.sh build`) and apex-desktop (apex-desktop's);
+- the patched libfprint (apex-kernel's `libfprint.sh build`, given this image's
+  `GA_REACHED` and updates-testing allowlist);
+- the rebuild lane's packages (gnome-shell, from apex-gnome's recipe), into
+  `rpms.lock.next` of the store below;
 - the image, from those RPMs and that lock;
-- G2 (`tests/shots/run.sh`, always twice, as `just vm-g2`), which stops the build when
-  it fails;
+- G2 (apex-gnome's `tests/shots/run.sh`, always twice, as `just vm-g2`), which stops the
+  build when it fails;
 - G4 (`qualify.sh local`, below), when `qualify.sh g4-due` says it is due: the image's
   G4 key differs from the last G4 pass, or that pass is 7 days old. The key
   (`qualify.sh g4-key`) holds the NEVRAs of gdm, gnome-shell, mutter, gjs,
@@ -52,14 +53,15 @@ order:
   G4 is due.
 
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
-lock the image carries (from G2's `result.txt`), the image, and G4's verdict: `passed
-for image ID`, or `not due: its key passed on DATE for image ID`. It is not written when
-`rpms.lock.next` changed while the gates ran. `just pkg-promote` refuses a lock it does
-not name.
+lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
+image ID`, or `not due: its key passed on DATE for image ID`) and `components pinned`, or
+`components dev-override` for a build with `APEX_SRC_<NAME>` set
+(`tools/components.sh help`). It is not written when `rpms.lock.next` changed while the
+gates ran. `just pkg-promote` refuses a lock it does not name, and a dev-override build.
 
 The Apex RPM key signs every RPM; nothing pushes or signs the image.
 
-The results are in `~/apex-fedora/_build/` inside the VM.
+The results are in `~/apex-image/_build/` inside the VM.
 
 The other recipes:
 
@@ -68,9 +70,9 @@ The other recipes:
 | `just vm-start` / `just vm-stop` | Boot in the background / clean ACPI shutdown. |
 | `just vm-status` | Show whether it runs, plus uptime, disk and memory use. |
 | `just vm-ssh [CMD…]` | Open a shell in the VM, or run `CMD`. |
-| `just vm-sync` | Copy the checkout to `~/apex-fedora` in the VM. |
+| `just vm-sync` | Copy the checkout to `~/apex-image` in the VM. |
 | `just vm-image-only` | Rebuild only the image, reusing the RPMs and the lane's `rpms.lock.next` of the last `just vm-image`. |
-| `just vm-g2 [IMAGE]` | G2 on the last build: its headless shell, run twice and asserted ([tests/shots](../../tests/shots/README.md)). |
+| `just vm-g2 [IMAGE]` | G2 on the last build: its headless shell, run twice and asserted (apex-gnome's `tests/shots`). |
 | `just vm-ci-install` | Install `ci-build`, the self-hosted runner's only entry point, and bind the runner's key to it ([tools/runner](../runner/README.md)). |
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
@@ -89,7 +91,7 @@ the VM.
 host ([tools/runner/README.md](../runner/README.md)). The runner's SSH key may only run
 `ci-build <sha>` (`ci-build.sh`, installed in the VM as
 `/usr/local/libexec/apex/ci-build`). `ci-build` checks out a commit of `main` in
-`~/apex-fedora`, runs `build-image.sh` and `lane.sh promote`, and returns the gate
+`~/apex-image`, runs `build-image.sh` and `lane.sh promote`, and returns the gate
 results as a tar. A CI build and `just vm-sync`, `vm-image` or any `builder-vm.sh run`
 recipe never overlap: all of them take `~/.apex-build.lock` in the VM, and the sync
 refuses while a CI build holds it.
@@ -101,7 +103,7 @@ rebuilt with the Apex series, such as gnome-shell with the Apex layer
 ([packaging/README.md](../../packaging/README.md#the-rebuild-lane)). `lane.sh` builds
 `apex-lane` from the checkout's HEAD with Fedora's rust, in a container of
 `image/Containerfile`'s `REPOS_BASE` (the image `localhost/apex-lane-builder`, made once
-per digest by `rpms.sh toolchain`, and the podman volume `apex-lane-cargo` for cargo's
+per digest with Fedora's rust from the compose's repositories, and the podman volume `apex-lane-cargo` for cargo's
 registry and target), and keeps the last three builds in `~/.cache/apex-lane/`. The
 lane's state lives in `~/apex-store/` in the VM, outside the synced checkout: the built
 sets by content key, `rpms.lock` and `rpms.lock.next`. dnf's metadata for the lane's
@@ -164,8 +166,8 @@ upstream's sheet.
 
 `logs/` keeps a screendump of every password prompt and of the unlocked session. A pass
 with no SKIP or WARN row records the image's G4 key, the time and the image ID in
-`~/apex-fedora/_build/g4-passed.txt`, which `just vm-image` compares against. The
-results are in `~/apex-fedora/_build/qualify/` (`results.md`, `logs/`). The nested
+`~/apex-image/_build/g4-passed.txt`, which `just vm-image` compares against. The
+results are in `~/apex-image/_build/qualify/` (`results.md`, `logs/`). The nested
 guest gets 3 GiB of RAM; the run takes seven boots, about 20 minutes.
 
 `just qualify-local` prints how to run the other scenarios (fresh, upgrade, counted
@@ -203,7 +205,7 @@ refuses to start.
 The first boot runs `gnome-initial-setup`, where you create your user. The Flathub apps
 install in the background.
 
-**How it differs from a laptop install** ([INSTALL.md](../../docs/INSTALL.md))
+**How it differs from a laptop install** ([INSTALL.md](https://github.com/apex-linux/apex/blob/main/docs/INSTALL.md))
 
 - Root accepts this VM's SSH key. A kernel argument starts sshd, which the image ships
   disabled. Both carry over to later updates.
@@ -243,7 +245,7 @@ from GNOME, from the Machine menu, or with `just desktop-stop`.
 | `just desktop-status` | Whether it runs, the installed image and digest, and disk use. |
 | `just desktop-ssh ['CMD']` | A root shell in the guest, or `CMD` run by the guest's shell. |
 | `just desktop-update [IMAGE]` | Stages the last `just vm-image` build in the running guest, keeping `/var/home` and `/etc` (below). |
-| `just shell-dev`, `just shell-c` | The shell's dev loop in this VM ([desktop/README.md](../../desktop/README.md#the-dev-loop)). |
+| `just shell-dev`, `just shell-c` | The shell's dev loop in this VM, from the apex-gnome checkout `APEX_GNOME_SRC` (default `../apex-gnome`; [desktop/README.md](https://github.com/apex-linux/apex-gnome/blob/main/desktop/README.md#the-dev-loop)). |
 
 The shell uses a key made for this VM. sshd is forwarded on `127.0.0.1:2223` only. A
 running VM is reached on the port it was started with, which `desktop-vm.sh` records in

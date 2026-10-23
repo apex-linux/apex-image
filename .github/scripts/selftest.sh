@@ -52,10 +52,6 @@ check_false "invalid operand dies" version_gt 45.20260924.1 garbage
 check_true "digest" is_digest "sha256:$(printf '%064d' 0)"
 check_false "short digest" is_digest sha256:abc
 check_false "uppercase digest" is_digest "sha256:$(printf 'A%.0s' {1..64})"
-check "tag unchanged" "libfprint-1.94.10-1.fc45-s0123456789ab" "$(oci_tag libfprint-1.94.10-1.fc45-s0123456789ab)"
-check "tag sanitised" "libfprint-1.94.10_rc1-1.fc45" "$(oci_tag 'libfprint-1.94.10~rc1-1.fc45')"
-check "tag leading dot" "_.hidden" "$(oci_tag .hidden)"
-check "tag length" 128 "$(oci_tag "$(printf 'x%.0s' {1..300})" | tr -d '\n' | wc -c)"
 
 # --- Containerfile parsing ---------------------------------------------------------------
 cat >"$TMP/Containerfile" <<'EOF'
@@ -84,9 +80,6 @@ registry.fedoraproject.org/fedora:45" \
 check "FROM images with build-arg overrides" "example.org/base:1
 registry.fedoraproject.org/fedora:46" \
     "$(containerfile_from_images "$TMP/Containerfile" BASE=example.org/base:1 FEDORA=46 COMPOSE=dnf)"
-check_true "pinned image with tag" is_pinned_image "registry.fedoraproject.org/fedora-bootc:45@sha256:$(printf '%064d' 1)"
-check_true "pinned image without tag" is_pinned_image "registry.fedoraproject.org/fedora-bootc@sha256:$(printf '%064d' 1)"
-check_false "floating tag is not pinned" is_pinned_image registry.fedoraproject.org/fedora-bootc:45
 
 is_empty_or_csv_list() { [[ $1 =~ ^([A-Za-z0-9._+-]+(,[A-Za-z0-9._+-]+)*)?$ ]]; }
 if [[ -f $APEX_TESTING_ALLOWLIST ]]; then
@@ -409,12 +402,16 @@ check "a missing key too" 1 "$(g4_due "$G4_DIR/absent.key")"
 # --- build-image.sh: G2 twice, G4 when due, and the gates record ---------------------------
 BUILD_DIR="$TMP/build-image"
 mkdir -p "$BUILD_DIR/work/tests/shots" "$BUILD_DIR/work/.github/scripts" "$BUILD_DIR/work/_build/image" \
-    "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/store"
+    "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image/packages" "$BUILD_DIR/store"
+cp "$APEX_ROOT/.github/scripts/lib.sh" "$BUILD_DIR/work/.github/scripts/"
+cp "$APEX_CONTAINERFILE" "$BUILD_DIR/work/image/"
+cp "$APEX_TESTING_ALLOWLIST" "$BUILD_DIR/work/image/packages/"
 printf 'lock\n' >"$BUILD_DIR/store/rpms.lock.next"
 LANE_LOCK_SHA=$(sha256sum <"$BUILD_DIR/store/rpms.lock.next" | cut -d' ' -f1)
 cat >"$BUILD_DIR/work/tests/shots/run.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "$G2_RUNS" >"$FAKE/g2-runs"
+printf '%s|%s|%s\n' "$G2_IMAGE_DIR" "$G2_REPOS_BASE" "$G2_OUT_DIR" >"$FAKE/g2-env"
 exit "$(cat "$FAKE/g2-rc" 2>/dev/null || echo 0)"
 EOF
 cat >"$BUILD_DIR/work/.github/scripts/qualify.sh" <<'EOF'
@@ -429,7 +426,7 @@ chmod +x "$BUILD_DIR/work/tests/shots/run.sh" "$BUILD_DIR/work/.github/scripts/q
 build_gates() {
     local image_only=${1:-0} rc=0
     rm -f "$BUILD_DIR/work/_build/gates-passed.txt" "$BUILD_DIR/g4-ran"
-    (cd "$BUILD_DIR/work" && FAKE=$BUILD_DIR APEX_STORE=$BUILD_DIR/store bash -c '
+    (cd "$BUILD_DIR/work" && FAKE=$BUILD_DIR APEX_STORE=$BUILD_DIR/store APEX_GNOME_SRC=$BUILD_DIR/work APEX_COMPONENTS=${APEX_COMPONENTS:-pinned} bash -c '
         . "$1"
         image_id() { echo cafe; }
         gate_g2 && gate_g4 "$2" && { [[ $G4_VERDICT == due ]] || record_gates; }' \
@@ -445,10 +442,14 @@ g2_result cafe "$LANE_LOCK_SHA"
 echo 0 >"$BUILD_DIR/g4-due-rc"
 check "G2, then G4 when due, then the record" 0 "$(G2_RUNS=1 build_gates)"
 check "G2 runs twice, whatever G2_RUNS says" 2 "$(cat "$BUILD_DIR/g2-runs")"
+check "G2 is apex-gnome's run.sh, given this image/, its REPOS_BASE and this _build/g2" \
+    "$BUILD_DIR/work/image|$(containerfile_arg REPOS_BASE)|$BUILD_DIR/work/_build/g2" "$(cat "$BUILD_DIR/g2-env")"
 check "G4 ran" local "$(cat "$BUILD_DIR/g4-ran")"
 check "the record names the lane lock the image carries, the image and G4's pass" \
-    "lock-sha256 $LANE_LOCK_SHA|image-id cafe|g2 passed|g4 passed for image cafe" \
+    "lock-sha256 $LANE_LOCK_SHA|image-id cafe|g2 passed|g4 passed for image cafe|components pinned" \
     "$(paste -sd'|' "$BUILD_DIR/work/_build/gates-passed.txt")"
+check "a build from a dev-override component says so in its record" "components dev-override" \
+    "$(APEX_COMPONENTS=dev-override build_gates >/dev/null; grep '^components ' "$BUILD_DIR/work/_build/gates-passed.txt")"
 echo 3 >"$BUILD_DIR/g4-due-rc"
 printf 'passed-at 2026-09-29T17:10:00Z\nimage-id beef\n' >"$BUILD_DIR/g4-due-stdout"
 check "G4 not due: the record" 0 "$(build_gates)"
@@ -480,7 +481,7 @@ rm -f "$BUILD_DIR/g2-rc"
 CI_DIR="$TMP/ci-build"
 CI_SHA=$(printf 'a%.0s' {1..40})
 CI_OTHER=$(printf 'b%.0s' {1..40})
-mkdir -p "$CI_DIR/bin" "$CI_DIR/store" "$CI_DIR/home/apex-fedora/.git" "$CI_DIR/home/apex-fedora/tools/builder-vm"
+mkdir -p "$CI_DIR/bin" "$CI_DIR/store" "$CI_DIR/home/apex-image/.git" "$CI_DIR/home/apex-image/tools/builder-vm"
 cat >"$CI_DIR/bin/git" <<'EOF'
 #!/usr/bin/env bash
 while [[ ${1:-} == -c || ${1:-} == -C ]]; do shift 2; done
@@ -497,22 +498,22 @@ case $1 in
     checkout) echo "$5" >"$FAKE/head" ;;
 esac
 EOF
-cat >"$CI_DIR/home/apex-fedora/tools/builder-vm/build-image.sh" <<'EOF'
+cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
 mkdir -p _build
 echo "lock-sha256 x" >_build/gates-passed.txt
 exit "$(cat "$FAKE/build-rc")"
 EOF
-cat >"$CI_DIR/home/apex-fedora/tools/builder-vm/lane.sh" <<'EOF'
+cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE/lane.log"
 EOF
-chmod +x "$CI_DIR/bin/git" "$CI_DIR/home/apex-fedora/tools/builder-vm/"*.sh
+chmod +x "$CI_DIR/bin/git" "$CI_DIR/home/apex-image/tools/builder-vm/"*.sh
 printf 'old\n' >"$CI_DIR/store/rpms.lock"
 printf 'new\n' >"$CI_DIR/store/rpms.lock.next"
 ci_build() {
     local rc=0
-    rm -f "$CI_DIR/git.log" "$CI_DIR/lane.log" "$CI_DIR/home/apex-fedora/_build/gates-passed.txt"
+    rm -f "$CI_DIR/git.log" "$CI_DIR/lane.log" "$CI_DIR/home/apex-image/_build/gates-passed.txt"
     echo 0000000000000000000000000000000000000000 >"$CI_DIR/head"
     HOME=$CI_DIR/home PATH="$CI_DIR/bin:$PATH" FAKE=$CI_DIR APEX_STORE=$CI_DIR/store \
         "$@" bash "$APEX_ROOT/tools/builder-vm/ci-build.sh" >"$CI_DIR/out.tar" 2>"$CI_DIR/err" || rc=$?
@@ -560,7 +561,11 @@ co_repo() {
     co_git init -q "$CO/src/$name"
     echo one >"$CO/src/$name/a"
     co_git -C "$CO/src/$name" add a && co_git -C "$CO/src/$name" commit -qm one
-    if [[ $name == apex-kernel ]]; then
+    if [[ $name == apex-gnome ]]; then
+        mkdir -p "$CO/src/$name/packaging/pkgs/gnome-shell"
+        echo family=gnome-shell >"$CO/src/$name/packaging/pkgs/gnome-shell/pkg.env"
+        co_git -C "$CO/src/$name" add packaging
+    elif [[ $name == apex-kernel ]]; then
         mkdir -p "$CO/src/$name/packaging/libfprint"
         echo patch.patch >"$CO/src/$name/packaging/libfprint/series"
         co_git -C "$CO/src/$name" add packaging
@@ -576,6 +581,8 @@ co_repo() {
 co_repo apex-system
 co_repo apex-desktop
 co_repo apex-kernel
+co_repo apex-gnome
+CO_GNOME=$(git -C "$CO/src/apex-gnome" rev-parse HEAD)
 CO_KERNEL=$(git -C "$CO/src/apex-kernel" rev-parse HEAD)
 CO_SYS=$(git -C "$CO/src/apex-system" rev-parse HEAD)
 CO_SYS_OLD=$(git -C "$CO/src/apex-system" rev-parse HEAD~1)
@@ -635,40 +642,75 @@ check "a dev-override is not promotable" 1 "$(components promotable)"
 check "an override that is no directory fails" 1 \
     "$(cd "$CO/work" && APEX_SRC_APEX_SYSTEM=../nowhere rc_of tools/components.sh fetch)"
 check "a pinned fetch makes it promotable again" "0:0" "$(components fetch):$(components promotable)"
-co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-kernel $CO/apex-kernel.git $CO_KERNEL"
+co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-kernel $CO/apex-kernel.git $CO_KERNEL" \
+    "apex-gnome $CO/apex-gnome.git $CO_GNOME"
 check "APEX_KERNEL_SRC is the component that holds packaging/libfprint" \
     "0:export APEX_KERNEL_SRC=$CO/work/_build/components/apex-kernel" \
     "$(components fetch):$(co_out env | grep APEX_KERNEL_SRC)"
+check "APEX_GNOME_SRC is apex-gnome, whose recipes the lane takes" \
+    "export APEX_GNOME_SRC=$CO/work/_build/components/apex-gnome|export APEX_LANE_RECIPES=$CO/work:$CO/work/_build/components/apex-gnome" \
+    "$(co_out env | grep -E 'APEX_GNOME_SRC|APEX_LANE_RECIPES' | paste -sd'|')"
 
-# --- build-image.sh: components.lock's checkouts are in effect before the first build step ---
+# --- build-image.sh: each RPM from its pinned component, after components.sh fetch and env ---
 BI="$TMP/build-image-components"
-mkdir -p "$BI/home/apex-fedora/tools/builder-vm" "$BI/kernel/packaging/libfprint"
-cat >"$BI/home/apex-fedora/tools/components.sh" <<'EOF'
+BIW=$BI/home/apex-image
+mkdir -p "$BIW/tools/builder-vm" "$BIW/.github/scripts" "$BIW/image/packages"
+cp "$APEX_ROOT/.github/scripts/lib.sh" "$BIW/.github/scripts/"
+cp "$APEX_CONTAINERFILE" "$BIW/image/"
+cp "$APEX_TESTING_ALLOWLIST" "$BIW/image/packages/"
+cat >"$BIW/tools/components.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "$1" >>"$FAKE/components.log"
-[[ $1 != env ]] || printf 'export APEX_KERNEL_SRC=%q\nexport APEX_SYSTEM_SRC=/pinned/system\n' "$FAKE/kernel"
+[[ $1 != env ]] || printf 'export APEX_%s_SRC=/pinned/%s\n' SYSTEM system DESKTOP desktop KERNEL kernel
 EOF
-printf '#!/usr/bin/env bash\n' >"$BI/home/apex-fedora/tools/builder-vm/snapshot.sh"
-chmod +x "$BI/home/apex-fedora/tools/components.sh" "$BI/home/apex-fedora/tools/builder-vm/snapshot.sh"
+printf '#!/usr/bin/env bash\n' >"$BIW/tools/builder-vm/snapshot.sh"
+cat >"$BIW/tools/builder-vm/lane.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "lane.sh $*" >>"$FAKE/steps.log"
+EOF
+chmod +x "$BIW/tools/components.sh" "$BIW/tools/builder-vm/"*.sh
 bi_main() {
-    rm -f "$BI/components.log" "$BI/first-step"
+    rm -f "$BI/components.log" "$BI/first-step" "$BI/steps.log"
     HOME=$BI/home FAKE=$BI bash -c '
         . "$1"
         sudo() { :; }
-        build_inputs() { printf "%s|%s|%s\n" "${APEX_SYSTEM_SRC:-unset}" "${APEX_KERNEL_SRC:-unset}" "$(libfprint_mounts | paste -sd" ")" >"$FAKE/first-step"; }
+        build_inputs() { printf "%s|%s\n" "${APEX_SYSTEM_SRC:-unset}" "${APEX_KERNEL_SRC:-unset}" >"$FAKE/first-step"; }
         build_image() { :; }
         gate_g2() { :; }
         gate_g4() { G4_VERDICT=due; }
         main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >/dev/null 2>&1
 }
+rm -f "$BIW/components.lock"
+check "no components.lock: the build stops before its first step" "1|no step" \
+    "$(rc_of bi_main)|$([[ -e $BI/first-step ]] && echo step || echo 'no step')"
+echo "apex-kernel /x $CO_KERNEL" >"$BIW/components.lock"
 (unset APEX_SYSTEM_SRC APEX_KERNEL_SRC; bi_main)
-check "no components.lock: no fetch, no env, no libfprint mount" "no calls|unset|unset|" \
-    "$([[ -e $BI/components.log ]] && paste -sd' ' "$BI/components.log" || echo 'no calls')|$(cat "$BI/first-step")"
-echo "apex-kernel /x $CO_KERNEL" >"$BI/home/apex-fedora/components.lock"
-(unset APEX_SYSTEM_SRC APEX_KERNEL_SRC; bi_main)
-check "with components.lock: fetch, then env, in effect at the first build step" \
-    "fetch env|/pinned/system|$BI/kernel|-v $BI/kernel/packaging/libfprint:/src/packaging/libfprint:ro,z" \
+check "fetch, then env, in effect at the first build step" "fetch env|/pinned/system|/pinned/kernel" \
     "$(paste -sd' ' "$BI/components.log")|$(cat "$BI/first-step")"
+(cd "$BIW" && rm -rf _build && FAKE=$BI APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
+    APEX_KERNEL_SRC=/pinned/kernel bash -c '
+    . "$1"
+    sudo() {
+        [[ $1 == podman ]] || return 0
+        local a out
+        for a in "$@"; do [[ $a != /build/* ]] || out=$a; done
+        mkdir -p "_build/${out#/build/}" && : >"_build/${out#/build/}/x.rpm"
+        printf "%s\n" "$*" >>"$FAKE/steps.log"
+    }
+    build_inputs' _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >/dev/null 2>&1
+bi_podman() { grep "^podman run .* -v $1:/component:z " "$BI/steps.log" | grep -o ' registry.fedoraproject.org/fedora:45 .*'; }
+check "the apex RPM: apex-system's rpms.sh, in its checkout" " registry.fedoraproject.org/fedora:45 .github/scripts/rpms.sh build /build/rpms/apex" \
+    "$(bi_podman /pinned/system)"
+check "apex-desktop: apex-desktop's rpms.sh" " registry.fedoraproject.org/fedora:45 .github/scripts/rpms.sh build /build/rpms/desktop" \
+    "$(bi_podman /pinned/desktop)"
+check "libfprint: apex-kernel's libfprint.sh" " registry.fedoraproject.org/fedora:45 .github/scripts/libfprint.sh build /build/libfprint" \
+    "$(bi_podman /pinned/kernel)"
+check "libfprint gets this image's GA_REACHED and updates-testing allowlist" \
+    "-e GA_REACHED=$(ga_reached) -e TESTING_INCLUDEPKGS=$(testing_includepkgs)" \
+    "$(grep -o -- '-e GA_REACHED=.* registry' "$BI/steps.log" | sed 's/ registry$//')"
+check "only libfprint gets them" 1 "$(grep -c -- '-e GA_REACHED=' "$BI/steps.log")"
+check "every RPM is signed, then the lane builds" "sign _build/rpms/apex/x.rpm|sign _build/rpms/desktop/x.rpm|sign _build/libfprint/x.rpm|build all" \
+    "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"
 
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
@@ -1135,139 +1177,6 @@ check "nor one with a WARN row" "1:no record" \
 check "nor a to-disk run, which skipped the counted rollback" "1:no record" \
     "$(LAYOUT=to-disk record_g4_pass_after_rows '| local-install | PASS | x |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
 
-# --- rpms.sh: cargo-auditable follows the spec and is part of the key ------------------
-rpms_fn() { bash -c '. "$1"; shift; "$@"' _ "$APEX_ROOT/.github/scripts/rpms.sh" "$@"; }
-printf '%%bcond auditable 1\n' >"$TMP/on.spec"
-printf '  %%bcond_without auditable\n' >"$TMP/on-legacy.spec"
-printf '%%bcond auditable 0\n' >"$TMP/off.spec"
-printf '%%bcond_with auditable\n' >"$TMP/off-legacy.spec"
-printf '# %%bcond auditable 1 would be on\n%%bcond auditable 0\n' >"$TMP/off-comment.spec"
-printf '%%bcond auditable 10\n%%bcond check 1\n' >"$TMP/off-other.spec"
-check "bcond auditable 1" on "$(rpms_fn spec_auditable "$TMP/on.spec")"
-check "bcond_without auditable" on "$(rpms_fn spec_auditable "$TMP/on-legacy.spec")"
-check "bcond auditable 0" off "$(rpms_fn spec_auditable "$TMP/off.spec")"
-check "bcond_with auditable" off "$(rpms_fn spec_auditable "$TMP/off-legacy.spec")"
-check "a comment does not count" off "$(rpms_fn spec_auditable "$TMP/off-comment.spec")"
-check "other bconds do not count" off "$(rpms_fn spec_auditable "$TMP/off-other.spec")"
-if [[ -f $APEX_ROOT/packaging/apex.spec ]]; then
-    check "apex.spec builds with cargo-auditable" on "$(rpms_fn spec_auditable "$APEX_ROOT/packaging/apex.spec")"
-    check "the key records install-tool.sh's cargo-auditable pin" \
-        "$("$APEX_ROOT/.github/scripts/install-tool.sh" --pin cargo-auditable)" "$(rpms_fn auditable_pin)"
-fi
-check_true "install-tool.sh pins are '<version> <sha256>'" \
-    grep -Eqx 'v?[0-9][0-9.]* [0-9a-f]{64}' <<<"$("$APEX_ROOT/.github/scripts/install-tool.sh" --pin cargo-auditable)"
-check_false "install-tool.sh --pin rejects unknown tools" "$APEX_ROOT/.github/scripts/install-tool.sh" --pin nope
-PIN_A="v0.7.6 $(printf 'a%.0s' {1..64})"
-RECIPE_A=$'repos --repo=fedora --repo=updates\n100755 blob 1111 .github/scripts/rpms.sh'
-key_a=$(rpms_fn key_of rust-1.98.1-1.fc45.x86_64 "$PIN_A" "$RECIPE_A" "tree")
-check "a key is 64 hex digits" 64 "$(tr -dc '0-9a-f' <<<"$key_a" | wc -c)"
-check "the key is stable" "$key_a" "$(rpms_fn key_of rust-1.98.1-1.fc45.x86_64 "$PIN_A" "$RECIPE_A" "tree")"
-check_false "a cargo-auditable bump changes the key" test "$key_a" = \
-    "$(rpms_fn key_of rust-1.98.1-1.fc45.x86_64 "v0.7.7 $(printf 'b%.0s' {1..64})" "$RECIPE_A" "tree")"
-check_false "auditable off changes the key" test "$key_a" = "$(rpms_fn key_of rust-1.98.1-1.fc45.x86_64 off "$RECIPE_A" "tree")"
-check_false "a rust update changes the key" test "$key_a" = \
-    "$(rpms_fn key_of rust-1.98.2-1.fc45.x86_64 "$PIN_A" "$RECIPE_A" "tree")"
-check_false "a change of rpms.sh changes the key" test "$key_a" = \
-    "$(rpms_fn key_of rust-1.98.1-1.fc45.x86_64 "$PIN_A" "${RECIPE_A/1111/2222}" "tree")"
-check_false "admitting updates-testing builds changes the key" test "$key_a" = \
-    "$(rpms_fn key_of rust-1.98.1-1.fc45.x86_64 "$PIN_A" "${RECIPE_A/updates/updates --repo=updates-testing}" "tree")"
-check "the recipe starts with the repository options" \
-    "repos $(bash -c '. "$1"; dnf_repo_args' _ "$APEX_ROOT/.github/scripts/lib.sh" | paste -sd' ' -)" \
-    "$(bash -c '. "$1"; git_() { printf "100755 blob 1111\t.github/scripts/rpms.sh\n"; }; recipe' _ "$APEX_ROOT/.github/scripts/rpms.sh" | head -n 1)"
-check "the recipe covers rpms.sh" ".github/scripts/rpms.sh" \
-    "$(bash -c '. "$1"; printf "%s\n" "${RECIPE_PATHS[*]}"' _ "$APEX_ROOT/.github/scripts/rpms.sh")"
-check "the key covers the Makefile, Cargo.toml and the packaged docs" \
-    "crates packaging/apex.spec Makefile Cargo.lock Cargo.toml LICENSE README.md" \
-    "$(bash -c '. "$1"; printf "%s\n" "${KEY_PATHS[*]}"' _ "$APEX_ROOT/.github/scripts/rpms.sh")"
-atree=$(bash -c '. "$1"; git_() { [[ $1 != ls-tree ]] || printf "100644 blob 1111\tcrates/apexctl/src/main.rs\n100644 blob 2222\tcrates/apex-lane/src/main.rs\n100644 blob 3333\tcrates/apex-lanes/x.rs\n100644 blob 4444\tcrates/apex-lint/src/main.rs\n100644 blob 5555\tcrates/apex-lint/Cargo.toml\n"; }; apex_tree' _ "$APEX_ROOT/.github/scripts/rpms.sh" 2>/dev/null)
-check "the apex key leaves the dev tools apex-lane and apex-lint out, but not their Cargo.toml" "100644 blob 1111	crates/apexctl/src/main.rs
-100644 blob 3333	crates/apex-lanes/x.rs
-100644 blob 5555	crates/apex-lint/Cargo.toml" "$atree"
-
-# --- the installed layout: M1-IMPLEMENTATION.md, make install and apex.spec agree ---------
-if command -v make >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
-    L="$TMP/layout"
-    mkdir -p "$L/target/release"
-    for b in apexctl apex-updated apex-boot-assess; do
-        printf '#!/bin/sh\n' >"$L/target/release/$b"
-        chmod +x "$L/target/release/$b"
-    done
-    # The Makefile's own defaults, whatever this shell exports (PREFIX, CARGO_TARGET_DIR...).
-    env -i PATH="$PATH" make -s -n -C "$APEX_ROOT" install DESTDIR=/DESTDIR >"$L/dry-run" 2>&1 ||
-        flunk "make -n install failed: $(cat "$L/dry-run")"
-    layout_rc=0
-    env -i PATH="$PATH" make -s -C "$APEX_ROOT" install DESTDIR="$L/root" \
-        CARGO_TARGET_DIR="$L/target" >"$L/install.log" 2>&1 || layout_rc=$?
-    check "make install into a scratch root succeeds" 0 "$layout_rc"
-    ((layout_rc == 0)) || cat "$L/install.log" >&2
-    (cd "$L/root" && find . -type f | sed 's/^\.//' | LC_ALL=C sort) >"$L/installed"
-    layout_problems=$(python3 - "$APEX_ROOT" "$L/dry-run" "$L/installed" <<'PY'
-import os, re, sys
-root, dry_run, installed = sys.argv[1:4]
-problems = []
-
-# Rows: | `source`[, `.ext`] | `destination` or `directory/` |
-text = open(f"{root}/docs/specs/M1-IMPLEMENTATION.md", encoding="utf-8").read()
-section = re.search(r"^## 2\..*?$(.*?)^## ", text, re.M | re.S)
-contract = set()
-for line in (section.group(1) if section else "").splitlines():
-    cells = [c.strip() for c in line.strip().strip("|").split("|")]
-    if len(cells) != 2 or not cells[0].startswith("`"):
-        continue
-    srcs = re.findall(r"`([^`]+)`", cells[0])
-    dest = re.findall(r"`([^`]+)`", cells[1])[0]
-    first = srcs[0]
-    for src in srcs:
-        if src.startswith("."):
-            src = os.path.splitext(first)[0] + src
-        contract.add((src, dest + os.path.basename(src) if dest.endswith("/") else dest))
-if not contract:
-    problems.append("no rows found in section 2 of docs/specs/M1-IMPLEMENTATION.md")
-
-# make -n install: install -Dm0NNN SOURCE '/DESTDIR/PATH'
-made = set(re.findall(r"install -Dm0[0-7]{3} (\S+) '/DESTDIR(/[^']+)'", open(dry_run).read()))
-for src, dest in sorted(contract - made):
-    problems.append(f"make install does not install {src} as {dest} (contract section 2)")
-for src, dest in sorted(made - contract):
-    problems.append(f"make install installs {src} as {dest}, which contract section 2 lacks")
-dests = {d for _, d in contract}
-got = set(open(installed).read().split())
-for d in sorted(dests - got):
-    problems.append(f"a real make install did not produce {d}")
-for d in sorted(got - dests):
-    problems.append(f"a real make install produced {d}, which contract section 2 lacks")
-
-macros = {"_bindir": "/usr/bin", "_libexecdir": "/usr/libexec", "_datadir": "/usr/share",
-          "_unitdir": "/usr/lib/systemd/system", "_tmpfilesdir": "/usr/lib/tmpfiles.d",
-          "_prefix": "/usr"}
-spec = open(f"{root}/packaging/apex.spec", encoding="utf-8").read()
-files = re.search(r"^%files\s*$(.*?)^%changelog", spec, re.M | re.S)
-listed, dirs = set(), set()
-for line in (files.group(1) if files else "").splitlines():
-    line = line.strip()
-    if not line or line.startswith("#") or line.startswith(("%license", "%doc")):
-        continue
-    is_dir = line.startswith("%dir ")
-    path = re.sub(r"%\{(\w+)\}", lambda m: macros.get(m.group(1), m.group(0)),
-                  line[5:] if is_dir else line)
-    if "%" in path or not path.startswith("/"):
-        problems.append(f"apex.spec %files line not understood: {line}")
-    (dirs if is_dir else listed).add(path)
-for d in sorted(dests - listed):
-    problems.append(f"apex.spec %files does not list {d}")
-for d in sorted(listed - dests):
-    problems.append(f"apex.spec %files lists {d}, which make install does not produce")
-for d in sorted({os.path.dirname(p) for p in dests if p.startswith("/usr/lib/systemd/system/")
-                 and p.count("/") == 6} - dirs):
-    problems.append(f"apex.spec %files does not own the drop-in directory {d} (%dir)")
-print("\n".join(problems))
-PY
-)
-    check "contract section 2, make install and apex.spec %files agree" "" "$layout_problems"
-    check_true "the boot-counter drop-ins are part of that layout" \
-        grep -qx '/usr/lib/systemd/system/emergency.service.d/50-apex-bootcount.conf' "$L/installed"
-fi
-
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
     local ga_reached=$1 allowlist=$2
@@ -1280,64 +1189,46 @@ check "pre-GA with an allowlist: only those builds from updates-testing" \
 check "pre-GA with an empty allowlist: no updates-testing" "--repo=fedora --repo=updates" "$(repo_args_with 0 '')"
 check "after GA: no updates-testing" "--repo=fedora --repo=updates" "$(repo_args_with 1 gtk4-4.24.0-1.fc45)"
 
-F="$TMP/fprint"
-mkdir -p "$F/bin"
-cat >"$F/bin/rpm" <<'EOF'
-#!/usr/bin/env bash
-case "$*" in
-    "-E %fedora") echo 45 ;;
-    "-E %_arch") echo x86_64 ;;
-    *) exit 1 ;;
-esac
-EOF
-cat >"$F/bin/dnf5" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$FAKE_DNF_LOG"
-echo 'libfprint 0 1.94.100 1.fc45 libfprint-1.94.100-1.fc45.src.rpm'
-EOF
-chmod +x "$F/bin/rpm" "$F/bin/dnf5"
-fprint_key() {
-    : >"$F/dnf.log"
-    PATH="$F/bin:$PATH" FAKE_DNF_LOG="$F/dnf.log" GA_REACHED=$1 TESTING_INCLUDEPKGS=$2 \
-        "$APEX_ROOT/packaging/libfprint/build.sh" key 2>/dev/null
+# --- contracts.sh: the image against a hardware profile (the CI job runs the pinned one) ----
+CT=$TMP/contracts
+CT_SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
+mkdir -p "$CT/system/hardware/m7400qc" "$CT/desktop/desktop/schemas" "$CT/desktop/desktop/systemd/user" \
+    "$CT/gnome/tests/layer/fixtures"
+printf '<schemalist/>\n' >"$CT/desktop/desktop/schemas/$CT_SCHEMA"
+printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
+cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
+    "$CT/gnome/tests/layer/fixtures/"
+ct_run() {
+    APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" APEX_GNOME_SRC="$CT/gnome" \
+        rc_of "$APEX_ROOT/.github/scripts/contracts.sh"
 }
-if [[ -x $APEX_ROOT/packaging/libfprint/build.sh ]]; then
-    k_empty=$(fprint_key 0 '')
-    check_false "libfprint, empty allowlist: updates-testing not enabled" grep -q updates-testing "$F/dnf.log"
-    k_list=$(fprint_key 0 gtk4-4.24.0-1.fc45)
-    check_true "libfprint, allowlist: updates-testing enabled" grep -q -- '--repo=updates-testing ' "$F/dnf.log"
-    check_true "libfprint, allowlist: restricted by includepkgs" \
-        grep -q -- '--setopt=updates-testing.includepkgs=gtk4-4.24.0-1.fc45' "$F/dnf.log"
-    k_ga=$(fprint_key 1 gtk4-4.24.0-1.fc45)
-    check_false "libfprint after GA: updates-testing not enabled" grep -q updates-testing "$F/dnf.log"
-    check "libfprint key names the stock NVR" libfprint-1.94.100-1.fc45-s "${k_empty%????????????}"
-    check_false "libfprint key changes with the repository options" test "$k_empty" = "$k_list"
-    check "libfprint key is the same with no updates-testing either way" "$k_empty" "$k_ga"
-fi
-
-# --- desktop/shell ships inside gnome-shell under gnome-shell's licence -------------------
-if [[ -d $APEX_ROOT/desktop/shell ]]; then
-    unlicensed=$(cd "$APEX_ROOT/desktop/shell" && find . -type f -printf '%P\n' | LC_ALL=C sort | while IFS= read -r f; do
-        [[ $(head -n 3 -- "$f") == *'SPDX-License-Identifier: GPL-2.0-or-later'* ]] || printf '%s ' "$f"
-    done)
-    check "desktop/shell: every file is GPL-2.0-or-later (SPDX)" "" "$unlicensed"
-    read -ra allowed <<<"$(sed -n 's/^source1_paths=//p' "$APEX_ROOT/packaging/pkgs/gnome-shell/pkg.env")"
-    outside=$(cd "$APEX_ROOT/desktop/shell" && find . -type f -printf '%P\n' | LC_ALL=C sort | while IFS= read -r f; do
-        for p in "${allowed[@]}"; do
-            [[ $f == "$p" || ($p == */ && $f == "$p"*) ]] && continue 2
-        done
-        printf '%s ' "$f"
-    done)
-    check "desktop/shell: every file is in the gnome-shell recipe's source1_paths" "" "$outside"
-fi
-
-# --- contracts.sh: the image against the hardware profile -------------------------------
-check "contracts: this checkout keeps them" 0 "$(rc_of "$APEX_ROOT/.github/scripts/contracts.sh" 2>/dev/null)"
-mkdir -p "$TMP/contracts/hardware/m7400qc"
-sed 's/^packages = \[/packages = ["x-firmware", /' "$APEX_ROOT/hardware/m7400qc/profile.toml" \
-    >"$TMP/contracts/hardware/m7400qc/profile.toml"
+contracts_with() {
+    local packages=$1 files=$2
+    printf '[firmware]\npackages = [%s]\nrequired_files = [%s]\n' "$packages" "$files" \
+        >"$CT/system/hardware/m7400qc/profile.toml"
+    ct_run
+}
+quoted() { sed 's/#.*//; s/[[:space:]]//g; /^$/d; s/.*/"&"/' "$1" | paste -sd, -; }
+CT_FIRMWARE='"linux-firmware"'
+CT_FILES=$(quoted "$APEX_ROOT/image/checks/firmware-files.txt")
+check "contracts: a profile whose firmware the image installs and checks" 0 "$(contracts_with "$CT_FIRMWARE" "$CT_FILES")"
 check "contracts: a profile firmware package that base.txt lacks" 1 \
-    "$(APEX_SYSTEM_SRC="$TMP/contracts" rc_of "$APEX_ROOT/.github/scripts/contracts.sh" 2>/dev/null)"
+    "$(contracts_with "$CT_FIRMWARE, \"x-firmware\"" "$CT_FILES")"
+check "contracts: required_files that firmware-files.txt does not list" 1 \
+    "$(contracts_with "$CT_FIRMWARE" "$CT_FILES, \"x/*.bin\"")"
+check "contracts: no profile" 1 "$(APEX_SYSTEM_SRC="$TMP/nowhere" APEX_DESKTOP_SRC="$CT/desktop" \
+    APEX_GNOME_SRC="$CT/gnome" rc_of "$APEX_ROOT/.github/scripts/contracts.sh")"
+check "contracts: with the copies equal" 0 "$(contracts_with "$CT_FIRMWARE" "$CT_FILES")"
+printf '<schemalist></schemalist>\n' >"$CT/gnome/tests/layer/fixtures/$CT_SCHEMA"
+check "contracts: apex-gnome's schema copy differs from apex-desktop's" 1 "$(ct_run)"
+rm "$CT/gnome/tests/layer/fixtures/$CT_SCHEMA"
+check "contracts: apex-gnome's schema copy is missing" 1 "$(ct_run)"
+cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/gnome/tests/layer/fixtures/"
+check "contracts: copies equal again" 0 "$(ct_run)"
+mkdir -p "$CT/system/crates/apex-session-agent/tests/data"
+check "contracts: the session agent without its schema copy" 1 "$(ct_run)"
+cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/system/crates/apex-session-agent/tests/data/"
+check "contracts: the session agent with its schema copy" 0 "$(ct_run)"
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }
@@ -1355,9 +1246,6 @@ check "lane lock: the RPMs to copy" "pkgs/gnome-shell/k1/gnome-shell-51.0-1.fc45
 pkgs/gnome-shell/k1/mutter-51.0-1.fc45.x86_64.rpm $ilsha" "$(image_sh "lane_lock_check '$IL/rpms.lock' gnome-shell libfprint" 2>/dev/null)"
 check "lane lock: degraded families" libfprint "$(image_sh "lane_lock_states '$IL/rpms.lock' degraded")"
 check "lane lock: no held family" "" "$(image_sh "lane_lock_states '$IL/rpms.lock' held")"
-if [[ -f $APEX_ROOT/packaging/pkgs/gnome-shell/pkg.env ]]; then
-    check "lane families: the committed pkg.env files" gnome-shell "$(image_sh lane_families | paste -sd' ' -)"
-fi
 mkdir -p "$IL/r1/packaging/pkgs/a" "$IL/r2/packaging/pkgs/b"
 printf 'family=fa\n' >"$IL/r1/packaging/pkgs/a/pkg.env"
 printf 'family=fb\n' >"$IL/r2/packaging/pkgs/b/pkg.env"
@@ -1397,46 +1285,21 @@ for g in "$GOLDEN"/lock/b-*.lock "$GOLDEN"/lock/store-rpms.lock.next "$GOLDEN"/h
     check "lane lock: apex-lane's golden ${g#"$GOLDEN"/} is accepted" 0 "$(rc_of image_sh "lane_lock_check '$g' gnome-shell")"
 done
 check "lane lock: apex-lane's golden locks are there" 1 "$((golden_locks > 0))"
-mkdir -p "$IL/rpms"
+mkdir -p "$IL/rpms" "$IL/desktop"
 : >"$IL/rpms/apex-0.1.0-1.fc45.x86_64.rpm"
+: >"$IL/desktop/apex-desktop-0.1.0-1.fc45.noarch.rpm"
 (cd "$IL/rpms" && sha256sum -- *.rpm >SHA256SUMS)
-ctx_rc=0
-ctx_log=$(APEX_WORK="$IL/work" GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/image.sh" context --rpms-dir "$IL/rpms" 2>&1) || ctx_rc=$?
+(cd "$IL/desktop" && sha256sum -- *.rpm >SHA256SUMS)
+image_context() {
+    ctx_rc=0
+    ctx_log=$(APEX_WORK="$IL/work" GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/image.sh" context "$@" 2>&1) || ctx_rc=$?
+}
+image_context --rpms-dir "$IL/rpms" --desktop-dir "$IL/desktop"
 check "image.sh context without --lane-lock fails" 1 "$ctx_rc"
 check_true "and says the lane's lock is required" grep -q "the rebuild lane's lock is required" <<<"$ctx_log"
-
-# --- rpms.sh: the apex-desktop key ----------------------------------------------------------
-check "the apex-desktop key covers desktop/, its spec, the Makefile and LICENSE" \
-    "desktop packaging/apex-desktop.spec Makefile LICENSE" \
-    "$(bash -c '. "$1"; printf "%s\n" "${DESKTOP_KEY_PATHS[*]}"' _ "$APEX_ROOT/.github/scripts/rpms.sh")"
-dkey=$(rpms_fn desktop_key_of "$RECIPE_A" "tree")
-check "an apex-desktop key is 64 hex digits" 64 "$(tr -dc '0-9a-f' <<<"$dkey" | wc -c)"
-check_false "a desktop change changes the apex-desktop key" test "$dkey" = "$(rpms_fn desktop_key_of "$RECIPE_A" "tree2")"
-check_false "a recipe change changes the apex-desktop key" test "$dkey" = "$(rpms_fn desktop_key_of "${RECIPE_A/1111/2222}" "tree")"
-check_false "the apex-desktop key is not the apex key" test "$dkey" = "$key_a"
-dtree=$(bash -c '. "$1"; git_() { [[ $1 != ls-tree ]] || printf "100644 blob 1111\tdesktop/schemas/x.gschema.xml\n100644 blob 2222\tdesktop/shell/js/ui/apex/hooks.js\n100644 blob 3333\tMakefile\n"; }; desktop_tree' _ "$APEX_ROOT/.github/scripts/rpms.sh" 2>/dev/null)
-check "the apex-desktop key leaves desktop/shell/ to the lane" "100644 blob 1111	desktop/schemas/x.gschema.xml
-100644 blob 3333	Makefile" "$dtree"
-
-# --- apex-desktop.spec installs every file of desktop/ outside desktop/shell/ -------------------
-if [[ -f $APEX_ROOT/packaging/apex-desktop.spec ]]; then
-    unpackaged=$(cd "$APEX_ROOT" && git ls-files --cached --others --exclude-standard -- desktop ':(exclude)desktop/shell' ':(exclude)desktop/README.md' |
-        while IFS= read -r f; do
-            grep -Fq -- "$f" packaging/apex-desktop.spec || printf '%s ' "$f"
-        done)
-    check "apex-desktop.spec installs every desktop/ file" "" "$unpackaged"
-fi
-
-# --- rust-toolchain-check.sh --warn-only (fake rustc) ----------------------------------
-mkdir -p "$TMP/rustc-bin"
-printf '#!/usr/bin/env bash\nprintf "rustc 9.9.9\\nrelease: 9.9.9\\n"\n' >"$TMP/rustc-bin/rustc"
-chmod +x "$TMP/rustc-bin/rustc"
-check "toolchain mismatch fails ci.yml" 1 \
-    "$(PATH="$TMP/rustc-bin:$PATH" GITHUB_STEP_SUMMARY=/dev/null rc_of "$APEX_ROOT/.github/scripts/rust-toolchain-check.sh")"
-check "toolchain mismatch only warns in rpms.sh build" 0 \
-    "$(PATH="$TMP/rustc-bin:$PATH" GITHUB_STEP_SUMMARY=/dev/null rc_of "$APEX_ROOT/.github/scripts/rust-toolchain-check.sh" --warn-only)"
-check "unknown option is a usage error" 2 \
-    "$(PATH="$TMP/rustc-bin:$PATH" rc_of "$APEX_ROOT/.github/scripts/rust-toolchain-check.sh" --nope)"
+image_context --rpms-dir "$IL/rpms" --lane-lock "$IL/rpms.lock"
+check "image.sh context without apex-desktop's RPMs fails" 1 "$ctx_rc"
+check_true "and says apex-desktop is required" grep -q "apex-desktop is required" <<<"$ctx_log"
 
 # --- Fedora images: digest pins on registry.fedoraproject.org only ------------------------
 DQ="sha256:$(printf 'd%.0s' {1..64})"
@@ -1505,59 +1368,52 @@ quay_refs=$(grep -nE '^[[:space:]]*[^#[:space:]].*quay' "$APEX_ROOT"/.github/scr
     grep -v '/selftest\.sh:' || true)
 check "quay.io is used nowhere in scripts, workflows, the Justfile or the Containerfile" "" "$quay_refs"
 
-# --- renovate.json: every digest pin has a manager, and the Fedora rule covers them ----
+# --- renovate.json: every Containerfile digest pin and component pin has a manager -------
+# The Fedora rules (one group, no release jumps) live in apex-ci's preset, which this extends.
 if command -v python3 >/dev/null 2>&1; then
     renovate_problems=$(python3 - "$APEX_ROOT" <<'PY'
-import glob, json, re, sys
+import json, re, sys
 root = sys.argv[1]
 cfg = json.load(open(f"{root}/renovate.json"))
 problems = []
+if cfg.get("extends") != ["local>apex-linux/apex-ci"]:
+    problems.append("renovate.json does not extend local>apex-linux/apex-ci alone")
 # Renovate's regex managers use JavaScript named groups; Python spells them (?P<...>).
 def py(rx):
     return re.compile(rx.replace("(?<", "(?P<"))
-containerfile = open(f"{root}/image/Containerfile").read()
-managers = [m for m in cfg.get("customManagers", [])
-            if any(re.search(p.strip("/"), "image/Containerfile") for p in m.get("managerFilePatterns", []))]
-fedora_rule = [r for r in cfg["packageRules"] if r.get("groupName") == "fedora 45 images"]
-names = set(fedora_rule[0]["matchPackageNames"]) if fedora_rule else set()
-frozen = [r for r in cfg["packageRules"] if r.get("enabled") is False and "docker" in r.get("matchDatasources", [])]
-if not frozen or set(frozen[0]["matchPackageNames"]) != names:
-    problems.append("the rule that disables Fedora major/minor/patch updates lists other names than 'fedora 45 images'")
-for line in containerfile.splitlines():
-    if not re.match(r"^ARG [A-Z_]+=\S+@sha256:[0-9a-f]{64}\s*$", line):
-        continue
-    hit = None
-    for m in managers:
-        for rx in m["matchStrings"]:
-            g = py(rx).search(line)
-            if g:
-                hit = (m, g)
-    if not hit:
-        problems.append(f"no custom manager matches: {line}")
-        continue
-    m, g = hit
-    new = "sha256:" + "e" * 64
-    out = m["autoReplaceStringTemplate"].replace("{{{depName}}}", g.group("depName")).replace("{{{newDigest}}}", new)
-    if out != line.strip().replace(g.group("currentDigest"), new):
-        problems.append(f"replacement template rewrites '{line}' as '{out}'")
-    if g.group("depName") not in names:
-        problems.append(f"{g.group('depName')} is not in the 'fedora 45 images' rule")
-for rule in cfg["packageRules"]:
-    for name in rule.get("matchPackageNames", []):
-        if "quay" in name:
-            problems.append(f"a package rule still names {name}")
+def managers_of(path):
+    return [m for m in cfg.get("customManagers", [])
+            if any(re.search(p.strip("/"), path) for p in m.get("managerFilePatterns", []))]
+def check_lines(path, pin):
+    managers = managers_of(path)
+    for line in open(f"{root}/{path}").read().splitlines():
+        if not re.match(pin, line):
+            continue
+        hits = [(m, g) for m in managers for rx in m["matchStrings"] if (g := py(rx).search(line))]
+        if len(hits) != 1:
+            problems.append(f"{len(hits)} custom managers match: {line}")
+            continue
+        m, g = hits[0]
+        new = re.sub(r"[0-9a-f]", "e", g.group("currentDigest"))
+        out = m["autoReplaceStringTemplate"]
+        for k in ("depName", "packageName"):
+            if k in g.groupdict():
+                out = out.replace("{{{" + k + "}}}", g.group(k))
+        out = out.replace("{{{newDigest}}}", new)
+        if out != line.strip().replace(g.group("currentDigest"), new):
+            problems.append(f"replacement template rewrites '{line}' as '{out}'")
+check_lines("image/Containerfile", r"^ARG [A-Z_]+=\S+@sha256:[0-9a-f]{64}\s*$")
+check_lines("components.lock", r"^apex-[a-z-]+ \S+ [0-9a-f]{40}$")
 for m in cfg.get("customManagers", []):
     for rx in m.get("matchStrings", []):
         if "quay" in rx:
             problems.append(f"a custom manager still accepts quay.io: {rx}")
-wf = "\n".join(open(p).read() for p in glob.glob(f"{root}/.github/workflows/*.yml"))
-for dep in set(re.findall(r"image: (\S+?):45@sha256:", wf)):
-    if dep not in names:
-        problems.append(f"{dep} (a workflow container) is not in the 'fedora 45 images' rule")
 print("\n".join(problems))
 PY
 )
-    check "renovate.json keeps every Fedora digest pin current" "" "$renovate_problems"
+    check "renovate.json keeps every Containerfile and component pin current" "" "$renovate_problems"
+    check "components.lock: every line is a comment or a pinned component" "" \
+        "$(grep -vE '^(#.*|apex-[a-z-]+ https://github\.com/apex-linux/[a-z-]+ [0-9a-f]{40})$' "$APEX_ROOT/components.lock" || true)"
     matches=$(python3 - "$APEX_ROOT" <<'PY'
 import json, re, sys
 cfg = json.load(open(f"{sys.argv[1]}/renovate.json"))
@@ -1569,11 +1425,13 @@ print(" ".join(str(hits(l)) for l in [
     "ARG BASE=registry.fedoraproject.org/fedora-bootc" + d,
     "ARG REPOS_BASE=registry.fedoraproject.org/fedora" + d,
     "ARG BASE=quay.io/fedora/fedora-bootc" + d,
-    "ARG REPOS_BASE=quay.io/fedora/fedora" + d]))
+    "ARG REPOS_BASE=quay.io/fedora/fedora" + d,
+    "apex-gnome https://github.com/apex-linux/apex-gnome " + "1" * 40,
+    "apex-gnome https://example.org/apex-gnome " + "1" * 40]))
 PY
 )
-    check "managers: registry.fedoraproject.org BASE and REPOS_BASE match one each, quay.io none" \
-        "1 1 0 0" "$matches"
+    check "managers: BASE, REPOS_BASE and a component match one each; quay.io and other hosts none" \
+        "1 1 0 0 1 0" "$matches"
 fi
 
 # --- ci-host.sh: preflight measures the scratch directory storage chose -----------------
@@ -1750,86 +1608,11 @@ check "an artifact labelled with another key is a miss" 5 "$(lookup_rc k1 k2 1)"
 check "an absent artifact is a miss" 3 "$(lookup_rc k1 k1 1 ghcr.io/x/missing)"
 check "a bad workflow name is refused" 1 \
     "$(PATH="$O/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" lookup ghcr.io/x/y k '../evil')"
-
-# --- privacy guard: biometric files, hex dumps and long lines never get tracked ---------
-V="$TMP/privacy"
-git init -q "$V"
-guard_rc() { GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/privacy-guard.sh" --dir "$V" "$@"; }
-guard_findings() {
-    GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/privacy-guard.sh" --dir "$V" 2>&1 |
-        grep -c '^privacy guard: [^0-9]' || true
-}
-tracked_fails() {
-    local name=$1 path=$2 content=$3
-    mkdir -p "$V/$(dirname "$path")"
-    printf '%s\n' "$content" >"$V/$path"
-    git -C "$V" add -f "$path"
-    check "$name" "1:1" "$(guard_rc):$(guard_findings)"
-    git -C "$V" rm -q --cached "$path"
-    rm -f "$V/$path"
-}
-tracked_passes() {
-    local name=$1 path=$2 content=$3
-    mkdir -p "$V/$(dirname "$path")"
-    printf '%s\n' "$content" >"$V/$path"
-    git -C "$V" add -f "$path"
-    check "$name" 0 "$(guard_rc)"
-}
-x_times() { printf "${2:-x}%.0s" $(seq "$1"); }
-table_row() { printf '| %s |' "$(printf 'word %.0s' $(seq "$1"))"; }
-
-tracked_passes "a clean file passes" README.md hello
-tracked_passes "hex bytes with no colon before them pass" short-hex.txt "short hex $(x_times 40 '0a ')"
-tracked_passes "a digest line passes" digest.txt "sha256 $(x_times 32 ab)"
-tracked_passes "four bytes after a colon pass" usb.log "usb: 0a 1b 2c 3d"
-tracked_passes "a hex-dump line outside *.log and *.txt passes that rule" notes.md "usb: 0a 1b 2c 3d 4e"
-tracked_passes "a 399-character line passes" wide.conf "$(x_times 399)"
-tracked_passes "a long line in Cargo.lock passes" Cargo.lock "$(x_times 500)"
-tracked_passes "a long line in a nested Cargo.lock passes" crates/x/Cargo.lock "$(x_times 500)"
-tracked_passes "a long line in an insta snapshot passes" crates/x/src/snapshots/x__y.snap "$(x_times 500)"
-tracked_passes "a long line in the bootc progress fixtures passes" \
-    crates/apex-bootc/tests/fixtures/progress/x.jsonl "{\"a\": \"$(x_times 500)\"}"
-tracked_passes "a long Markdown table row of words passes" docs/table.md "$(table_row 100)"
-check "all of that together passes" 0 "$(guard_rc)"
-
-printf 'P5\n' >"$V/enrolled.pgm"
-check "an untracked image is not tracked yet" 0 "$(guard_rc)"
-check "--untracked sees it" 1 "$(guard_rc --untracked)"
-rm -f "$V/enrolled.pgm"
-for f in enrolled.pgm print.VARIANT rec.ioctl rec.umockdev cap.pcap cap.pcapng var/lib/fprint/user/1 \
-    a/var/lib/fprint/b; do
-    tracked_fails "a tracked $f fails" "$f" ''
-done
-tracked_fails "a long line of hex bytes fails" dump.log "fpi-usb DEBUG transfer: $(printf '%02x ' {0..199})"
-tracked_fails "a long C array of hex bytes fails" frame.c \
-    "static const guint8 frame[] = { $(printf '0x%02x, ' {0..199})};"
-tracked_fails "128 hex bytes fail under 400 characters too" frame.h "$(x_times 128 5a)"
-tracked_fails "a hex run fails in a file exempt from the length rule" Cargo.lock "x = \"$(x_times 150 'ab ')\""
-tracked_fails "a hex-dump line in a .log fails" usb.log "usb: 0a 1b 2c 3d 4e"
-tracked_fails "a hex-dump line in a .TXT fails" CAPTURE.TXT "rx: 0a1b2c3d4e5f   "
-tracked_fails "a 400-character line fails" wide.conf "$(x_times 400)"
-tracked_fails "a long line in a .txt fails" long-text.txt "$(x_times 500)"
-tracked_fails "a long base64 line fails" frame.json "{\"frame\": \"$(x_times 120 QUJD)\"}"
-tracked_fails "a long Markdown line outside a table fails" docs/prose.md "$(x_times 450 'y ')"
-tracked_fails "a Markdown table row with a long blob fails" docs/blob.md "| frame | $(x_times 150 QUJD) |"
-tracked_fails "a table row outside Markdown fails" table.txt "$(table_row 100)"
-tracked_fails "a long line in another Rust file fails" crates/x/src/lib.rs "$(x_times 450)"
-mkdir -p "$V/leak"
-printf '%s\n' "SECRETMARKER $(x_times 450)" >"$V/leak/data.txt"
-git -C "$V" add leak/data.txt
-leak_out=$(GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/privacy-guard.sh" --dir "$V" 2>&1 || true)
-check_true "the finding names the file and line" grep -q '^privacy guard: leak/data.txt:1: ' <<<"$leak_out"
-check_false "the finding does not print the line" grep -q SECRETMARKER <<<"$leak_out"
-git -C "$V" rm -q --cached leak/data.txt
-check "the tree is clean again" 0 "$(guard_rc)"
-check "the repository itself is clean" 0 \
-    "$(GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/privacy-guard.sh" --untracked)"
+# --- .gitignore: biometric file names are never tracked ------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG \
     var/lib/fprint/u/1 image/system_files/var/lib/fprint/u/1; do
     check_true ".gitignore ignores $f" git -C "$APEX_ROOT" check-ignore -q --no-index "$f"
 done
-check_false ".gitignore keeps the fingerprint documentation" \
-    git -C "$APEX_ROOT" check-ignore -q --no-index docs/hardware/FINGERPRINT.md
 
 if ((FAILS > 0)); then
     die "selftest: $FAILS failure(s)"

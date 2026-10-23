@@ -11,10 +11,23 @@ readonly checkout
 # shellcheck source=SCRIPTDIR/../../.github/scripts/lib.sh
 . "$checkout/.github/scripts/lib.sh"
 
+# The recipes are in the pinned components. An existing state is kept, so a dev-override
+# stays on record until the next fetch.
+components_env=
+if [[ -f $checkout/components.lock ]] && ! components_env=$("$checkout/tools/components.sh" env 2>/dev/null); then
+    "$checkout/tools/components.sh" fetch >&2
+    components_env=$("$checkout/tools/components.sh" env)
+fi
+eval "$components_env"
+
 readonly CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/apex-lane
 readonly CARGO_VOLUME=apex-lane-cargo
 readonly BUILDER=localhost/apex-lane-builder
 readonly GATES_PASSED=$checkout/_build/gates-passed.txt
+# Fedora's rust from the compose's own repositories, so apex-lane links against their glibc.
+# shellcheck disable=SC2016 # expanded in the container
+readonly TOOLCHAIN='. /src/.github/scripts/lib.sh && mapfile -t repos < <(dnf_repo_args) &&
+    retry 3 10 dnf5 -y --setopt=install_weak_deps=False "${repos[@]}" install rust cargo clippy rustfmt gcc'
 
 git_() { git -c safe.directory="$checkout" -C "$checkout" "$@"; }
 
@@ -37,7 +50,7 @@ builder_image() {
         log "lane.sh: making $image"
         as_root podman rm -f apex-lane-builder-tmp >/dev/null 2>&1 || true
         as_root podman run --name apex-lane-builder-tmp -v "$checkout:/src:ro,z" "$base" \
-            /src/.github/scripts/rpms.sh toolchain >&2
+            bash -c "$TOOLCHAIN" >&2
         as_root podman commit -q apex-lane-builder-tmp "$image" >/dev/null
         as_root podman rm apex-lane-builder-tmp >/dev/null
         while IFS= read -r old; do
@@ -77,7 +90,18 @@ build() {
 next_lock_passed_gates() {
     local next=${APEX_STORE:-$HOME/apex-store}/rpms.lock.next passed
     passed=$(sed -n 's/^lock-sha256 //p' "$GATES_PASSED" 2>/dev/null)
-    [[ -s $next && -n $passed && $passed == "$(sha256sum <"$next" | cut -d' ' -f1)" ]]
+    [[ -s $next && -n $passed && $passed == "$(sha256sum <"$next" | cut -d' ' -f1)" ]] &&
+        grep -qx 'components pinned' "$GATES_PASSED"
+}
+
+recipe_dir() {
+    local root
+    local -a roots
+    IFS=: read -ra roots <<<"${APEX_LANE_RECIPES:-$checkout}"
+    for root in "${roots[@]}"; do
+        [[ ! -f $root/packaging/pkgs/$1/pkg.env ]] || { printf '%s\n' "$root/packaging/pkgs/$1"; return 0; }
+    done
+    die "no recipe packaging/pkgs/$1 in APEX_LANE_RECIPES (${APEX_LANE_RECIPES:-$checkout})"
 }
 
 [[ -x $bin ]] || build
@@ -85,8 +109,12 @@ if [[ ${1:-} == --path ]]; then
     printf '%s\n' "$bin"
     exit 0
 fi
+if [[ ${1:-} == --recipe-dir ]]; then
+    recipe_dir "$2"
+    exit 0
+fi
 if [[ ${1:-} == promote ]] && ! next_lock_passed_gates; then
-    die "no image built from rpms.lock.next has passed G1, G2 and G4 (_build/gates-passed.txt): run just vm-image"
+    die "no image built from rpms.lock.next and pinned components has passed G1, G2 and G4 (_build/gates-passed.txt): run just vm-image"
 fi
 if [[ ${1:-} == promote && -x $checkout/tools/components.sh ]] && ! "$checkout/tools/components.sh" promotable; then
     die "a build from a dev-override component never promotes: unset APEX_SRC_*, then components.sh fetch and just vm-image"

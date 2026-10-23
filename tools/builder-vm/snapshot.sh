@@ -6,8 +6,8 @@
 set -euo pipefail
 
 checkout=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-if [[ $(id -un) != builder || $checkout != "$HOME/apex-fedora" ]]; then
-    echo "snapshot.sh: only for the builder VM's checkout ~builder/apex-fedora (this is $checkout, user $(id -un))" >&2
+if [[ $(id -un) != builder || $checkout != "$HOME/apex-image" ]]; then
+    echo "snapshot.sh: only for the builder VM's checkout ~builder/apex-image (this is $checkout, user $(id -un))" >&2
     exit 2
 fi
 cd -- "$checkout"

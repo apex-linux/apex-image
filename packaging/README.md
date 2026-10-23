@@ -1,141 +1,43 @@
 # Packaging
 
-Everything Apex builds as an RPM, and how it is built. The image compose never runs
-`cargo` or `rpmbuild` itself: each package is built first, in the builder VM
-(`tools/builder-vm/build-image.sh`), and fed to the single depsolve of the compose
-through a local repository (`createrepo_c`, priority 1; see
-[ARCHITECTURE sections 3](../docs/ARCHITECTURE.md#3-delivery-model-bootc-on-the-ostree-backend)
-and [4](../docs/ARCHITECTURE.md#4-build-and-publish)).
+How apex-image turns the components' packages into the image. The image compose never
+runs `cargo` or `rpmbuild` itself: each package is built first, in the builder VM
+(`tools/builder-vm/build-image.sh`), from the component that owns it, and fed to the
+single depsolve of the compose through a local repository (`createrepo_c`, priority 1).
 
-| Piece | Builds | Built or checked by | Output |
+| RPM | Built from | By | Output |
 |---|---|---|---|
-| `../Makefile`, `apex.spec` | the `apex` RPM: `apexctl`, `apex-updated`, `apex-boot-assess` and their data files | the builder VM (`rpms.sh build`) | `_build/rpms/` |
-| `licenses.py` | the `License:` tag of `apex.spec`, from `cargo metadata` | `ci.yml` and `rpms.sh build` (check) | pass/fail |
-| `apex-desktop.spec` | the `apex-desktop` noarch RPM from `desktop/` (S1a: the Apex GSettings schema and the shell's crash guard) | the builder VM (`rpms.sh build`, next to the apex RPM) | `_build/rpms/` |
-| `pkgs/gnome-shell/`, with `apex-lane` (`../crates/apex-lane`) | Fedora's gnome-shell SRPM with the Apex series and `desktop/shell/` ([ADR 0014](../docs/adr/0014-engine-level-desktop.md)) | the builder VM (`just pkg-build`, and step 3 of `just vm-image`) | `~/apex-store/`, `rpms.lock.next` |
-| `libfprint/` | Fedora's libfprint SRPM plus the ELAN 04f3:0c6e patches | the builder VM (`libfprint.sh build`) | `_build/libfprint/`, or "degraded" |
-| `pkgs/kernel/` | the CachyOS kernel and NVIDIA open modules as one pair ([ADR 0015](../docs/adr/0015-cachyos-kernel-and-nvidia.md)) | none yet: the lane arrives in roadmap S1c | none yet |
+| `apex` (`apexctl`, `apex-updated`, `apex-boot-assess`) | apex-system (`APEX_SYSTEM_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/apex/` |
+| `apex-desktop` (the Apex GSettings schema and the shell's crash guard) | apex-desktop (`APEX_DESKTOP_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/desktop/` |
+| libfprint with the ELAN `04f3:0c6e` patches | apex-kernel (`APEX_KERNEL_SRC`) | its `.github/scripts/libfprint.sh build`, given this image's `GA_REACHED` and updates-testing allowlist | `_build/libfprint/`, or "degraded" |
+| gnome-shell with the Apex layer, and later the kernel pair | the recipes in `packaging/pkgs/` of apex-gnome and apex-kernel (`APEX_LANE_RECIPES`) | `apex-lane build` ([below](#the-rebuild-lane)) | `~/apex-store/`, `rpms.lock.next` |
 
-`just vm-image` (`tools/builder-vm/build-image.sh`) runs them in order: `rpms.sh build`,
-libfprint, `apex-lane build all`, then the image from `rpms.lock.next`
-([The image](#the-image)). The Apex RPM key signs every RPM they build
-([Signing](#signing)).
-
-## The apex RPM
-
-One `make install` target defines the installed layout for both development and the
-RPM, and it is exactly the table in section 2 of
-[docs/specs/M1-IMPLEMENTATION.md](../docs/specs/M1-IMPLEMENTATION.md). The spec only
-calls the Makefile:
-
-| Spec section | Runs |
-|---|---|
-| `%build` | `cargo fetch --locked`, then `make build AUDITABLE=yes`: `cargo auditable build --release --locked --bin apexctl --bin apex-updated --bin apex-boot-assess` with Fedora's `RUSTFLAGS` |
-| `%install` | `make install DESTDIR=%{buildroot} PREFIX=/usr` (never builds) |
-| `%check` | `make check-data`: `xmllint` on the D-Bus and polkit XML, `systemd-analyze verify` on the units and the emergency/rescue drop-ins in a staged root; desktop and metainfo validation once the M2 app exists. The Rust tests run in `ci.yml`: here they would recompile the whole tree |
-
-Decisions recorded in the spec:
-
-- **Network build, not vendored.** Crates come from crates.io during `%build`, pinned by
-  the committed `Cargo.lock`. That works because `rpms.sh build` runs `rpmbuild` in a
-  `registry.fedoraproject.org/fedora:45` container with network access. Vendoring is
-  needed only if the build moves to COPR or mock.
-- **cargo-auditable** is required (`%bcond auditable 1`) but not packaged by Fedora, so
-  `rpms.sh build` installs the release binary pinned in
-  `.github/scripts/install-tool.sh` (version and SHA-256, bumped together by Renovate)
-  before `rpmbuild`, and only while the spec builds with it. `--without auditable`
-  exists for local builds.
-- **No debuginfo sub-packages** by default (`%bcond debuginfo 0`): the RPM only feeds
-  the compose and is never served to a debugger; symbols stay in the binaries, and
-  `--with debuginfo` rebuilds the same commit with DWARF when a core dump needs it.
-- **Release from git:** `0.<commit date>.git<12-hex commit>.fc45`, set by `make rpm`
-  through the `commitdate` and `shortcommit` macros (`0.0.gitunknown` without them).
-- **Scriptlets:** `%systemd_post`/`%systemd_preun` for all four units. On upgrade only the
-  timer restarts: `apex-updated` is D-Bus activated (a restart could kill a running bootc
-  operation), and the two oneshots would run again. No `%tmpfiles_create`: in an image
-  compose `/var` is not the target's, so `/var/lib/apex` comes from `apex.conf` at boot.
-- **License:** `GPL-3.0-or-later AND` the licenses of every crate linked into the three
-  binaries. `python3 packaging/licenses.py` computes it (normal dependencies only, no
-  build, dev or proc-macro crates, x86_64 Linux); `--check packaging/apex.spec` fails
-  when a dependency change makes the tag stale. `ci.yml` runs the check on every pull
-  request and every push to `main`, and `rpms.sh build` runs it before `make rpm`, so
-  a stale tag is never packaged. After a dependency change, run
-  `python3 packaging/licenses.py` and paste its `License:` line into the spec; the
-  breakdown comments it prints above that line are for review and stay out of the spec.
-  The per-crate breakdown ships as `LICENSE.dependencies`, generated by Fedora's
-  `%cargo_license`.
-- **Runtime requirements** beyond bootc and ostree (`apex-updated` runs `bootc` and reads
-  the staged deployment's manifest with `ostree cat`): `grub2-tools-minimal`
-  (`grub2-editenv`), plus `/usr/bin/unshare` and `/usr/bin/mount` (util-linux-core),
-  because `/boot` is read-only on bootc systems and every grubenv write runs in a
-  private mount namespace with `/boot` remounted read-write (contract section 5);
-  `bootupd`, which owns `/usr/lib/bootupd/grub2-static/configs.d` for the boot-counter
-  snippet; `dbus` and `dbus-common`, the system bus and the directories of the bus
-  files; `polkit`, the authority for the `io.github.apex-linux.apex.update.*` actions
-  and the owner of `actions/`.
-
-### In the builder VM (`rpms.sh build`)
-
-`.github/scripts/rpms.sh build OUTDIR` does the whole build, as root in
-`registry.fedoraproject.org/fedora:45` with the repository checked out. Every
-dnf5 call names the image compose's repositories (`REPOS` below: `--repo=fedora
---repo=updates`, plus `--repo=updates-testing` limited by `includepkgs` to the
-allowlisted builds while `GA_REACHED=0`), never the container's defaults, which enable
-all of updates-testing before GA:
-
-```bash
-dnf5 -y install $REPOS dnf5-plugins rpm-build make git-core findutils tar xz curl python3
-dnf5 -y builddep $REPOS packaging/apex.spec packaging/apex-desktop.spec
-# only while apex.spec has `%bcond auditable 1`: the pinned release, SHA-256 checked
-.github/scripts/install-tool.sh cargo-auditable /usr/local/bin
-python3 packaging/licenses.py --check packaging/apex.spec
-make rpm        # git runs with safe.directory set for this command only
-# -> target/rpm/RPMS/x86_64/apex-0.1.0-0.<date>.git<hash>.fc45.x86_64.rpm, SRPMS/…
-make rpm-desktop
-# -> target/rpm/RPMS/noarch/apex-desktop-0.1.0-0.<date>.git<hash>.fc45.noarch.rpm
-```
-
-`make rpm` refuses a checkout without commits, refuses a spec `Version` that differs
-from the workspace version in `Cargo.toml`, and warns that uncommitted changes are not
-in the package (it runs `git archive HEAD`). Outside the container, `build-image.sh`
-signs both RPMs with the Apex RPM key ([Signing](#signing)).
-
-The content key (`rpms.sh key`) covers everything that changes the RPM:
-`git ls-tree -r HEAD` of `crates/` (without `crates/apex-lane/`, the lane's dev tool),
-`packaging/apex.spec`, the root `Makefile`,
-`Cargo.toml`, `Cargo.lock`, and `LICENSE` and `README.md` (packaged as `%license` and
-`%doc`), plus the `rust` NEVRA those repositories resolve, the cargo-auditable pin
-while the spec builds with it, and the recipe (the repository options and `rpms.sh`
-itself), so a change to how the RPM is built never reuses RPMs built the old way. It
-was the tag of an attested `ghcr.io/apex-linux/apex-rpms` artifact; nothing publishes
-or attests one now, so the builder VM always builds (`oci-artifact.sh` goes in S2c).
-
-### Locally
-
-```bash
-make build                      # cargo auditable when installed, plain cargo otherwise
-make install DESTDIR=/tmp/apex  # the exact layout of the RPM, without root
-make check-data                 # validators that are installed; the rest are skipped
-make rpm RPMBUILD_FLAGS='--without auditable'   # in the Fedora 45 builder VM
-```
+`tools/components.sh fetch` clones each component at its commit in `components.lock`
+into `_build/components/`, and `tools/components.sh env` names the clones. `just
+vm-image` runs, in order: the components, the apex and apex-desktop RPMs, libfprint,
+`apex-lane build all`, then the image from `rpms.lock.next` ([The image](#the-image)).
+The Apex RPM key signs every RPM they build ([Signing](#signing)). This repository
+keeps no RPM recipe of its own: `crates/apex-lane` and `rebuild.sh`, the Bash lane it
+replaced, whose history keeps the release numbers from dropping.
 
 ## The rebuild lane
 
-`apex-lane` rebuilds a Fedora SRPM with the Apex inputs of `pkgs/<pkg>/`
-([ARCHITECTURE 4.1](../docs/ARCHITECTURE.md#41-rebuild-lane-s1a) and
-[4.3](../docs/ARCHITECTURE.md#43-hold-on-failure)). It generalises
-`libfprint/build.sh`, which keeps its own script until roadmap S2c moves libfprint here.
-It runs in the builder VM, from the checkout; the Fedora half runs as root in a fresh
+`apex-lane` rebuilds a Fedora SRPM with the Apex inputs of `packaging/pkgs/<pkg>/` in a
+recipe checkout: apex-gnome for gnome-shell, apex-kernel for the kernel pair, every
+checkout in `APEX_LANE_RECIPES`
+([ARCHITECTURE 4.1](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#41-rebuild-lane-s1a) and
+[4.3](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#43-hold-on-failure)). It generalises apex-kernel's
+`packaging/libfprint/build.sh`, which keeps its own script until roadmap S2c moves
+libfprint here. It runs in the builder VM, from this checkout; the Fedora half runs as root in a fresh
 container of `image/Containerfile`'s `REPOS_BASE`, the digest the compose resolves
 with, as `apex-lane in-container`, the same binary mounted read-only. Signing, the
 store and the locks stay in the VM.
 
-`apex-lane` is a Rust dev tool (`crates/apex-lane`), never shipped: the apex RPM does not
-carry the binary and its content key leaves the crate out, though `%cargo_license` lists
-the crate and its dependencies in `LICENSE.dependencies`, since it reads the whole
-workspace. `tools/builder-vm/lane.sh` builds it from the checkout's `HEAD` with Fedora's
-rust in a container of `REPOS_BASE` (`rpms.sh toolchain` once per `REPOS_BASE` digest,
-as `localhost/apex-lane-builder`), so it links against the glibc of the lane's
+`apex-lane` is a Rust dev tool (`crates/apex-lane`), never shipped: it lives in this
+repository, and no RPM carries it. `tools/builder-vm/lane.sh` builds it from the
+checkout's `HEAD` with Fedora's rust in a container of `REPOS_BASE` (Fedora's rust from
+the compose's repositories, once per `REPOS_BASE` digest, as
+`localhost/apex-lane-builder`), so it links against the glibc of the lane's
 containers; it caches the binary in `~/.cache/apex-lane` by its inputs and runs it in
 the checkout. The binary embeds the tree id of `crates/apex-lane` it was built from, and
 `build`, `key` and `prep` refuse to run from any other.
@@ -147,11 +49,12 @@ the checkout. The binary embeds the tree id of `crates/apex-lane` it was built f
 | `just pkg-status` | `apex-lane status` | each family's state, build and hold timer, in `rpms.lock.next` and `rpms.lock` |
 | `just pkg-prep PKG` | `apex-lane prep PKG` | a git work tree in the VM's `_build/pkg/PKG/tree`: Fedora's `%prep`, the series as commits, Source1 |
 | `just pkg-rebase PKG NVR` | `apex-lane prep PKG NVR` | the same from another Fedora build, with `git am -3` |
-| `just pkg-export PKG [NEW.patch…]` | `apex-lane export PKG` | the work tree's commits back to `pkgs/PKG/patches/` and `series` on the host |
+| `just pkg-export PKG [NEW.patch…]` | `apex-lane export PKG` | the work tree's commits back to `packaging/pkgs/PKG/patches/` and `series` of the recipe's checkout on the host (`APEX_RECIPES`, default `../apex-gnome`) |
 | `just pkg-promote` | `apex-lane promote` | `rpms.lock.next` becomes `rpms.lock`, after an image built from it passed its gates |
 | `just pkg-stock PKG` | `apex-lane stock PKG` | the owner's choice at a hold limit: the next image takes Fedora's build of the family |
 
-The recipes sync the checkout into the VM first. The lane builds committed inputs only,
+The recipes sync the checkout into the VM first, and `lane.sh` takes the recipes from the
+pinned components (`tools/components.sh`). The lane builds committed inputs only,
 and `lane.sh` builds the tool from `HEAD`: in the VM, `tools/builder-vm/snapshot.sh`
 commits a dirty host tree as a throwaway snapshot, as `just vm-image` does.
 
@@ -382,7 +285,9 @@ stock on its own (ADR 0014).
   when its key changed, a new gnome-shell, mutter or gdm NVR among others, or its last
   pass is a week old; `just vm-image` runs it when it is due), `just pkg-promote`. It
   refuses unless `_build/gates-passed.txt`, which `just vm-image` writes after those
-  gates from the lock the image carries, names `rpms.lock.next` as it is now.
+  gates from the lock the image carries, names `rpms.lock.next` as it is now and says
+  `components pinned`: an image built from a dev-override component (`APEX_SRC_<NAME>`)
+  never promotes.
 
 ### Signing
 
@@ -423,9 +328,9 @@ key, and its secret half in the GnuPG home. After the container, before the stor
   names, or the lane stops before the lock (RECOVERY §6.8).
 
 `apex-lane sign RPM...` does the same to RPMs the lane does not build, and updates a
-`manifest.txt` beside them that lists them. `build-image.sh` runs it on `_build/rpms/`
-after `rpms.sh build` and on `_build/libfprint/` after `libfprint.sh build`, then
-rewrites their `SHA256SUMS`.
+`manifest.txt` beside them that lists them. `build-image.sh` runs it on `_build/rpms/apex/`
+and `_build/rpms/desktop/` after the components' `rpms.sh build`, and on
+`_build/libfprint/` after `libfprint.sh build`, then rewrites their `SHA256SUMS`.
 
 The Containerfile's repos stage copies the public key and Fedora's into the local
 repository, where rpm-ostree's libdnf looks for a local repository's `gpgkey=` files,
@@ -462,51 +367,3 @@ GNUPGHOME=~/.local/share/apex/rpm-gnupg-new gpg --batch --pinentry-mode loopback
 Its public half (`gpg --armor --export-options export-minimal --export FPR`) replaces
 `RPM-GPG-KEY-apex`, and its fingerprint every copy that RECOVERY §6.8 lists, in one
 reviewed change.
-
-## apex-desktop
-
-`apex-desktop.spec` packages `desktop/` except `desktop/shell/` (which ships inside
-gnome-shell), with `make rpm-desktop`: `git archive HEAD` of `desktop/` and `LICENSE`,
-then `rpmbuild -ba` with the `commitdate` and `shortcommit` macros of `make rpm`, so its
-release is `0.<commit date>.git<12-hex commit>.fc45`. `rpms.sh build` builds it after
-the apex RPM, into the same output directory, and writes its own content key to
-`KEY_DESKTOP`: `git ls-tree -r HEAD` of `desktop/` (without `desktop/shell/`),
-`apex-desktop.spec`, the `Makefile` and `LICENSE`, plus the recipe, so an asset change
-never changes the apex key. `image/packages/apex.txt` lists it.
-
-In S1a it holds:
-
-- `io.github.apex_linux.Apex.Desktop` (`layer-enabled`, `disabled-features`), whose
-  `%check` runs `glib-compile-schemas --strict --dry-run`;
-- the shell's crash guard (ADR 0014): `org.gnome.Shell@.service.d/50-apex.conf`, which
-  adds `OnFailure=apex-shell-safe.service` to GNOME Shell's user unit, and
-  `apex-shell-safe.service`, a oneshot ordered before the session bus restart
-  (`gnome-session-restart-dbus.service`) and gated on the layer's `%t/apex-shell-starting`
-  that sets `layer-enabled=false`, leaves `$XDG_STATE_HOME/apex/shell-guard-tripped`
-  and removes the layer's file. `tests/layer/run.sh` runs the unit's condition and
-  commands after an aborted shell; G1 verifies both units in the image.
-
-It has no scriptlets: the image compiles the schemas, glib2's file trigger covers dnf,
-and the user units have no `[Install]` section.
-
-## libfprint
-
-See [libfprint/README.md](libfprint/README.md). In short: `build.sh key` gives the cache
-key (Fedora's libfprint NVR plus a hash of the enabled patches); `build.sh` downloads
-the same SRPM the compose would install, verifies its signature against the
-pinned Fedora 45 key, applies `series`, builds `libfprint-…-1.fc45.apex1`, and runs the
-elan replay tests. `build-image.sh` then signs its RPMs with the Apex RPM key, and its
-`manifest.txt` records it ([Signing](#signing)). Exit 3 means degraded: the image ships
-Fedora's stock libfprint with `io.github.apex-linux.apex.degraded=fingerprint`, so OS
-updates never wait for this package.
-
-## Kernel and NVIDIA (S1c)
-
-The image will boot the CachyOS kernel (GCC build), rebuilt from the COPR's signed SRPM,
-with NVIDIA's open modules built for exactly that kernel in the same job
-([ADR 0015](../docs/adr/0015-cachyos-kernel-and-nvidia.md)). The lane lands in roadmap
-S1c. Today `pkgs/kernel/` holds what the K1 spike measured and the pieces the lane will
-reuse: the spec patch, the per-build module key, the kmod build and the pair's checks
-([pkgs/kernel/README.md](pkgs/kernel/README.md)); it has no `pkg.env`, so no image takes
-the kernel yet. `pkgs/kernel/patches/` holds only the ALC294 quirk, which is out of any
-series: it ships only if the `model=` alias fails (ADR 0004, as amended).

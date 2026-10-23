@@ -1,7 +1,7 @@
 # Image
 
 The Containerfile, package lists, build checks and rootfs overlay (`system_files/`) of
-the Apex image. The design is in [ARCHITECTURE](../docs/ARCHITECTURE.md) (delivery
+the Apex image. The design is in [ARCHITECTURE](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md) (delivery
 model, build and publish, package policy); `.github/scripts/image.sh` builds it. This
 file keeps the reasons the files themselves are too terse to carry.
 

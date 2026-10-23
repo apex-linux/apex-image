@@ -6,7 +6,7 @@ usage() {
     cat <<'EOF'
 usage: desktop-disk.sh IMAGE AUTHORIZED_KEY
 
-Guest-side disk build for `desktop-vm.sh install`, run in ~/apex-fedora inside the
+Guest-side disk build for `desktop-vm.sh install`, run in ~/apex-image inside the
 builder VM. It installs a local image with the qualification's install_disk onto a
 disk laid out like the laptop minus LUKS (ESP + ext4 /boot + btrfs root), then
 converts the disk to qcow2 for the host.
@@ -38,7 +38,7 @@ image=$1
 key=$2
 
 readonly DESKTOP_OUT=${DESKTOP_OUT:-default}
-export QUALIFY_OUT="$HOME/apex-fedora/_build/desktop/$DESKTOP_OUT"
+export QUALIFY_OUT="$HOME/apex-image/_build/desktop/$DESKTOP_OUT"
 export QUALIFY_LAYOUT=separate-boot
 export QUALIFY_DISK_GB=${DESKTOP_DISK_GB:-64}
 # qualify.sh only runs its main when executed; sourced, it provides install_disk.

@@ -15,11 +15,11 @@ VM never mounts host directories.
   builder-vm.sh status        running or not, uptime, disk and memory use
   builder-vm.sh ssh [CMD...]  a shell (or CMD) in the VM as user "builder"
   builder-vm.sh running       exit 0 when the VM runs, 1 when not (no output)
-  builder-vm.sh sync          rsync the repository to ~/apex-fedora in the VM
+  builder-vm.sh sync          rsync the repository to ~/apex-image in the VM
   builder-vm.sh fetch REMOTE LOCAL
                               copy the file REMOTE (relative to the builder user's home
                               in the VM) to LOCAL on the host; resumes a partial copy
-  builder-vm.sh run CMD...    sync, then run CMD in ~/apex-fedora in the VM
+  builder-vm.sh run CMD...    sync, then run CMD in ~/apex-image in the VM
   builder-vm.sh image [--image-only]
                               sync, then build the RPM inputs and the image in the VM
                               (--image-only reuses the RPMs of the previous run)
@@ -289,7 +289,7 @@ sync_repo() {
     local rsh="ssh ${ssh_opts[*]}"
     rsync -a --delete --info=stats1 --rsync-path="flock -n $GUEST_BUILD_LOCK rsync" \
         --exclude=/target/ --exclude=/_build/ --exclude=/rpms/ \
-        -e "$rsh" "$REPO/" builder@127.0.0.1:apex-fedora/
+        -e "$rsh" "$REPO/" builder@127.0.0.1:apex-image/
 }
 
 fetch_file() {
@@ -305,14 +305,14 @@ run_in_repo() {
     sync_repo
     local cmd
     printf -v cmd '%q ' "$@"
-    vm_ssh -t "cd ~/apex-fedora && flock -n $GUEST_BUILD_LOCK $cmd"
+    vm_ssh -t "cd ~/apex-image && flock -n $GUEST_BUILD_LOCK $cmd"
 }
 
 image() {
     local image_only_flag=${1:-}
     sync_repo
     # Run by path, not fed through `bash -s`: G4's ssh (qualify.sh, no -n) would read the rest of the script.
-    vm_ssh "flock -n $GUEST_BUILD_LOCK bash ~/apex-fedora/tools/builder-vm/build-image.sh $image_only_flag" </dev/null
+    vm_ssh "flock -n $GUEST_BUILD_LOCK bash ~/apex-image/tools/builder-vm/build-image.sh $image_only_flag" </dev/null
 }
 
 ci_install() {

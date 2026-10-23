@@ -142,7 +142,7 @@ The build step calls `ssh apex-builder ci-build <sha>`, with workflow commands s
 for the VM's log. In the VM, `ci-build` then:
 
 1. fetches `main` from `APEX_CI_REMOTE` (in `~/.config/apex/ci.env`, read as data);
-2. checks the commit out in `~/apex-fedora`, with `git clean -ffdx` keeping only
+2. checks the commit out in `~/apex-image`, with `git clean -ffdx` keeping only
    `_build/`;
 3. runs `tools/components.sh fetch` once the repository has it (the components hook);
 4. runs `build-image.sh`: the RPMs, libfprint, the rebuild lane, the image, G2 twice,
@@ -153,7 +153,7 @@ for the VM's log. In the VM, `ci-build` then:
 The gates step writes the results to the job summary. It fails when there is no gates
 file.
 
-The CI build uses the VM's one checkout, `~/apex-fedora`, its `_build/` and the VM's
+The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and
 `localhost/apex:build` is that commit's image. The next `just vm-sync` replaces both
 with your working tree. Nothing on the host is lost, because the host's tree is the

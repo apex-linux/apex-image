@@ -1,0 +1,1 @@
+image/system_files/usr/share/flatpak/remotes.d/*.flatpakrepo # Flathub's GPGKey= is one base64 line, as Flathub publishes it

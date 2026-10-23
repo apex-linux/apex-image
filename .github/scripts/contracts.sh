@@ -8,7 +8,8 @@ usage() {
     cat >&2 <<'EOF'
 
 The contracts between the image and the components it takes, checked against the
-component checkouts APEX_SYSTEM_SRC and APEX_DESKTOP_SRC (default: this checkout).
+component checkouts APEX_SYSTEM_SRC, APEX_DESKTOP_SRC and APEX_GNOME_SRC (default: the
+pinned clones of tools/components.sh fetch).
 
   contracts.sh      exit 0 when every contract holds
 EOF
@@ -49,3 +50,28 @@ for p in problems:
 sys.exit(1 if problems else 0)
 EOF
 log "contracts: the image installs and checks the firmware of the hardware profile"
+
+# Copies of apex-desktop's files that components keep for their own tests, by explicit
+# path, so a moved copy fails too: COPY ORIGINAL pairs.
+readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
+copies=(
+    "$APEX_GNOME_SRC/tests/layer/fixtures/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA"
+    "$APEX_GNOME_SRC/tests/layer/fixtures/apex-shell-safe.service"
+    "$APEX_DESKTOP_SRC/desktop/systemd/user/apex-shell-safe.service"
+)
+if [[ -d $APEX_SYSTEM_SRC/crates/apex-session-agent ]]; then
+    copies+=("$APEX_SYSTEM_SRC/crates/apex-session-agent/tests/data/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA")
+fi
+stale=0
+for ((i = 0; i < ${#copies[@]}; i += 2)); do
+    if [[ ! -f ${copies[i + 1]} ]]; then
+        printf 'error: %s is missing\n' "${copies[i + 1]}" >&2
+        stale=1
+    elif ! cmp -s -- "${copies[i]}" "${copies[i + 1]}"; then
+        printf 'error: %s is missing or differs from %s: copy it from the pinned apex-desktop\n' \
+            "${copies[i]}" "${copies[i + 1]}" >&2
+        stale=1
+    fi
+done
+((stale == 0)) || die "contracts: see above"
+log "contracts: every copy of apex-desktop's files equals the pinned apex-desktop's"

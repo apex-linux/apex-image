@@ -37,6 +37,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# apex-gnome's desktop/shell, which shell-dev.sh sends: only the files the probe edits.
+export APEX_GNOME_SRC=$T/apex-gnome
+mkdir -p "$APEX_GNOME_SRC/desktop/shell/js/ui/apex" "$APEX_GNOME_SRC/desktop/shell/data/theme/apex"
+printf 'export function enable() {}\n' >"$APEX_GNOME_SRC/desktop/shell/js/ui/apex/layer.js"
+printf '#panel { height: 32px; }\n' >"$APEX_GNOME_SRC/desktop/shell/data/theme/apex/_top-bar.scss"
+
 unset APEX_DESKTOP_DIR APEX_DESKTOP_THROWAWAY APEX_DESKTOP_SSH_PORT APEX_DESKTOP_UNGATED APEX_VM_DIR APEX_VM_SSH_PORT \
     APEX_SHELL_DEV_PROBE_LIMIT CLAUDECODE
 export HOME=$T/home XDG_DATA_HOME=$T/data XDG_CACHE_HOME=$T/cache FAKE_STATE=$T/state
@@ -260,7 +266,7 @@ bootc_status() {
                              version: null, imageDigest: $booted}}}}'
 }
 
-readonly GATES_DIR=$FAKE_STATE/builder-home/apex-fedora/_build
+readonly GATES_DIR=$FAKE_STATE/builder-home/apex-image/_build
 g2_passed() {
     local id=$1 status=${2:-passed}
     rm -rf -- "$GATES_DIR"
@@ -380,7 +386,7 @@ readonly KEY=k1
 readonly STOCK=gnome-shell-51.0-1.fc45
 readonly DEVKIT_RPM=mutter-devkit-51.0-1.fc45.x86_64.rpm
 readonly SRPM=gnome-shell-51.0-1.fc45.apex3.src.rpm
-work=$BUILDER_HOME/apex-fedora/_build/pkg/gnome-shell
+work=$BUILDER_HOME/apex-image/_build/pkg/gnome-shell
 mkdir -p "$work/tree/.git" "$work/tree/js/ui/apex" "$work/tree/js/misc" "$work/tree/src" \
     "$work/tree/data/theme/apex" "$work/tree/data/theme/gnome-shell-sass" \
     "$BUILDER_HOME/apex-store/pkgs/gnome-shell/$KEY" "$THROWAWAY_DIR/shell-dev/rpms"
@@ -496,12 +502,12 @@ check "each reload says how long it took" grep -q 'reloaded in [0-9]*\.[0-9] s' 
 probe_repo=$T/repo
 mkdir -p "$probe_repo/tools" "$probe_repo/desktop"
 cp -r "$REPO/tools/builder-vm" "$probe_repo/tools/"
-cp -r "$REPO/desktop/shell" "$probe_repo/desktop/"
+cp -r "$APEX_GNOME_SRC/desktop/shell" "$probe_repo/desktop/"
 before=$(find "$probe_repo/desktop/shell" -type f -exec sha256sum {} + | sort)
 run_cmd throwaway "$probe_repo/tools/builder-vm/shell-dev.sh" probe
 check "probe refuses without a nested shell that answers" test "$RC" -ne 0
 check "and says to start the loop" err_has "start the loop first"
-run_cmd env FAKE_REPO="$probe_repo" APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_DIR="$THROWAWAY_DIR" \
+run_cmd env FAKE_REPO="$probe_repo" APEX_GNOME_SRC="$probe_repo" APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_DIR="$THROWAWAY_DIR" \
     APEX_DESKTOP_SSH_PORT="$THROWAWAY_PORT" "$probe_repo/tools/builder-vm/shell-dev.sh" probe
 check "probe times an SCSS and a JS edit within the limit" test "$RC" -eq 0
 check "it names the Apex partial" err_has "the SCSS edit of desktop/shell/data/theme/apex/_top-bar.scss showed in the nested shell after"
@@ -511,7 +517,7 @@ check "every file of desktop/shell is back as it was" \
 check "and the copies from before the probe are gone" test ! -e "$THROWAWAY_DIR/.shell-dev-probe"
 
 probe_partial=$probe_repo/desktop/shell/data/theme/apex/_top-bar.scss
-run_cmd env FAKE_REPO="$probe_repo" FAKE_NESTED_SHELL_IGNORES_EDITS=1 APEX_SHELL_DEV_PROBE_LIMIT=1 \
+run_cmd env FAKE_REPO="$probe_repo" APEX_GNOME_SRC="$probe_repo" FAKE_NESTED_SHELL_IGNORES_EDITS=1 APEX_SHELL_DEV_PROBE_LIMIT=1 \
     APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_DIR="$THROWAWAY_DIR" APEX_DESKTOP_SSH_PORT="$THROWAWAY_PORT" \
     "$probe_repo/tools/builder-vm/shell-dev.sh" probe
 check "an edit the nested shell never shows fails the probe" test "$RC" -eq 1
@@ -520,7 +526,7 @@ check "and still restores every file" \
     test "$(find "$probe_repo/desktop/shell" -type f -exec sha256sum {} + | sort)" == "$before"
 
 cp -p "$probe_partial" "$T/partial-before"
-run_cmd env FAKE_REPO="$probe_repo" FAKE_OWNER_EDITS_DURING_PROBE=1 APEX_DESKTOP_THROWAWAY=1 \
+run_cmd env FAKE_REPO="$probe_repo" APEX_GNOME_SRC="$probe_repo" FAKE_OWNER_EDITS_DURING_PROBE=1 APEX_DESKTOP_THROWAWAY=1 \
     APEX_DESKTOP_DIR="$THROWAWAY_DIR" APEX_DESKTOP_SSH_PORT="$THROWAWAY_PORT" "$probe_repo/tools/builder-vm/shell-dev.sh" probe
 check "an owner's edit during the probe survives it" \
     test "$(cat "$probe_partial")" == "$(printf '// owner edit during the probe\n'; cat "$T/partial-before")"
@@ -528,7 +534,7 @@ check "and the probe takes out only its own line" err_has "took out only the pro
 cp -p "$T/partial-before" "$probe_partial"
 
 mkdir -p "$THROWAWAY_DIR/.shell-dev-probe"
-run_cmd env FAKE_REPO="$probe_repo" APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_DIR="$THROWAWAY_DIR" \
+run_cmd env FAKE_REPO="$probe_repo" APEX_GNOME_SRC="$probe_repo" APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_DIR="$THROWAWAY_DIR" \
     APEX_DESKTOP_SSH_PORT="$THROWAWAY_PORT" "$probe_repo/tools/builder-vm/shell-dev.sh" probe
 check "a probe that did not finish stops the next one" test "$RC" -ne 0
 check "which says where the files from before it are" err_has "$THROWAWAY_DIR/.shell-dev-probe holds"

@@ -14,7 +14,7 @@ with restrict,command=. It takes nothing but SSH_ORIGINAL_COMMAND, which must be
   ci-build <40 lowercase hex digits>
 
 It fetches main from APEX_CI_REMOTE, refuses a commit that main does not contain, checks
-the commit out in a clean ~/apex-fedora (keeping _build/, where the G4 record lives), and
+the commit out in a clean ~/apex-image (keeping _build/, where the G4 record lives), and
 runs, in order: the components hook (tools/components.sh fetch, once the repository has
 it), build-image.sh (the RPMs, libfprint, the rebuild lane, the image, G2 twice, G4 when
 due, _build/gates-passed.txt), and lane.sh promote when the gates passed. The log goes to
@@ -30,7 +30,7 @@ Exit: the build's status; 2 for a refused request; 75 while another build holds 
 EOF
 }
 
-readonly CHECKOUT=$HOME/apex-fedora
+readonly CHECKOUT=$HOME/apex-image
 readonly STORE=${APEX_STORE:-$HOME/apex-store}
 readonly CI_ENV=$HOME/.config/apex/ci.env
 readonly BUILD_LOCK=$HOME/.apex-build.lock

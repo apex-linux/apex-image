@@ -6,16 +6,15 @@ readonly APEX_REGISTRY=ghcr.io
 readonly APEX_NAMESPACE=ghcr.io/apex-linux
 readonly APEX_REPO_TESTING=ghcr.io/apex-linux/apex-testing
 readonly APEX_REPO_STABLE=ghcr.io/apex-linux/apex
-readonly APEX_REPO_RPMS=ghcr.io/apex-linux/apex-rpms
-readonly APEX_REPO_LIBFPRINT=ghcr.io/apex-linux/apex-libfprint
 readonly APEX_SOURCE_URL=https://github.com/apex-linux/apex-image
 readonly APEX_LABEL_PREFIX=io.github.apex-linux.apex
 
 APEX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly APEX_ROOT
-# The component checkouts; until the split, this one holds them all.
-: "${APEX_SYSTEM_SRC:=$APEX_ROOT}"
-: "${APEX_DESKTOP_SRC:=$APEX_ROOT}"
+# The pinned component checkouts of tools/components.sh fetch, unless its env names others.
+: "${APEX_SYSTEM_SRC:=$APEX_ROOT/_build/components/apex-system}"
+: "${APEX_DESKTOP_SRC:=$APEX_ROOT/_build/components/apex-desktop}"
+: "${APEX_GNOME_SRC:=$APEX_ROOT/_build/components/apex-gnome}"
 
 in_github_actions() { [[ ${GITHUB_ACTIONS:-} == true ]]; }
 
@@ -203,33 +202,7 @@ registry_label() {
     jq -r --arg l "$2" '.Labels[$l] // ""' <<<"$json"
 }
 
-registry_login() {
-    if [[ -z ${GH_TOKEN:-} ]]; then
-        log "GH_TOKEN is not set; registry access stays anonymous"
-        return 0
-    fi
-    local dir=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
-    export REGISTRY_AUTH_FILE="$dir/apex-registry-auth.json"
-    printf '%s' "$GH_TOKEN" |
-        skopeo login --authfile "$REGISTRY_AUTH_FILE" \
-            --username "${GITHUB_ACTOR:-apex-ci}" --password-stdin "$APEX_REGISTRY" >&2
-    chmod 0600 "$REGISTRY_AUTH_FILE"
-    if [[ -n ${GITHUB_ENV:-} ]]; then
-        printf 'REGISTRY_AUTH_FILE=%s\n' "$REGISTRY_AUTH_FILE" >>"$GITHUB_ENV"
-    fi
-}
-
 is_digest() { [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]]; }
-
-is_pinned_image() { [[ $1 =~ ^[a-z0-9.-]+(/[a-z0-9._-]+)+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}$ ]]; }
-
-oci_tag() {
-    local t
-    t=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '_')
-    t=${t:0:128}
-    [[ $t =~ ^[A-Za-z0-9_] ]] || t="_${t:0:127}"
-    printf '%s\n' "$t"
-}
 
 readonly APEX_CONTAINERFILE="$APEX_ROOT/image/Containerfile"
 readonly APEX_TESTING_ALLOWLIST="$APEX_ROOT/image/packages/updates-testing-allowlist.txt"

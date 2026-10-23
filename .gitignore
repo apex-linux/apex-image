@@ -1,9 +1,6 @@
 /target/
 **/*.rs.bk
 
-node_modules/
-/shell/*/dist/
-
 **/__pycache__/
 
 /_build/
@@ -20,8 +17,8 @@ cosign.key
 *.key
 *.key.bak
 
-# Biometric data never belongs in the repository, in any letter case (docs/hardware/FINGERPRINT.md);
-# privacy-guard.sh also fails on these names, and on the hex dumps and long lines no pattern catches.
+# Biometric data never belongs in any repository, in any letter case; apex-ci's privacy
+# guard also fails on these names, and on the hex dumps and long lines no pattern catches.
 *.[Pp][Gg][Mm]
 *.[Vv][Aa][Rr][Ii][Aa][Nn][Tt]
 *.[Ii][Oo][Cc][Tt][Ll]

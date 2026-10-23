@@ -10,9 +10,11 @@ usage() {
 Assemble, inspect, rechunk and push the Apex image, with rootful podman (sudo when not
 root).
 
-  image.sh context --rpms-ref REF|--rpms-dir DIR [--libfprint-ref REF|--libfprint-dir DIR]
-                   --lane-lock LANE [--lock FILE]
-                                    put the RPM inputs into the context; LANE is the rebuild
+  image.sh context --rpms-ref REF|--rpms-dir DIR --desktop-ref REF|--desktop-dir DIR
+                   [--libfprint-ref REF|--libfprint-dir DIR] --lane-lock LANE [--lock FILE]
+                                    put the RPM inputs into the context: the apex RPM
+                                    (apex-system's rpms.sh), apex-desktop (apex-desktop's)
+                                    and libfprint (apex-kernel's); LANE is the rebuild
                                     lane's lock in its store (the builder VM's
                                     ~/apex-store/rpms.lock.next); FILE (a lock.txt of an
                                     earlier build) is replayed through --build-arg LOCK
@@ -166,11 +168,13 @@ lane_context() {
 }
 
 cmd_context() {
-    local rpms_ref="" rpms_dir="" fp_ref="" fp_dir="" lock="" lane=""
+    local rpms_ref="" rpms_dir="" desktop_ref="" desktop_dir="" fp_ref="" fp_dir="" lock="" lane=""
     while (($#)); do
         case $1 in
             --rpms-ref) rpms_ref=$2; shift 2 ;;
             --rpms-dir) rpms_dir=$2; shift 2 ;;
+            --desktop-ref) desktop_ref=$2; shift 2 ;;
+            --desktop-dir) desktop_dir=$2; shift 2 ;;
             --libfprint-ref) fp_ref=$2; shift 2 ;;
             --libfprint-dir) fp_dir=$2; shift 2 ;;
             --lane-lock) lane=$2; shift 2 ;;
@@ -178,7 +182,8 @@ cmd_context() {
             *) die "context: unknown option $1" ;;
         esac
     done
-    [[ -n $rpms_ref || -n $rpms_dir ]] || die "context: the apex RPMs are required (--rpms-ref or --rpms-dir)"
+    [[ -n $rpms_ref || -n $rpms_dir ]] || die "context: the apex RPM is required (--rpms-ref or --rpms-dir)"
+    [[ -n $desktop_ref || -n $desktop_dir ]] || die "context: apex-desktop is required (--desktop-ref or --desktop-dir)"
     [[ -n $lane ]] || die "context: the rebuild lane's lock is required (--lane-lock; in the builder VM" \
         "$HOME/apex-store/rpms.lock.next): gnome-shell reaches the image only through it, and nothing" \
         "degrades a design package to stock on its own (ADR 0014)"
@@ -194,7 +199,15 @@ cmd_context() {
         (cd "$rpms_dir" && sha256sum --check --strict --quiet SHA256SUMS) || die "$rpms_dir: bad SHA256SUMS"
         cp -- "$rpms_dir"/*.rpm "$RPMS_DIR/"
         [[ -n $rpms_key || ! -f $rpms_dir/KEY ]] || rpms_key=$(cat "$rpms_dir/KEY")
-        [[ -n $desktop_key || ! -f $rpms_dir/KEY_DESKTOP ]] || desktop_key=$(cat "$rpms_dir/KEY_DESKTOP")
+    fi
+
+    if [[ -n $desktop_ref ]]; then
+        "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull "$desktop_ref" "$RPMS_DIR"
+        [[ -n $desktop_key ]] || desktop_key=$desktop_ref
+    else
+        (cd "$desktop_dir" && sha256sum --check --strict --quiet SHA256SUMS) || die "$desktop_dir: bad SHA256SUMS"
+        cp -- "$desktop_dir"/*.rpm "$RPMS_DIR/"
+        [[ -n $desktop_key || ! -f $desktop_dir/KEY ]] || desktop_key=$(cat "$desktop_dir/KEY")
     fi
 
     if [[ -n $fp_ref ]]; then

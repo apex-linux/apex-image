@@ -1,73 +1,69 @@
-# Apex
+# apex-image
 
-Apex is a personal, image-based Linux distribution for exactly one laptop: the ASUS
-Vivobook Pro 14X OLED **M7400QC** (Ryzen 5 5600H, RTX 3050 Mobile, Realtek ALC294,
-ELAN fingerprint reader, Samsung 2880×1800 OLED at 90 Hz).
+The image of [Apex](https://github.com/apex-linux/apex), a Fedora 45 bootc desktop for
+one laptop, the ASUS Vivobook Pro 14X OLED (M7400QC). This repository composes the image
+from its components, gates it, and holds the builder VM and the pipeline that build it.
 
-- **Base:** Fedora 45 delivered with bootc. Updates are atomic and signed, the laptop
-  never reboots behind your back, and a bad update rolls back after a counted number of
-  failed boots.
-- **Desktop:** GNOME 51 on Wayland only, with GTK4/libadwaita apps. Legacy components
-  are removed and kept out by a build gate.
-- **Display:** pixel-exact by default (integer scale 2 on the built-in panel).
-- **Hardware:** fixes for this machine: ALC294 speakers, the ELAN `04f3:0c6e` reader,
-  firmware, dGPU power gating and the battery charge limit. Each fix is meant to go
-  upstream.
-- **Components:** everything Apex writes itself is Rust.
+| Path | What it is |
+|---|---|
+| `image/` | The Containerfile, the package lists, the rootfs overlay and the build checks (G1) |
+| `components.lock` | The commit of each component the image takes: apex-system, apex-desktop, apex-gnome and apex-kernel |
+| `tools/components.sh` | Clones those commits into `_build/components/` and names them for the build |
+| `crates/apex-lane`, `packaging/` | The rebuild lane: Fedora SRPMs rebuilt with the recipes of apex-gnome and apex-kernel, stored by content key and recorded in `rpms.lock` ([packaging/README.md](packaging/README.md)) |
+| `tools/builder-vm/` | The Fedora 45 builder VM, the build, G2 and G4 (qualification), and the desktop VM ([README](tools/builder-vm/README.md)) |
+| `tools/runner/`, `.github/workflows/vm.yml` | The self-hosted runner that drives the builder VM from GitHub ([README](tools/runner/README.md)) |
+| `.github/scripts/` | The image, qualification and publishing scripts, and their self-test |
+| `tests/devloop/` | The dev loop's host side against a fake ssh |
 
-> Status: **S1a done; step M in progress**: the design reset and the move to the
-> `apex-linux` GitHub organisation. Nothing here is ready to install yet. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+| Component | Gives the image |
+|---|---|
+| [apex-system](https://github.com/apex-linux/apex-system) | the `apex` RPM (`apexctl`, `apex-updated`, `apex-boot-assess`) and the machine profile's rendered files |
+| [apex-desktop](https://github.com/apex-linux/apex-desktop) | the `apex-desktop` RPM: the Apex GSettings schema, the crash guard and the desktop data |
+| [apex-gnome](https://github.com/apex-linux/apex-gnome) | the gnome-shell recipe with the Apex layer, and G2, the headless shell |
+| [apex-kernel](https://github.com/apex-linux/apex-kernel) | the patched libfprint and the kernel lane's recipe |
 
-## Read first
-
-- [Architecture](docs/ARCHITECTURE.md): how the pieces fit, and why.
-- [Design direction](docs/DESIGN.md): the look, the product rules and the settings
-  contract.
-- [Decisions](docs/adr/): one ADR per non-obvious choice.
-- [M1 contract](docs/specs/M1-IMPLEMENTATION.md): names, paths and formats shared
-  between components.
-- [Threat model](docs/THREAT-MODEL.md).
-- Hardware procedures and acceptance tests: [docs/hardware/](docs/hardware/).
-- [Install](docs/INSTALL.md) and [recovery](docs/RECOVERY.md) runbooks.
-- [Contributing](docs/CONTRIBUTING.md): code explains itself, and the comment guard
-  that holds every change to it.
-
-## Layout
-
-```
-crates/     Rust: apex-bootc, apex-update, apex-boot, apex-dbus, apex-updated, apexctl,
-            apex-lane, apex-lint
-desktop/    the Apex layer in gnome-shell, the apex-desktop schema, units and wallpapers
-hardware/   machine profile (single source of truth) and rendered drop-ins
-image/      Containerfile, package lists, rootfs overlay, image checks
-packaging/  RPM spec, libfprint patch series, the kernel lane's patches (S1c)
-.github/    ci.yml, the only workflow; the scripts of ci.yml and the builder VM
-```
+The design is in the [apex](https://github.com/apex-linux/apex) repository:
+[ARCHITECTURE §4](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#4-build-and-publish),
+[§11](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#11-quality-gates)
+and the [threat model](https://github.com/apex-linux/apex/blob/main/docs/THREAT-MODEL.md).
 
 ## Development
 
-The development host needs only a Rust toolchain. `rust-toolchain.toml` pins the same
-version Fedora 45 ships.
+The image builds only in the builder VM; the development host needs a Rust toolchain for
+`apex-lane` and `just`.
 
 ```bash
-just check
+just check          # apex-lane: fmt, clippy -D warnings and the tests, as CI runs them
+just image-test     # the image checks' tests (with the components fetched)
+just vm-create      # once: the builder VM
+just vm-image       # the components, the RPMs, the lane, the image, G2 twice, G4 when due
 ```
 
-`just check` runs fmt, clippy, the tests and the comment guard
-([CONTRIBUTING](docs/CONTRIBUTING.md)) as ci.yml does.
+A change across repositories builds from a sibling checkout instead of the pinned commit:
+`APEX_SRC_APEX_GNOME=../apex-gnome just vm-image`. Such a build is recorded as a
+dev-override and never promotes the lane's lock; the change reaches the image when the
+component's commit lands in `components.lock`.
 
-```bash
-just render
-```
+CI (`ci.yml`) runs apex-lane's checks, shellcheck, actionlint, the self-test and the dev
+loop's tests, the image checks' tests and the contracts against the pinned components,
+and the privacy and comment guards of [apex-ci](https://github.com/apex-linux/apex-ci).
+`vm.yml` builds and gates the image in the builder VM from `main`; nothing publishes the
+image yet (roadmap S1d).
 
-Packages and images build in a Fedora 45 builder VM
-([ARCHITECTURE §4](docs/ARCHITECTURE.md#4-build-and-publish)). GitHub runs only
-`ci.yml`, which checks the code on every pull request and every push to `main`.
-Hardware measurements need root and are run by hand. Nothing in this repository runs
-`sudo` for you.
+## Moving the builder VM to this repository (once)
+
+A builder VM made from the monorepo keeps its checkout, `_build/` (the G4 record) and
+`~/apex-store` under the old name. On the host that runs it:
+
+1. `just vm-start`, then `just vm-ssh 'mv ~/apex-fedora ~/apex-image'`. The lane's store
+   (`~/apex-store`) and the Apex RPM key stay where they are.
+2. `just vm-sync` from a checkout of this repository: it replaces the VM copy's `.git`
+   and work tree, and keeps `_build/`.
+3. `just vm-ci-install`, so that `ci-build` uses `~/apex-image`; then
+   `just vm-ssh 'echo APEX_CI_REMOTE=https://github.com/apex-linux/apex-image.git >~/.config/apex/ci.env'`.
+4. `just vm-image`. The first run clones the four components into `_build/components/`
+   and rebuilds the lane's builder image, since its toolchain step changed.
 
 ## License
 
-GPL-3.0-or-later. Patches in `packaging/` carry the licenses of the projects they
-modify (GPL-2.0 for the kernel, LGPL-2.1-or-later for libfprint).
+GPL-3.0-or-later (`LICENSE`).

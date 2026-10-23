@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   rust:
-    name: fmt, clippy, test, deny
+    name: apex-lane fmt, clippy, test, deny
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -33,20 +33,16 @@ jobs:
       RUST_BACKTRACE: "1"
     steps:
       - name: Tools for checkout, the cache and the tests
-        # dbus-daemon: the D-Bus tests' private buses; git, tar and diffutils: apex-lane's shell_fakes.rs.
+        # git, tar and diffutils: apex-lane's shell_fakes.rs.
         run: >-
           dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install
-          git-core tar gzip zstd xz findutils curl python3 dbus-daemon diffutils
+          git-core tar gzip zstd xz findutils curl python3 diffutils
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install Fedora's Rust toolchain (the compose's repositories)
-        run: .github/scripts/rpms.sh toolchain
-
-      - name: Fedora rustc matches rust-toolchain.toml
-        run: .github/scripts/rust-toolchain-check.sh
+      - uses: apex-linux/apex-ci/actions/fedora-rust@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -54,10 +50,9 @@ jobs:
           # A pull request must not seed the cache that main uses.
           save-if: ${{ github.event_name == 'push' }}
 
-      - name: Install cargo-deny (pinned release, SHA-256 checked)
-        run: |
-          .github/scripts/install-tool.sh cargo-deny "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: apex-linux/apex-ci/actions/install-tool@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
+        with:
+          tools: cargo-deny
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -66,28 +61,13 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test
-        # The bus tests must run: apexctl's skip under APEXCTL_TEST_SKIP_BUS, apex-boot's without dbus-daemon.
-        run: |
-          unset APEXCTL_TEST_SKIP_BUS
-          test -x /usr/bin/dbus-daemon || { echo "::error::/usr/bin/dbus-daemon is missing: the D-Bus tests would not run"; exit 1; }
-          cargo test --workspace --locked
-
-      - name: Comment guard (docs/CONTRIBUTING.md)
-        # The guard lists files with git, which refuses the runner-owned checkout to root.
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          cargo run -p apex-lint --locked -- comments
+        run: cargo test --workspace --locked
 
       - name: cargo deny
         run: cargo deny --locked check
 
-      - name: RPM License tag matches the linked crates
-        run: |
-          python3 packaging/licenses.py --self-test
-          python3 packaging/licenses.py --check packaging/apex.spec
-
   scripts:
-    name: shellcheck, actionlint, selftest
+    name: shellcheck, actionlint, selftest, devloop
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -97,21 +77,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install actionlint and shellcheck (pinned releases, SHA-256 checked)
-        run: |
-          .github/scripts/install-tool.sh actionlint "$RUNNER_TEMP/bin"
-          .github/scripts/install-tool.sh shellcheck "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - uses: apex-linux/apex-ci/actions/install-tool@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
+        with:
+          tools: actionlint shellcheck
 
       - name: actionlint
         # With shellcheck on PATH, actionlint also checks every run: block.
         run: actionlint -config-file .github/scripts/actionlint.yaml
 
-      - name: bash -n and shellcheck of the CI, packaging, builder VM and test scripts
+      - name: bash -n and shellcheck of the CI, builder VM, runner and test scripts
         run: |
-          for f in .github/scripts/*.sh packaging/*/build.sh packaging/pkgs/*/*.sh tools/*.sh tools/builder-vm/*.sh tools/runner/*.sh tests/*/*.sh; do bash -n "$f"; done
+          for f in .github/scripts/*.sh tools/*.sh tools/builder-vm/*.sh tools/runner/*.sh tests/*/*.sh; do bash -n "$f"; done
           shellcheck -x -P .github/scripts --severity=style .github/scripts/*.sh
-          shellcheck -x --severity=style packaging/*/build.sh packaging/pkgs/*/*.sh tools/*.sh tools/builder-vm/*.sh tools/runner/*.sh tests/*/*.sh
+          shellcheck -x --severity=style tools/*.sh tools/builder-vm/*.sh tools/runner/*.sh tests/*/*.sh
 
       - name: sh -n, bash -n and shellcheck of image/checks and image/tests
         # The Containerfile's final stage runs image/checks with sh.
@@ -123,9 +101,6 @@ jobs:
       - name: Script self-tests
         run: .github/scripts/selftest.sh
 
-      - name: Contracts between the image and its components
-        run: .github/scripts/contracts.sh
-
       - name: The dev loop's host side, against a fake ssh
         run: tests/devloop/run.sh
 
@@ -133,7 +108,7 @@ jobs:
         run: jq empty renovate.json
 
   image-tests:
-    name: image/tests/run.sh (Fedora 45)
+    name: image/tests/run.sh (Fedora 45, pinned components)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -156,72 +131,58 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Python fakes compile
-        run: |
-          for f in image/tests/fake/*; do
-            if head -n 1 "$f" | grep -q python3; then
-              python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f"
-            fi
-          done
-
-      - name: image/tests/run.sh
+      - name: The components of components.lock
         # Without safe.directory, git refuses the runner-owned checkout to root, and
         # t-lists.sh silently leaves out its .gitignore checks.
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git rev-parse --git-dir >/dev/null
+          tools/components.sh fetch
+          tools/components.sh env >"$RUNNER_TEMP/components.env"
+
+      - name: image/tests/run.sh
+        run: |
+          . "$RUNNER_TEMP/components.env"
           image/tests/run.sh
 
-  layer-tests:
-    name: tests/layer/run.sh (Fedora 45)
+  contracts:
+    name: contracts with the pinned components
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     container:
       image: registry.fedoraproject.org/fedora:45@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
-      # Mount namespaces for bubblewrap's /proc/cmdline fixture; the runner is disposable and this job holds no secrets.
+      # Mount namespaces for bubblewrap's /proc/cmdline fixture in apex-gnome's layer tests.
       options: --privileged
     env:
       APEX_LAYER_TESTS_NO_SKIP: "1"
     steps:
-      - name: gjs, glib2 and bubblewrap
+      - name: git, python3, gjs, glib2 and bubblewrap
         run: >-
           dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install
-          gjs glib2 bubblewrap bash coreutils grep sed
+          git-core python3 gjs glib2 bubblewrap bash coreutils grep sed
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: tests/layer/run.sh
-        run: tests/layer/run.sh
+      - name: The components of components.lock
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          tools/components.sh fetch
+          tools/components.sh env >"$RUNNER_TEMP/components.env"
 
-  shots-tests:
-    # G2 itself needs the built image and runs in the builder VM (just vm-g2); this job
-    # tests its PNG comparison, its assertions and its dbusmock fixtures.
-    name: tests/shots/selftest.sh (Fedora 45)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    container:
-      image: registry.fedoraproject.org/fedora:45@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
-    env:
-      APEX_SHOTS_TESTS_NO_SKIP: "1"
-    steps:
-      - name: gjs, GdkPixbuf, jq, and the fixtures' dbus-daemon, python3-dbusmock and client libraries
-        run: >-
-          dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install
-          gjs gdk-pixbuf2 jq bash coreutils gawk grep sed
-          dbus-daemon python3-dbusmock NetworkManager-libnm gnome-bluetooth-libs
+      - name: The image installs and checks the hardware profile's firmware (apex-system)
+        run: |
+          . "$RUNNER_TEMP/components.env"
+          .github/scripts/contracts.sh
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: tests/shots/selftest.sh
-        run: tests/shots/selftest.sh
+      - name: apex-gnome's layer tests against the pinned apex-desktop
+        # The layer tests carry copies of apex-desktop's schema and crash guard unit.
+        run: |
+          . "$RUNNER_TEMP/components.env"
+          "$APEX_GNOME_SRC/tests/layer/run.sh"
 
   privacy:
     name: No biometric files
@@ -234,5 +195,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Tracked files
-        run: .github/scripts/privacy-guard.sh
+      - uses: apex-linux/apex-ci/actions/privacy-guard@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
+
+  comments:
+    name: Comment guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: apex-linux/apex-ci/actions/comments@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
