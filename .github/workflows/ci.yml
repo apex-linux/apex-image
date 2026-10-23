@@ -158,10 +158,10 @@ jobs:
     env:
       APEX_LAYER_TESTS_NO_SKIP: "1"
     steps:
-      - name: git, python3, gjs, glib2 and bubblewrap
+      - name: git, python3, gjs, glib2, gi-compile-repository for the layer's fixture typelibs, and bubblewrap
         run: >-
           dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install
-          git-core python3 gjs glib2 bubblewrap bash coreutils grep sed
+          git-core python3 gjs glib2 /usr/bin/gi-compile-repository bubblewrap bash coreutils gawk grep sed
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
