@@ -84,6 +84,14 @@ mkroot() {
         >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
     cp "$DESKTOP"/schemas/*.gschema.xml "$DESKTOP"/schemas/*.gschema.override "$r/usr/share/glib-2.0/schemas/"
     upstream_schemas "$r/usr/share/glib-2.0/schemas" "$DESKTOP/schemas/90_apex.gschema.override"
+    printf '<schemalist><schema id="org.gnome.Ptyxis.Profile"><key name="label" type="s"><default>%s</default></key><key name="cell-height-scale" type="d"><range min="1.0" max="2.0"/><default>1.0</default></key></schema></schemalist>\n' \
+        "''" >"$r/usr/share/glib-2.0/schemas/org.gnome.Ptyxis.Profile.gschema.xml"
+    # Fedora's dconf profile and an empty locks directory, as the dconf package ships them.
+    mkdir -p "$r/etc/dconf/profile" "$r/etc/dconf/db/distro.d/locks"
+    printf 'user-db:user\nsystem-db:local\nsystem-db:site\nsystem-db:distro\n' >"$r/etc/dconf/profile/user"
+    cp "$DESKTOP"/dconf/distro.d/* "$r/etc/dconf/db/distro.d/"
+    touch -d '2026-10-01 00:00' "$r"/etc/dconf/db/distro.d/*
+    : >"$r/etc/dconf/db/distro"
     cp -R "$DESKTOP/systemd/user/." "$r/usr/lib/systemd/user/"
     printf '[Unit]\nDescription=GNOME Shell\nOnFailure=org.gnome.Shell-disable-extensions.service\n\n[Service]\nType=notify\nExecStart=/usr/bin/true\nSuccessExitStatus=1\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell@.service"
@@ -120,6 +128,10 @@ expect_out "documentation and binaries do not count" '^PASS desktop: no text fil
 expect_out "the committed schema compiles with --strict" '^PASS desktop: the Apex schema compiles with --strict$'
 expect_out "the schema has the Spotlight binding" '^PASS desktop: the Apex schema has toggle-spotlight$'
 expect_out "the committed override compiles with --strict" '^PASS desktop: /usr/share/glib-2\.0/schemas/90_apex\.gschema\.override sets no color-scheme and compiles with --strict against the installed schemas$'
+expect_out "the dconf profile reads the distro database" '^PASS desktop: /etc/dconf/profile/user lists system-db:distro$'
+expect_out "the distro database is compiled" '^PASS desktop: /etc/dconf/db/distro is compiled from every file in /etc/dconf/db/distro\.d$'
+expect_out "an empty locks directory holds no lock" '^PASS desktop: no dconf lock in /etc/dconf/db/distro\.d$'
+expect_out "the Ptyxis profile is the default and valid" "^PASS desktop: the 2 dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile [0-9a-f]{32}, and each is a valid setting$"
 expect_out "the committed crash guard verifies" '^PASS desktop: the crash guard is installed'
 
 r=$(mkroot held held)
@@ -252,6 +264,63 @@ desktop badupstream
 expect_rc "an upstream schema that fails --strict leaves the override unvalidated, with a warning" 0
 expect_out "and says so" '^WARN desktop: the installed schemas fail --strict without the Apex override'
 expect_no_out "with no pass line for the override" '^PASS desktop: .*90_apex\.gschema\.override'
+
+DISTRO=etc/dconf/db/distro.d
+KEYFILE=$DISTRO/50-apex-ptyxis
+r=$(mkroot nodistrodb)
+sed -i '/^system-db:distro$/d' "$r/etc/dconf/profile/user"
+desktop nodistrodb
+expect_rc "a dconf profile without system-db:distro fails" 1
+expect_out "and says what that loses" '^FAIL desktop: /etc/dconf/profile/user does not list system-db:distro: the Apex Ptyxis profile is never read$'
+r=$(mkroot nodb)
+rm "$r/etc/dconf/db/distro"
+desktop nodb
+expect_rc "an image without the compiled distro database fails" 1
+expect_out "and names dconf update" '^FAIL desktop: no /etc/dconf/db/distro: the image build did not run dconf update$'
+r=$(mkroot staledb)
+touch -d '2026-09-01 00:00' "$r/etc/dconf/db/distro"
+desktop staledb
+expect_rc "a database older than its keyfiles fails" 1
+expect_out "and says so" '^FAIL desktop: /etc/dconf/db/distro is older than a file in /etc/dconf/db/distro\.d'
+r=$(mkroot lock)
+printf '/org/gnome/Ptyxis/default-profile-uuid\n' >"$r/$DISTRO/locks/50-apex"
+desktop lock
+expect_rc "a dconf lock fails" 1
+expect_out "and names it" '^FAIL desktop: dconf locks ship in /etc/dconf/db/distro\.d/locks \(ADR 0011 refuses them\): /etc/dconf/db/distro\.d/locks/50-apex$'
+r=$(mkroot unknownprofilekey)
+printf 'no-such-key=true\n' >>"$r/$KEYFILE"
+desktop unknownprofilekey
+expect_rc "a profile key Ptyxis does not have fails" 1
+expect_out "and names it" '^FAIL desktop: /etc/dconf/db/distro\.d/50-apex-ptyxis \[org/gnome/Ptyxis/Profiles/[0-9a-f]{32}\] no-such-key=true is not a valid org\.gnome\.Ptyxis\.Profile setting'
+r=$(mkroot badvalue)
+sed -i 's/^cell-height-scale=.*/cell-height-scale=3.0/' "$r/$KEYFILE"
+desktop badvalue
+expect_rc "a value outside the key's range fails" 1
+expect_out "and names it" '^FAIL desktop: .*\] cell-height-scale=3\.0 is not a valid org\.gnome\.Ptyxis\.Profile setting'
+r=$(mkroot fixedpath)
+printf "[org/gnome/desktop/interface]\nfont-hinting='none'\n" >"$r/$DISTRO/60-fixed"
+desktop fixedpath
+expect_rc "a fixed-path key in dconf fails" 1
+expect_out "and points at the override" '^FAIL desktop: /etc/dconf/db/distro\.d/60-fixed \[org/gnome/desktop/interface\] font-hinting: only the Ptyxis profile belongs in dconf; a fixed-path key goes in /usr/share/glib-2\.0/schemas/90_apex\.gschema\.override$'
+r=$(mkroot otherprofile)
+sed -i 's|^\[org/gnome/Ptyxis/Profiles/.*\]$|[org/gnome/Ptyxis/Profiles/00000000000000000000000000000000]|' "$r/$KEYFILE"
+desktop otherprofile
+expect_rc "a profile that is not the default fails" 1
+expect_out "and says so" "^FAIL desktop: .*profile 0{32} is not Ptyxis's default-profile-uuid and in profile-uuids"
+r=$(mkroot noprofile)
+rm "$r/$KEYFILE"
+desktop noprofile
+expect_rc "an image without the Apex Ptyxis profile fails" 1
+expect_out "and says so" '^FAIL desktop: no key in /etc/dconf/db/distro\.d: the Apex Ptyxis profile is missing'
+# CI runs this file in fedora:45 with dconf installed: Fedora's own files must pass.
+if [ -f /etc/dconf/profile/user ] && grep -qx 'ID=fedora' /etc/os-release 2>/dev/null; then
+    r=$(mkroot fedoradconf)
+    cp /etc/dconf/profile/user "$r/etc/dconf/profile/user"
+    rm -rf "${r:?}/$DISTRO/locks"
+    if [ -d /etc/dconf/db/distro.d/locks ]; then cp -R /etc/dconf/db/distro.d/locks "$r/$DISTRO/"; fi
+    desktop fedoradconf
+    expect_rc "Fedora's dconf profile and distro locks directory pass" 0
+fi
 
 r=$(mkroot noguard)
 rm "$r/usr/lib/systemd/user/org.gnome.Shell@.service.d/50-apex.conf"

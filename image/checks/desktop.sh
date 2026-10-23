@@ -1,5 +1,5 @@
 #!/bin/sh
-# The rebuilt shell as the rebuild lane locked it, its theme, schema, vendor override and
+# The rebuilt shell as the rebuild lane locked it, its theme, schema, vendor defaults and
 # crash guard, and no dev-loop or fault-injection setting in the image.
 set -eu
 CHECK_NAME=desktop
@@ -11,6 +11,9 @@ THEME=/usr/share/gnome-shell/gnome-shell-theme.gresource
 SCHEMAS=/usr/share/glib-2.0/schemas
 SCHEMA=$SCHEMAS/io.github.apex_linux.Apex.Desktop.gschema.xml
 OVERRIDE=$SCHEMAS/90_apex.gschema.override
+DCONF_PROFILE=/etc/dconf/profile/user
+DCONF_DB=/etc/dconf/db/distro
+DCONF_KEYFILES=/etc/dconf/db/distro.d
 USERUNITS=/usr/lib/systemd/user
 MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */
@@ -226,6 +229,71 @@ elif command -v glib-compile-schemas >/dev/null 2>&1; then
         # image/Containerfile only warns here too: upstream schemas are not Apex's to fix.
         warn "the installed schemas fail --strict without the Apex override: $OVERRIDE was not validated"
     fi
+fi
+
+if [ ! -f "$(rootpath "$DCONF_PROFILE")" ]; then
+    fail "no $DCONF_PROFILE: dconf reads no system database"
+elif ! grep -qx 'system-db:distro' "$(rootpath "$DCONF_PROFILE")"; then
+    fail "$DCONF_PROFILE does not list system-db:distro: the Apex Ptyxis profile is never read"
+else
+    pass "$DCONF_PROFILE lists system-db:distro"
+fi
+keyfiles=$(rootpath "$DCONF_KEYFILES")
+if [ ! -f "$(rootpath "$DCONF_DB")" ]; then
+    fail "no $DCONF_DB: the image build did not run dconf update"
+elif [ -n "$(find "$keyfiles" -type f ! -path "$keyfiles/locks/*" -newer "$(rootpath "$DCONF_DB")" 2>/dev/null)" ]; then
+    fail "$DCONF_DB is older than a file in $DCONF_KEYFILES: the image build did not run dconf update after it"
+else
+    pass "$DCONF_DB is compiled from every file in $DCONF_KEYFILES"
+fi
+locks=$(find "$keyfiles/locks" -type f 2>/dev/null | while IFS= read -r f; do unroot "$f"; done | paste -sd ' ' -)
+if [ -n "$locks" ]; then
+    fail "dconf locks ship in $DCONF_KEYFILES/locks (ADR 0011 refuses them): $locks"
+else
+    pass "no dconf lock in $DCONF_KEYFILES"
+fi
+
+# Only the Ptyxis profile, a relocatable schema no override reaches, belongs in dconf.
+# A memory-backend set rejects an unknown key or a value of the wrong type.
+find "$keyfiles" -maxdepth 1 -type f -exec awk '/^\[/ { path = substr($0, 2, length($0) - 2); next }
+    /^[[:space:]]*(#|$)/ { next }
+    { k = $0; sub(/[[:space:]]*=.*/, "", k); v = $0; sub(/^[^=]*=[[:space:]]*/, "", v)
+      printf "%s\t%s\t%s\t%s\n", FILENAME, path, k, v }' {} + >"$TMPD/dconf-keys" 2>/dev/null || true
+mkdir "$TMPD/compiled" "$TMPD/nodata"
+cp "$(rootpath "$SCHEMAS")"/*.gschema.xml "$(rootpath "$SCHEMAS")"/*.gschema.override "$TMPD/compiled/" 2>/dev/null || true
+glib-compile-schemas "$TMPD/compiled" >/dev/null 2>&1 || true
+gs() {
+    env -i PATH="$PATH" GSETTINGS_SCHEMA_DIR="$TMPD/compiled" GSETTINGS_BACKEND=memory XDG_DATA_DIRS="$TMPD/nodata" \
+        gsettings "$@" </dev/null
+}
+default_uuid=$(gs get org.gnome.Ptyxis default-profile-uuid 2>/dev/null | tr -d "'")
+uuids=$(gs get org.gnome.Ptyxis profile-uuids 2>/dev/null || true)
+bad=0
+n=0
+tab=$(printf '\t')
+while IFS="$tab" read -r file path key value; do
+    n=$((n + 1))
+    where="$(unroot "$file") [$path] $key"
+    case $path in
+        org/gnome/Ptyxis/Profiles/*/*) uuid='' ;;
+        org/gnome/Ptyxis/Profiles/?*) uuid=${path#org/gnome/Ptyxis/Profiles/} ;;
+        *) uuid='' ;;
+    esac
+    if [ -z "$uuid" ]; then
+        fail "$where: only the Ptyxis profile belongs in dconf; a fixed-path key goes in $OVERRIDE"
+        bad=1
+    elif [ "$uuid" != "$default_uuid" ] || ! printf '%s\n' "$uuids" | grep -qF "'$uuid'"; then
+        fail "$where: profile $uuid is not Ptyxis's default-profile-uuid and in profile-uuids ($OVERRIDE)"
+        bad=1
+    elif ! gs set "org.gnome.Ptyxis.Profile:/$path/" "$key" "$value" >"$TMPD/out" 2>&1; then
+        fail "$where=$value is not a valid org.gnome.Ptyxis.Profile setting: $(head -n 1 "$TMPD/out")"
+        bad=1
+    fi
+done <"$TMPD/dconf-keys"
+if [ "$n" -eq 0 ]; then
+    fail "no key in $DCONF_KEYFILES: the Apex Ptyxis profile is missing (apex-desktop)"
+elif [ "$bad" -eq 0 ]; then
+    pass "the $n dconf default(s) in $DCONF_KEYFILES set Ptyxis's default profile $default_uuid, and each is a valid setting"
 fi
 
 dropin=$USERUNITS/org.gnome.Shell@.service.d/50-apex.conf
