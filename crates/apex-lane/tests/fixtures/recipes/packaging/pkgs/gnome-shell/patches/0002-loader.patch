@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thuong Vo <66083331+SekiroKenjii@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:27:18 +0700
+Subject: [PATCH] main: load the Apex layer, with stock fallbacks
+
+- import ui/apex/hooks.js, the only Apex module that upstream files
+  import;
+- before the session mode exists, load ui/apex/layer.js and run its
+  configure phase (hooks.loadLayer never rejects: it returns null in the
+  gdm mode, in safe mode, or when the layer fails);
+- run the layer's enable phase at startup-prepared;
+- in safe mode, take the stylesheets from
+  resource:///org/gnome/shell/theme/stock/;
+- sessionMode: a value hook over each mode's parameters, through which the
+  layer draws 'default' as light in the user and unlock-dialog modes.
+---
+ js/ui/main.js        | 13 +++++++++++++
+ js/ui/sessionMode.js |  4 +++-
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/js/ui/main.js b/js/ui/main.js
+index 87e17f3..c78f30b 100644
+--- a/js/ui/main.js
++++ b/js/ui/main.js
+@@ -47,6 +47,7 @@ import * as PointerA11yTimeout from './pointerA11yTimeout.js';
+ import {formatError} from '../misc/errorUtils.js';
+ import * as ParentalControlsManager from '../misc/parentalControlsManager.js';
+ import * as Util from '../misc/util.js';
++import * as ApexHooks from './apex/hooks.js';
+ 
+ const WELCOME_DIALOG_LAST_SHOWN_VERSION = 'welcome-dialog-last-shown-version';
+ // Make sure to mention the point release, otherwise it will show every time
+@@ -107,6 +108,7 @@ let _oskResource = null;
+ let _iconResource = null;
+ let _workspacesAdjustment = null;
+ let _workspaceAdjustmentRegistry = null;
++let _apexLayer = null;
+ 
+ Gio._promisify(Gio.File.prototype, 'delete_async');
+ Gio._promisify(Gio.File.prototype, 'touch_async');
+@@ -170,6 +172,8 @@ export async function start() {
+     if (!currentDesktop || !currentDesktop.split(':').includes('GNOME'))
+         GioUnix.DesktopAppInfo.set_desktop_env('GNOME');
+ 
++    _apexLayer = await ApexHooks.loadLayer(() => import('./apex/layer.js'));
++
+     sessionMode = new SessionMode.SessionMode();
+     sessionMode.connect('updated', _sessionUpdated);
+ 
+@@ -328,6 +332,9 @@ async function _initializeUI() {
+         });
+     }
+ 
++    if (_apexLayer)
++        layoutManager.connect('startup-prepared', () => _apexLayer.enable());
++
+     let Scripting;
+     let perfModule;
+     const {automationScript} = global;
+@@ -414,6 +421,12 @@ async function _handleLockScreenWarning() {
+ function _getStylesheet(name) {
+     let stylesheet;
+ 
++    if (ApexHooks.safe()) {
++        stylesheet = Gio.File.new_for_uri(`resource:///org/gnome/shell/theme/stock/${name}`);
++        if (stylesheet.query_exists(null))
++            return stylesheet;
++    }
++
+     stylesheet = Gio.File.new_for_uri(`resource:///org/gnome/shell/theme/${name}`);
+     if (stylesheet.query_exists(null))
+         return stylesheet;
+diff --git a/js/ui/sessionMode.js b/js/ui/sessionMode.js
+index b4f2437..bb9ae09 100644
+--- a/js/ui/sessionMode.js
++++ b/js/ui/sessionMode.js
+@@ -7,6 +7,7 @@ import {LoginDialog}  from '../gdm/loginDialog.js';
+ import {UnlockDialog} from '../ui/unlockDialog.js';
+ 
+ import * as Config from '../misc/config.js';
++import * as ApexHooks from './apex/hooks.js';
+ 
+ const DEFAULT_MODE = 'restrictive';
+ 
+@@ -195,7 +196,8 @@ export class SessionMode extends Signals.EventEmitter {
+             ? {..._modes[DEFAULT_MODE], ..._modes[current.parentMode]}
+             : {..._modes[DEFAULT_MODE]};
+ 
+-        const params = {...parent, ...current};
++        const params = ApexHooks.value('session-mode',
++            {...parent, ...current}, this.currentMode);
+ 
+         // A simplified version of Lang.copyProperties, handles
+         // undefined as a special case for "no change / inherit from previous mode"

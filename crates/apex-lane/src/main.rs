@@ -21,7 +21,8 @@ const BUILT_FROM: Option<&str> = option_env!("APEX_LANE_TREE");
     after_help = concat!(
         "Environment: APEX_STORE [~/apex-store], APEX_GA_REACHED (overrides the Containerfile's ",
         "GA_REACHED), APEX_KEEP_WORK=1 (keep the rpmbuild tree in _build/lane/PKG/work), ",
-        "APEX_RPM_SIGNING_ENV [~/.config/apex/rpm-signing.env].\n\n",
+        "APEX_RPM_SIGNING_ENV [~/.config/apex/rpm-signing.env], APEX_LANE_RECIPES (the ",
+        "checkouts holding packaging/pkgs, ':'-separated) [this checkout].\n\n",
         "Exit status: 0 built or unchanged; 1 infrastructure error (nothing recorded); ",
         "2 usage or configuration error; 3 no shippable build (held, degraded, or kept stock)."
     )
@@ -205,6 +206,19 @@ fn settings() -> Result<Settings> {
     })
 }
 
+fn recipe_roots() -> Result<Vec<PathBuf>> {
+    let Some(list) = std::env::var_os("APEX_LANE_RECIPES") else {
+        return Ok(Vec::new());
+    };
+    std::env::split_paths(&list)
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| {
+            p.canonicalize()
+                .map_err(|e| usage(format!("APEX_LANE_RECIPES: {}: {e}", p.display())))
+        })
+        .collect()
+}
+
 fn run(command: Command, report: &Reporter) -> Result<Exit> {
     if let Command::InContainer(c) = command {
         return in_container(c, report);
@@ -212,13 +226,14 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
     let cwd = std::env::current_dir().map_err(|e| infra(format!("no working directory: {e}")))?;
     let root = vm::find_root(&cwd).ok_or_else(|| {
         usage(format!(
-            "{} is not inside an apex-fedora checkout (packaging/pkgs, image/Containerfile)",
+            "{} is not inside a lane checkout (crates/apex-lane, image/Containerfile)",
             cwd.display()
         ))
     })?;
     let runner = StdRunner::cleared(&home());
     let vm = Vm {
         root,
+        recipes: recipe_roots()?,
         settings: settings()?,
         runner: &runner,
         clock: &SystemClock,

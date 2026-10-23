@@ -33,61 +33,84 @@ pub enum Mode {
     },
 }
 
-/// The paths that must be clean and whose commits N counts.
-pub fn lane_paths(pkg: &Pkg) -> Vec<String> {
-    let mut paths = vec![format!("packaging/pkgs/{}", pkg.name)];
-    paths.extend(pkg.env.source1.clone());
-    paths.extend(SOURCE_PATHS.map(String::from));
-    // The deleted Bash lane: its history keeps counting, or N would drop.
-    paths.push("packaging/rebuild.sh".into());
-    paths
-}
-
 /// Fixed, so the archive's bytes follow from the tree id alone.
 const SOURCE1_MTIME: &str = "@946684800";
 
 impl Vm<'_> {
+    /// Each checkout with the paths that must be clean there and whose commits N counts:
+    /// the recipe in its checkout, the lane itself in the lane checkout.
+    pub fn lane_paths<'p>(&'p self, pkg: &'p Pkg) -> Vec<(&'p Path, Vec<String>)> {
+        let mut recipe = vec![format!("packaging/pkgs/{}", pkg.name)];
+        recipe.extend(pkg.env.source1.clone());
+        let mut tool: Vec<String> = SOURCE_PATHS.map(String::from).into();
+        // The deleted Bash lane: its history keeps counting, or N would drop.
+        tool.push("packaging/rebuild.sh".into());
+        if pkg.recipe_root == self.root {
+            recipe.extend(tool);
+            vec![(&self.root, recipe)]
+        } else {
+            vec![(&pkg.recipe_root, recipe), (&self.root, tool)]
+        }
+    }
+
     pub fn check_committed(&self, pkg: &Pkg) -> Result<()> {
+        for (root, paths) in self.lane_paths(pkg) {
+            self.check_clean(root, paths)?;
+        }
+        Ok(())
+    }
+
+    fn check_clean(&self, root: &Path, paths: Vec<String>) -> Result<()> {
         let head = self.runner.run(
-            &self
-                .git()
+            &Self::git_in(root)
                 .args(["rev-parse", "-q", "--verify", "HEAD"])
                 .stdout(Stdout::Null),
         )?;
         if !head.ok() {
-            return Err(usage("the checkout has no commit"));
+            return Err(usage(format!("{} has no commit", root.display())));
         }
-        if text::chomp(&self.git_out(["rev-parse", "--is-shallow-repository"])?) != b"false" {
-            return Err(usage(
-                "a shallow clone cannot count .apexN; fetch the full history",
-            ));
+        if text::chomp(&self.git_out_in(root, ["rev-parse", "--is-shallow-repository"])?)
+            != b"false"
+        {
+            return Err(usage(format!(
+                "{} is a shallow clone, which cannot count .apexN; fetch the full history",
+                root.display()
+            )));
         }
-        let dirty = self.git_out(
+        let dirty = self.git_out_in(
+            root,
             ["status", "--porcelain", "--untracked-files=all", "--"]
                 .map(String::from)
                 .into_iter()
-                .chain(lane_paths(pkg)),
+                .chain(paths),
         )?;
         let dirty = text::chomp(&dirty);
         if !dirty.is_empty() {
             return Err(usage(format!(
-                "uncommitted lane inputs (commit them, or use the just pkg-* recipes, which snapshot a dirty tree in the builder VM):\n{}",
+                "uncommitted lane inputs in {} (commit them, or use the just pkg-* recipes, which snapshot a dirty tree in the builder VM):\n{}",
+                root.display(),
                 text::lossy(dirty)
             )));
         }
         Ok(())
     }
 
+    /// The sum over the checkouts, so N only grows when the recipe moves to its own repo.
     pub fn release_n(&self, pkg: &Pkg) -> Result<u64> {
-        let out = self.git_out(
-            ["rev-list", "--count", "HEAD", "--"]
-                .map(String::from)
-                .into_iter()
-                .chain(lane_paths(pkg)),
-        )?;
-        text::lossy(text::chomp(&out))
-            .parse()
-            .map_err(|_| infra("git rev-list --count gave no number"))
+        let mut n = 0;
+        for (root, paths) in self.lane_paths(pkg) {
+            let out = self.git_out_in(
+                root,
+                ["rev-list", "--count", "HEAD", "--"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain(paths),
+            )?;
+            n += text::lossy(text::chomp(&out))
+                .parse::<u64>()
+                .map_err(|_| infra("git rev-list --count gave no number"))?;
+        }
+        Ok(n)
     }
 
     pub fn head_lane_tree(&self) -> Result<Option<String>> {
@@ -144,10 +167,9 @@ impl Vm<'_> {
         .map_err(infra)
     }
 
-    fn archive(&self, tree: &str, out: &Path) -> Result<()> {
+    fn archive(&self, root: &Path, tree: &str, out: &Path) -> Result<()> {
         self.run_ok(
-            &self
-                .git()
+            &Self::git_in(root)
                 .args(["archive", "--format=tar"])
                 .arg(format!("--mtime={SOURCE1_MTIME}"))
                 .arg("-o")
@@ -170,14 +192,17 @@ impl Vm<'_> {
             return Ok(None);
         };
         let not_committed = || usage(format!("{source1} is not a committed directory"));
-        let tree = self.head_object(source1)?.ok_or_else(not_committed)?;
-        let kind = self.git_out(["cat-file", "-t", tree.as_str()])?;
+        let root = &pkg.recipe_root;
+        let tree = self
+            .head_object_in(root, source1)?
+            .ok_or_else(not_committed)?;
+        let kind = self.git_out_in(root, ["cat-file", "-t", tree.as_str()])?;
         if text::chomp(&kind) != b"tree" {
             return Err(not_committed());
         }
         let archive = archive_name(source1, &tree);
         let path = dir.join(&archive);
-        self.archive(&tree, &path)?;
+        self.archive(root, &tree, &path)?;
         let allowed = &pkg.env.source1_paths;
         for m in text::lines(&self.tar_list(&path, false)?) {
             let m = text::lossy(m);
@@ -211,17 +236,17 @@ impl Vm<'_> {
             vec!["read-tree".to_owned(), "HEAD".to_owned()],
             vec!["add".into(), "-A".into(), "--".into(), source1.clone()],
         ] {
-            self.run_ok(&with_index(self.git().args(&args)))?;
+            self.run_ok(&with_index(Self::git_in(&pkg.recipe_root).args(&args)))?;
         }
         let out = self.run_ok(&with_index(
-            self.git()
+            Self::git_in(&pkg.recipe_root)
                 .arg("write-tree")
                 .arg(format!("--prefix={source1}/"))
                 .capture(),
         ))?;
         let tree = text::lossy(text::chomp(&out.stdout));
         let archive = archive_name(source1, &tree);
-        self.archive(&tree, &dir.join(&archive))?;
+        self.archive(&pkg.recipe_root, &tree, &dir.join(&archive))?;
         Ok(Some(Source1 { archive, tree }))
     }
 
@@ -296,6 +321,8 @@ impl Vm<'_> {
             .args(["run", "--rm", "--pull=missing"])
             .arg("-v")
             .arg(mount(&self.root, "/src", "ro,z")?)
+            .arg("-v")
+            .arg(mount(&pkg.recipe_root, "/recipes", "ro,z")?)
             .arg("-v")
             .arg(mount(work, "/work", "z")?)
             .arg("-v")

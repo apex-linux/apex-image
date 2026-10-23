@@ -7,7 +7,7 @@ command -v glib-compile-schemas >/dev/null 2>&1 || skip_all "glib-compile-schema
 command -v systemd-analyze >/dev/null 2>&1 || skip_all "systemd-analyze not found"
 [ -x /usr/bin/gsettings ] || skip_all "no /usr/bin/gsettings (systemd-analyze checks apex-shell-safe.service's ExecStart)"
 
-DESKTOP=$REPO_ROOT/desktop
+DESKTOP=$APEX_DESKTOP_SRC/desktop
 SHA=$(printf '%064d' 0 | tr 0 a)
 KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
 

@@ -379,6 +379,7 @@ impl VmTest {
     fn vm<'a>(&'a self, fake: &'a Fake, clock: &'a FixedClock) -> Vm<'a> {
         Vm {
             root: self.root.path().to_path_buf(),
+            recipes: Vec::new(),
             settings: settings(
                 self.store.path(),
                 &self.store.path().join("rpm-signing.env"),
@@ -434,6 +435,8 @@ fn vm_build_stores_and_records_the_set() {
         "-v",
         &format!("{root}:/src:ro,z"),
         "-v",
+        &format!("{root}:/recipes:ro,z"),
+        "-v",
         &format!("{root}/_build/lane/demo:/work:z"),
         "-v",
         &format!("{}/pkgs/demo:/store:ro,z", t.store.path().display()),
@@ -470,6 +473,39 @@ fn vm_build_stores_and_records_the_set() {
             .join(&archive)
             .is_file()
     );
+}
+
+#[test]
+fn a_recipe_checkout_of_its_own_adds_its_history_to_n() {
+    let t = VmTest::new(DEMO_ENV);
+    let recipes = tempfile::tempdir().unwrap();
+    let r = recipes.path();
+    run_git(t.root.path(), &["clone", "-q", ".", r.to_str().unwrap()]);
+    write(&r.join("desktop/demo/demo/apex.js"), "// apex, again\n");
+    let fake = vm_fake(|out, _| {
+        built_set(out, KEY);
+        0
+    });
+    let c = clock();
+    let mut vm = t.vm(&fake, &c);
+    vm.recipes = vec![r.to_path_buf()];
+    let err = vm.build("demo").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains(&format!("uncommitted lane inputs in {}", r.display())),
+        "{err}"
+    );
+    run_git(r, &["commit", "-q", "-a", "-m", "again"]);
+    vm.build("demo").expect("built");
+    let podman = fake.calls("podman");
+    let p = &podman[0];
+    let tree = run_git(r, &["rev-parse", "HEAD:desktop/demo"])
+        .trim()
+        .to_owned();
+    assert!(p.contains(&format!("{}:/src:ro,z", t.root.path().display())));
+    assert!(p.contains(&format!("{}:/recipes:ro,z", r.display())));
+    assert!(p.windows(2).any(|w| w == ["--n", "3"]), "{p:?}");
+    assert!(p.windows(2).any(|w| w == ["--source1-tree", tree.as_str()]));
 }
 
 #[test]
@@ -971,6 +1007,7 @@ impl ContainerTest {
         Container {
             paths: Paths {
                 src: self.src.path().to_path_buf(),
+                recipes: self.src.path().to_path_buf(),
                 work: self.work.path().to_path_buf(),
                 store: self.store.path().to_path_buf(),
                 fedora_keys: self.keys.path().to_path_buf(),

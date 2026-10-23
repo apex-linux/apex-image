@@ -10,6 +10,7 @@ use crate::shell::fs;
 #[derive(Debug, Clone)]
 pub struct Pkg {
     pub name: String,
+    pub recipe_root: PathBuf,
     pub dir: PathBuf,
     pub env: PkgEnv,
     pub series: Vec<String>,
@@ -89,6 +90,7 @@ pub fn load(root: &Path, name: &str, parse: Parse) -> Result<Pkg> {
     };
     Ok(Pkg {
         name: name.to_owned(),
+        recipe_root: root.to_path_buf(),
         dir,
         env,
         series,
@@ -98,18 +100,20 @@ pub fn load(root: &Path, name: &str, parse: Parse) -> Result<Pkg> {
 
 /// One lane package per family: `lock_put` replaces a family's records whole, so a
 /// second package would silently drop the first one's RPMs.
-pub fn check_family_unique(root: &Path, pkg: &Pkg) -> Result<()> {
-    for other in all(root)? {
-        if other == pkg.name {
-            continue;
-        }
-        let path = pkgs_dir(root).join(&other).join("pkg.env");
-        let family = fs::read_opt(&path)?.and_then(|b| pkg_env::family_of(&b));
-        if family.as_deref() == Some(pkg.env.family.as_str()) {
-            return Err(usage(format!(
-                "packages {} and {other} share the family {}; the lane takes one package per family",
-                pkg.name, pkg.env.family
-            )));
+pub fn check_family_unique(roots: &[PathBuf], pkg: &Pkg) -> Result<()> {
+    for root in roots {
+        for other in all(root)? {
+            if other == pkg.name {
+                continue;
+            }
+            let path = pkgs_dir(root).join(&other).join("pkg.env");
+            let family = fs::read_opt(&path)?.and_then(|b| pkg_env::family_of(&b));
+            if family.as_deref() == Some(pkg.env.family.as_str()) {
+                return Err(usage(format!(
+                    "packages {} and {other} share the family {}; the lane takes one package per family",
+                    pkg.name, pkg.env.family
+                )));
+            }
         }
     }
     Ok(())
