@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+FROM registry.fedoraproject.org/fedora:45@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
+
+ARG RUNNER_VERSION
+ARG RUNNER_SHA256
+
+RUN dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install \
+        lttng-ust openssl-libs krb5-libs zlib libicu openssh-clients tar gzip coreutils \
+    && dnf5 clean all \
+    && useradd --create-home --uid 1000 runner
+
+USER runner
+WORKDIR /home/runner/actions-runner
+
+RUN curl -fsSL -o /tmp/runner.tar.gz \
+        "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" \
+    && echo "${RUNNER_SHA256}  /tmp/runner.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/runner.tar.gz \
+    && rm /tmp/runner.tar.gz
+
+# The job's steps inherit the runner's environment: the JIT config must not be in it.
+ENTRYPOINT ["/bin/bash", "-c", "jit=$APEX_RUNNER_JIT; unset APEX_RUNNER_JIT; exec ./run.sh --jitconfig \"$jit\""]
