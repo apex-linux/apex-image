@@ -19,7 +19,8 @@ if ! command -v glib-compile-schemas >/dev/null 2>&1 || ! command -v gsettings >
 fi
 
 mkdir "$TMPD/schemas" "$TMPD/nodata"
-for f in "$(rootpath "$SCHEMAS")"/*.gschema.xml "$(rootpath "$SCHEMAS")"/*.gschema.override; do
+# org.gnome.desktop.interface uses the enums of org.gnome.desktop.enums.xml.
+for f in "$(rootpath "$SCHEMAS")"/*.gschema.xml "$(rootpath "$SCHEMAS")"/*.enums.xml "$(rootpath "$SCHEMAS")"/*.gschema.override; do
     if [ -f "$f" ]; then cp "$f" "$TMPD/schemas/"; fi
 done
 if ! glib-compile-schemas "$TMPD/schemas" >"$TMPD/compile" 2>&1; then

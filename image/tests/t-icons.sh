@@ -53,7 +53,11 @@ mkroot() {
     printf '%s\n' '<schemalist><schema id="org.gnome.desktop.interface" path="/org/gnome/desktop/interface/">' \
         '<key name="icon-theme" type="s"><default>'"'Adwaita'"'</default></key>' \
         '<key name="font-name" type="s"><default>'"'Cantarell 11'"'</default></key>' \
+        '<key name="clock-format" enum="org.gnome.desktop.GDesktopClockFormat"><default>'"'24h'"'</default></key>' \
         '</schema></schemalist>' >"$r/$SCHEMAS/org.gnome.desktop.interface.gschema.xml"
+    printf '%s\n' '<schemalist><enum id="org.gnome.desktop.GDesktopClockFormat">' \
+        '<value nick="24h" value="0"/><value nick="12h" value="1"/></enum></schemalist>' \
+        >"$r/$SCHEMAS/org.gnome.desktop.enums.xml"
     default_theme Adwaita
     theme Adwaita hicolor scalable/apps symbolic/apps
     theme hicolor '' 48x48/apps scalable/apps
