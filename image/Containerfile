@@ -266,6 +266,7 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     fi; \
     rm -rf "$tmp"; \
     glib-compile-schemas "$schemas"; \
+    dconf update; \
     systemd-hwdb update --usr; \
     subpixel=/usr/share/fontconfig/conf.avail/10-sub-pixel-none.conf; \
     [ -f "$subpixel" ] || { echo "ERROR: $subpixel not found" >&2; exit 1; }; \
