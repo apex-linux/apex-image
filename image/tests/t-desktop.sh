@@ -50,6 +50,28 @@ with open(sys.argv[1], "w", encoding="utf-8") as f:
 PY
 }
 
+# upstream_schemas DIR OVERRIDE: a stub schema per group of OVERRIDE, its keys typed
+# from their values, for Fedora's schemas.
+upstream_schemas() {
+    python3 - "$@" <<'PY'
+import configparser, sys
+ini = configparser.ConfigParser(interpolation=None)
+ini.optionxform = str
+ini.read(sys.argv[2], encoding="utf-8")
+def gtype(v):
+    if v in ("true", "false"):
+        return "b"
+    if v.startswith("[("):
+        return "a(" + "s" * (v.split(")")[0].count(",") + 1) + ")"
+    return "as" if v.startswith("[") else "s"
+for group in ini.sections():
+    keys = "".join(f'<key name="{k}" type="{gtype(v)}"><default><![CDATA[{v}]]></default></key>'
+                   for k, v in ini[group].items())
+    with open(f"{sys.argv[1]}/{group}.gschema.xml", "w", encoding="utf-8") as f:
+        f.write(f'<schemalist><schema id="{group}" path="/{group.replace(".", "/")}/">{keys}</schema></schemalist>\n')
+PY
+}
+
 # mkroot NAME [LOCK_STATE]: prints the path of a root as the image build leaves it.
 mkroot() {
     r=$T/$1
@@ -60,7 +82,8 @@ mkroot() {
     # A resource stores each sheet uncompressed between binary headers.
     printf 'GVariant\000\000\000\000/*! apex-shell-theme light */\n.apex-theme-marker {\n  color: #16161a; }\n\000\000/*! apex-shell-theme dark */\n\000/*! apex-shell-structure */\n\000' \
         >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
-    cp "$DESKTOP"/schemas/*.gschema.xml "$r/usr/share/glib-2.0/schemas/"
+    cp "$DESKTOP"/schemas/*.gschema.xml "$DESKTOP"/schemas/*.gschema.override "$r/usr/share/glib-2.0/schemas/"
+    upstream_schemas "$r/usr/share/glib-2.0/schemas" "$DESKTOP/schemas/90_apex.gschema.override"
     cp -R "$DESKTOP/systemd/user/." "$r/usr/lib/systemd/user/"
     printf '[Unit]\nDescription=GNOME Shell\nOnFailure=org.gnome.Shell-disable-extensions.service\n\n[Service]\nType=notify\nExecStart=/usr/bin/true\nSuccessExitStatus=1\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell@.service"
@@ -95,6 +118,8 @@ expect_out "rpm -V is clean" '^PASS desktop: rpm -V gnome-shell gnome-shell-comm
 expect_out "an empty extensions directory" '^PASS desktop: no shell extension'
 expect_out "documentation and binaries do not count" '^PASS desktop: no text file under /usr or /etc names G_RESOURCE_OVERLAYS,--unsafe-mode,APEX_SHELL_TEST_FAULT \(1 documentation file\(s\) not counted\)$'
 expect_out "the committed schema compiles with --strict" '^PASS desktop: the Apex schema compiles with --strict$'
+expect_out "the schema has the Spotlight binding" '^PASS desktop: the Apex schema has toggle-spotlight$'
+expect_out "the committed override compiles with --strict" '^PASS desktop: /usr/share/glib-2\.0/schemas/90_apex\.gschema\.override sets no color-scheme and compiles with --strict against the installed schemas$'
 expect_out "the committed crash guard verifies" '^PASS desktop: the crash guard is installed'
 
 r=$(mkroot held held)
@@ -203,6 +228,30 @@ sed -i 's|<default>true</default>|<default>yes</default>|' "$r"/usr/share/glib-2
 desktop badschema
 expect_rc "a schema that fails --strict fails" 1
 expect_out "and says so" '^FAIL desktop: the Apex schema fails --strict'
+
+OVR=usr/share/glib-2.0/schemas/90_apex.gschema.override
+r=$(mkroot nooverride)
+rm "$r/$OVR"
+desktop nooverride
+expect_rc "a missing override fails" 1
+expect_out "and says so" '^FAIL desktop: no /usr/share/glib-2\.0/schemas/90_apex\.gschema\.override: the vendor defaults are missing'
+r=$(mkroot colorscheme)
+printf "\n[org.gnome.desktop.interface]\ncolor-scheme='prefer-dark'\n" >>"$r/$OVR"
+desktop colorscheme
+expect_rc "an override that sets color-scheme fails" 1
+expect_out "and says why" '^FAIL desktop: .*90_apex\.gschema\.override sets color-scheme'
+r=$(mkroot unknownkey)
+printf '\n[org.gnome.desktop.interface]\nno-such-key=true\n' >>"$r/$OVR"
+desktop unknownkey
+expect_rc "an override with a key no schema has fails" 1
+expect_out "glib-compile-schemas names it" '^FAIL desktop: .*90_apex\.gschema\.override fails --strict: .*no-such-key'
+r=$(mkroot badupstream)
+printf '<schemalist><schema id="org.example.Broken"><key name="k" type="b"><default>yes</default></key></schema></schemalist>\n' \
+    >"$r/usr/share/glib-2.0/schemas/org.example.Broken.gschema.xml"
+desktop badupstream
+expect_rc "an upstream schema that fails --strict leaves the override unvalidated, with a warning" 0
+expect_out "and says so" '^WARN desktop: the installed schemas fail --strict without the Apex override'
+expect_no_out "with no pass line for the override" '^PASS desktop: .*90_apex\.gschema\.override'
 
 r=$(mkroot noguard)
 rm "$r/usr/lib/systemd/user/org.gnome.Shell@.service.d/50-apex.conf"
