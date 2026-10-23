@@ -10,8 +10,8 @@ containers/image rejects unknown keys, so the explanation lives in this file.
 
 | Image | Accepted when |
 |---|---|
-| `ghcr.io/sekirokenjii/apex` (stable) | sigstore-signed by `keys/release.pub` or `keys/release-backup.pub` |
-| `ghcr.io/sekirokenjii/apex-testing` | sigstore-signed by `keys/ci.pub` |
+| `ghcr.io/apex-linux/apex` (stable) | sigstore-signed by `keys/release.pub` or `keys/release-backup.pub` |
+| `ghcr.io/apex-linux/apex-testing` | sigstore-signed by `keys/ci.pub` |
 | anything else, any transport | rejected (global `default` is `reject`) |
 
 - There are no transport-wide accept rules. Policy scopes match whole path
@@ -21,7 +21,7 @@ containers/image rejects unknown keys, so the explanation lives in this file.
   bind a tag, so a signed older digest could be served under `:45`. The daemon's
   monotonic version check (ADR 0012) closes that gap; this file cannot.
 - `registries.d/apex.yaml` (in `/usr/share/containers`) turns on sigstore attachments
-  for `ghcr.io/sekirokenjii`; without it no signature would be found.
+  for `ghcr.io/apex-linux`; without it no signature would be found.
 - A key file that does not parse (for example a placeholder) makes the requirement
   fail, so the policy fails closed.
 

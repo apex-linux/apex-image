@@ -15,10 +15,10 @@ case $RELEASE_BUILD in
 esac
 
 # Changes only together with policy.json, in one reviewed change. The CI key never signs for
-# ghcr.io/sekirokenjii/apex.
-TRUST_MAP='ghcr.io/sekirokenjii/apex	/usr/share/apex/keys/release.pub
-ghcr.io/sekirokenjii/apex	/usr/share/apex/keys/release-backup.pub
-ghcr.io/sekirokenjii/apex-testing	/usr/share/apex/keys/ci.pub'
+# ghcr.io/apex-linux/apex.
+TRUST_MAP='ghcr.io/apex-linux/apex	/usr/share/apex/keys/release.pub
+ghcr.io/apex-linux/apex	/usr/share/apex/keys/release-backup.pub
+ghcr.io/apex-linux/apex-testing	/usr/share/apex/keys/ci.pub'
 
 KEYDIR=$(rootpath /usr/share/apex/keys)
 POLICY=$(rootpath /usr/share/apex/containers/policy.json)

@@ -320,7 +320,7 @@ RUN set -eu; \
 # at rechunk time, over inherited ones.
 LABEL containers.bootc="1" \
       ostree.bootable="1" \
-      org.opencontainers.image.source="https://github.com/SekiroKenjii/apex-fedora"
+      org.opencontainers.image.source="https://github.com/apex-linux/apex-image"
 ENV container=oci
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

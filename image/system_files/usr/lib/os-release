@@ -10,10 +10,10 @@ PRETTY_NAME="Apex 45 (GNOME 51)"
 LOGO=fedora-logo-icon
 CPE_NAME="cpe:/o:fedoraproject:fedora:45"
 DEFAULT_HOSTNAME="apex"
-HOME_URL="https://github.com/SekiroKenjii/apex-fedora"
-DOCUMENTATION_URL="https://github.com/SekiroKenjii/apex-fedora/tree/main/docs"
+HOME_URL="https://github.com/apex-linux"
+DOCUMENTATION_URL="https://github.com/apex-linux/apex/tree/main/docs"
 # No REDHAT_* keys: crash reporters would file Apex bugs with Fedora.
-BUG_REPORT_URL="https://github.com/SekiroKenjii/apex-fedora/issues"
+BUG_REPORT_URL="https://github.com/apex-linux/apex/issues"
 SUPPORT_END=2027-11-24
 VARIANT="Apex"
 VARIANT_ID=apex

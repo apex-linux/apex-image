@@ -59,7 +59,7 @@ the digest that will be published.
                                      image-id lines on stdout
 
 CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
-ghcr.io/sekirokenjii/apex-testing@sha256:...). It needs nested KVM, and sudo for
+ghcr.io/apex-linux/apex-testing@sha256:...). It needs nested KVM, and sudo for
 podman, losetup and mount. `red` works with any two different Apex images whose updater
 arms the counter, e.g. `qualify.sh red sha256:<older> sha256:<newer>`.
 
@@ -123,7 +123,7 @@ readonly G4_TRIGGER_DIRS=(/usr/lib/bootc/kargs.d)
 readonly G4_OVERLAY=$APEX_ROOT/image/system_files
 readonly G4_MAX_AGE_DAYS=7
 readonly G4_NOT_DUE=3
-readonly APEX_SCHEMA=io.github.sekirokenjii.Apex.Desktop
+readonly APEX_SCHEMA=io.github.apex_linux.Apex.Desktop
 readonly CRASH_GUARD_MARKER=apex-shell-starting
 readonly CRASH_GUARD_TRIPPED=.local/state/apex/shell-guard-tripped
 readonly TEST_FAULT_FILE=.config/environment.d/90-apex-qualify-fault.conf

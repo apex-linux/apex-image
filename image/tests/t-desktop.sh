@@ -197,9 +197,9 @@ r=$(mkroot noschema)
 rm "$r"/usr/share/glib-2.0/schemas/*.gschema.xml
 desktop noschema
 expect_rc "a missing Apex schema fails" 1
-expect_out "and says what that means" '^FAIL desktop: no /usr/share/glib-2\.0/schemas/io\.github\.sekirokenjii\.Apex\.Desktop\.gschema\.xml: the layer would run in safe mode'
+expect_out "and says what that means" '^FAIL desktop: no /usr/share/glib-2\.0/schemas/io\.github\.apex_linux\.Apex\.Desktop\.gschema\.xml: the layer would run in safe mode'
 r=$(mkroot badschema)
-sed -i 's|<default>true</default>|<default>yes</default>|' "$r"/usr/share/glib-2.0/schemas/io.github.sekirokenjii.Apex.Desktop.gschema.xml
+sed -i 's|<default>true</default>|<default>yes</default>|' "$r"/usr/share/glib-2.0/schemas/io.github.apex_linux.Apex.Desktop.gschema.xml
 desktop badschema
 expect_rc "a schema that fails --strict fails" 1
 expect_out "and says so" '^FAIL desktop: the Apex schema fails --strict'

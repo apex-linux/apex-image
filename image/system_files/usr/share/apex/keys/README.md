@@ -7,9 +7,9 @@ layer for private keys.
 
 | File | Trusted for | Private half lives in |
 |---|---|---|
-| `release.pub` | `ghcr.io/sekirokenjii/apex` | GitHub environment `release` (main only, manual approval) |
-| `release-backup.pub` | `ghcr.io/sekirokenjii/apex` | offline only, encrypted; never in GitHub |
-| `ci.pub` | `ghcr.io/sekirokenjii/apex-testing` | GitHub environment `testing` |
+| `release.pub` | `ghcr.io/apex-linux/apex` | GitHub environment `release` (main only, manual approval) |
+| `release-backup.pub` | `ghcr.io/apex-linux/apex` | offline only, encrypted; never in GitHub |
+| `ci.pub` | `ghcr.io/apex-linux/apex-testing` | GitHub environment `testing` |
 | `RPM-GPG-KEY-apex` | the RPMs of `[apex]` in the image build, not images | the builder VM; one offline backup |
 
 ## Placeholders
@@ -51,7 +51,7 @@ Signing, for reference (the workflows own this):
 
 ```sh
 cosign sign --yes --new-bundle-format=false --use-signing-config=false \
-  --key env://COSIGN_PRIVATE_KEY ghcr.io/sekirokenjii/apex@sha256:<digest>
+  --key env://COSIGN_PRIVATE_KEY ghcr.io/apex-linux/apex@sha256:<digest>
 ```
 
 ## RPM-GPG-KEY-apex

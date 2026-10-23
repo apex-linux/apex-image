@@ -16,7 +16,7 @@ readonly GUEST_SCRIPT_PATH=/var/lib/apex-shell-dev/bin/shell-dev-guest.sh
 readonly BOOTED_DIGEST=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
 readonly STAGED_DIGEST=sha256:bbbb000000000000000000000000000000000000000000000000000000000000
 readonly IMAGE_ID=cccc000000000000000000000000000000000000000000000000000000000000
-readonly APEX_SOURCE=https://github.com/SekiroKenjii/apex-fedora
+readonly APEX_SOURCE=https://github.com/apex-linux/apex-image
 
 tests=0
 failed=0
@@ -274,7 +274,7 @@ reset_guest() {
     printf 'apex\n' >"$FAKE_STATE/variant"
     printf '    500000000000\n' >"$FAKE_STATE/avail"
     printf '%s|4000000000|1|%s\n' "$IMAGE_ID" "$APEX_SOURCE" >"$FAKE_STATE/builder-image"
-    bootc_status registry ghcr.io/sekirokenjii/apex-testing:45 "" >"$FAKE_STATE/bootc-status.json"
+    bootc_status registry ghcr.io/apex-linux/apex-testing:45 "" >"$FAKE_STATE/bootc-status.json"
     bootc_status containers-storage localhost/apex:build "$STAGED_DIGEST" >"$FAKE_STATE/bootc-status-staged.json"
 }
 
@@ -360,7 +360,7 @@ check "update upgrades a guest that follows the image already" \
     bash -c "grep -q 'bootc upgrade' '$FAKE_STATE/ssh.log' && ! grep -q 'bootc switch' '$FAKE_STATE/ssh.log'"
 
 reset_guest
-bootc_status registry ghcr.io/sekirokenjii/apex-testing:45 "" >"$FAKE_STATE/bootc-status-staged.json"
+bootc_status registry ghcr.io/apex-linux/apex-testing:45 "" >"$FAKE_STATE/bootc-status-staged.json"
 run_cmd throwaway "$DESKTOP_VM" update
 check "update reports when bootc staged nothing" test "$RC" -eq 0
 check "that report names the booted digest" err_has "nothing staged"
