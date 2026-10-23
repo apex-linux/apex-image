@@ -33,14 +33,14 @@ impl Outcome {
 
 impl Vm<'_> {
     pub fn load(&self, name: &str) -> Result<Pkg> {
-        let pkg = pkg::load(&self.root, name, Parse::Full)?;
-        pkg::check_family_unique(&self.root, &pkg)?;
+        let pkg = pkg::load(&self.recipe_root_of(name)?, name, Parse::Full)?;
+        pkg::check_family_unique(&self.recipe_roots(), &pkg)?;
         Ok(pkg)
     }
 
     pub fn build(&self, target: &str) -> Result<Vec<Outcome>> {
         let pkgs = if target == "all" {
-            let all = pkg::all(&self.root)?;
+            let all = self.all_pkgs()?;
             if all.is_empty() {
                 return Err(usage("no package has a pkg.env under packaging/pkgs"));
             }

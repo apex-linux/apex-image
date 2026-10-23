@@ -32,8 +32,8 @@ keys() {
     run env ROOT="$1" RELEASE_BUILD=0 "$SH" "$CHECKS/keys.sh"
 }
 
-APEX='ghcr.io/sekirokenjii/apex'
-TESTING='ghcr.io/sekirokenjii/apex-testing'
+APEX='ghcr.io/apex-linux/apex'
+TESTING='ghcr.io/apex-linux/apex-testing'
 
 r=$(mkroot good)
 keys "$r"

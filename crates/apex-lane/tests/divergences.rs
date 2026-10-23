@@ -119,9 +119,10 @@ fn limit_and_since_are_read_strictly() {
 }
 
 #[test]
-fn the_ere_subset_covers_the_committed_anchors() {
+fn the_ere_subset_covers_the_gnome_shell_anchors() {
     let edit = std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/pkgs/gnome-shell/spec-edit"),
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/recipes/packaging/pkgs/gnome-shell/spec-edit"),
     )
     .expect("spec-edit");
     assert_eq!(

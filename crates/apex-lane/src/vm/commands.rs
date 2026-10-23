@@ -87,7 +87,7 @@ impl Vm<'_> {
     }
 
     pub fn export(&self, name: &str, new: &[String]) -> Result<()> {
-        let pkg = pkg::load(&self.root, name, Parse::Export)?;
+        let pkg = pkg::load(&self.recipe_root_of(name)?, name, Parse::Export)?;
         let tree = self.root.join("_build/pkg").join(&pkg.name).join("tree");
         if !tree.join(".git").is_dir() {
             return Err(usage(format!(

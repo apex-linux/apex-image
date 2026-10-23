@@ -99,7 +99,7 @@ readonly QEMU_PROCESS_NAME=apex-desktop
 readonly OWNER_VM_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/apex/desktop
 readonly DEFAULT_SSH_PORT=2223
 # image/Containerfile's label: a local build has no version label to tell it by.
-readonly APEX_IMAGE_SOURCE=https://github.com/SekiroKenjii/apex-fedora
+readonly APEX_IMAGE_SOURCE=https://github.com/apex-linux/apex-image
 
 VM_DIR=$(realpath -m -- "${APEX_DESKTOP_DIR:-$OWNER_VM_DIR}")
 MEM=${APEX_DESKTOP_MEM:-4G}

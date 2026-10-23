@@ -206,6 +206,7 @@ mod tests {
         git(tree.path(), &["commit", "-q", "-m", "prep"]);
         let pkg = Pkg {
             name: "demo".into(),
+            recipe_root: tree.path().to_path_buf(),
             dir: tree.path().to_path_buf(),
             env: PkgEnv {
                 srpm: "demo".into(),

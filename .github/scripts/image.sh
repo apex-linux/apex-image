@@ -35,6 +35,10 @@ Environment:
   APEX_TARGET       podman build --target (a stage of image/Containerfile)
   APEX_RELEASE_BUILD  --build-arg RELEASE_BUILD (default 0); 1 for an image that will
                     be pushed, which then requires the real public keys
+  APEX_LANE_RECIPES the checkouts holding packaging/pkgs, ':'-separated (default
+                    this checkout)
+  APEX_SYSTEM_SRC, APEX_DESKTOP_SRC   the apex-system and apex-desktop checkouts
+                    (default this checkout)
 EOF
     exit 2
 }
@@ -58,12 +62,18 @@ load_env() {
 }
 
 lane_families() {
-    local f
-    for f in "$APEX_ROOT"/packaging/pkgs/*/pkg.env; do
-        [[ -f $f ]] || continue
-        sed -n 's/^family=[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' "$f"
+    local root f
+    local -a roots
+    IFS=: read -ra roots <<<"${APEX_LANE_RECIPES:-$APEX_ROOT}"
+    for root in "${roots[@]}"; do
+        for f in "$root"/packaging/pkgs/*/pkg.env; do
+            [[ -f $f ]] || continue
+            sed -n 's/^family=[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' "$f"
+        done
     done | LC_ALL=C sort -u
 }
+
+head_tree() { git -c safe.directory="$1" -C "$1" rev-parse "HEAD:$2" 2>/dev/null || echo none; }
 
 # Prints "PATH SHA256" per rpm line, and only when the lock is valid and records every family.
 lane_lock_check() {
@@ -210,6 +220,14 @@ cmd_context() {
 
     lane_context "$lane"
 
+    if [[ ! $APEX_SYSTEM_SRC -ef $APEX_ROOT ]]; then
+        [[ -z $(git -c safe.directory="$APEX_ROOT" -C "$APEX_ROOT" ls-files -- hardware) ]] ||
+            die "context: this checkout tracks hardware/, so APEX_SYSTEM_SRC must be unset or this checkout"
+        rm -rf "$CONTEXT/hardware"
+        mkdir -p "$CONTEXT/hardware/m7400qc"
+        cp -R -- "$APEX_SYSTEM_SRC/hardware/m7400qc/generated" "$CONTEXT/hardware/m7400qc/"
+    fi
+
     (cd "$RPMS_DIR" && sha256sum -- *.rpm >SHA256SUMS)
     {
         printf 'RPMS_KEY=%q\n' "${rpms_key:-unknown}"
@@ -284,7 +302,6 @@ cmd_build() {
 # shellcheck disable=SC2153 # BASE, RPMS_KEY, ... come from load_env
 content_key() {
     local degraded=$1 held=$2
-    local git_=(git -c safe.directory="$APEX_ROOT" -C "$APEX_ROOT")
     {
         printf 'apex content key schema 1\n'
         printf 'base %s\n' "$BASE"
@@ -294,9 +311,9 @@ content_key() {
         printf 'desktop-rpm %s\n' "$DESKTOP_KEY"
         printf 'libfprint %s\n' "$LIBFPRINT_KEY"
         printf 'lane %s\n' "$LANE_LOCK_SHA256"
-        printf 'tree image %s\n' "$("${git_[@]}" rev-parse HEAD:image 2>/dev/null || echo none)"
-        printf 'tree desktop %s\n' "$("${git_[@]}" rev-parse HEAD:desktop 2>/dev/null || echo none)"
-        printf 'tree hardware %s\n' "$("${git_[@]}" rev-parse HEAD:hardware 2>/dev/null || echo none)"
+        printf 'tree image %s\n' "$(head_tree "$APEX_ROOT" image)"
+        printf 'tree desktop %s\n' "$(head_tree "$APEX_DESKTOP_SRC" desktop)"
+        printf 'tree hardware %s\n' "$(head_tree "$APEX_SYSTEM_SRC" hardware)"
         jq -cS '[.packages[] | {name, epoch, version, release, arch}]' "$APEX_WORK/manifest.json"
     } | sha256sum | cut -c1-64
 }

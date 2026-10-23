@@ -49,6 +49,7 @@ pub struct Args {
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub src: PathBuf,
+    pub recipes: PathBuf,
     pub work: PathBuf,
     pub store: PathBuf,
     pub fedora_keys: PathBuf,
@@ -58,6 +59,7 @@ impl Default for Paths {
     fn default() -> Self {
         Self {
             src: "/src".into(),
+            recipes: "/recipes".into(),
             work: "/work".into(),
             store: "/store".into(),
             fedora_keys: "/usr/share/pki/rpm-gpg".into(),
@@ -183,7 +185,7 @@ impl Container<'_> {
     }
 
     fn setup(&self) -> Result<Setup> {
-        let env_path = pkg::pkgs_dir(&self.paths.src)
+        let env_path = pkg::pkgs_dir(&self.paths.recipes)
             .join(&self.args.pkg)
             .join("pkg.env");
         if !env_path.is_file() {
@@ -194,7 +196,7 @@ impl Container<'_> {
                 "in-container runs as root in the REPOS_BASE container",
             ));
         }
-        let pkg = pkg::load(&self.paths.src, &self.args.pkg, Parse::Full)?;
+        let pkg = pkg::load(&self.paths.recipes, &self.args.pkg, Parse::Full)?;
         if pkg.env.source1.is_some() {
             let staged = self
                 .args

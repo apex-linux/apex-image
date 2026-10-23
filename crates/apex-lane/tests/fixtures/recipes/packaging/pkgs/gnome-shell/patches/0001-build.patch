@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Thuong Vo <66083331+SekiroKenjii@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:27:18 +0700
+Subject: [PATCH] build: compile the Apex SCSS and resource into gnome-shell
+
+The Apex layer ships inside gnome-shell (apex-fedora ADR 0014). Its
+sources come from Source1, a git archive of desktop/shell/ in apex-fedora,
+which %prep unpacks at the top of this tree:
+
+- the light and dark entry files import apex/_apex-tokens.scss right after
+  _colors and apex/_apex.scss last; the high-contrast entry file imports
+  apex/_apex-structure.scss last;
+- data/theme/meson.build reads data/theme/apex/meson.build, which adds the
+  Apex partials to theme_sources;
+- apex.gresource.xml is compiled and linked into libshell next to
+  js-resources.
+
+%prep also deletes the shipped CSS, so meson runs sassc on all three entry
+files.
+---
+ data/theme/gnome-shell-dark.scss          | 2 ++
+ data/theme/gnome-shell-high-contrast.scss | 1 +
+ data/theme/gnome-shell-light.scss         | 2 ++
+ data/theme/meson.build                    | 1 +
+ js/meson.build                            | 6 ++++++
+ src/meson.build                           | 1 +
+ 6 files changed, 13 insertions(+)
+
+diff --git a/data/theme/gnome-shell-dark.scss b/data/theme/gnome-shell-dark.scss
+index c1a330b..8ad949b 100644
+--- a/data/theme/gnome-shell-dark.scss
++++ b/data/theme/gnome-shell-dark.scss
+@@ -2,6 +2,8 @@ $variant: 'dark';
+ $contrast: 'normal';
+ 
+ @import "gnome-shell-sass/_colors"; //use gtk colors
++@import "apex/apex-tokens";
+ @import "gnome-shell-sass/_drawing";
+ @import "gnome-shell-sass/_common";
+ @import "gnome-shell-sass/_widgets";
++@import "apex/apex";
+diff --git a/data/theme/gnome-shell-high-contrast.scss b/data/theme/gnome-shell-high-contrast.scss
+index a4394dd..b21143d 100644
+--- a/data/theme/gnome-shell-high-contrast.scss
++++ b/data/theme/gnome-shell-high-contrast.scss
+@@ -5,3 +5,4 @@ $contrast: "high";
+ @import "gnome-shell-sass/_drawing";
+ @import "gnome-shell-sass/_common";
+ @import "gnome-shell-sass/_widgets";
++@import "apex/apex-structure";
+diff --git a/data/theme/gnome-shell-light.scss b/data/theme/gnome-shell-light.scss
+index 22b8347..3778f0b 100644
+--- a/data/theme/gnome-shell-light.scss
++++ b/data/theme/gnome-shell-light.scss
+@@ -2,6 +2,8 @@ $variant: 'light';
+ $contrast: 'normal';
+ 
+ @import "gnome-shell-sass/_colors"; //use gtk colors
++@import "apex/apex-tokens";
+ @import "gnome-shell-sass/_drawing";
+ @import "gnome-shell-sass/_common";
+ @import "gnome-shell-sass/_widgets";
++@import "apex/apex";
+diff --git a/data/theme/meson.build b/data/theme/meson.build
+index d6f2d8e..08d953b 100644
+--- a/data/theme/meson.build
++++ b/data/theme/meson.build
+@@ -41,6 +41,7 @@ theme_sources = files([
+   'gnome-shell-sass/widgets/_workspace-switcher.scss',
+   'gnome-shell-sass/widgets/_workspace-thumbnails.scss'
+ ])
++subdir('apex')
+ 
+ stylesheets = [
+   'gnome-shell-high-contrast.css',
+diff --git a/js/meson.build b/js/meson.build
+index e594e23..150b385 100644
+--- a/js/meson.build
++++ b/js/meson.build
+@@ -8,6 +8,12 @@ js_resources = gnome.compile_resources(
+   dependencies: [config_js]
+ )
+ 
++apex_resources = gnome.compile_resources(
++  'apex-resources', '../apex.gresource.xml',
++  source_dir: '..',
++  c_name: 'apex_resources',
++)
++
+ if have_portal_helper
+   portal_resources = gnome.compile_resources(
+     'portal-resources', 'portal-resources.gresource.xml',
+diff --git a/src/meson.build b/src/meson.build
+index 73817da..705b629 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -213,6 +213,7 @@ libshell_gir_sources = [
+ 
+ libshell_no_gir_sources = [
+   js_resources,
++  apex_resources,
+   libshell_private_headers,
+   libshell_private_sources
+ ]

@@ -7,7 +7,7 @@ command -v glib-compile-schemas >/dev/null 2>&1 || skip_all "glib-compile-schema
 command -v systemd-analyze >/dev/null 2>&1 || skip_all "systemd-analyze not found"
 [ -x /usr/bin/gsettings ] || skip_all "no /usr/bin/gsettings (systemd-analyze checks apex-shell-safe.service's ExecStart)"
 
-DESKTOP=$REPO_ROOT/desktop
+DESKTOP=$APEX_DESKTOP_SRC/desktop
 SHA=$(printf '%064d' 0 | tr 0 a)
 KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
 
@@ -197,9 +197,9 @@ r=$(mkroot noschema)
 rm "$r"/usr/share/glib-2.0/schemas/*.gschema.xml
 desktop noschema
 expect_rc "a missing Apex schema fails" 1
-expect_out "and says what that means" '^FAIL desktop: no /usr/share/glib-2\.0/schemas/io\.github\.sekirokenjii\.Apex\.Desktop\.gschema\.xml: the layer would run in safe mode'
+expect_out "and says what that means" '^FAIL desktop: no /usr/share/glib-2\.0/schemas/io\.github\.apex_linux\.Apex\.Desktop\.gschema\.xml: the layer would run in safe mode'
 r=$(mkroot badschema)
-sed -i 's|<default>true</default>|<default>yes</default>|' "$r"/usr/share/glib-2.0/schemas/io.github.sekirokenjii.Apex.Desktop.gschema.xml
+sed -i 's|<default>true</default>|<default>yes</default>|' "$r"/usr/share/glib-2.0/schemas/io.github.apex_linux.Apex.Desktop.gschema.xml
 desktop badschema
 expect_rc "a schema that fails --strict fails" 1
 expect_out "and says so" '^FAIL desktop: the Apex schema fails --strict'

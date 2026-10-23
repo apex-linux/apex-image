@@ -8,7 +8,7 @@ APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 LOCK=${APEX_RPMS_LOCK:-$(rootpath /usr/share/apex/rpms.lock)}
 THEME=/usr/share/gnome-shell/gnome-shell-theme.gresource
-SCHEMA=/usr/share/glib-2.0/schemas/io.github.sekirokenjii.Apex.Desktop.gschema.xml
+SCHEMA=/usr/share/glib-2.0/schemas/io.github.apex_linux.Apex.Desktop.gschema.xml
 USERUNITS=/usr/lib/systemd/user
 MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */

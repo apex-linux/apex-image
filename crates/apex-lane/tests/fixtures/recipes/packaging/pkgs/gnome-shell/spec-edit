@@ -1,0 +1,37 @@
+# Anchored edits to Fedora's gnome-shell.spec; format and placeholders:
+# packaging/README.md. apex-lane adds the PatchNNNN lines itself.
+
+# %{autorelease} with braces expands to 1%{?dist}, so the suffix goes after .fc45 and
+# sorts above Fedora's build; "%autorelease -e apexN" would give 1.apexN.fc45, below it.
+replace ^Release:[[:space:]]+%autorelease$
+	Release:        %{autorelease}@APEX_RELEASE@
+end
+
+after ^Source0:
+	Source1:        @SOURCE1@
+end
+
+after ^BuildRequires:[[:space:]]+meson$
+	BuildRequires:  sassc
+end
+
+# The exact mutter the shell is built against; Fedora's >= lines stay.
+after ^BuildRequires:[[:space:]]+mutter-devel[[:space:]]
+	BuildRequires:  mutter-devel = @PIN_EVR@
+end
+
+after ^Requires:[[:space:]]+mutter%\{\?_isa\}[[:space:]]
+	Requires:       mutter%{?_isa} = @PIN_EVR@
+end
+
+# tar -k, mkdir without -p, mv and rm fail rather than clobber or miss an upstream file.
+# With no CSS left meson runs sassc on all three sheets; keep pkg.env's prep_* in step.
+after ^%autosetup[[:space:]]
+	# Apex: the layer, the SCSS and the resource list (Source1, desktop/shell/ in
+	# apex-fedora). Upstream's compiled light and dark sheets become the safe-mode
+	# sheets, and the shipped high-contrast sheet goes, so sassc builds all three.
+	tar -xkf %{SOURCE1}
+	mkdir data/theme/apex/stock
+	mv data/theme/gnome-shell-light.css data/theme/gnome-shell-dark.css data/theme/apex/stock/
+	rm data/theme/gnome-shell-high-contrast.css
+end

@@ -275,7 +275,7 @@ just desktop-update    # stage it in the running desktop VM (about 2 minutes for
 2. Starts the builder VM if it is not running, and stops it again afterwards. Both VMs
    then run at once.
 3. Refuses an image without the labels `containers.bootc=1` and
-   `org.opencontainers.image.source=https://github.com/SekiroKenjii/apex-fedora`, an
+   `org.opencontainers.image.source=https://github.com/apex-linux/apex-image`, an
    image that has passed no G2 (as `desktop-install`; `APEX_DESKTOP_UNGATED=1` takes it
    anyway), and a guest with less than twice the image's size plus 2 GiB free in `/var`.
 4. Streams `sudo podman save --format oci-archive` in the builder VM into `podman load`

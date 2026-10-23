@@ -1,5 +1,5 @@
 # Without it containers/image never finds cosign's signature attachments, and the
 # policy's sigstoreSigned rules fail. Keep this the only file configuring this scope.
 docker:
-  ghcr.io/sekirokenjii:
+  ghcr.io/apex-linux:
     use-sigstore-attachments: true

@@ -6,7 +6,7 @@
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
 
 DROPIN=$IMAGE_DIR/system_files/usr/lib/systemd/system/bootloader-update.service.d/10-apex-after-green-boot.conf
-ASSESS_UNIT=$REPO_ROOT/crates/apex-boot/data/apex-boot-assess.service
+ASSESS_UNIT=$APEX_SYSTEM_SRC/crates/apex-boot/data/apex-boot-assess.service
 INVOCATION=0123456789abcdef0123456789abcdef
 DIGEST=sha256:$(printf 'a%.0s' $(seq 64))
 
@@ -95,7 +95,7 @@ expect_rc "no decision in the journal: skipped" 1
 expect_out "and says so" 'no decision in its journal'
 if [ "$(cat "$FAKE_READS")" -eq 11 ]; then ok "after ten waits for journald"; else not_ok "after ten waits for journald ($(cat "$FAKE_READS") reads)"; fi
 
-SNAPSHOT=$REPO_ROOT/crates/apex-boot/src/snapshots/apex_boot__decide__tests__decision_table_snapshot.snap
+SNAPSHOT=$APEX_SYSTEM_SRC/crates/apex-boot/src/snapshots/apex_boot__decide__tests__decision_table_snapshot.snap
 
 # The Rust test assess_process checks that the logged "decision: " line has this form.
 snapshot_decisions_as_logged() {

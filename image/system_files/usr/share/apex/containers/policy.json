@@ -6,7 +6,7 @@
   ],
   "transports": {
     "docker": {
-      "ghcr.io/sekirokenjii/apex": [
+      "ghcr.io/apex-linux/apex": [
         {
           "type": "sigstoreSigned",
           "keyPaths": [
@@ -18,7 +18,7 @@
           }
         }
       ],
-      "ghcr.io/sekirokenjii/apex-testing": [
+      "ghcr.io/apex-linux/apex-testing": [
         {
           "type": "sigstoreSigned",
           "keyPath": "/usr/share/apex/keys/ci.pub",

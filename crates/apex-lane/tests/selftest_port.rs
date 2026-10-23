@@ -27,8 +27,8 @@ source1_paths=apex.gresource.xml js/ui/apex/
 prep_moved=a/b.css:a/apex/stock/b.css
 ";
 
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+fn recipes() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/recipes")
 }
 
 #[test]
@@ -613,7 +613,7 @@ fn nevra_name_of_a_nevra() {
 }
 
 fn gnome_shell() -> pkg::Pkg {
-    pkg::load(&root(), "gnome-shell", Parse::Full).expect("the committed gnome-shell inputs parse")
+    pkg::load(&recipes(), "gnome-shell", Parse::Full).expect("the gnome-shell fixture parses")
 }
 
 #[test]
@@ -630,32 +630,6 @@ fn gnome_shell_series() {
         gnome_shell().series,
         ["0001-build.patch", "0002-loader.patch"]
     );
-}
-
-#[test]
-fn desktop_shell_holds_only_source1_paths() {
-    let allowed = gnome_shell().env.source1_paths;
-    let base = root().join("desktop/shell");
-    let mut stack = vec![base.clone()];
-    let mut outside = Vec::new();
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("desktop/shell") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else {
-                let rel = path
-                    .strip_prefix(&base)
-                    .expect("inside")
-                    .display()
-                    .to_string();
-                if !member_ok(&rel, &allowed) {
-                    outside.push(rel);
-                }
-            }
-        }
-    }
-    assert!(outside.is_empty(), "outside source1_paths: {outside:?}");
 }
 
 /// Fedora's lines as of f45 gnome-shell.spec, 2026-09-28.

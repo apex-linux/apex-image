@@ -42,6 +42,10 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+fn recipes() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/recipes")
+}
+
 fn assert_same(path: &str, actual: &[u8]) {
     let expected = read(path);
     assert!(
@@ -122,7 +126,7 @@ fn spec_edit_edge_cases() {
 /// gnome-shell.out is the spec inside the stored gnome-shell-51.0-1.fc45.apex2.src.rpm.
 #[test]
 fn spec_edit_gnome_shell_f45() {
-    let gs = pkg::load(&root(), "gnome-shell", Parse::Full).expect("committed inputs");
+    let gs = pkg::load(&recipes(), "gnome-shell", Parse::Full).expect("the fixture");
     apply_case(
         "gnome-shell",
         &read("spec-edit/gnome-shell-51.0-1.fc45.spec"),
@@ -194,6 +198,7 @@ fn test_vm<'a>(
 ) -> Vm<'a> {
     Vm {
         root: root(),
+        recipes: vec![recipes()],
         settings: Settings {
             store: store.to_path_buf(),
             ga_override: None,
@@ -427,7 +432,7 @@ fn hold_cases() {
             (StdRunner::inherit(), FixedClock(now), Reporter::capturing());
         let bodhi = FixtureBodhi(dir.join(&case).join("in/bodhi"));
         let vm = test_vm(store.path(), &runner, &clock, &bodhi, &report);
-        let mut gs = pkg::load(&root(), "gnome-shell", Parse::Full).expect("committed inputs");
+        let mut gs = pkg::load(&recipes(), "gnome-shell", Parse::Full).expect("the fixture");
         gs.env.on_fail = on_fail;
         let result = vm.record_failure(&gs, work.path());
         let exit = u8::from(result.is_err());
