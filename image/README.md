@@ -104,6 +104,22 @@ Each `checks/*.sh` sources `checks/lib/common.sh` after `set -eu` and `CHECK_NAM
 prints one PASS, FAIL, WARN or SKIP line per assertion, and ends with `finish`, which
 exits 1 on a FAIL. The final stage runs them with `sh`.
 
+| Check | Guards |
+|---|---|
+| `composefs.sh` | composefs holds the deployed root, in the image and in the initramfs |
+| `desktop.sh` | the shell as the lane locked it, its theme, the Apex schema, vendor defaults and crash guard |
+| `firmware.sh` | every glob of `firmware-files.txt` matches a firmware file |
+| `icons.sh` | every `.desktop` file's `Icon=` resolves in the default icon theme, what it inherits, hicolor or the unthemed dirs, as GTK resolves it |
+| `kernel.sh` | the one kernel and its initramfs: early KMS, microcode, the LUKS2 unlock |
+| `keybindings.sh` | no two default keybindings share a combination |
+| `keys.sh` | the signature policy's trust mapping and the keys it names |
+| `legacy.sh` | no banned package, and no GTK2, GTK3 or Xorg user outside `audit/legacy-allowlist.txt` |
+| `overlay.sh` | the rootfs overlay's files parse without a warning |
+| `power.sh` | tuned-ppd and its ppd.conf |
+| `secrets.sh` | no private key in the image outside reviewed fixtures and packaged files |
+| `signing.sh` | nothing disables RPM or dnf signature checks; the Apex RPM key |
+| `system.sh` | what the install and recovery runbooks rely on |
+
 Each `tests/t-*.sh` sources `tests/lib.sh`, writes only under `$T` (removed on exit),
 and ends with `done_testing`; the output is TAP. `tests/run.sh --help` shows how to run
 them.
