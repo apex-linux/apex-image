@@ -199,7 +199,7 @@ jobs:
 
   shots-tests:
     # G2 itself needs the built image and runs in the builder VM (just vm-g2); this job
-    # tests its PNG comparison and its reading of the token file and the top bar.
+    # tests its PNG comparison, its assertions and its dbusmock fixtures.
     name: tests/shots/selftest.sh (Fedora 45)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -210,10 +210,11 @@ jobs:
     env:
       APEX_SHOTS_TESTS_NO_SKIP: "1"
     steps:
-      - name: gjs, GdkPixbuf and jq
+      - name: gjs, GdkPixbuf, jq, and the fixtures' dbus-daemon, python3-dbusmock and client libraries
         run: >-
           dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install
           gjs gdk-pixbuf2 jq bash coreutils gawk grep sed
+          dbus-daemon python3-dbusmock NetworkManager-libnm gnome-bluetooth-libs
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
