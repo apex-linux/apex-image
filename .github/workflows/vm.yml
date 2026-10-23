@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: vm
+
+# The image build in the builder VM, through the self-hosted runner (tools/runner/README.md).
+# No pull_request trigger: the runner only builds commits of main, and ci-build refuses others.
+on:
+  push:
+    branches: [main]
+    paths:
+      - components.lock
+      - image/**
+      - crates/apex-lane/**
+      - tools/**
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: A commit of main to build instead of its head; needs the vm-dispatch approval
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: vm
+  cancel-in-progress: false
+
+jobs:
+  dispatch-approval:
+    name: vm-dispatch approval of the inputs
+    if: >-
+      github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
+      && github.event_name == 'workflow_dispatch' && inputs.sha != ''
+    runs-on: [self-hosted, apex-kvm]
+    timeout-minutes: 5
+    environment: vm-dispatch
+    permissions: {}
+    steps:
+      - name: Approved
+        env:
+          SHA: ${{ inputs.sha }}
+        run: echo "vm-dispatch approved a build of $SHA"
+
+  build:
+    name: builder VM build and gates
+    needs: dispatch-approval
+    # Skipped approval: no inputs to approve. A rejected or failed one stops the build.
+    if: >-
+      github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
+      && !cancelled()
+      && (needs.dispatch-approval.result == 'success'
+          || (needs.dispatch-approval.result == 'skipped'
+              && (github.event_name != 'workflow_dispatch' || inputs.sha == '')))
+    runs-on: [self-hosted, apex-kvm]
+    timeout-minutes: 420
+    permissions: {}
+    steps:
+      - name: Commit
+        id: commit
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          sha=${INPUT_SHA:-$GITHUB_SHA}
+          [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a full commit sha: $sha"; exit 1; }
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+
+      # ci-build (tools/builder-vm/ci-build.sh) runs every stage in the VM, starting with the
+      # components hook for tools/components.sh fetch; the RPM key and ~/apex-store stay there.
+      - name: Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          # The VM's build log is not trusted to issue workflow commands.
+          token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+          echo "::stop-commands::$token"
+          rc=0
+          # shellcheck disable=SC2029 # the sha is the remote command, checked above and by ci-build
+          ssh apex-builder ci-build "$SHA" >"$RUNNER_TEMP/results.tar" || rc=$?
+          echo "::$token::"
+          case $rc in
+            0) ;;
+            2) echo "::error::ci-build refused $SHA" ;;
+            75) echo "::error::another build holds the builder VM" ;;
+            *) echo "::error::the build in the builder VM failed (exit $rc)" ;;
+          esac
+          exit "$rc"
+
+      - name: Gates file
+        if: ${{ !cancelled() }}
+        run: |
+          out=$RUNNER_TEMP/results
+          mkdir -p "$out"
+          [[ -s $RUNNER_TEMP/results.tar ]] || { echo "::error::the builder VM returned no results"; exit 1; }
+          tar -xf "$RUNNER_TEMP/results.tar" -C "$out" --no-same-owner --no-same-permissions
+          section() {
+            [[ -s $out/$2 ]] || return 0
+            printf '### %s\n\n```\n' "$1"
+            cat -- "$out/$2"
+            printf '```\n\n'
+          }
+          {
+            echo "## Builder VM"
+            echo
+            section "ci-build" ci-build.txt
+            section "Gates (gates-passed.txt)" gates-passed.txt
+            section "Lane lock (rpms.lock to rpms.lock.next, before the promotion)" lock.diff
+            section "G2 (result.txt)" g2-result.txt
+            section "G4 record (g4-passed.txt)" g4-passed.txt
+            if [[ -s $out/g4-results.md ]]; then
+              printf '### G4 (results.md)\n\n'
+              cat -- "$out/g4-results.md"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          [[ -s $out/gates-passed.txt ]] || { echo "::error::no gates file: G2 or G4 did not pass"; exit 1; }

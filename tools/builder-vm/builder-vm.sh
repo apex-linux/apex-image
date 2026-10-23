@@ -24,6 +24,10 @@ VM never mounts host directories.
                               sync, then build the RPM inputs and the image in the VM
                               (--image-only reuses the RPMs of the previous run)
   builder-vm.sh provision     re-run the guest provisioning (idempotent)
+  builder-vm.sh ci-install PUBKEY
+                              install ci-build, the self-hosted runner's entry point,
+                              and bind the ssh public key in the file PUBKEY to it with
+                              restrict,command= (tools/runner/README.md)
   builder-vm.sh console       follow the serial console log
   builder-vm.sh destroy --yes delete the VM disk, firmware vars and keys (keeps the
                               verified base image cache)
@@ -55,6 +59,11 @@ readonly QEMU_PROCESS_NAME=apex-builder
 # "Host injected async #PF in interrupt disabled region".
 readonly QEMU_CPU=host,kvm-asyncpf=off,kvm-asyncpf-int=off
 readonly HOST_LOOPBACK_FROM_GUEST=10.0.2.2
+readonly CI_BUILD=/usr/local/libexec/apex/ci-build
+readonly CI_KEY_COMMENT=apex-ci
+# Taken by ci-build too, so that a CI build and a sync or build from this host never overlap.
+# shellcheck disable=SC2088 # expanded by the guest's shell
+readonly GUEST_BUILD_LOCK='~/.apex-build.lock'
 
 VM_DIR=${APEX_VM_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/apex/builder}
 MEM=${APEX_VM_MEM:-6G}
@@ -268,11 +277,17 @@ status() {
     [[ -e $DISK ]] && log "disk: $(du -h "$DISK" | cut -f1) used on the host, $DISK"
 }
 
+require_build_lock_free() {
+    vm_ssh "flock -n $GUEST_BUILD_LOCK true" </dev/null ||
+        die "a CI build (ci-build) holds the builder VM; wait for it, or see: $0 ssh 'pgrep -af build-image'"
+}
+
 sync_repo() {
     running || die "the VM is not running ($0 start)"
+    require_build_lock_free
     init_ssh_opts
     local rsh="ssh ${ssh_opts[*]}"
-    rsync -a --delete --info=stats1 \
+    rsync -a --delete --info=stats1 --rsync-path="flock -n $GUEST_BUILD_LOCK rsync" \
         --exclude=/target/ --exclude=/_build/ --exclude=/rpms/ \
         -e "$rsh" "$REPO/" builder@127.0.0.1:apex-fedora/
 }
@@ -290,14 +305,40 @@ run_in_repo() {
     sync_repo
     local cmd
     printf -v cmd '%q ' "$@"
-    vm_ssh -t "cd ~/apex-fedora && $cmd"
+    vm_ssh -t "cd ~/apex-fedora && flock -n $GUEST_BUILD_LOCK $cmd"
 }
 
 image() {
     local image_only_flag=${1:-}
     sync_repo
     # Run by path, not fed through `bash -s`: G4's ssh (qualify.sh, no -n) would read the rest of the script.
-    vm_ssh "bash ~/apex-fedora/tools/builder-vm/build-image.sh $image_only_flag" </dev/null
+    vm_ssh "flock -n $GUEST_BUILD_LOCK bash ~/apex-fedora/tools/builder-vm/build-image.sh $image_only_flag" </dev/null
+}
+
+ci_install() {
+    local pubkey_file=$1 type blob line
+    [[ -r $pubkey_file ]] || die "ci-install: cannot read $pubkey_file"
+    read -r type blob _ <"$pubkey_file" || true
+    [[ $type == ssh-ed25519 && $blob =~ ^[A-Za-z0-9+/]+=*$ && $(wc -l <"$pubkey_file") -le 1 ]] ||
+        die "ci-install: $pubkey_file is not one ssh-ed25519 public key"
+    ssh-keygen -l -f "$pubkey_file" >/dev/null || die "ci-install: ssh-keygen does not read $pubkey_file"
+    line="restrict,command=\"$CI_BUILD\" $type $blob $CI_KEY_COMMENT"
+    vm_ssh "sudo install -d -m 0755 ${CI_BUILD%/*} && sudo tee $CI_BUILD >/dev/null && sudo chmod 0755 $CI_BUILD" \
+        <"$HERE/ci-build.sh"
+    vm_ssh "bash -s -- $(printf '%q ' "$line" "$CI_KEY_COMMENT")" <<'EOF'
+set -euo pipefail
+keys=$HOME/.ssh/authorized_keys
+umask 077
+mkdir -p "$HOME/.ssh"
+touch "$keys"
+grep -v " $2\$" "$keys" >"$keys.new" || true
+printf '%s\n' "$1" >>"$keys.new"
+mv -f "$keys.new" "$keys"
+mkdir -p "$HOME/.config/apex"
+[[ -e $HOME/.config/apex/ci.env ]] || printf 'APEX_CI_REMOTE=https://github.com/apex-linux/apex-image.git\n' >"$HOME/.config/apex/ci.env"
+EOF
+    log "installed $CI_BUILD; the key $(ssh-keygen -l -f "$pubkey_file" | cut -d' ' -f2) may run only ci-build <sha>"
+    log "main is fetched from $(vm_ssh 'sed -n "s/^APEX_CI_REMOTE=//p" ~/.config/apex/ci.env' </dev/null) (~/.config/apex/ci.env in the VM)"
 }
 
 destroy() {
@@ -327,6 +368,10 @@ main() {
             [[ ${1:-} == "" || ${1:-} == --image-only ]] || die "usage: $0 image [--image-only]"
             image "${1:-}" ;;
         provision) running || die "the VM is not running ($0 start)"; provision ;;
+        ci-install)
+            running || die "the VM is not running ($0 start)"
+            (($# == 1)) || die "usage: $0 ci-install PUBKEY"
+            ci_install "$1" ;;
         console) exec tail -f "$SERIAL" ;;
         destroy) destroy "$@" ;;
         help | -h | --help) usage ;;
