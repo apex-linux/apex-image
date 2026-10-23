@@ -59,6 +59,13 @@ theme_index() {
     done
 }
 
+# -L -type f drops a dangling link, and a link loop only makes find exit 1: neither resolves.
+icon_files() {
+    if [ -d "$1" ]; then
+        find -L "$1" -maxdepth 1 -type f \( -name '*.png' -o -name '*.svg' -o -name '*.xpm' \) 2>/dev/null || true
+    fi
+}
+
 # GTK's order: the theme, then depth first what it inherits, each once, and hicolor last.
 printf '%s\nhicolor\n' "$theme" >"$TMPD/todo"
 : >"$TMPD/seen"
@@ -87,18 +94,12 @@ while [ -s "$TMPD/todo" ]; do
     } >"$TMPD/dirs"
     printf '%s\n' "$ICON_BASES" | while IFS= read -r base; do
         while IFS= read -r d; do
-            dir=$(rootpath "$base/$t/$d")
-            if [ -d "$dir" ]; then
-                find -L "$dir" -maxdepth 1 -type f \( -name '*.png' -o -name '*.svg' -o -name '*.xpm' \)
-            fi
+            icon_files "$(rootpath "$base/$t/$d")"
         done <"$TMPD/dirs"
     done >>"$TMPD/files"
 done
 printf '%s\n' "$ICON_BASES" | while IFS= read -r base; do
-    dir=$(rootpath "$base")
-    if [ -d "$dir" ]; then
-        find -L "$dir" -maxdepth 1 -type f \( -name '*.png' -o -name '*.svg' -o -name '*.xpm' \)
-    fi
+    icon_files "$(rootpath "$base")"
 done >>"$TMPD/files"
 sed -e 's|.*/||' -e 's/\.[^.]*$//' "$TMPD/files" | LC_ALL=C sort -u >"$TMPD/names"
 
