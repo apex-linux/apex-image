@@ -1,6 +1,5 @@
 #!/bin/sh
-# image/checks/keybindings.sh on fake roots: stub GNOME keybinding schemas with the
-# committed Apex schema and override.
+# image/checks/keybindings.sh on stub GNOME schemas, and in fedora:45 on Fedora's own.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v glib-compile-schemas >/dev/null 2>&1 || skip_all "glib-compile-schemas not found"
@@ -22,8 +21,7 @@ stub() {
     } >"$r/$SCHEMAS/$id.gschema.xml"
 }
 
-# mkroot NAME: GNOME's stock bindings that matter here, with Super+Space on the input
-# source as upstream ships it; the Apex override moves it.
+# mkroot NAME: upstream's Super+Space input source, which the Apex override moves.
 mkroot() {
     r=$T/$1
     mkdir -p "$r/$SCHEMAS"
@@ -87,8 +85,7 @@ keybindings broken
 expect_rc "a keybinding schema that does not parse fails" 1
 expect_out "as a schema whose bindings were not checked" '^FAIL keybindings: no schema org\.gnome\.shell\.keybindings under '
 
-# In fedora:45 (CI): the stock schemas of the four packages that ship keybindings, unpacked
-# without installing them, with the committed Apex schema and override.
+# The schemas of the packages that ship keybindings, unpacked, not installed.
 if grep -qx 'ID=fedora' /etc/os-release 2>/dev/null && command -v dnf5 >/dev/null 2>&1; then
     r=$T/fedora
     mkdir -p "$r/rpms" "$r/$SCHEMAS"
