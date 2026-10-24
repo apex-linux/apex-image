@@ -1290,8 +1290,7 @@ pinned_features() {
 pinned_gnome() { printf 'apex-gnome %s' "$(git -C "$APEX_GNOME_SRC" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"; }
 
 # A feature the pin lacks is no regression; one the pin lists must have run in the session.
-# Returns 1, with FEATURE_NOTE set, when the pinned apex-gnome does not list FEATURE.
-# feature_gate TEST FEATURE SINCE [ROW...]: the ROWs (default TEST) name it in results.md.
+# Returns 1, with FEATURE_NOTE set, when the pin lacks FEATURE; ROWs (default TEST) name it.
 feature_gate() {
     local test=$1 feature=$2 since=$3 features row
     local -a rows=("${@:4}")
