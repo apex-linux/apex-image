@@ -121,6 +121,10 @@ vm-image-only:
 vm-qualify:
     tools/builder-vm/builder-vm.sh run env QUALIFY_MEM=3G QUALIFY_SMP=4 .github/scripts/qualify.sh local localhost/apex:build
 
+# INSTALL.md's USB SSD rehearsal in the builder VM: G4 with root in LUKS2, unlocked through Plymouth's prompt at every boot.
+vm-qualify-luks:
+    tools/builder-vm/builder-vm.sh run env QUALIFY_LAYOUT=luks QUALIFY_MEM=3G QUALIFY_SMP=4 .github/scripts/qualify.sh local localhost/apex:build
+
 # G2 in the builder VM: the headless shell of IMAGE (the last vm-image build), run twice and asserted (apex-gnome's tests/shots).
 vm-g2 image="localhost/apex:build":
     tools/builder-vm/builder-vm.sh run bash -c '. .github/scripts/lib.sh && eval "$(tools/components.sh env)" && G2_IMAGE_DIR=$PWD/image G2_REPOS_BASE=$(containerfile_arg REPOS_BASE) G2_OUT_DIR=$PWD/_build/g2 "$APEX_GNOME_SRC/tests/shots/run.sh" "$1"' _ {{ image }}

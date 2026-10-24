@@ -70,7 +70,11 @@ arms the counter, e.g. `qualify.sh red sha256:<older> sha256:<newer>`.
 Environment (all optional):
   QUALIFY_OUT           work directory (default _build/qualify); fixtures/ and logs/
                         in it are the artifacts worth keeping
-  QUALIFY_LAYOUT        separate-boot (default): ESP + ext4 /boot + btrfs root, the
+  QUALIFY_LAYOUT        luks: INSTALL.md's USB SSD rehearsal (ADR 0010), separate-boot
+                        with root in LUKS2 (btrfs subvolumes root and var), the
+                        passphrase typed over QMP into the Plymouth prompt at every boot
+                        (`red` and the counted rollback are skipped, no G4 pass is recorded);
+                        separate-boot (default): ESP + ext4 /boot + btrfs root, the
                         laptop's layout, installed with `bootc install to-filesystem`;
                         to-disk: `bootc install to-disk --via-loopback --filesystem btrfs`
                         (`red` is skipped there: GRUB cannot count on a btrfs /boot)
@@ -153,8 +157,9 @@ SESSION_UID=
 SESSION_TYPE=
 TEST_PASSWORD=
 LOCAL_CANDIDATE_DIGEST=
+LUKS_PASSPHRASE=
 FEATURE_NOTE=
-declare -a LOOPS=() MOUNTS=()
+declare -a LOOPS=() MOUNTS=() MAPPERS=()
 
 result() {
     local test=$1 status=$2 detail=$3
@@ -239,6 +244,100 @@ install_kargs() {
     done
 }
 
+# INSTALL.md §5.1, §5.3, §7 and §8 on a loop device: the passphrase lives in this run only.
+install_luks() {
+    local name=$1 image=$2 target=$3 loop uuid deploy statefile btrfs_uuid
+    local mnt=$QUALIFY_OUT/mnt-$name top=$QUALIFY_OUT/mnt-$name-top mapper=apex-qualify-$name
+    shift 3
+    local -a common=("$@") kargs
+    mapfile -t kargs < <(install_kargs)
+    loop=$(as_root losetup --find --show --partscan "$QUALIFY_OUT/$name.raw")
+    LOOPS+=("$loop")
+    as_root sfdisk --quiet --wipe always "$loop" <<'EOF'
+label: gpt
+size=600MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="esp"
+size=1GiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="apex-boot"
+type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name="apex-root"
+EOF
+    as_root partx --update "$loop" 2>/dev/null || true
+    as_root udevadm settle 2>/dev/null || true
+    as_root mkfs.vfat -F 32 -n EFI "${loop}p1" >/dev/null
+    as_root mkfs.ext4 -q -F -L apex-boot "${loop}p2"
+    LUKS_PASSPHRASE=$(openssl rand -hex 12) || die "openssl rand failed"
+    printf '%s' "$LUKS_PASSPHRASE" | as_root cryptsetup luksFormat --batch-mode --type luks2 --label apex-root \
+        --key-file - "${loop}p3" || die "cryptsetup luksFormat failed"
+    printf '%s' "$LUKS_PASSPHRASE" | as_root cryptsetup open --key-file - "${loop}p3" "$mapper" ||
+        die "cryptsetup open failed"
+    MAPPERS+=("$mapper")
+    uuid=$(as_root cryptsetup luksUUID "${loop}p3")
+    as_root mkfs.btrfs -q -f -L apex "/dev/mapper/$mapper"
+    mkdir -p "$top" "$mnt"
+    as_root mount -o subvolid=5 "/dev/mapper/$mapper" "$top"
+    MOUNTS+=("$top")
+    as_root btrfs -q subvolume create "$top/root"
+    as_root btrfs -q subvolume create "$top/var"
+    as_root mount -o subvol=root "/dev/mapper/$mapper" "$mnt"
+    MOUNTS+=("$mnt")
+    as_root mkdir -p "$mnt/boot"
+    as_root mount "${loop}p2" "$mnt/boot"
+    MOUNTS+=("$mnt/boot")
+    as_root mkdir -p "$mnt/boot/efi"
+    as_root mount "${loop}p1" "$mnt/boot/efi"
+    MOUNTS+=("$mnt/boot/efi")
+    # show_status puts systemd-cryptsetup's start and finish on the serial console, under
+    # Plymouth's prompt on tty0.
+    as_root podman run "${common[@]}" -v "$mnt:/target" "$image" \
+        bootc install to-filesystem --generic-image \
+        --target-imgref "$target" --root-ssh-authorized-keys /out/authorized_keys \
+        --karg "rd.luks.uuid=$uuid" --karg rd.systemd.show_status=true "${kargs[@]}" /target
+    statefile=$top/root/ostree/deploy/default
+    # shellcheck disable=SC2016 # expanded by the root shell
+    deploy=$(as_root sh -c 'ls -d "$1"/deploy/*.0' sh "$statefile") || die "no deployment under $statefile"
+    as_root cp -a --reflink=always "$statefile/var/." "$top/var/"
+    as_root chcon --reference="$statefile/var" "$top/var" 2>/dev/null || true
+    btrfs_uuid=$(as_root blkid -s UUID -o value "/dev/mapper/$mapper")
+    printf 'UUID=%s /var btrfs subvol=/var 0 0\n' "$btrfs_uuid" | as_root tee -a "$deploy/etc/fstab" >/dev/null
+    unmount_all
+    close_mappers
+    as_root losetup --detach "$loop"
+    LOOPS=()
+}
+
+close_mappers() {
+    local m
+    for m in "${MAPPERS[@]}"; do as_root cryptsetup close "$m" 2>/dev/null || true; done
+    MAPPERS=()
+}
+
+serial_lines() { wc -l <"$VM_SERIAL" 2>/dev/null || echo 0; }
+serial_has() { tail -n "+$(($1 + 1))" "$VM_SERIAL" 2>/dev/null | tr -d '\r' | grep -Eq "$2"; }
+cryptsetup_asked() { serial_has "$1" 'Starting .*Cryptography Setup for '; }
+cryptsetup_opened() { serial_has "$1" 'Finished .*Cryptography Setup for '; }
+
+# FROM is the serial log's line count before this boot. With WRONG, a wrong passphrase
+# goes in first and must leave the disk closed.
+luks_unlock() {
+    local test=$1 from=$2 wrong=${3:-}
+    wait_until "$test" "$QUALIFY_BOOT_TIMEOUT" \
+        "no 'Starting … Cryptography Setup' on the serial console: the initramfs never asked for the LUKS passphrase" \
+        cryptsetup_asked "$from"
+    sleep "$QUALIFY_POLL"
+    screendump "$test-prompt"
+    if [[ -n $wrong ]]; then
+        { type_text "$WRONG_PASSWORD" && qmp "$(key_press ret)"; } || fail "$test-wrong" "QEMU took no key on its QMP socket $QMP_SOCKET"
+        local i
+        for i in 1 2 3; do sleep "$QUALIFY_POLL"; done
+        ! cryptsetup_opened "$from" || fail "$test-wrong" "a wrong passphrase opened the LUKS root"
+        vm_alive || fail "$test-wrong" "the VM stopped after a wrong passphrase"
+        screendump "$test-wrong"
+        result "$test-wrong" PASS "a wrong passphrase left the LUKS root closed, and the prompt asked again (logs/$test-wrong.png)"
+    fi
+    { type_text "$LUKS_PASSPHRASE" && qmp "$(key_press ret)"; } || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" "the passphrase typed into the Plymouth prompt did not open the LUKS root" \
+        cryptsetup_opened "$from"
+    [[ -z $wrong ]] || result "$test" PASS "Plymouth's prompt (logs/$test-prompt.png) took the passphrase over QMP; systemd-cryptsetup opened the LUKS2 root"
+}
+
 install_disk() {
     local name=$1 image=$2 target=$3 disk="$QUALIFY_OUT/$1.raw"
     group "Install $image ($QUALIFY_LAYOUT) into $disk"
@@ -297,7 +396,8 @@ EOF
             as_root losetup --detach "$loop"
             LOOPS=()
             ;;
-        *) die "QUALIFY_LAYOUT must be separate-boot or to-disk" ;;
+        luks) install_luks "$name" "$image" "$target" "${common[@]}" ;;
+        *) die "QUALIFY_LAYOUT must be separate-boot, luks or to-disk" ;;
     esac
     endgroup
 }
@@ -413,9 +513,11 @@ wait_ssh() {
 }
 
 vm_reboot() {
-    local before after deadline
+    local before after deadline from
     before=$(vm_ssh cat /proc/sys/kernel/random/boot_id)
+    from=$(serial_lines)
     vm_ssh 'systemctl reboot' >/dev/null 2>&1 || true
+    [[ -z $LUKS_PASSPHRASE ]] || luks_unlock "$VM_NAME-luks-reboot" "$from"
     deadline=$((SECONDS + QUALIFY_BOOT_TIMEOUT))
     while ((SECONDS < deadline)); do
         sleep 15
@@ -1541,6 +1643,7 @@ cmd_local() {
     ensure_key
     install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
     start_vm local
+    [[ -z $LUKS_PASSPHRASE ]] || luks_unlock local-luks 0 wrong
     wait_ssh
     assert_green local-install "$digest"
     assert_bootloader_updated local-install
@@ -1551,7 +1654,11 @@ cmd_local() {
         stage_local_candidate local-stage "$digest"
         counted_rollback local "$digest" "$LOCAL_CANDIDATE_DIGEST"
     else
-        result local-red SKIP "QUALIFY_LAYOUT=$QUALIFY_LAYOUT: GRUB cannot save the counter on a btrfs /boot"
+        if [[ $QUALIFY_LAYOUT == luks ]]; then
+            result local-red SKIP "QUALIFY_LAYOUT=luks: every boot of the counted rollback would wait for the passphrase"
+        else
+            result local-red SKIP "QUALIFY_LAYOUT=$QUALIFY_LAYOUT: GRUB cannot save the counter on a btrfs /boot"
+        fi
         create_test_user local
         vm_reboot
         assert_green local-rebooted "$digest"
@@ -1568,7 +1675,11 @@ cmd_local() {
     lock_matrix local "$since"
     crash_guard_logins local
     safe_karg_lock local
-    record_g4_pass local "$image"
+    if [[ $QUALIFY_LAYOUT == luks ]]; then
+        result local-g4 SKIP "QUALIFY_LAYOUT=luks is the install rehearsal: only the default layout records G4 passes"
+    else
+        record_g4_pass local "$image"
+    fi
     save_journal final
     stop_vm
     drop_disk local
@@ -1654,6 +1765,7 @@ cleanup() {
     if ((rc != 0)) && vm_alive; then save_journal failure; fi
     stop_vm || true
     unmount_all
+    close_mappers
     local l
     for l in "${LOOPS[@]}"; do as_root losetup --detach "$l" 2>/dev/null || true; done
     if [[ ${QUALIFY_KEEP_DISKS:-0} != 1 ]]; then rm -f "$QUALIFY_OUT"/*.raw; fi
@@ -1673,6 +1785,7 @@ main() {
     esac
     require qemu-system-x86_64 ssh ssh-keygen jq openssl skopeo podman truncate sfdisk \
         losetup mkfs.vfat mkfs.ext4 mkfs.btrfs comm
+    [[ $QUALIFY_LAYOUT != luks ]] || require cryptsetup btrfs blkid
     mkdir -p "$QUALIFY_OUT"
     rm -rf "$QUALIFY_OUT/logs.previous"
     if [[ -d $QUALIFY_OUT/logs ]]; then mv "$QUALIFY_OUT/logs" "$QUALIFY_OUT/logs.previous"; fi

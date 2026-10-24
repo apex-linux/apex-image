@@ -1836,6 +1836,68 @@ check "a first publication of a whole image moves" 0 "$(degraded_rc 45 '')"
 printf 'broken' >"$P/reg/broken.fail"
 check "a published tag that cannot be read is refused" 1 "$(degraded_rc broken '')"
 
+# --- qualify.sh luks: the passphrase goes into Plymouth's prompt once systemd-cryptsetup asks ---
+L="$TMP/luks"
+luks() { # [wrong] [FROM]: luks_unlock on a fake serial console and QMP; prints the exit status
+    local rc=0
+    mkdir -p "$L/out/logs"
+    : >"$L/out/results.md"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    QUALIFY_OUT="$L/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_BOOT_TIMEOUT=2 GITHUB_ACTIONS='' \
+        bash -c '
+        . "$1"
+        VM_SERIAL=$2/serial LUKS_PASSPHRASE=0123456789abcdef01234567 QMP_SOCKET=$2/qmp
+        vm_alive() { [[ ! -e $FAKE/stopped ]]; }
+        save_journal() { :; }
+        qmp() {
+            local cmd keys
+            for cmd in "$@"; do
+                keys=$(jq -r "select(.execute == \"send-key\") | [.arguments.keys[].data] | join(\"+\")" <<<"$cmd")
+                case $keys in
+                    "") ;;
+                    ret)
+                        if [[ $(cat "$FAKE/typed" 2>/dev/null) == "$LUKS_PASSPHRASE" && ! -e $FAKE/never-opens ]] ||
+                            [[ -e $FAKE/wrong-opens ]]; then
+                            echo "[  OK  ] Finished systemd-cryptsetup@luks.service - Cryptography Setup for luks-x." >>"$VM_SERIAL"
+                        fi
+                        : >"$FAKE/typed" ;;
+                    *) printf "%s" "$keys" >>"$FAKE/typed" ;;
+                esac
+            done
+        }
+        luks_unlock local-luks "$4" "$3"' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$L" "${1:-}" "${2:-0}" >"$L/stderr" 2>&1 || rc=$?
+    printf '%s\n' "$rc"
+}
+luks_boot() {
+    rm -rf "$L"
+    mkdir -p "$L"
+    export FAKE=$L
+    printf '%s\n' '[    1.2] some boot line' '         Starting systemd-cryptsetup@luks.service - Cryptography Setup for luks-x...' >"$L/serial"
+}
+luks_boot
+check "the passphrase opens the LUKS root, after a wrong one is refused" 0 "$(luks wrong)"
+check "row local-luks-wrong passes" 1 "$(grep -c '^| local-luks-wrong | PASS |' "$L/out/results.md")"
+check "row local-luks passes" 1 "$(grep -c '^| local-luks | PASS |' "$L/out/results.md")"
+check "a reboot's unlock writes no row" 0 "$(luks_boot; luks)"
+check "and no row" 0 "$(grep -c . "$L/out/results.md")"
+luks_boot
+: >"$L/serial"
+check "a boot that never asks fails" 1 "$(luks wrong)"
+check_true "and says the initramfs never asked" grep -q '^| local-luks | FAIL | no .Starting … Cryptography Setup.' "$L/out/results.md"
+luks_boot
+: >"$L/wrong-opens"
+check "a wrong passphrase that opens the disk fails" 1 "$(luks wrong)"
+check_true "at the wrong row" grep -q '^| local-luks-wrong | FAIL | a wrong passphrase opened the LUKS root' "$L/out/results.md"
+luks_boot
+: >"$L/never-opens"
+check "a passphrase the prompt does not take fails" 1 "$(luks wrong)"
+check_true "and says so" grep -q '^| local-luks | FAIL | the passphrase typed into the Plymouth prompt did not open' "$L/out/results.md"
+luks_boot
+echo '[  OK  ] Finished systemd-cryptsetup@luks.service - Cryptography Setup for luks-x.' >>"$L/serial"
+check "an earlier boot's prompt and unlock do not count for the next boot" 1 "$(luks '' 3)"
+check_true "which waits for its own prompt" grep -q '^| local-luks | FAIL | no .Starting … Cryptography Setup.' "$L/out/results.md"
+unset FAKE
+
 # --- publish.sh publish: push apex:<version>, sign it, move :45 only past the policy -----
 R="$TMP/publish-registry"
 mkdir -p "$R/bin"
