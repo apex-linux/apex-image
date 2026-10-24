@@ -244,6 +244,15 @@ One run may print both kernel lines, the point line first.
   countdown.
 - each newer NVIDIA build: a new driver waits for the owner.
 
+**`apex-lane sources --lock LOCK --out DIR`** writes the kernel pair's public source
+artifact (ARCHITECTURE 4.2, N6) for the pair LOCK records: an OCI layout whose one layer
+holds `srpms/` (the kernel SRPM and, for a whole pair, the nvidia-kmod SRPM, from the
+mirror, each against its pinned sha256), `recipe/` (the recipe directory as the job saw
+it, pins, spec patch and series included, kept in the stored set) and `SHA256SUMS`. The
+same pair gives the same digest. A LOCK without a pair writes nothing; a set stored before
+the recipe was kept is exit 1. `build-image.sh` writes it to `_build/image/sources`, except
+for a break-glass image; the runner pushes it.
+
 ### `series`
 
 One `NNNN-name.patch` per line, relative to `patches/`, in application order; `#`

@@ -7,6 +7,7 @@ use std::time::Instant;
 use super::Vm;
 use super::build::{Outcome, remove_tree};
 use super::sign::Signer;
+use super::sources;
 use crate::core::checksig::checksig_ok;
 use crate::core::hold;
 use crate::core::key::content_key;
@@ -617,21 +618,7 @@ impl Vm<'_> {
         fs::write(&set.join("manifest.txt"), manifest_text.as_bytes())?;
         fs::write(&set.join("key.txt"), format!("{key}\n").as_bytes())?;
         fs::write(&set.join("key-input.txt"), preimage.as_bytes())?;
-        // The image takes what it checks a pair against from the set alone.
-        if lock_name == PAIR_LOCK {
-            let key = self
-                .settings
-                .store
-                .join("mirror/keys")
-                .join(format!("{}.gpg", plan.nvidia.negativo17_key));
-            fs::copy_with_mode(&key, &set.join(NEGATIVO17_KEYRING))?;
-        }
-        let config = plan.job.join(CONFIG_REQUIRED);
-        if config.is_file() {
-            fs::copy_with_mode(&config, &set.join(CONFIG_REQUIRED))?;
-        }
-        fs::copy_with_mode(&plan.job.join(JOB_KERNEL_ENV), &set.join(JOB_KERNEL_ENV))?;
-        fs::copy_with_mode(&plan.job.join(JOB_NVIDIA_ENV), &set.join(JOB_NVIDIA_ENV))?;
+        self.keep_inputs(plan, &set, lock_name)?;
         for entry in fs::sorted_entries(&out)? {
             if entry.is_file() {
                 let name = fs::file_name(&entry);
@@ -651,6 +638,35 @@ impl Vm<'_> {
         let stored = self.store_pkg(&p.name).join(key);
         self.move_tree(&partial, &stored)?;
         Self::verify_stored(&stored)
+    }
+
+    /// What the image checks a pair against, and the source artifact's pins and recipe.
+    fn keep_inputs(&self, plan: &Plan, set: &Path, lock_name: &str) -> Result<()> {
+        if lock_name == PAIR_LOCK {
+            let key = self
+                .settings
+                .store
+                .join("mirror/keys")
+                .join(format!("{}.gpg", plan.nvidia.negativo17_key));
+            fs::copy_with_mode(&key, &set.join(NEGATIVO17_KEYRING))?;
+        }
+        let config = plan.job.join(CONFIG_REQUIRED);
+        if config.is_file() {
+            fs::copy_with_mode(&config, &set.join(CONFIG_REQUIRED))?;
+        }
+        fs::copy_with_mode(&plan.job.join(JOB_KERNEL_ENV), &set.join(JOB_KERNEL_ENV))?;
+        let recipe = set.join(sources::SOURCE_RECIPE);
+        fs::create_dir_all(&recipe)?;
+        let mut job = plan.job.clone().into_os_string();
+        job.push("/.");
+        self.run_ok(
+            &Cmd::new(Program::Cp)
+                .args(["-a", "--"])
+                .arg(job)
+                .arg(&recipe),
+        )?;
+        fs::copy_with_mode(&plan.job.join(JOB_NVIDIA_ENV), &set.join(JOB_NVIDIA_ENV))?;
+        Ok(())
     }
 
     fn record_pair(&self, p: &PairPkg, key: &str, line: &[u8]) -> Result<()> {
@@ -819,7 +835,7 @@ impl Vm<'_> {
         Ok(Exit::Ok)
     }
 
-    fn the_pair(&self) -> Result<PairPkg> {
+    pub(super) fn the_pair(&self) -> Result<PairPkg> {
         for name in self.all_pkgs()? {
             if let Some(p) = self.load_pair(&name)? {
                 return Ok(p);

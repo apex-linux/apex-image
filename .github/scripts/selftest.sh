@@ -752,6 +752,19 @@ check "only libfprint gets them" 1 "$(grep -c -- '-e GA_REACHED=' "$BI/steps.log
 check "every RPM is signed, then the lane builds" "sign _build/rpms/apex/x.rpm|sign _build/rpms/desktop/x.rpm|sign _build/libfprint/x.rpm|build all" \
     "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"
 
+bi_sources() {
+    rm -f "$BI/steps.log"
+    mkdir -p "$BIW/_build/image/sources"
+    (cd "$BIW" && FAKE=$BI APEX_STORE=/store bash -c '. "$1"; source_artifact' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >/dev/null 2>&1
+}
+bi_sources
+check "the pair's source artifact goes next to the image" "sources --lock /store/rpms.lock.next --out _build/image/sources" \
+    "$(sed -n 's/^lane.sh //p' "$BI/steps.log")"
+APEX_KERNEL=fedora bi_sources
+check "a break-glass image writes none, and leaves no stale one" "no call|no dir" \
+    "$([[ -e $BI/steps.log ]] && echo call || echo 'no call')|$([[ -e $BIW/_build/image/sources ]] && echo dir || echo 'no dir')"
+
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
 mkdir -p "$QMP_DIR"

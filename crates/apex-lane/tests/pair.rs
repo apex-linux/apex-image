@@ -16,7 +16,7 @@ use std::time::Duration;
 use apex_lane::core::hash::sha256_hex;
 use apex_lane::core::pins::{self, Nevra};
 use apex_lane::core::utc::UtcSecond;
-use apex_lane::error::Result;
+use apex_lane::error::{Exit, Result};
 use apex_lane::shell::bodhi::Bodhi;
 use apex_lane::shell::clock::FixedClock;
 use apex_lane::shell::cmd::{Cmd, Outcome, Program, Runner, StdRunner};
@@ -291,7 +291,7 @@ impl Runner for Fake {
             return Ok(out);
         }
         match cmd.program {
-            Program::Git | Program::Cp => self.real.run(cmd),
+            Program::Git | Program::Cp | Program::Tar => self.real.run(cmd),
             _ => panic!("unexpected command: {cmd}"),
         }
     }
@@ -1063,5 +1063,114 @@ fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
         String::from_utf8_lossy(&t.report.captured()).contains(&format!(
             "modules: 960 in the pair, 1000 in the last good pair {good}"
         ))
+    );
+}
+
+fn layer_listing(out: &Path) -> Vec<String> {
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("index.json")).unwrap()).unwrap();
+    let blob = |digest: &str| {
+        out.join("blobs/sha256")
+            .join(digest.strip_prefix("sha256:").unwrap())
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(blob(index["manifests"][0]["digest"].as_str().unwrap())).unwrap(),
+    )
+    .unwrap();
+    let layer = blob(manifest["layers"][0]["digest"].as_str().unwrap());
+    let listed = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(&layer)
+        .output()
+        .unwrap();
+    let mut names: Vec<String> = String::from_utf8(listed.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.ends_with('/'))
+        .map(|l| l.trim_start_matches("./").to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn the_source_artifact_holds_both_srpms_the_pins_and_the_recipe() {
+    let t = PairTest::new();
+    let key = t.with_good_pair();
+    let out = t.store.path().join("sources");
+    let lock = t.store.path().join("rpms.lock");
+    assert_eq!(t.run(T0, |vm| vm.sources(&lock, &out).unwrap()), Exit::Ok);
+    assert_eq!(
+        std::fs::read_to_string(out.join("oci-layout")).unwrap(),
+        r#"{"imageLayoutVersion":"1.0.0"}"#
+    );
+    let names = layer_listing(&out);
+    for file in [
+        "SHA256SUMS",
+        "srpms/kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm",
+        "srpms/nvidia-kmod-615.78.08-1.fc45.src.rpm",
+        "recipe/kernel.env",
+        "recipe/nvidia.env",
+        "recipe/pair.sh",
+        "recipe/bump.sh",
+        "recipe/config-required.txt",
+    ] {
+        assert!(names.iter().any(|n| n == file), "no {file} in {names:?}");
+    }
+    let index = std::fs::read_to_string(out.join("index.json")).unwrap();
+    assert!(index.contains(&key), "{index}");
+    t.run(T0, |vm| vm.sources(&lock, &out).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(out.join("index.json")).unwrap(),
+        index,
+        "the same pair gives the same digest"
+    );
+}
+
+#[test]
+fn a_kernel_only_set_has_only_the_kernel_srpm_and_no_pair_has_no_artifact() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    t.pins("7.3.1-1", "615.78.08-1");
+    t.fake.on_job(failing("kmod: it does not build", true));
+    assert_eq!(t.build(T0), Built::Held);
+    assert_eq!(t.build("2026-12-04T00:00:00Z"), Built::Degraded);
+    let out = t.store.path().join("sources");
+    let next = t.store.path().join("rpms.lock.next");
+    t.run(T0, |vm| vm.sources(&next, &out).unwrap());
+    let srpms: Vec<String> = layer_listing(&out)
+        .into_iter()
+        .filter(|n| n.starts_with("srpms/"))
+        .collect();
+    assert_eq!(
+        srpms,
+        ["srpms/kernel-cachyos-7.3.1-1.cachyos1.fc45.src.rpm"]
+    );
+
+    let none = t.store.path().join("no-pair.lock");
+    write(
+        &none,
+        "# apex rpms.lock 1: written by apex-lane\nfamily gnome-shell stock\n",
+    );
+    let empty = t.store.path().join("none");
+    assert_eq!(t.run(T0, |vm| vm.sources(&none, &empty).unwrap()), Exit::Ok);
+    assert!(!empty.exists());
+    assert!(
+        String::from_utf8_lossy(&t.report.captured())
+            .contains("no kernel pair, so no source artifact")
+    );
+}
+
+#[test]
+fn a_pair_stored_before_the_source_artifact_is_named() {
+    let t = PairTest::new();
+    let key = t.with_good_pair();
+    std::fs::remove_dir_all(t.store.path().join("pkgs/kernel").join(&key).join("recipe")).unwrap();
+    let lock = t.store.path().join("rpms.lock");
+    let out = t.store.path().join("sources");
+    let err = t.run(T0, |vm| vm.sources(&lock, &out).unwrap_err().to_string());
+    assert!(
+        err.contains("the pair predates the source artifact; build it again"),
+        "{err}"
     );
 }
