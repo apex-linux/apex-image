@@ -173,6 +173,8 @@ lane_context() {
     mapfile -t families < <(lane_families)
     store=$(cd "$(dirname -- "$lane")" && pwd)
     if [[ $kernel == fedora ]]; then
+        awk '$1 == "family" && $2 == "kernel-cachyos" { f = 1 } END { exit !f }' "$lane" ||
+            die "context --kernel fedora: no kernel pair in the lane lock $lane: the image already uses Fedora's kernel"
         break_glass_lock "$lane" >"$APEX_WORK/break-glass.lock"
         lane=$APEX_WORK/break-glass.lock
         warn "break-glass: Fedora's kernel, without the kernel pair or its NVIDIA set (degraded=nvidia); this image never promotes"
