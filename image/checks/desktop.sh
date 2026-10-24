@@ -21,6 +21,8 @@ MARKERS='/*! apex-shell-theme light */
 PTYXIS=/usr/bin/ptyxis
 PROMPT=/etc/profile.d/apex-prompt.sh
 SHELL_STATUS=/etc/profile.d/zz-apex-shell-status.sh
+GDM_LOGO=/usr/share/pixmaps/apex-gdm-logo.svg
+GREETER_BACKGROUND=/usr/share/backgrounds/apex/apex-greeter-light.png
 PTYXIS_MARKER='/*! apex-ptyxis */'
 NAUTILUS=/usr/bin/nautilus
 NAUTILUS_MARKER='/*! apex-nautilus */'
@@ -415,6 +417,18 @@ elif [ "$(printf '%s\n' vte.sh zz-apex-shell-status.sh | LC_ALL=C sort | head -n
     fail "$SHELL_STATUS sorts before vte.sh, which would put its own precmd back"
 else
     pass "$SHELL_STATUS is apex-desktop's and sorts after vte.sh, so the terminal gets each command's real exit status"
+fi
+
+# gdm's own override names Fedora's logo; Apex's override must sort after it.
+logo=$(gs get org.gnome.login-screen logo 2>/dev/null | tr -d "'" || true)
+if [ "$logo" != "$GDM_LOGO" ]; then
+    fail "org.gnome.login-screen logo resolves to '${logo:-nothing}', not $GDM_LOGO: zz_apex-login-screen.gschema.override is missing or another override sorts after it (apex-desktop)"
+elif [ ! -f "$(rootpath "$GDM_LOGO")" ]; then
+    fail "no $GDM_LOGO: the greeter shows no logo (apex-desktop)"
+elif [ ! -f "$(rootpath "$GREETER_BACKGROUND")" ]; then
+    fail "no $GREETER_BACKGROUND: the greeter falls back to a flat colour (apex-desktop)"
+else
+    pass "the greeter's logo resolves to $GDM_LOGO, and $GREETER_BACKGROUND is installed"
 fi
 
 finish
