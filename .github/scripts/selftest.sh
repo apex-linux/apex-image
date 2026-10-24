@@ -257,6 +257,13 @@ check_false "unknown state dies" grubenv_check sideways <<<"$env_plain"
 check "the reason names both variables" "still armed: apex_target=$D1 apex_counter=-1" \
     "$(grubenv_check disarmed <<<"$env_counted" || true)"
 
+green_state() {
+    bash -c '. "$1"; has=$2; vm_ssh() { [[ $* == "test -e $APEX_MENU_SNIPPET" && $has == yes ]]; }; green_grubstate' \
+        _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1"
+}
+check "a green boot of an image with the menu snippet is confirmed" confirmed "$(green_state yes)"
+check "a green boot of an older image is only disarmed" disarmed "$(green_state no)"
+
 deny=$(printf '{"digests":[{"digest":"%s","reason":"fallback","at":1}],"extra":1}' "$D1")
 check_true "denylisted" denylist_has "$D1" <<<"$deny"
 check_false "not denylisted" denylist_has "$D2" <<<"$deny"
@@ -1627,6 +1634,7 @@ if [[ $1 == list-tags ]]; then
     exit 0
 fi
 tag=${ref##*:}
+if [[ -f $FAKE_REG/$tag.fail ]]; then echo 'Error: 502 Bad Gateway' >&2; exit 1; fi
 if [[ -f $FAKE_REG/$tag.json ]]; then cat "$FAKE_REG/$tag.json"; exit 0; fi
 echo "Error: reading manifest $tag in ${ref%:*}: manifest unknown" >&2
 exit 1
@@ -1663,6 +1671,31 @@ check "an absent tag that list-tags still lists is refused" 1 \
 rm -f "$P/reg/tags.json"
 check "an absent tag that list-tags cannot confirm is refused" 1 \
     "$(increases ghcr.io/x/t:45 "$D2" 45.20260925.151 "$C_B")"
+
+# --- publish.sh: a stable move never adds a degraded component without the owner -------
+degraded_json() { # DIGEST_CHAR DEGRADED
+    jq -n --arg d "sha256:$(printf "$1%.0s" {1..64})" --arg g "$2" --arg l "$APEX_LABEL_PREFIX.degraded" \
+        '{Digest: $d, Labels: {"org.opencontainers.image.version": "45.20260925.151", ($l): $g}}'
+}
+degraded_rc() { # PUBLISHED-TAG CANDIDATE-DEGRADED [ALLOW]
+    degraded_json 2 "$2" >"$P/reg/${D2#sha256:}.json"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$P/bin:$PATH" FAKE_REG="$P/reg" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
+        rc_of bash -c '. "$1"; shift; check_degraded "$@"' _ "$APEX_ROOT/.github/scripts/publish.sh" \
+        "ghcr.io/x/t:$1" "$D2" "${3:-0}"
+}
+degraded_json 1 fingerprint >"$P/reg/45.json"
+check "the same degraded set moves" 0 "$(degraded_rc 45 fingerprint)"
+check "a smaller degraded set moves" 0 "$(degraded_rc 45 '')"
+check "a degraded component the published image lacks is refused" 1 "$(degraded_rc 45 fingerprint,nvidia)"
+check "the owner's --allow-degraded moves it" 0 "$(degraded_rc 45 fingerprint,nvidia 1)"
+degraded_json 1 audio,fingerprint >"$P/reg/45.json"
+check "another set of the same size that adds one is refused" 1 "$(degraded_rc 45 fingerprint,nvidia)"
+rm -f "$P/reg/45.json"
+check "a first publication of a degraded image is refused" 1 "$(degraded_rc 45 nvidia)"
+check "a first publication of a whole image moves" 0 "$(degraded_rc 45 '')"
+printf 'broken' >"$P/reg/broken.fail"
+check "a published tag that cannot be read is refused" 1 "$(degraded_rc broken '')"
 
 # --- oci-artifact.sh lookup: a cache hit must be attested by the workflow on main ------
 O="$TMP/oci"

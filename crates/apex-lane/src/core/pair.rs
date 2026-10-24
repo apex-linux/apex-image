@@ -13,6 +13,9 @@ pub const KEY_SCHEMA: u32 = 1;
 const KERNEL_HOLD_HOURS: i64 = 72;
 const KMOD_POINT_HOLD_HOURS: i64 = 72;
 const KMOD_MAJOR_HOLD_DAYS: i64 = 14;
+/// K7: a pinned key's expiry is announced well before it stops every verification.
+const KEY_WARN_DAYS: i64 = 60;
+const KEY_URGENT_DAYS: i64 = 14;
 /// ARCHITECTURE 4.2: a pair whose module count moves more than this from the last good
 /// pair's is held, as a check failure.
 const MODULE_DRIFT_PERCENT: usize = 5;
@@ -193,6 +196,72 @@ pub fn newly_degraded(locked: &[u8], next: &[u8]) -> Vec<String> {
                 && !is_degraded(&lock::family_line(locked, family))
         })
         .collect()
+}
+
+/// A pinned key with an expiry date: the pins' `*_key_expires`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedKey {
+    pub what: &'static str,
+    pub fingerprint: String,
+    pub expires: String,
+}
+
+pub fn pinned_keys(kernel: &KernelPins, nvidia: &crate::core::pins::NvidiaPins) -> Vec<PinnedKey> {
+    let key = |what, fingerprint: &str, expires: &Option<String>| {
+        expires.as_ref().map(|expires| PinnedKey {
+            what,
+            fingerprint: fingerprint.to_owned(),
+            expires: expires.clone(),
+        })
+    };
+    [
+        key("the COPR key", &kernel.copr_key, &kernel.copr_key_expires),
+        key(
+            "the CachyOS tag key",
+            kernel.tag_key.as_deref().unwrap_or("?"),
+            &kernel.tag_key_expires,
+        ),
+        key(
+            "negativo17's key",
+            &nvidia.negativo17_key,
+            &nvidia.negativo17_key_expires,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyExpiry {
+    Fine,
+    Warn(String),
+    Urgent(String),
+    Expired(String),
+}
+
+/// Days are counted to the start of the expiry date, UTC.
+pub fn key_expiry(key: &PinnedKey, now: UtcSecond) -> KeyExpiry {
+    let Some(at) = UtcSecond::parse(format!("{}T00:00:00Z", key.expires).as_bytes()) else {
+        return KeyExpiry::Fine;
+    };
+    let days = (at.0 - now.0).div_euclid(86_400);
+    let named = format!(
+        "{} {} expires on {}",
+        key.what, key.fingerprint, key.expires
+    );
+    if now >= at {
+        KeyExpiry::Expired(format!(
+            "{} {} expired on {}: pin its successor, checked against a second source",
+            key.what, key.fingerprint, key.expires
+        ))
+    } else if days < KEY_URGENT_DAYS {
+        KeyExpiry::Urgent(format!("{named}, in {days} days: pin its successor now"))
+    } else if days < KEY_WARN_DAYS {
+        KeyExpiry::Warn(format!("{named}, in {days} days"))
+    } else {
+        KeyExpiry::Fine
+    }
 }
 
 /// Kernel modules in an `rpm -qlp` listing of the pair's RPMs.
@@ -552,6 +621,31 @@ mod tests {
         assert_eq!(newly_degraded(b"", degraded), ["kernel-cachyos"]);
         assert!(newly_degraded(degraded, degraded).is_empty());
         assert!(newly_degraded(degraded, whole).is_empty());
+    }
+
+    #[test]
+    fn key_expiries() {
+        let key = |expires: &str| PinnedKey {
+            what: "the COPR key",
+            fingerprint: "F".into(),
+            expires: expires.into(),
+        };
+        let now = at("2026-12-01T12:00:00Z");
+        assert_eq!(key_expiry(&key("2027-03-01"), now), KeyExpiry::Fine);
+        assert_eq!(
+            key_expiry(&key("2027-01-15"), now),
+            KeyExpiry::Warn("the COPR key F expires on 2027-01-15, in 44 days".into())
+        );
+        assert_eq!(
+            key_expiry(&key("2026-12-10"), now),
+            KeyExpiry::Urgent(
+                "the COPR key F expires on 2026-12-10, in 8 days: pin its successor now".into()
+            )
+        );
+        assert!(
+            matches!(key_expiry(&key("2026-12-01"), now), KeyExpiry::Expired(r) if r.starts_with("the COPR key F expired on 2026-12-01"))
+        );
+        assert_eq!(key_expiry(&key("not a date"), now), KeyExpiry::Fine);
     }
 
     #[test]

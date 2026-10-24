@@ -37,6 +37,11 @@ const NEGATIVO17_KEYRING: &str = "negativo17.gpg";
 const PAIR_LOCK: &str = "pair.lock";
 const KERNEL_LOCK: &str = "kernel.lock";
 const CONFIG_REQUIRED: &str = "config-required.txt";
+const DEBUG_DIR: &str = "debug";
+const DEBUG_FILES: [&str; 4] = ["vmlinux", "System.map", "config", "kernel.log"];
+/// ARCHITECTURE 4.2: a crash on any of the last few pairs can still be decoded.
+const DEBUG_PAIRS_KEPT: usize = 4;
+const LAST_FAILURE_LOG: &str = "last-failure-kernel.log";
 const LOW_CPU_SHARES: &str = "256";
 const STDERR_TAIL_LINES: usize = 30;
 
@@ -211,6 +216,15 @@ impl Vm<'_> {
         let work = self.lane_work(&p.name);
         self.fresh_work_dir(&work, &["in", "out", "mirror"])?;
         let plan = self.plan(p, &work)?;
+        if let Some(reason) = self.check_keys(&plan.kernel, &plan.nvidia) {
+            return self.record_pair_failure(
+                p,
+                &plan,
+                &work.join("out"),
+                reason.as_bytes(),
+                signer,
+            );
+        }
         self.mirror_pair(&plan, &work.join("mirror"))?;
         let stored = self.store_pkg(&p.name).join(&plan.key);
         if stored.symlink_metadata().is_ok() {
@@ -251,6 +265,7 @@ impl Vm<'_> {
         }
         self.store_pair_set(p, &plan, &plan.key, &plan.preimage, PAIR_LOCK, signer)?;
         self.record_pair(p, &plan.key, format!("built {}", plan.key).as_bytes())?;
+        self.retain_pairs(p)?;
         let manifest_text = fs::read(&stored.join("manifest.txt"))?;
         let mut summary = vec![
             format!("### {}: built in {} s", p.name, start.elapsed().as_secs()),
@@ -353,6 +368,30 @@ impl Vm<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Warns of a pinned key that expires soon; an expired one is the reason to hold.
+    fn check_keys(&self, kernel: &KernelPins, nvidia: &NvidiaPins) -> Option<String> {
+        let mut expired = None;
+        for key in pair::pinned_keys(kernel, nvidia) {
+            match pair::key_expiry(&key, self.clock.now()) {
+                pair::KeyExpiry::Fine => {}
+                pair::KeyExpiry::Warn(message) => self.report.warn(&message),
+                pair::KeyExpiry::Urgent(message) => {
+                    self.report.warn(&message);
+                    self.report.summary(&[
+                        "### A pinned key expires soon".into(),
+                        String::new(),
+                        message,
+                    ]);
+                }
+                pair::KeyExpiry::Expired(message) => {
+                    self.report.warn(&message);
+                    expired.get_or_insert(message);
+                }
+            }
+        }
+        expired
     }
 
     fn download(&self, url: &str, to: &Path) -> Result<()> {
@@ -619,17 +658,7 @@ impl Vm<'_> {
         fs::write(&set.join("key.txt"), format!("{key}\n").as_bytes())?;
         fs::write(&set.join("key-input.txt"), preimage.as_bytes())?;
         self.keep_inputs(plan, &set, lock_name)?;
-        for entry in fs::sorted_entries(&out)? {
-            if entry.is_file() {
-                let name = fs::file_name(&entry);
-                let to = if name == lock_name || name == "signing_key.x509" {
-                    set.join(&name)
-                } else {
-                    set.join("logs").join(&name)
-                };
-                fs::copy_with_mode(&entry, &to)?;
-            }
-        }
+        keep_job_files(&out, &set, lock_name)?;
         self.sign_built(&set, signer)?;
         fs::create_dir_all(&self.store_pkg(&p.name))?;
         let partial = self.store_pkg(&p.name).join(format!(".partial-{key}"));
@@ -711,6 +740,13 @@ impl Vm<'_> {
         let side = Side::of_reason(&reason);
         let now = self.clock.now();
         let store = self.store_pkg(&p.name);
+        fs::create_dir_all(&store)?;
+        let log = out.join(DEBUG_DIR).join("kernel.log");
+        if log.is_file() {
+            fs::copy_with_mode(&log, &store.join(LAST_FAILURE_LOG))?;
+        } else {
+            remove_file(&store.join(LAST_FAILURE_LOG))?;
+        }
         let (good_key, good_degraded) = self.last_good_pair(p, plan, &reason, stderr)?;
         let mut newer = Vec::new();
         if plan.moves.kernel {
@@ -742,6 +778,7 @@ impl Vm<'_> {
             }
             let line = pair::degraded_line(&key, &since, &newer_csv, timer.as_ref(), &reason);
             self.record_pair(p, &key, &line)?;
+            self.retain_pairs(p)?;
             self.report.summary(&[
                 format!("### {}: {}", p.name, pair::DEGRADED_NVIDIA),
                 String::new(),
@@ -791,6 +828,37 @@ impl Vm<'_> {
             side == Side::Kmod && reached,
         ));
         Ok(Outcome::Held)
+    }
+
+    /// Keeps the newest pairs whole; an older one keeps its RPMs while a lock names it.
+    fn retain_pairs(&self, p: &PairPkg) -> Result<()> {
+        let store = self.store_pkg(&p.name);
+        let mut locks = fs::read_opt(&self.lock_file())?.unwrap_or_default();
+        locks.extend(fs::read_opt(&self.next_lock_file())?.unwrap_or_default());
+        let mut sets = Vec::new();
+        for dir in fs::sorted_entries(&store)? {
+            let manifest_path = dir.join("manifest.txt");
+            if fs::file_name(&dir).starts_with('.') || !manifest_path.is_file() {
+                continue;
+            }
+            let stored = std::fs::metadata(&manifest_path)
+                .and_then(|m| m.modified())
+                .map_err(|e| fs::io_error("cannot stat", &manifest_path, &e))?;
+            sets.push((stored, dir));
+        }
+        sets.sort_by(|a, b| b.cmp(a));
+        for (_, dir) in sets.iter().skip(DEBUG_PAIRS_KEPT) {
+            let key = fs::file_name(dir);
+            let named = locks.windows(key.len()).any(|w| w == key.as_bytes());
+            if named {
+                remove_tree(&dir.join(DEBUG_DIR))?;
+            } else {
+                remove_tree(dir)?;
+                self.report
+                    .notice(&format!("store: pruned {key}, which no lock names"));
+            }
+        }
+        Ok(())
     }
 
     /// The pair a hold keeps, and whether it is a kernel-only set; the failure is kept first.
@@ -862,6 +930,8 @@ impl Vm<'_> {
         let report = pair::parse_bump(&bump.stdout).map_err(infra)?;
         let kernel_path = p.dir.join(&p.env.kernel_env);
         let (kernel, kernel_bytes) = Self::read_kernel(&kernel_path)?;
+        let (nvidia, _) = Self::read_nvidia(&p.dir.join(&p.env.nvidia_env))?;
+        self.check_keys(&kernel, &nvidia);
         if let Some(srpm) = &report.point {
             self.point_bump(&p, &kernel, &kernel_bytes, srpm)?;
         }
@@ -999,6 +1069,41 @@ fn check_kernel(locked: &PairLock, kernel: &KernelPins) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The lock, the module certificate and the logs, and the kernel's debug files.
+fn keep_job_files(out: &Path, set: &Path, lock_name: &str) -> Result<()> {
+    for entry in fs::sorted_entries(out)? {
+        if entry.is_file() {
+            let name = fs::file_name(&entry);
+            let to = if name == lock_name || name == "signing_key.x509" {
+                set.join(&name)
+            } else {
+                set.join("logs").join(&name)
+            };
+            fs::copy_with_mode(&entry, &to)?;
+        }
+    }
+    fs::create_dir_all(&set.join(DEBUG_DIR))?;
+    for name in DEBUG_FILES {
+        let from = out.join(DEBUG_DIR).join(name);
+        if !from.is_file() {
+            return Err(infra(format!(
+                "pair.sh wrote {lock_name} without {DEBUG_DIR}/{name}"
+            )));
+        }
+        let to = set.join(DEBUG_DIR).join(name);
+        std::fs::rename(&from, &to).map_err(|e| fs::io_error("cannot move", &from, &e))?;
+    }
+    Ok(())
+}
+
+fn remove_file(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(fs::io_error("cannot remove", path, &e)),
+    }
 }
 
 fn link_or_copy(from: &Path, to: &Path) -> Result<()> {

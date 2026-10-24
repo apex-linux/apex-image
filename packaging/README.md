@@ -182,33 +182,44 @@ exactly what it built before.
    pair of `rpms.lock` (its stored `kernel.env` and `nvidia.env`). When both sides
    moved, the job takes the new kernel with the old driver; the new driver follows once
    that image is promoted.
-2. **Mirror at first sight** into `~/apex-store/mirror/`: each key file
+2. **Pinned keys (K7).** A key whose `*_key_expires` is less than 60 days away is
+   warned about at every run and in `kernel-bump`. Inside 14 days the warning says to
+   pin its successor now, in the build summary too. An expired one holds the pair before anything is downloaded, with
+   the key, its fingerprint and the date as the reason: from then on no input could
+   verify against it.
+3. **Mirror at first sight** into `~/apex-store/mirror/`: each key file
    (`keys/FPR.gpg`, exactly the pinned key) and every pinned SRPM and binary, the
    waiting driver's too, each checked against its pinned sha256 and, with `rpmkeys -Kv`
    against a keyring holding only its key, its signature. The COPR keeps 5 builds and
    negativo17 the last 2 of each package, so a hold or a rebuild works from the store.
    Any failure here is exit 1.
-3. **The key**: `KERNEL-NVR-s<12 hex>` over the lane's tool id, the dnf options and
+4. **The key**: `KERNEL-NVR-s<12 hex>` over the lane's tool id, the dnf options and
    every file of the recipe directory (`README.md` aside) as the job sees it. A stored
    key is taken unchanged, with no container.
-4. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
+5. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
    container of `REPOS_BASE`, at low CPU weight, the recipe directory read-only at
    `/job`, the module key's tmpfs at `/run/apex-modkey`, ccache in the volume
    `apex-lane-ccache`. Exit 0: the RPMs of `pair.lock`, each sha256 checked and
    queried with `rpm -qp`, are signed with the Apex RPM key and stored under
    `pkgs/kernel/KEY/` with `pair.lock`, the pins, the module certificate and the logs,
    and, for the image's checks, the recipe's `config-required.txt` and (a whole pair)
-   negativo17's key file as mirrored, `negativo17.gpg`.
-   Exit 1: a hold (below), the reason the last line of its stderr. Anything else is
-   exit 1 of the lane. After an exit 0 the lane runs the one gate of ARCHITECTURE 4.2
+   negativo17's key file as mirrored, `negativo17.gpg`. `pair.sh`'s `OUT/debug/`
+   (`vmlinux` with DWARF, `System.map`, the built `config`, `kernel.log`) goes to
+   `debug/` in the set; a lock without all four is exit 1 of the lane.
+   Exit 1: a hold (below), the reason the last line of its stderr, and `debug/kernel.log`,
+   when the kernel got that far, kept as `pkgs/kernel/last-failure-kernel.log`. Anything
+   else is exit 1 of the lane. After an exit 0 the lane runs the one gate of ARCHITECTURE 4.2
    that check.sh cannot, since it never sees the last good pair: the modules in the
    pair's RPMs (`rpm -qlp`) within 5 % of the last good pair's, or a `check:` hold.
    BTF is check.sh's, through `config-required.txt` (`CONFIG_DEBUG_INFO_BTF=y`).
-5. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
+6. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
    each `install=` package and the kmod built for that kernel, and one of kind `mirror`
    for each `userspace=` RPM of the driver the pair was built with, copied from the
    mirror into the set and checked against its pin. `kernel-cachyos-devel` is stored,
    not locked. A kernel-only set (`degraded=nvidia`) locks no userspace.
+7. **Retention** (ARCHITECTURE 4.2), after each new pair: the 4 newest sets stay whole.
+   An older one that `rpms.lock` or `rpms.lock.next` names loses only `debug/`; one
+   that neither names is removed. The mirror is kept forever.
 
 **Holds** (ARCHITECTURE 4.3) keep the last good pair's `rpm` lines:
 
@@ -344,6 +355,8 @@ image carries the lock it was built from, at `/usr/share/apex/rpms.lock`.
   rpms.lock.next              the candidate: what the next image build takes
   pkgs/PKG/KEY/               one build: RPMs, Apex SRPM, manifest.txt, key.txt, spec.diff, logs/
   pkgs/PKG/last-failure.txt   the reason and log tail of the last exit 3
+  pkgs/kernel/KEY/debug/      vmlinux, System.map, config, kernel.log: the 4 newest pairs
+  mirror/                     the pair's pinned inputs and keys, kept forever
 ```
 
 `rpms.lock` format 1, one record per line (`reason=` runs to the end of the line):

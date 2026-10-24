@@ -356,13 +356,17 @@ fn write_pair(dirs: &JobDirs, with_kmod: bool) {
         lock,
     );
     write(&dirs.out.join("signing_key.x509"), "cert");
-    write(&dirs.out.join("kernel.log"), "built");
+    for name in ["vmlinux", "System.map", "config", "kernel.log"] {
+        write(&dirs.out.join("debug").join(name), name);
+    }
 }
 
 fn failing(reason: &'static str, keep_kernel: bool) -> impl Fn(&JobDirs) -> (i32, String) {
     move |dirs| {
         if keep_kernel {
             write_pair(dirs, false);
+        } else {
+            write(&dirs.out.join("debug/kernel.log"), "the kernel's build log");
         }
         (1, format!("the log's tail\n{reason}\n"))
     }
@@ -607,7 +611,10 @@ fn a_good_pair_is_signed_stored_and_locked() {
         "key-input.txt",
         "config-required.txt",
         "negativo17.gpg",
-        "logs/kernel.log",
+        "debug/vmlinux",
+        "debug/System.map",
+        "debug/config",
+        "debug/kernel.log",
     ] {
         assert!(set.join(kept).is_file(), "the stored pair has no {kept}");
     }
@@ -740,6 +747,11 @@ fn a_kernel_failure_holds_72_hours_from_the_kernel_org_release_then_a_rerun_clea
     let failure =
         std::fs::read_to_string(t.store.path().join("pkgs/kernel/last-failure.txt")).unwrap();
     assert!(failure.starts_with("kernel: rpmbuild -bb failed\nthe log's tail\n"));
+    assert_eq!(
+        std::fs::read_to_string(t.store.path().join("pkgs/kernel/last-failure-kernel.log"))
+            .unwrap(),
+        "the kernel's build log"
+    );
     assert_eq!(t.build("2026-12-02T00:00:00Z"), Built::Held);
     assert!(
         t.family_line().contains(&format!("since={T0} ")),
@@ -1030,6 +1042,117 @@ fn a_point_and_a_major_bump_together() {
     assert!(shown.contains("7.4.0-1.cachyos1.fc45.src is a new major: waiting for owner; the pinned 7.3 reaches its EOL in 9d"), "{shown}");
 }
 
+fn with_key_expiry(t: &PairTest, date: &str) {
+    let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
+    let mut text = std::fs::read_to_string(&k).unwrap();
+    let _ = writeln!(text, "copr_key_expires={date}");
+    write(&k, text);
+    commit_all(t.recipes.path());
+}
+
+#[test]
+fn a_pinned_key_inside_14_days_is_in_the_build_summary() {
+    let t = PairTest::new();
+    with_key_expiry(&t, "2026-12-10");
+    t.fake.on_job(good_job);
+    assert!(matches!(t.build(T0), Built::Built(_)));
+    let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
+    let line =
+        format!("the COPR key {COPR_FPR} expires on 2026-12-10, in 9 days: pin its successor now");
+    assert!(
+        shown.contains(&format!("### A pinned key expires soon\n\n{line}\n")),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_pinned_key_that_expires_soon_warns_and_an_expired_one_holds() {
+    let t = PairTest::new();
+    with_key_expiry(&t, "2027-01-15");
+    let Built::Built(good) = ({
+        t.fake.on_job(good_job);
+        t.build(T0)
+    }) else {
+        panic!("not built")
+    };
+    assert!(
+        String::from_utf8_lossy(&t.report.captured()).contains(&format!(
+            "the COPR key {COPR_FPR} expires on 2027-01-15, in 45 days"
+        ))
+    );
+    t.promote();
+    let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
+    let text = std::fs::read_to_string(&k)
+        .unwrap()
+        .replace("2027-01-15", "2026-11-30");
+    write(&k, text);
+    commit_all(t.recipes.path());
+    let (curls, podmans) = (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman));
+    t.fake.on_job(good_job);
+    assert_eq!(t.build(T0), Built::Held);
+    assert!(t.family_line().starts_with(&format!(
+        "family kernel-cachyos held {good} since={T0} side=kernel reason=the COPR key {COPR_FPR} expired on 2026-11-30"
+    )), "{}", t.family_line());
+    assert_eq!(
+        (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman)),
+        (curls, podmans),
+        "nothing is downloaded or built with an expired key"
+    );
+}
+
+#[test]
+fn the_store_keeps_the_last_4_pairs_debug_files_and_prunes_what_no_lock_names() {
+    let t = PairTest::new();
+    let mut keys = Vec::new();
+    for n in 0..6 {
+        if n > 0 {
+            let notes = t.recipes.path().join("packaging/pkgs/kernel/notes.txt");
+            write(&notes, format!("{n}\n"));
+            commit_all(t.recipes.path());
+        }
+        t.fake.on_job(good_job);
+        let Built::Built(key) = t.build(T0) else {
+            panic!("not built")
+        };
+        keys.push(key);
+        if n == 0 {
+            t.promote();
+        }
+    }
+    let store = t.store.path().join("pkgs/kernel");
+    for key in &keys[2..] {
+        assert!(
+            store.join(key).join("debug/vmlinux").is_file(),
+            "{key} keeps its debug files"
+        );
+    }
+    assert!(!store.join(&keys[1]).exists(), "no lock names {}", keys[1]);
+    let promoted = store.join(&keys[0]);
+    assert!(
+        promoted.join("manifest.txt").is_file() && !promoted.join("debug").exists(),
+        "rpms.lock names {}: its RPMs stay, its debug files go",
+        keys[0]
+    );
+    image_sh_accepts(&t.store.path().join("rpms.lock"));
+    image_sh_accepts(&t.store.path().join("rpms.lock.next"));
+}
+
+#[test]
+fn a_pair_without_its_vmlinux_breaks_the_contract() {
+    let t = PairTest::new();
+    t.fake.on_job(|dirs| {
+        let done = good_job(dirs);
+        std::fs::remove_file(dirs.out.join("debug/vmlinux")).unwrap();
+        done
+    });
+    let err = t.run(T0, |vm| vm.build("kernel").unwrap_err().to_string());
+    assert!(
+        err.contains("pair.sh wrote pair.lock without debug/vmlinux"),
+        "{err}"
+    );
+    assert!(!t.store.path().join("rpms.lock.next").exists());
+}
+
 #[test]
 fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
     let t = PairTest::new();
@@ -1044,12 +1167,15 @@ fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
             "family kernel-cachyos held {good} since={T0} limit=2026-12-04T00:00:00Z newer=kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src security=1 side=kernel reason=check: the pair has 949 modules, the last good pair {good} 1000: more than 5 % apart"
         )
     );
-    let stored = std::fs::read_dir(t.store.path().join("pkgs/kernel"))
+    let mut stored: Vec<String> = std::fs::read_dir(t.store.path().join("pkgs/kernel"))
         .unwrap()
-        .count();
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    stored.sort();
     assert_eq!(
-        stored, 2,
-        "the good pair and last-failure.txt; nothing new is stored"
+        stored,
+        [good.as_str(), "last-failure-kernel.log", "last-failure.txt"],
+        "the good pair and the failure's reason and kernel log; nothing new is stored"
     );
     t.fake.modules.borrow_mut().insert("7.3.1-1".into(), 960);
     let Built::Built(key) = t.build("2026-12-01T01:00:00Z") else {

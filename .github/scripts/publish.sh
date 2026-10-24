@@ -11,12 +11,16 @@ Sign, tag and promote Apex images. Only digests move; nothing is rebuilt.
 
   publish.sh sign REPO DIGEST             cosign-sign REPO@DIGEST (legacy .sig format)
   publish.sh tag-testing DIGEST VERSION   move apex-testing:45 to DIGEST
-  publish.sh promote-copy DIGEST          copy apex-testing@DIGEST to apex:<version>
-  publish.sh promote-tag DIGEST           move apex:45 to DIGEST
+  publish.sh promote-copy [--allow-degraded] DIGEST
+                                          copy apex-testing@DIGEST to apex:<version>
+  publish.sh promote-tag [--allow-degraded] DIGEST
+                                          move apex:45 to DIGEST
   publish.sh version DIGEST               print the candidate's version label
 
 A tag moves only to a digest that passes the image's own committed policy, with a newer
-version built from the same or a later commit of main (needs fetch-depth: 0).
+version built from the same or a later commit of main (needs fetch-depth: 0). A stable
+move refuses a candidate degraded in a component apex:45 is not degraded in; only the
+owner's --allow-degraded takes it.
 
 Environment: REGISTRY_AUTH_FILE (write access for tag moves); for sign also
 COSIGN_PRIVATE_KEY, COSIGN_PASSWORD, GH_TOKEN and GITHUB_ACTOR, and cosign on PATH.
@@ -132,6 +136,42 @@ check_increases() {
     log "$ref: $cur_version -> $version (commit ${cur_revision:0:12} -> ${revision:0:12})"
 }
 
+# The names in comma list $1 that comma list $2 lacks, comma-joined.
+degraded_growth() {
+    comm -23 <(tr ',' '\n' <<<"$1" | sed '/^$/d' | sort -u) <(tr ',' '\n' <<<"$2" | sed '/^$/d' | sort -u) |
+        paste -sd, -
+}
+
+degraded_of() {
+    jq -r --arg l "$APEX_LABEL_PREFIX.degraded" '.Labels[$l] // ""' <<<"$1"
+}
+
+# A component that degrades reaches the published channel only by the owner's decision.
+check_degraded() {
+    local ref=$1 digest=$2 allow=$3 json rc=0 candidate published='' grown
+    json=$(registry_inspect "$APEX_REPO_TESTING@$digest") || die "cannot inspect $APEX_REPO_TESTING@$digest"
+    candidate=$(degraded_of "$json")
+    json=$(registry_inspect "$ref") || rc=$?
+    case $rc in
+        0) published=$(degraded_of "$json") ;;
+        "$REGISTRY_ABSENT") ;;
+        *) die "cannot read $ref; refusing to move it without knowing what it has degraded" ;;
+    esac
+    grown=$(degraded_growth "$candidate" "$published")
+    [[ -n $grown ]] || return 0
+    if [[ $allow == 1 ]]; then
+        warn "$ref: the candidate adds degraded=$grown (published: ${published:-none}); moving it by the owner's --allow-degraded"
+        summary "Owner's override: \`$ref\` takes degraded=$grown."
+        return 0
+    fi
+    die "refusing to move $ref: the candidate adds degraded=$grown (published: ${published:-none});" \
+        "only the owner's --allow-degraded publishes it"
+}
+
+allow_degraded_arg() {
+    if [[ ${1:-} == --allow-degraded ]]; then printf '1\n'; else printf '0\n'; fi
+}
+
 cmd_sign() {
     (($# == 2)) || die "usage: publish.sh sign REPO DIGEST"
     local repo=$1 digest=$2
@@ -169,13 +209,17 @@ cmd_tag_testing() {
 }
 
 cmd_promote_copy() {
-    (($# == 1)) || die "usage: publish.sh promote-copy DIGEST"
+    local allow
+    allow=$(allow_degraded_arg "$@")
+    ((allow == 0)) || shift
+    (($# == 1)) || die "usage: publish.sh promote-copy [--allow-degraded] DIGEST"
     local digest=$1 labels version revision rc=0 existing
     require_keys ci release release-backup
     labels=$(candidate_labels "$digest")
     version=${labels% *} revision=${labels#* }
     check_increases "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$version" "$revision" || rc=$?
     ((rc == 0 || rc == TAG_ALREADY_THERE)) || return "$rc"
+    check_degraded "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$allow"
     rc=0
     existing=$(registry_digest "$APEX_REPO_STABLE:$version") || rc=$?
     case $rc in
@@ -196,14 +240,19 @@ cmd_promote_copy() {
 }
 
 cmd_promote_tag() {
-    (($# == 1)) || die "usage: publish.sh promote-tag DIGEST"
+    local allow
+    allow=$(allow_degraded_arg "$@")
+    ((allow == 0)) || shift
+    (($# == 1)) || die "usage: publish.sh promote-tag [--allow-degraded] DIGEST"
     local digest=$1 labels version revision rc=0
     require_keys release release-backup
     labels=$(candidate_labels "$digest")
     version=${labels% *} revision=${labels#* }
     check_increases "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$version" "$revision" || rc=$?
     case $rc in
-        0) verified_copy "$APEX_REPO_STABLE@$digest" "$APEX_REPO_STABLE:$APEX_FEDORA" ;;
+        0)
+            check_degraded "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$allow"
+            verified_copy "$APEX_REPO_STABLE@$digest" "$APEX_REPO_STABLE:$APEX_FEDORA" ;;
         "$TAG_ALREADY_THERE") ;;
         *) return "$rc" ;;
     esac
