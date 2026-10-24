@@ -1119,6 +1119,13 @@ vm_ssh() {
         "cat /run/user/1000/$PKEXEC_UNIT.rc") from pkexec.rc | grep . ;;
         "cat /run/user/1000/$PKEXEC_UNIT.out") from pkexec.out ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'FAILED to authenticate'") from polkit-log | grep . ;;
+        "cat $POLKIT_ACTIONS") from policies | grep . ;;
+        "pkaction --action-id "*" --verbose")
+            id=${cmd#pkaction --action-id }
+            id=${id% --verbose}
+            [[ ! -e $STATE/unloaded-$id ]] || { echo "No action with action id $id"; return 1; }
+            printf '%s:\n  description:       x\n  vendor:            %s\n  vendor_url:        https://github.com/apex-linux\n' \
+                "$id" "$(cat "$STATE/vendor-$id" 2>/dev/null || echo Apex)" ;;
         "sh -s") cat >/dev/null; from key ;;
         *) printf 'unexpected vm_ssh: %s\n' "$cmd" >&2; return 99 ;;
     esac
@@ -1458,6 +1465,38 @@ check_true "naming the exit" grep -q '^| local-polkit-cancel | FAIL | pkexec exi
 polkit_fails cancel-keeps-helper local-polkit-cancel
 polkit_fails pkexec-not-root local-polkit
 check_true "naming what pkexec printed" grep -q "^| local-polkit | FAIL | pkexec /usr/bin/id -u exited 0 and printed '1000', not 0 and 0" "$GUEST_DIR/out/results.md"
+
+# polkitd's own reading of the actions G1 parsed: what the dialog's details show.
+policies() {
+    rm -f "$GUEST_DIR"/state/unloaded-* "$GUEST_DIR"/state/vendor-*
+    cat "$APEX_SYSTEM_POLICY" >"$GUEST_DIR/state/policies"
+}
+APEX_SYSTEM_POLICY=$TMP/apex-update.policy
+printf '%s\n' '<policyconfig>' '  <vendor>Apex</vendor>' \
+    '  <action id="io.github.apex-linux.apex.update.check">' '  </action>' \
+    '  <action id="io.github.apex-linux.apex.update.rollback">' '  </action>' '</policyconfig>' >"$APEX_SYSTEM_POLICY"
+policies
+check "polkit actions: pkaction knows each, vendor Apex" 0 "$(guest polkit_actions local)"
+check_true "and the row names them" grep -q '^| local-polkit-actions | PASS | pkaction --verbose names vendor Apex for the 2 actions of .*: io\.github\.apex-linux\.apex\.update\.check io\.github\.apex-linux\.apex\.update\.rollback |' "$GUEST_DIR/out/results.md"
+policies
+: >"$GUEST_DIR/state/unloaded-io.github.apex-linux.apex.update.rollback"
+check "an action polkitd did not load fails" 1 "$(guest polkit_actions local)"
+check_true "and is named" grep -q '^| local-polkit-actions | FAIL | pkaction does not know io\.github\.apex-linux\.apex\.update\.rollback' "$GUEST_DIR/out/results.md"
+policies
+: >"$GUEST_DIR/state/vendor-io.github.apex-linux.apex.update.check"
+check "a blank vendor fails" 1 "$(guest polkit_actions local)"
+check_true "naming it" grep -q "^| local-polkit-actions | FAIL | pkaction names vendor '' for io\.github\.apex-linux\.apex\.update\.check, not 'Apex'" "$GUEST_DIR/out/results.md"
+check "and stops there" 0 "$(grep -c 'update\.rollback' "$GUEST_DIR/out/results.md" || true)"
+policies
+echo Other >"$GUEST_DIR/state/vendor-io.github.apex-linux.apex.update.rollback"
+check "another vendor fails" 1 "$(guest polkit_actions local)"
+check_true "naming it" grep -q "^| local-polkit-actions | FAIL | pkaction names vendor 'Other' for io\.github\.apex-linux\.apex\.update\.rollback" "$GUEST_DIR/out/results.md"
+: >"$GUEST_DIR/state/policies"
+check "no Apex policy on the guest fails" 1 "$(guest polkit_actions local)"
+check_true "and says so" grep -q '^| local-polkit-actions | FAIL | no /usr/share/polkit-1/actions/io\.github\.apex-linux\.\*\.policy on the guest' "$GUEST_DIR/out/results.md"
+printf '<policyconfig>\n  <action id="bad id; reboot">\n</policyconfig>\n' >"$GUEST_DIR/state/policies"
+check "an id that is not a polkit id fails before any pkaction" 1 "$(guest polkit_actions local)"
+check_true "naming it" grep -q '^| local-polkit-actions | FAIL | an action id is not a polkit id: bad' "$GUEST_DIR/out/results.md"
 
 apex_locked_in
 check "apex.safe=1: upstream's two-stage lock" 0 "$(guest safe_karg_lock local)"

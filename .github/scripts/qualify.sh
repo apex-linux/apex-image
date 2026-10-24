@@ -148,6 +148,8 @@ readonly APEX_SAFE_KARG=apex.safe=1
 readonly APEX_SAFE_KARG_LINE='Apex: safe mode (apex.safe=1)'
 readonly WRONG_PASSWORD=notthepassword0
 readonly PKEXEC_UNIT=apex-qualify-pkexec
+readonly POLKIT_ACTIONS='/usr/share/polkit-1/actions/io.github.apex-linux.*.policy'
+readonly POLKIT_VENDOR=Apex
 readonly APEX_LAYER_JS=desktop/shell/js/ui/apex/layer.js
 
 VM_NAME=
@@ -1536,6 +1538,25 @@ polkit_agent() {
     result "$test" PASS "pkexec /usr/bin/id -u as $TEST_USER: the shell's ${stock:+stock }dialog (logs/$test-dialog.png) took the password; it printed 0 and exited 0"
 }
 
+# G1 parses these files strictly; only polkitd on a booted guest reads them as the dialog's
+# details show them.
+polkit_actions() {
+    local test=$1-polkit-actions files id out vendor
+    local -a ids
+    files=$(vm_ssh "cat $POLKIT_ACTIONS") || fail "$test" "no $POLKIT_ACTIONS on the guest"
+    mapfile -t ids < <(grep -o '<action id="[^"]*"' <<<"$files" | cut -d'"' -f2)
+    ((${#ids[@]} > 0)) || fail "$test" "$POLKIT_ACTIONS name no action"
+    for id in "${ids[@]}"; do
+        [[ $id =~ ^[A-Za-z0-9._-]+$ ]] || fail "$test" "an action id is not a polkit id: $id"
+        out=$(vm_ssh "pkaction --action-id $id --verbose") ||
+            fail "$test" "pkaction does not know $id: polkitd did not load it"
+        vendor=$(sed -n 's/^[[:space:]]*vendor:[[:space:]]*//p' <<<"$out" | sed 's/[[:space:]]*$//')
+        [[ $vendor == "$POLKIT_VENDOR" ]] ||
+            fail "$test" "pkaction names vendor '$vendor' for $id, not '$POLKIT_VENDOR': the dialog's details show it"
+    done
+    result "$test" PASS "pkaction --verbose names vendor $POLKIT_VENDOR for the ${#ids[@]} actions of $POLKIT_ACTIONS: ${ids[*]}"
+}
+
 # Apply arms only for another digest whose manifest version is higher.
 stage_local_candidate() {
     local test=$1 booted=$2 manifest version status dir=$GUEST_TMP/candidate
@@ -1785,6 +1806,7 @@ cmd_local() {
     login_lock_unlock local
     lock_matrix local "$since"
     polkit_agent local
+    polkit_actions local
     crash_guard_logins local
     polkit_agent local-safe stock
     safe_karg_lock local
