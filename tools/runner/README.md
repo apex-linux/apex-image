@@ -180,7 +180,9 @@ for the VM's log. In the VM, `ci-build` then:
    `rpms.lock`.
 
 The gates step writes the results to the job summary. It fails when there is no gates
-file.
+file. When G4 ran, its screendumps, journals and serial logs follow as the artifact
+`qualify-logs-<sha>`, kept 14 days: each file at most 20 MiB and 200 MiB in all, with
+`SKIPPED` naming what was left out.
 
 The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and

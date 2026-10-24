@@ -549,6 +549,12 @@ cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
 mkdir -p _build
 echo "lock-sha256 x" >_build/gates-passed.txt
+if [[ -e $FAKE/with-logs ]]; then
+    mkdir -p _build/qualify/logs
+    echo shot >_build/qualify/logs/local-lock.png
+    echo journal >_build/qualify/logs/local-unlock.journal.txt
+    truncate -s 21M _build/qualify/logs/local.serial.log
+fi
 exit "$(cat "$FAKE/build-rc")"
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane.sh" <<'EOF'
@@ -597,6 +603,18 @@ check "a failed build exits with its status and promotes nothing" "1:no promotio
     "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
 check "and still returns its results" "build-image 1|exit 1" \
     "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -E '^(build-image|exit) ' | paste -sd'|')"
+: >"$CI_DIR/with-logs"
+mkdir -p "$CI_DIR/home/apex-image/_build/qualify/logs"
+echo stale >"$CI_DIR/home/apex-image/_build/qualify/logs/old.journal.txt"
+touch -d '2001-01-01' "$CI_DIR/home/apex-image/_build/qualify/logs/old.journal.txt"
+ci_request "ci-build $CI_SHA" >/dev/null
+check "a failed G4 returns this run's logs for vm.yml's artifact" \
+    "./qualify-logs/SKIPPED ./qualify-logs/local-lock.png ./qualify-logs/local-unlock.journal.txt" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep '^\./qualify-logs/.' | sort | paste -sd' ')"
+check "and names the file over 20 MiB it left out" "local.serial.log 21504 KiB" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./qualify-logs/SKIPPED)"
+rm "$CI_DIR/with-logs"
+rm -rf "$CI_DIR/home/apex-image/_build/qualify"
 
 # --- tools/components.sh: pinned full clones of components.lock, and the dev override ------
 CO="$TMP/components"
