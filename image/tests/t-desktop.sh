@@ -391,10 +391,26 @@ apex='EdDSA/SHA512, Tue Sep 29 2026 07:00:00 AM UTC, Key ID 8da3252bd6ef25fa'
 r=$(mkroot ptyxisbuilt)
 add_ptyxis "$r/usr/share/apex/rpms.lock" built
 rpmdb "$T/ptyxisbuilt.db" ptyxis.evr=51.0-1.fc45.apex1 "ptyxis.signature=$apex"
+mkdir -p "$r/usr/bin"
+printf '\177ELF\002\001\001\000\000/*! apex-ptyxis */\000' >"$r/usr/bin/ptyxis"
 desktop ptyxisbuilt
 expect_rc "the Apex terminal as the lane built it passes" 0
 expect_out "with every locked RPM" '^PASS desktop: the 5 locked RPM\(s\) are installed at their locked NEVRAs$'
 expect_out "and is named" '^PASS desktop: ptyxis 51\.0-1\.fc45\.apex1 is an Apex build with the Apex RPM signature \(the family is built\)$'
+expect_out "with the Apex resource" '^PASS desktop: /usr/bin/ptyxis carries /\*! apex-ptyxis \*/: the Apex resource is compiled in$'
+r=$(mkroot ptyxisnomarker)
+add_ptyxis "$r/usr/share/apex/rpms.lock" built
+rpmdb "$T/ptyxisnomarker.db" ptyxis.evr=51.0-1.fc45.apex1 "ptyxis.signature=$apex"
+desktop ptyxisnomarker
+expect_rc "an Apex Ptyxis without the Apex resource fails" 1
+expect_out "and says so" '^FAIL desktop: /usr/bin/ptyxis lacks /\*! apex-ptyxis \*/'
+r=$(mkroot ptyxisstockmarker)
+add_ptyxis "$r/usr/share/apex/rpms.lock" stock
+mkdir -p "$r/usr/bin"
+printf '\177ELF/*! apex-ptyxis */\000' >"$r/usr/bin/ptyxis"
+desktop ptyxisstockmarker
+expect_rc "the Apex resource under a stock family fails" 1
+expect_out "and says so" '^FAIL desktop: /usr/bin/ptyxis carries /\*! apex-ptyxis \*/, but the family is stock$'
 r=$(mkroot ptyxisfedora)
 add_ptyxis "$r/usr/share/apex/rpms.lock" held
 desktop ptyxisfedora
