@@ -8,6 +8,7 @@ command -v systemd-analyze >/dev/null 2>&1 || skip_all "systemd-analyze not foun
 [ -x /usr/bin/gsettings ] || skip_all "no /usr/bin/gsettings (systemd-analyze checks apex-shell-safe.service's ExecStart)"
 
 DESKTOP=$APEX_DESKTOP_SRC/desktop
+NKEYS=$(find "$DESKTOP/dconf/distro.d" -maxdepth 1 -type f -exec cat {} + | grep -cvE '^[[:space:]]*(#|\[|$)')
 SHA=$(printf '%064d' 0 | tr 0 a)
 KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
 
@@ -51,6 +52,8 @@ db = {
     "mutter": {"evr": "51.0-1.fc45", "signature": fedora},
     "mutter-common": {"evr": "51.0-1.fc45", "arch": "noarch", "signature": fedora},
     "ptyxis": {"evr": "51.0-1.fc45", "signature": fedora},
+    "apex-desktop": {"evr": "0.1.0-0.fc45", "arch": "noarch", "signature": apex,
+                     "files": ["/etc/profile.d/apex-prompt.sh"]},
 }
 for edit in sys.argv[2:]:
     key, value = edit.split("=", 1)
@@ -95,8 +98,8 @@ mkroot() {
         >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
     cp "$DESKTOP"/schemas/*.gschema.xml "$DESKTOP"/schemas/*.gschema.override "$r/usr/share/glib-2.0/schemas/"
     upstream_schemas "$r/usr/share/glib-2.0/schemas" "$DESKTOP/schemas/90_apex.gschema.override"
-    printf '<schemalist><schema id="org.gnome.Ptyxis.Profile"><key name="label" type="s"><default>%s</default></key><key name="cell-height-scale" type="d"><range min="1.0" max="2.0"/><default>1.0</default></key></schema></schemalist>\n' \
-        "''" >"$r/usr/share/glib-2.0/schemas/org.gnome.Ptyxis.Profile.gschema.xml"
+    printf '<schemalist><schema id="org.gnome.Ptyxis.Profile"><key name="label" type="s"><default>%s</default></key><key name="palette" type="s"><default>%s</default></key><key name="cell-height-scale" type="d"><range min="1.0" max="2.0"/><default>1.0</default></key></schema></schemalist>\n' \
+        "''" "'gnome'" >"$r/usr/share/glib-2.0/schemas/org.gnome.Ptyxis.Profile.gschema.xml"
     # Fedora's dconf profile and an empty locks directory, as the dconf package ships them.
     mkdir -p "$r/etc/dconf/profile" "$r/etc/dconf/db/distro.d/locks"
     printf 'user-db:user\nsystem-db:local\nsystem-db:site\nsystem-db:distro\n' >"$r/etc/dconf/profile/user"
@@ -108,6 +111,9 @@ mkroot() {
         >"$r/usr/lib/systemd/user/org.gnome.Shell@.service"
     printf '[Unit]\nDescription=Disable GNOME Shell extensions after failure\nDefaultDependencies=no\n\n[Service]\nType=simple\nExecStart=/usr/bin/true\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell-disable-extensions.service"
+    mkdir -p "$r/etc/profile.d"
+    cp "$DESKTOP/ptyxis/apex-prompt.sh" "$r/etc/profile.d/"
+    : >"$r/etc/profile.d/vte.sh"
     # GLib's NEWS names G_RESOURCE_OVERLAYS, and libgio reads it: neither sets it.
     printf 'Overview of changes in GLib 2.51.1\n* Add G_RESOURCE_OVERLAYS\n' >"$r/usr/share/doc/glib2/NEWS"
     printf '\177ELF\002\001\001\000\000G_RESOURCE_OVERLAYS\000' >"$r/usr/lib64/libgio-2.0.so.0"
@@ -130,6 +136,7 @@ done
 expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.0-1\.fc45, the installed mutter$'
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
 expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
+expect_out "the Apex prompt" '^PASS desktop: /etc/profile.d/apex-prompt.sh is apex-desktop.s and sorts before vte.sh'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
     expect_out "the theme carries /*! $v */" "^PASS desktop: .*gnome-shell-theme\\.gresource carries /\\*! $v \\*/\$"
 done
@@ -143,7 +150,7 @@ expect_out "the committed override compiles with --strict" '^PASS desktop: /usr/
 expect_out "the dconf profile reads the distro database" '^PASS desktop: /etc/dconf/profile/user lists system-db:distro$'
 expect_out "the distro database is compiled" '^PASS desktop: /etc/dconf/db/distro is compiled from every file in /etc/dconf/db/distro\.d$'
 expect_out "an empty locks directory holds no lock" '^PASS desktop: no dconf lock in /etc/dconf/db/distro\.d$'
-expect_out "the Ptyxis profile is the default and valid" "^PASS desktop: the 2 dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile [0-9a-f]{32}, and each is a valid setting$"
+expect_out "the Ptyxis profile is the default and valid" "^PASS desktop: the $NKEYS dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile [0-9a-f]{32}, and each is a valid setting$"
 expect_out "the committed crash guard verifies" '^PASS desktop: the crash guard is installed'
 
 r=$(mkroot held held)
@@ -321,7 +328,7 @@ touch -d '2026-10-01 00:00' "$r/$KEYFILE"
 desktop enums
 expect_rc "schemas whose types come from an enums file pass" 0
 expect_out "the override is validated against them" '^PASS desktop: /usr/share/glib-2\.0/schemas/90_apex\.gschema\.override sets no color-scheme and compiles with --strict against the installed schemas$'
-expect_out "the profile key of the enum type is a valid setting" "^PASS desktop: the 3 dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile"
+expect_out "the profile key of the enum type is a valid setting" "^PASS desktop: the $((NKEYS + 1)) dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile"
 r=$(mkroot fixedpath)
 printf "[org/gnome/desktop/interface]\nfont-hinting='none'\n" >"$r/$DISTRO/60-fixed"
 desktop fixedpath
@@ -386,6 +393,17 @@ r=$(mkroot stockapex stock)
 desktop stockapex
 expect_rc "an Apex shell under a stock family fails" 1
 expect_out "and says so" '^FAIL desktop: gnome-shell 51\.0-1\.fc45\.apex1 is an Apex build, but the lane.s gnome-shell family is stock$'
+
+r=$(mkroot noprompt)
+rm "$r/etc/profile.d/apex-prompt.sh"
+desktop noprompt
+expect_rc "an image without the Apex prompt fails" 1
+expect_out "and says so" '^FAIL desktop: no /etc/profile.d/apex-prompt.sh'
+r=$(mkroot strayprompt)
+rpmdb "$T/strayprompt.db" 'apex-desktop.files=[]'
+desktop strayprompt
+expect_rc "a prompt file no package owns fails" 1
+expect_out "and says so" "^FAIL desktop: /etc/profile.d/apex-prompt.sh belongs to 'no package', not apex-desktop$"
 
 apex='EdDSA/SHA512, Tue Sep 29 2026 07:00:00 AM UTC, Key ID 8da3252bd6ef25fa'
 r=$(mkroot ptyxisbuilt)
