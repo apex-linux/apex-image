@@ -51,6 +51,22 @@ sys.exit(1 if problems else 0)
 EOF
 log "contracts: the image installs and checks the firmware of the hardware profile"
 
+python3 - "$APEX_ROOT/image/Containerfile" "$APEX_SYSTEM_SRC/crates/apexctl/src/manifest.rs" <<'EOF' || die "contracts: see above"
+import re
+import sys
+
+containerfile, manifest_rs = (open(p, encoding="utf-8").read() for p in sys.argv[1:])
+written = set(re.findall(r'echo ([a-z0-9-]+) >>"\$degraded"', containerfile))
+accepted = re.search(r"DEGRADED_COMPONENTS: &\[&str\] = &\[([^\]]*)\]", manifest_rs)
+if not written or not accepted:
+    sys.exit("error: found no degraded names in the Containerfile, or no DEGRADED_COMPONENTS in apexctl")
+refused = sorted(written - set(re.findall(r'"([^"]+)"', accepted.group(1))))
+if refused:
+    sys.exit(f"error: the Containerfile can label the image degraded={','.join(refused)}, "
+             f"but the pinned apexctl build manifest refuses it ({sys.argv[2]})")
+EOF
+log "contracts: apexctl build manifest accepts every degraded name the image can write"
+
 # Copies of apex-desktop's files that components keep for their own tests, by explicit
 # path, so a moved copy fails too: COPY ORIGINAL pairs.
 readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
