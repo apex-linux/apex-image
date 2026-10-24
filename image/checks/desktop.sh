@@ -19,6 +19,7 @@ MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */
 /*! apex-shell-structure */'
 PTYXIS=/usr/bin/ptyxis
+PROMPT=/etc/profile.d/apex-prompt.sh
 PTYXIS_MARKER='/*! apex-ptyxis */'
 DEV_ONLY_SETTINGS='G_RESOURCE_OVERLAYS
 --unsafe-mode
@@ -371,6 +372,20 @@ else
         fi
         pass "the crash guard is installed: OnFailure=apex-shell-safe.service on GNOME Shell's unit, ordered before the session bus restart, and both verify"
     fi
+fi
+
+# vte.sh wraps the PS1 it finds, so the Apex prompt must be set first (apex-desktop's CI runs both).
+owner=''
+if root_rpm -qf --qf '%{NAME}\n' "$PROMPT" >"$TMPD/owner" 2>/dev/null; then owner=$(head -n 1 "$TMPD/owner"); fi
+if [ ! -f "$(rootpath "$PROMPT")" ]; then
+    fail "no $PROMPT: the terminal keeps Fedora's prompt (apex-desktop)"
+elif [ "$owner" != apex-desktop ]; then
+    fail "$PROMPT belongs to '${owner:-no package}', not apex-desktop"
+elif [ -f "$(rootpath /etc/profile.d/vte.sh)" ] &&
+    [ "$(printf '%s\n' apex-prompt.sh vte.sh | LC_ALL=C sort | head -n 1)" != apex-prompt.sh ]; then
+    fail "$PROMPT sorts after vte.sh, so VTE's shell integration would lose the Apex prompt"
+else
+    pass "$PROMPT is apex-desktop's and sorts before vte.sh, which wraps it with the shell-integration markers"
 fi
 
 finish
