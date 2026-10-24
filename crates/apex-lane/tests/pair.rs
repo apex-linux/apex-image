@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use apex_lane::core::hash::sha256_hex;
-use apex_lane::core::pins::{self, Nevra};
+use apex_lane::core::pins::{self, KernelPins, Nevra, NvidiaPins};
 use apex_lane::core::utc::UtcSecond;
 use apex_lane::error::{Exit, Result};
 use apex_lane::shell::bodhi::Bodhi;
@@ -138,6 +138,8 @@ struct Fake {
     archive_matches: Cell<bool>,
     /// Modules in kernel-cachyos-modules, by kernel version-release; 1000 otherwise.
     modules: RefCell<BTreeMap<String, usize>>,
+    /// source-check.sh's exit and stderr; 0 by default.
+    source_check: RefCell<(i32, String)>,
     real: StdRunner,
 }
 
@@ -199,6 +201,7 @@ impl Fake {
             tag_signer: RefCell::new(TAG_FPR.into()),
             archive_matches: Cell::new(true),
             modules: RefCell::default(),
+            source_check: RefCell::new((0, "ok SHA256SUMS lists and matches every file\n".into())),
             real: StdRunner::inherit(),
         }
     }
@@ -215,6 +218,18 @@ impl Fake {
                 c.program == program || argv(c).first().is_some_and(|a| a == program.path())
             })
             .count()
+    }
+
+    fn source_check_sh(&self, cmd: &Cmd) -> Option<Outcome> {
+        let args = argv(cmd);
+        (cmd.program == Program::Bash && args[0].ends_with("/source-check.sh")).then(|| {
+            let (code, stderr) = self.source_check.borrow().clone();
+            Outcome {
+                code,
+                stdout: Vec::new(),
+                stderr: stderr.into_bytes(),
+            }
+        })
     }
 
     /// The tools of `kernel-bump`'s report, past `bump.sh`.
@@ -357,7 +372,11 @@ impl Fake {
 impl Runner for Fake {
     fn run(&self, cmd: &Cmd) -> Result<Outcome> {
         self.log.borrow_mut().push(cmd.clone());
-        if let Some(out) = self.report_tools(cmd).or_else(|| self.script(cmd)) {
+        if let Some(out) = self
+            .report_tools(cmd)
+            .or_else(|| self.source_check_sh(cmd))
+            .or_else(|| self.script(cmd))
+        {
             return Ok(out);
         }
         match cmd.program {
@@ -465,6 +484,37 @@ fn write_pair(dirs: &JobDirs, with_kmod: bool) {
     for name in ["vmlinux", "System.map", "config", "kernel.log"] {
         write(&dirs.out.join("debug").join(name), name);
     }
+    write_source(dirs, &kernel, &nvidia, with_kmod);
+}
+
+/// pair.sh's public source set: both pinned SRPMs, even after a kmod failure.
+fn write_source(dirs: &JobDirs, kernel: &KernelPins, nvidia: &NvidiaPins, with_kmod: bool) {
+    let src = dirs.out.join("source");
+    for nevra in [&kernel.srpm, &nvidia.kmod_srpm] {
+        let file = nevra.file_name();
+        std::fs::create_dir_all(src.join("srpms")).unwrap();
+        std::fs::copy(dirs.mirror.join(&file), src.join("srpms").join(&file)).unwrap();
+    }
+    for name in ["kernel.env", "nvidia.env", "series", "kernel-spec.patch"] {
+        let from = dirs.job.join(name);
+        let text = std::fs::read(&from).unwrap_or_else(|_| name.as_bytes().to_vec());
+        write(&src.join("recipe").join(name), text);
+    }
+    write(
+        &src.join("licenses/kernel-COPYING"),
+        "GPL-2.0 WITH Linux-syscall-note",
+    );
+    write(&src.join("licenses/GPL-2.0"), "GPL-2.0");
+    let kmod = if with_kmod {
+        nvidia.kmod_srpm.to_string()
+    } else {
+        "none: the kmod did not build".into()
+    };
+    write(
+        &src.join("README.source"),
+        format!("kernel={}\nkmod={kmod}\n", kernel.srpm),
+    );
+    write(&src.join("SHA256SUMS"), "sums\n");
 }
 
 /// pair.sh with its hook: `APEX_PAIR_FAULT=kmod` takes the kmod-failure path.
@@ -568,6 +618,7 @@ impl PairTest {
         write(&k.join("pair.sh"), "#!/bin/bash\n");
         write(&k.join("config-required.txt"), "CONFIG_MODULE_SIG=y\n");
         write(&k.join("bump.sh"), "#!/bin/bash\n");
+        write(&k.join("source-check.sh"), "#!/bin/bash\n");
         init_repo(recipes.path());
         let t = Self {
             _serial: serial,
@@ -1604,8 +1655,42 @@ fn layer_listing(out: &Path) -> Vec<String> {
     names
 }
 
+/// Every file of the stored source set, relative to it, as the layer should hold it.
+fn set_listing(t: &PairTest, key: &str) -> Vec<String> {
+    let set = t.store.path().join("pkgs/kernel").join(key).join("source");
+    let mut names: Vec<String> = walk(&set)
+        .into_iter()
+        .map(|p| p.strip_prefix(&set).unwrap().display().to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn source_checks(t: &PairTest) -> Vec<Vec<String>> {
+    t.fake
+        .log
+        .borrow()
+        .iter()
+        .filter(|c| c.program == Program::Bash && argv(c)[0].ends_with("/source-check.sh"))
+        .map(argv)
+        .collect()
+}
+
 #[test]
-fn the_source_artifact_holds_both_srpms_the_pins_and_the_recipe() {
+fn the_source_artifact_wraps_pair_shs_set_as_it_is() {
     let t = PairTest::new();
     let key = t.with_good_pair();
     let out = t.store.path().join("sources");
@@ -1616,18 +1701,34 @@ fn the_source_artifact_holds_both_srpms_the_pins_and_the_recipe() {
         r#"{"imageLayoutVersion":"1.0.0"}"#
     );
     let names = layer_listing(&out);
+    assert_eq!(
+        names,
+        set_listing(&t, &key),
+        "the layer is the stored set, nothing added"
+    );
     for file in [
         "SHA256SUMS",
+        "README.source",
+        "licenses/kernel-COPYING",
         "srpms/kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm",
         "srpms/nvidia-kmod-615.78.08-1.fc45.src.rpm",
         "recipe/kernel.env",
         "recipe/nvidia.env",
-        "recipe/pair.sh",
-        "recipe/bump.sh",
-        "recipe/config-required.txt",
     ] {
         assert!(names.iter().any(|n| n == file), "no {file} in {names:?}");
     }
+    assert!(
+        !names.iter().any(|n| n == "recipe/pair.sh"),
+        "no reassembled recipe: {names:?}"
+    );
+    let set = t.store.path().join("pkgs/kernel").join(&key).join("source");
+    let checks = source_checks(&t);
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert!(
+        checks[0][0].ends_with("packaging/pkgs/kernel/source-check.sh"),
+        "{checks:?}"
+    );
+    assert_eq!(checks[0][1], set.display().to_string());
     let index = std::fs::read_to_string(out.join("index.json")).unwrap();
     assert!(index.contains(&key), "{index}");
     t.run(T0, |vm| vm.sources(&lock, &out).unwrap());
@@ -1639,7 +1740,7 @@ fn the_source_artifact_holds_both_srpms_the_pins_and_the_recipe() {
 }
 
 #[test]
-fn a_kernel_only_set_has_only_the_kernel_srpm_and_no_pair_has_no_artifact() {
+fn a_kernel_only_set_is_wrapped_as_pair_sh_wrote_it_and_no_pair_has_no_artifact() {
     let t = PairTest::new();
     t.with_good_pair();
     t.pins("7.3.1-1", "615.78.08-1");
@@ -1649,14 +1750,17 @@ fn a_kernel_only_set_has_only_the_kernel_srpm_and_no_pair_has_no_artifact() {
     let out = t.store.path().join("sources");
     let next = t.store.path().join("rpms.lock.next");
     t.run(T0, |vm| vm.sources(&next, &out).unwrap());
-    let srpms: Vec<String> = layer_listing(&out)
-        .into_iter()
-        .filter(|n| n.starts_with("srpms/"))
-        .collect();
+    let names = layer_listing(&out);
+    let srpms: Vec<&String> = names.iter().filter(|n| n.starts_with("srpms/")).collect();
     assert_eq!(
         srpms,
-        ["srpms/kernel-cachyos-7.3.1-1.cachyos1.fc45.src.rpm"]
+        [
+            "srpms/kernel-cachyos-7.3.1-1.cachyos1.fc45.src.rpm",
+            "srpms/nvidia-kmod-615.78.08-1.fc45.src.rpm"
+        ],
+        "pair.sh keeps both pinned SRPMs after a kmod failure"
     );
+    assert!(names.iter().any(|n| n == "README.source"));
 
     let none = t.store.path().join("no-pair.lock");
     write(
@@ -1673,17 +1777,68 @@ fn a_kernel_only_set_has_only_the_kernel_srpm_and_no_pair_has_no_artifact() {
 }
 
 #[test]
-fn a_pair_stored_before_the_source_artifact_is_named() {
+fn a_pair_stored_before_the_source_set_is_named() {
     let t = PairTest::new();
     let key = t.with_good_pair();
-    std::fs::remove_dir_all(t.store.path().join("pkgs/kernel").join(&key).join("recipe")).unwrap();
+    std::fs::remove_dir_all(t.store.path().join("pkgs/kernel").join(&key).join("source")).unwrap();
     let lock = t.store.path().join("rpms.lock");
     let out = t.store.path().join("sources");
     let err = t.run(T0, |vm| vm.sources(&lock, &out).unwrap_err().to_string());
     assert!(
-        err.contains("the pair predates the source artifact; build it again"),
+        err.contains("the pair predates pair.sh's source set; build it again"),
         "{err}"
     );
+    assert!(source_checks(&t).is_empty());
+}
+
+#[test]
+fn a_set_that_fails_source_check_is_refused() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    let lock = t.store.path().join("rpms.lock");
+    let out = t.store.path().join("sources");
+    *t.fake.source_check.borrow_mut() = (
+        1,
+        "ok recipe/ holds the series and pins\nnot ok: srpms/nvidia-kmod-615.78.08-1.fc45.src.rpm does not have its pinned sha256\n".into(),
+    );
+    let err = t.run(T0, |vm| vm.sources(&lock, &out).unwrap_err().to_string());
+    assert!(
+        err.contains("source-check.sh refused")
+            && err.contains("not ok: srpms/nvidia-kmod-615.78.08-1.fc45.src.rpm does not have its pinned sha256; no source artifact"),
+        "{err}"
+    );
+    assert!(!out.exists(), "nothing is wrapped");
+    assert!(!out.with_extension("partial").exists());
+
+    *t.fake.source_check.borrow_mut() = (2, "source-check.sh cannot run: no sha256sum\n".into());
+    let err = t.run(T0, |vm| vm.sources(&lock, &out).unwrap_err().to_string());
+    assert!(
+        err.contains(
+            "source-check.sh could not run (exit 2): source-check.sh cannot run: no sha256sum"
+        ),
+        "{err}"
+    );
+    assert!(!out.exists());
+}
+
+#[test]
+fn a_pin_without_source_check_sh_is_named() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    std::fs::remove_file(
+        t.recipes
+            .path()
+            .join("packaging/pkgs/kernel/source-check.sh"),
+    )
+    .unwrap();
+    let lock = t.store.path().join("rpms.lock");
+    let out = t.store.path().join("sources");
+    let err = t.run(T0, |vm| vm.sources(&lock, &out).unwrap_err().to_string());
+    assert!(
+        err.contains("source-check.sh is missing: the pinned apex-kernel predates the source set"),
+        "{err}"
+    );
+    assert!(!out.exists());
 }
 
 #[test]

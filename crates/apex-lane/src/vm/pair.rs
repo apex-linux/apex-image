@@ -684,6 +684,10 @@ impl Vm<'_> {
         fs::write(&set.join("key-input.txt"), preimage.as_bytes())?;
         self.keep_inputs(plan, &set, lock_name)?;
         keep_job_files(&out, &set, lock_name)?;
+        let source = out.join(sources::SOURCE_SET);
+        if source.is_dir() {
+            self.move_tree(&source, &set.join(sources::SOURCE_SET))?;
+        }
         self.sign_built(&set, signer)?;
         fs::create_dir_all(&self.store_pkg(&p.name))?;
         let partial = self.store_pkg(&p.name).join(format!(".partial-{key}"));
@@ -694,7 +698,7 @@ impl Vm<'_> {
         Self::verify_stored(&stored)
     }
 
-    /// What the image checks a pair against, and the source artifact's pins and recipe.
+    /// What the image checks a pair against.
     fn keep_inputs(&self, plan: &Plan, set: &Path, lock_name: &str) -> Result<()> {
         if lock_name == PAIR_LOCK {
             let key = self
@@ -709,16 +713,6 @@ impl Vm<'_> {
             fs::copy_with_mode(&config, &set.join(CONFIG_REQUIRED))?;
         }
         fs::copy_with_mode(&plan.job.join(JOB_KERNEL_ENV), &set.join(JOB_KERNEL_ENV))?;
-        let recipe = set.join(sources::SOURCE_RECIPE);
-        fs::create_dir_all(&recipe)?;
-        let mut job = plan.job.clone().into_os_string();
-        job.push("/.");
-        self.run_ok(
-            &Cmd::new(Program::Cp)
-                .args(["-a", "--"])
-                .arg(job)
-                .arg(&recipe),
-        )?;
         fs::copy_with_mode(&plan.job.join(JOB_NVIDIA_ENV), &set.join(JOB_NVIDIA_ENV))?;
         Ok(())
     }

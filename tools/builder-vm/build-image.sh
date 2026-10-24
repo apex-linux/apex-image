@@ -23,8 +23,8 @@ apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECI
 --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
 or image/ changes), and only says whether G4 is due.
 
-The kernel pair's source artifact (both SRPMs, the pins and the recipe, an OCI layout)
-goes to _build/image/sources when the lane lock has a pair; nothing pushes it.
+The kernel pair's source artifact (pair.sh's source set, checked with source-check.sh, as an
+OCI layout) goes to _build/image/sources when the lane lock has a pair; nothing pushes it.
 
 --kernel fedora builds the break-glass image (just image KERNEL=fedora, ADR 0015):
 Fedora's kernel, with the kernel pair's rpm lines left out of the image's lock
