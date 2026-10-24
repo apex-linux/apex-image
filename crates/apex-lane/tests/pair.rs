@@ -336,13 +336,17 @@ fn write_pair(dirs: &JobDirs, with_kmod: bool) {
         lock,
     );
     write(&dirs.out.join("signing_key.x509"), "cert");
-    write(&dirs.out.join("kernel.log"), "built");
+    for name in ["vmlinux", "System.map", "config", "kernel.log"] {
+        write(&dirs.out.join("debug").join(name), name);
+    }
 }
 
 fn failing(reason: &'static str, keep_kernel: bool) -> impl Fn(&JobDirs) -> (i32, String) {
     move |dirs| {
         if keep_kernel {
             write_pair(dirs, false);
+        } else {
+            write(&dirs.out.join("debug/kernel.log"), "the kernel's build log");
         }
         (1, format!("the log's tail\n{reason}\n"))
     }
@@ -587,7 +591,10 @@ fn a_good_pair_is_signed_stored_and_locked() {
         "key-input.txt",
         "config-required.txt",
         "negativo17.gpg",
-        "logs/kernel.log",
+        "debug/vmlinux",
+        "debug/System.map",
+        "debug/config",
+        "debug/kernel.log",
     ] {
         assert!(set.join(kept).is_file(), "the stored pair has no {kept}");
     }
@@ -720,6 +727,11 @@ fn a_kernel_failure_holds_72_hours_from_the_kernel_org_release_then_a_rerun_clea
     let failure =
         std::fs::read_to_string(t.store.path().join("pkgs/kernel/last-failure.txt")).unwrap();
     assert!(failure.starts_with("kernel: rpmbuild -bb failed\nthe log's tail\n"));
+    assert_eq!(
+        std::fs::read_to_string(t.store.path().join("pkgs/kernel/last-failure-kernel.log"))
+            .unwrap(),
+        "the kernel's build log"
+    );
     assert_eq!(t.build("2026-12-02T00:00:00Z"), Built::Held);
     assert!(
         t.family_line().contains(&format!("since={T0} ")),
@@ -1008,4 +1020,57 @@ fn a_point_and_a_major_bump_together() {
     assert_eq!(env, kernel_env("7.3.1-1"), "the point bump goes ahead");
     let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
     assert!(shown.contains("7.4.0-1.cachyos1.fc45.src is a new major: waiting for owner; the pinned 7.3 reaches its EOL in 9d"), "{shown}");
+}
+
+#[test]
+fn the_store_keeps_the_last_4_pairs_debug_files_and_prunes_what_no_lock_names() {
+    let t = PairTest::new();
+    let mut keys = Vec::new();
+    for n in 0..6 {
+        if n > 0 {
+            let notes = t.recipes.path().join("packaging/pkgs/kernel/notes.txt");
+            write(&notes, format!("{n}\n"));
+            commit_all(t.recipes.path());
+        }
+        t.fake.on_job(good_job);
+        let Built::Built(key) = t.build(T0) else {
+            panic!("not built")
+        };
+        keys.push(key);
+        if n == 0 {
+            t.promote();
+        }
+    }
+    let store = t.store.path().join("pkgs/kernel");
+    for key in &keys[2..] {
+        assert!(
+            store.join(key).join("debug/vmlinux").is_file(),
+            "{key} keeps its debug files"
+        );
+    }
+    assert!(!store.join(&keys[1]).exists(), "no lock names {}", keys[1]);
+    let promoted = store.join(&keys[0]);
+    assert!(
+        promoted.join("manifest.txt").is_file() && !promoted.join("debug").exists(),
+        "rpms.lock names {}: its RPMs stay, its debug files go",
+        keys[0]
+    );
+    image_sh_accepts(&t.store.path().join("rpms.lock"));
+    image_sh_accepts(&t.store.path().join("rpms.lock.next"));
+}
+
+#[test]
+fn a_pair_without_its_vmlinux_breaks_the_contract() {
+    let t = PairTest::new();
+    t.fake.on_job(|dirs| {
+        let done = good_job(dirs);
+        std::fs::remove_file(dirs.out.join("debug/vmlinux")).unwrap();
+        done
+    });
+    let err = t.run(T0, |vm| vm.build("kernel").unwrap_err().to_string());
+    assert!(
+        err.contains("pair.sh wrote pair.lock without debug/vmlinux"),
+        "{err}"
+    );
+    assert!(!t.store.path().join("rpms.lock.next").exists());
 }

@@ -198,14 +198,20 @@ exactly what it built before.
    queried with `rpm -qp`, are signed with the Apex RPM key and stored under
    `pkgs/kernel/KEY/` with `pair.lock`, the pins, the module certificate and the logs,
    and, for the image's checks, the recipe's `config-required.txt` and (a whole pair)
-   negativo17's key file as mirrored, `negativo17.gpg`.
-   Exit 1: a hold (below), the reason the last line of its stderr. Anything else is
-   exit 1 of the lane.
+   negativo17's key file as mirrored, `negativo17.gpg`. `pair.sh`'s `OUT/debug/`
+   (`vmlinux` with DWARF, `System.map`, the built `config`, `kernel.log`) goes to
+   `debug/` in the set; a lock without all four is exit 1 of the lane.
+   Exit 1: a hold (below), the reason the last line of its stderr, and `debug/kernel.log`,
+   when the kernel got that far, kept as `pkgs/kernel/last-failure-kernel.log`. Anything
+   else is exit 1 of the lane.
 5. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
    each `install=` package and the kmod built for that kernel, and one of kind `mirror`
    for each `userspace=` RPM of the driver the pair was built with, copied from the
    mirror into the set and checked against its pin. `kernel-cachyos-devel` is stored,
    not locked. A kernel-only set (`degraded=nvidia`) locks no userspace.
+6. **Retention** (ARCHITECTURE 4.2), after each new pair: the 4 newest sets stay whole.
+   An older one that `rpms.lock` or `rpms.lock.next` names loses only `debug/`; one
+   that neither names is removed. The mirror is kept forever.
 
 **Holds** (ARCHITECTURE 4.3) keep the last good pair's `rpm` lines:
 
@@ -332,6 +338,8 @@ image carries the lock it was built from, at `/usr/share/apex/rpms.lock`.
   rpms.lock.next              the candidate: what the next image build takes
   pkgs/PKG/KEY/               one build: RPMs, Apex SRPM, manifest.txt, key.txt, spec.diff, logs/
   pkgs/PKG/last-failure.txt   the reason and log tail of the last exit 3
+  pkgs/kernel/KEY/debug/      vmlinux, System.map, config, kernel.log: the 4 newest pairs
+  mirror/                     the pair's pinned inputs and keys, kept forever
 ```
 
 `rpms.lock` format 1, one record per line (`reason=` runs to the end of the line):
