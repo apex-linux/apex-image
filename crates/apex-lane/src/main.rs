@@ -68,6 +68,9 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// apex-kernel's kernel.env and nvidia.env in DIR, parsed as the lane does, with the
+    /// tag pins kernel-bump needs (the contracts job's check; no checkout or store needed).
+    CheckPins { dir: PathBuf },
     /// Sign RPMs in place with the Apex RPM key: the builder VM's apex, apex-desktop and
     /// libfprint builds. A manifest.txt beside them records it.
     Sign {
@@ -236,9 +239,31 @@ fn recipe_roots() -> Result<Vec<PathBuf>> {
         .collect()
 }
 
+fn check_pins(dir: &std::path::Path, report: &Reporter) -> Result<Exit> {
+    let read = |name: &str| {
+        let path = dir.join(name);
+        std::fs::read(&path).map_err(|e| usage(format!("{}: {e}", path.display())))
+    };
+    let (kernel, nvidia) =
+        apex_lane::core::pins::check_pins(&read("kernel.env")?, &read("nvidia.env")?)
+            .map_err(|e| usage(format!("{}: {}", dir.display(), e.0)))?;
+    report.log(&format!(
+        "check-pins: {}: {} with {}, tag {} from {}",
+        dir.display(),
+        kernel.srpm,
+        nvidia.kmod_srpm,
+        kernel.tag.unwrap_or_default(),
+        kernel.tag_repo.unwrap_or_default()
+    ));
+    Ok(Exit::Ok)
+}
+
 fn run(command: Command, report: &Reporter) -> Result<Exit> {
     if let Command::InContainer(c) = command {
         return in_container(c, report);
+    }
+    if let Command::CheckPins { dir } = &command {
+        return check_pins(dir, report);
     }
     let cwd = std::env::current_dir().map_err(|e| infra(format!("no working directory: {e}")))?;
     let root = vm::find_root(&cwd).ok_or_else(|| {
@@ -284,7 +309,7 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
         Command::Sources { lock, out } => vm.sources(&lock, &out),
         Command::Stock { pkg } => vm.stock(&pkg).map(|()| Exit::Ok),
         Command::Sign { rpms } => vm.sign_files(&rpms).map(|()| Exit::Ok),
-        Command::InContainer(_) => unreachable!("handled above"),
+        Command::InContainer(_) | Command::CheckPins { .. } => unreachable!("handled above"),
     }
 }
 
