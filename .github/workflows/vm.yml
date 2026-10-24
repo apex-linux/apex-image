@@ -133,9 +133,10 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
           # Data from the VM: one escaped line each, never a command of its own. Never gating.
           esc() { local v=${1//'%'/%25}; v=${v//$'\r'/%0D}; printf '%s' "${v//$'\n'/%0A}"; }
+          esc_prop() { local v; v=$(esc "$1"); v=${v//:/%3A}; printf '%s' "${v//,/%2C}"; }
           if [[ -s $out/absorb/warnings.tsv ]]; then
             while IFS=$'\t' read -r family srpm result detail; do
-              echo "::warning title=absorb $(esc "$family")::$(esc "$srpm") (updates-testing): $(esc "$result") $(esc "$detail")"
+              echo "::warning title=absorb $(esc_prop "$family")::$(esc "$srpm") (updates-testing): $(esc "$result") $(esc "$detail")"
             done <"$out/absorb/warnings.tsv"
           fi
           [[ -s $out/gates-passed.txt ]] || { echo "::error::no gates file: G2 or G4 did not pass"; exit 1; }
@@ -144,7 +145,7 @@ jobs:
         if: ${{ !cancelled() && steps.results.outputs.logs != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: qualify-logs-${{ steps.commit.outputs.sha }}
+          name: vm-logs-${{ steps.commit.outputs.sha }}
           path: ${{ steps.results.outputs.logs }}
           retention-days: 14
           if-no-files-found: ignore

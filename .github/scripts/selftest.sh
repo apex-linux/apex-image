@@ -2377,6 +2377,121 @@ check_false "the patches after a failure are not applied" grep -qx 'line 28!' "$
 check "an argument that looks like an option is a usage error" 2 \
     "$(rc_of "$APEX_ROOT/tools/builder-vm/lane-absorb-report.sh" --help)"
 
+# --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
+V="$TMP/vm-yml"
+mkdir -p "$V/bin"
+vm_step() { # NAME: the run: script of vm.yml's step NAME, as GitHub hands it to bash
+    awk -v name="      - name: $1" '
+        $0 == name { found = 1; next }
+        found && /^      - name: / { exit }
+        found && /^        run: \|$/ { body = 1; next }
+        body && /^          / { print substr($0, 11); next }
+        body && /^$/ { print ""; next }
+        body { exit }' "$APEX_ROOT/.github/workflows/vm.yml"
+}
+cat >"$V/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
+echo "::error::a line of the VM's log" >&2
+[[ ! -s $FAKE_VM/results.tar ]] || cat "$FAKE_VM/results.tar"
+exit "$(cat "$FAKE_VM/ssh.rc")"
+EOF
+chmod +x "$V/bin/ssh"
+vm_run() { # STEP [VAR=VALUE...]: one step with GitHub's files; prints its exit status
+    local step=$1 rc=0
+    shift
+    vm_step "$step" >"$V/step.sh"
+    [[ -s $V/step.sh ]] || { echo "no step '$step' in vm.yml"; return; }
+    env PATH="$V/bin:$PATH" FAKE_VM="$V" RUNNER_TEMP="$V/temp" GITHUB_OUTPUT="$V/output" \
+        GITHUB_STEP_SUMMARY="$V/summary" GITHUB_SHA="$CI_SHA" "$@" \
+        bash --noprofile --norc -eo pipefail "$V/step.sh" >"$V/log" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+vm_reset() { rm -rf "$V/temp" "$V/output" "$V/summary" "$V/results" "$V/ssh.args" "$V/results.tar"; mkdir -p "$V/temp"; }
+vm_results() { # FILE=CONTENT...: the results tar ci-build would return
+    local kv
+    rm -rf "$V/results"
+    mkdir -p "$V/results"
+    for kv in "$@"; do
+        mkdir -p "$V/results/$(dirname "${kv%%=*}")"
+        printf '%s\n' "${kv#*=}" >"$V/results/${kv%%=*}"
+    done
+    tar -C "$V/results" -cf "$V/results.tar" .
+}
+COMMIT='Commit'
+BUILD='Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)'
+GATES='Gates file'
+check "vm.yml has the three steps the selftest runs" "yes yes yes" \
+    "$(for s in "$COMMIT" "$BUILD" "$GATES"; do [[ -n $(vm_step "$s") ]] && printf 'yes ' || printf 'no '; done | sed 's/ $//')"
+
+vm_reset
+check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
+vm_reset
+check "Commit: the schedule asks for the absorption report" "0|sha=$CI_SHA extra=absorb" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=schedule INPUT_SHA=)|$(paste -sd' ' "$V/output")"
+vm_reset
+check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA="$CI_OTHER")|$(cat "$V/output")"
+vm_reset
+check "Commit: a short sha is an error" "1|::error::not a full commit sha: abc123" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA=abc123)|$(cat "$V/log")"
+
+for case in "0:" "1:::error::the build in the builder VM failed (exit 1)" "2:::error::ci-build refused $CI_SHA" \
+    "75:::error::another build holds the builder VM"; do
+    vm_reset
+    echo "${case%%:*}" >"$V/ssh.rc"
+    check "build: ssh exit ${case%%:*} is the step's exit, with its message" "${case%%:*}|${case#*:}" \
+        "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=)|$(grep -v -e "^::stop-commands::" -e '^::[0-9a-f]\{32\}::$' -e "a line of the VM's log" "$V/log")"
+done
+vm_stopped() { # the VM's line sits between ::stop-commands::TOKEN and ::TOKEN::
+    local first token
+    first=$(sed -n 1p "$V/log")
+    token=${first#::stop-commands::}
+    [[ $first == "::stop-commands::$token" && ${#token} == 32 ]] &&
+        [[ $(sed -n 2p "$V/log") == "::error::a line of the VM's log" && $(sed -n 3p "$V/log") == "::$token::" ]]
+}
+check_true "build: the VM's log runs with workflow commands stopped, then they resume" vm_stopped
+vm_reset
+echo 0 >"$V/ssh.rc"
+vm_run "$BUILD" SHA="$CI_SHA" EXTRA= >/dev/null
+check "build: a push asks for the build alone" "apex-builder ci-build $CI_SHA" "$(cat "$V/ssh.args")"
+vm_run "$BUILD" SHA="$CI_SHA" EXTRA=absorb >/dev/null
+check "build: the daily run adds absorb" "apex-builder ci-build $CI_SHA absorb" "$(cat "$V/ssh.args")"
+
+vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
+vm_reset
+vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
+    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png"
+check "gates: a green build passes" 0 "$(vm_gates)"
+check "gates: with each result in the summary" "## Builder VM|### ci-build|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
+    "$(grep -E '^##' "$V/summary" | paste -sd'|')"
+check "gates: and G4's logs for the artifact" "logs=$V/temp/logs|local.png" \
+    "$(cat "$V/output")|$(ls "$V/temp/logs/qualify-logs")"
+vm_reset
+vm_results "ci-build.txt=sha $CI_SHA" "lock.diff=x"
+check "gates: a red build without a gates file fails" "1|::error::no gates file: G2 or G4 did not pass" \
+    "$(vm_gates)|$(cat "$V/log")"
+check "gates: and still writes its summary, but no artifact without logs" "yes|" \
+    "$(grep -q '^### ci-build' "$V/summary" && echo yes)|$(cat "$V/output" 2>/dev/null)"
+vm_reset
+check "gates: an empty results tar is an error" "1|::error::the builder VM returned no results" "$(vm_gates)|$(cat "$V/log")"
+vm_reset
+vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "absorb/report.md=# Lane absorption report
+| Family | x |" "absorb/rows.tsv=x" "absorb/warnings.tsv=$(printf 'gnome-shell\tgnome-shell-51.1-1.fc45\tfails\t0015-lock.patch: 100%% of hunk 4\nptyxis\tptyxis-51.0-1.fc45\tfuzz\t1 patch(es); x')"
+check "gates: the daily run's warnings never fail the step" 0 "$(vm_gates)"
+check "gates: one escaped warning per family" \
+    "::warning title=absorb gnome-shell::gnome-shell-51.1-1.fc45 (updates-testing): fails 0015-lock.patch: 100%25 of hunk 4|::warning title=absorb ptyxis::ptyxis-51.0-1.fc45 (updates-testing): fuzz 1 patch(es); x" \
+    "$(grep '^::warning' "$V/log" | paste -sd'|')"
+check "gates: the report joins the summary and the artifact" "### Absorption (lane-absorb-report.sh)|warnings.tsv" \
+    "$(grep -o '^### Absorption.*' "$V/summary")|$([[ -s $V/temp/logs/absorb/warnings.tsv ]] && echo warnings.tsv)"
+vm_reset
+vm_results "gates-passed.txt=x" "absorb/warnings.tsv=$(printf 'evil\tx\tfails\tline one\n::error::injected\tx\tfails\ty')"
+vm_gates >/dev/null
+check "gates: a warning line cannot issue a command of its own" 0 "$(grep -c '^::error::injected' "$V/log")"
+check "gates: and its family cannot end the title property" \
+    "::warning title=absorb %3A%3Aerror%3A%3Ainjected::x (updates-testing): fails y" "$(grep 'injected' "$V/log")"
+check_true "gates: the artifact is vm-logs-<sha>" grep -qF "name: vm-logs-\${{ steps.commit.outputs.sha }}" "$APEX_ROOT/.github/workflows/vm.yml"
+
 # --- .gitignore: biometric file names are never tracked ------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG \
     var/lib/fprint/u/1 image/system_files/var/lib/fprint/u/1; do
