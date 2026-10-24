@@ -150,7 +150,6 @@ readonly WRONG_PASSWORD=notthepassword0
 readonly PKEXEC_UNIT=apex-qualify-pkexec
 readonly POLKIT_ACTIONS='/usr/share/polkit-1/actions/io.github.apex-linux.*.policy'
 readonly POLKIT_VENDOR=Apex
-readonly APEX_LAYER_JS=desktop/shell/js/ui/apex/layer.js
 
 VM_NAME=
 VM_SERIAL=
@@ -1282,7 +1281,7 @@ no_fingerprint_conversation() {
 pinned_features() {
     local js=${APEX_GNOME_SRC:-}/$APEX_LAYER_JS
     [[ -n ${APEX_GNOME_SRC:-} && -f $js ]] || return 1
-    sed -n "s/^const FEATURES_IN_ENABLE_ORDER = \[\(.*\)\];\$/\1/p" "$js" | tr -d "' " | tr ',' '\n' | grep .
+    layer_features "$js"
 }
 
 pinned_gnome() { printf 'apex-gnome %s' "$(git -C "$APEX_GNOME_SRC" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"; }

@@ -67,6 +67,35 @@ if refused:
 EOF
 log "contracts: apexctl build manifest accepts every degraded name the image can write"
 
+# Every layer feature must be a choice of the kill switch: gsettings refuses any other name.
+gnome=$(component_at apex-gnome "$APEX_GNOME_SRC")
+desktop=$(component_at apex-desktop "$APEX_DESKTOP_SRC")
+features=$(layer_features "$APEX_GNOME_SRC/$APEX_LAYER_JS" 2>/dev/null) ||
+    die "contracts: $gnome's $APEX_LAYER_JS has no FEATURES_IN_ENABLE_ORDER, or it is empty"
+choices=$(python3 - "$APEX_DESKTOP_SRC/desktop/schemas/io.github.apex_linux.Apex.Desktop.gschema.xml" <<'EOF'
+import sys
+import xml.etree.ElementTree as ET
+
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except (OSError, ET.ParseError) as e:
+    sys.exit(f"error: cannot read {sys.argv[1]}: {e}")
+key = root.find("./schema[@id='io.github.apex_linux.Apex.Desktop']/key[@name='disabled-features']")
+if key is None:
+    sys.exit("error: schema io.github.apex_linux.Apex.Desktop has no disabled-features key")
+names = [c.get("value") for c in key.findall("./choices/choice")]
+if not names:
+    sys.exit("error: disabled-features has no <choices>: it takes any name, so none can be checked")
+print("\n".join(names))
+EOF
+) || die "contracts: $desktop: see above"
+lacking=$(comm -23 <(sort -u <<<"$features") <(sort -u <<<"$choices") | paste -sd' ' -)
+[[ -z $lacking ]] ||
+    die "contracts: $gnome's layer has features that $desktop's disabled-features cannot turn off (not in its <choices>): $lacking"
+unused=$(comm -13 <(sort -u <<<"$features") <(sort -u <<<"$choices") | paste -sd' ' -)
+[[ -z $unused ]] || warn "contracts: $desktop's disabled-features offers choices that $gnome's layer has no feature for: $unused"
+log "contracts: every feature of $gnome's layer can be turned off by $desktop's disabled-features"
+
 # Copies of one component's files that another keeps, by explicit path, so a moved copy
 # fails too: COPY ORIGINAL pairs.
 readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml

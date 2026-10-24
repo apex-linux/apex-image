@@ -1569,7 +1569,19 @@ ct_degraded() {
     printf 'pub const DEGRADED_COMPONENTS: &[&str] = &[%s];\n' "$1" >"$CT/system/crates/apexctl/src/manifest.rs"
 }
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
-printf '<schemalist/>\n' >"$CT/desktop/desktop/schemas/$CT_SCHEMA"
+ct_choices() { # NAMES: apex-desktop's schema with disabled-features offering NAMES
+    local c=''
+    for n in "$@"; do c+="<choice value=\"$n\"/>"; done
+    printf '<schemalist><schema id="io.github.apex_linux.Apex.Desktop" path="/x/">%s</schema></schemalist>\n' \
+        "<key name=\"disabled-features\" type=\"as\">${c:+<choices>$c</choices>}<default>[]</default></key>" \
+        >"$CT/desktop/desktop/schemas/$CT_SCHEMA"
+}
+ct_features() { # LIST: apex-gnome's layer.js with FEATURES_IN_ENABLE_ORDER = [LIST]
+    mkdir -p "$CT/gnome/${APEX_LAYER_JS%/*}"
+    printf "import x from 'y';\nconst FEATURES_IN_ENABLE_ORDER = [%s];\n" "$1" >"$CT/gnome/$APEX_LAYER_JS"
+}
+ct_choices motion spotlight
+ct_features "'motion', 'spotlight'"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
     "$CT/gnome/tests/layer/fixtures/"
@@ -1618,6 +1630,32 @@ cp "$CT/system/crates/apex-dbus/data/$CT_UPDATE1" "$CT/gnome/desktop/control-cen
 check "contracts: Settings' Update1 copy equals apex-system's" 0 "$(ct_run)"
 rm "$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
 check "contracts: a Settings Update1 copy with no XML in apex-system" 1 "$(ct_run)"
+cp "$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1" "$CT/system/crates/apex-dbus/data/"
+ct_kill() { # CHOICES FEATURES: contracts.sh's exit, its output in $CT/out
+    local rc=0
+    read -ra ct_c <<<"$1"
+    ct_choices "${ct_c[@]}"
+    for f in "$CT/gnome/tests/layer/fixtures" "$CT/system/crates/apex-session-agent/tests/data"; do
+        cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$f/"
+    done
+    ct_features "$2"
+    APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' \
+        "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+check "contracts: every layer feature is a kill-switch choice" 0 "$(ct_kill 'motion spotlight panel' "'motion', 'spotlight', 'panel'")"
+check_true "and says so" grep -q "^contracts: every feature of apex-gnome (.*)'s layer can be turned off" "$CT/out"
+check "contracts: a layer feature the kill switch lacks" 1 "$(ct_kill 'motion spotlight' "'motion', 'spotlight', 'glass', 'dock'")"
+check_true "naming both components and the features" grep -q \
+    "^error: contracts: apex-gnome (.*)'s layer has features that apex-desktop (.*)'s disabled-features cannot turn off (not in its <choices>): dock glass$" "$CT/out"
+check "contracts: a choice with no layer feature only warns" 0 "$(ct_kill 'motion spotlight shadows' "'motion', 'spotlight'")"
+check_true "naming it" grep -q "^warning: contracts: apex-desktop (.*)'s disabled-features offers choices that apex-gnome (.*)'s layer has no feature for: shadows$" "$CT/out"
+check "contracts: an empty feature list" 1 "$(ct_kill 'motion spotlight' '')"
+check_true "says so" grep -q "^error: contracts: apex-gnome (.*)'s desktop/shell/js/ui/apex/layer.js has no FEATURES_IN_ENABLE_ORDER, or it is empty" "$CT/out"
+check "contracts: a free-form kill switch, no <choices>" 1 "$(ct_kill '' "'motion'")"
+check_true "says it cannot be checked" grep -q '^error: disabled-features has no <choices>: it takes any name' "$CT/out"
+check_true "naming apex-desktop" grep -q '^error: contracts: apex-desktop (.*): see above' "$CT/out"
+ct_kill 'motion spotlight' "'motion', 'spotlight'" >/dev/null
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }
