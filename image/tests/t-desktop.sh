@@ -120,6 +120,10 @@ mkroot() {
     touch -d '2026-10-01 00:00' "$r"/etc/dconf/db/distro.d/*
     : >"$r/etc/dconf/db/distro"
     cp -R "$DESKTOP/systemd/user/." "$r/usr/lib/systemd/user/"
+    # As apex-desktop's spec installs them.
+    mkdir -p "$r/usr/lib/systemd/user/graphical-session.target.wants" "$r/usr/libexec"
+    ln -s ../apex-folder-icons.service "$r/usr/lib/systemd/user/graphical-session.target.wants/apex-folder-icons.service"
+    install -m0755 "$DESKTOP/icons/apex-folder-icons.sh" "$r/usr/libexec/apex-folder-icons"
     printf '[Unit]\nDescription=GNOME Shell\nOnFailure=org.gnome.Shell-disable-extensions.service\n\n[Service]\nType=notify\nExecStart=/usr/bin/true\nSuccessExitStatus=1\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell@.service"
     printf '[Unit]\nDescription=Disable GNOME Shell extensions after failure\nDefaultDependencies=no\n\n[Service]\nType=simple\nExecStart=/usr/bin/true\n' \
@@ -170,6 +174,7 @@ expect_out "an empty locks directory holds no lock" '^PASS desktop: no dconf loc
 expect_out "the Ptyxis profile is the default and valid" "^PASS desktop: the $NKEYS dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile [0-9a-f]{32}, and each is a valid setting$"
 expect_out "the committed crash guard verifies" '^PASS desktop: the crash guard is installed'
 expect_out "the greeter's logo and background" '^PASS desktop: the greeter.s logo resolves to /usr/share/pixmaps/apex-gdm-logo\.svg, and /usr/share/backgrounds/apex/apex-greeter-light\.png is installed$'
+expect_out "the folder icons unit is enabled" '^PASS desktop: apex-folder-icons\.service is enabled for every user through graphical-session\.target\.wants and runs /usr/libexec/apex-folder-icons$'
 
 r=$(mkroot fedoralogo)
 rm "$r/usr/share/glib-2.0/schemas/zz_apex-login-screen.gschema.override"
@@ -415,6 +420,21 @@ sed -i 's/^Type=oneshot$/Type=oneshot\nRestartSec=soon/' "$r/usr/lib/systemd/use
 desktop badunit
 expect_rc "a guard unit that does not verify fails" 1
 expect_out "systemd-analyze names it" '^FAIL desktop: systemd-analyze --user verify'
+
+r=$(mkroot noiconslink)
+rm "$r/usr/lib/systemd/user/graphical-session.target.wants/apex-folder-icons.service"
+desktop noiconslink
+expect_rc "a folder icons unit nothing enables fails" 1
+expect_out "and says so" 'graphical-session\.target\.wants/apex-folder-icons\.service is not a link to \.\./apex-folder-icons\.service'
+r=$(mkroot iconswronglink)
+ln -sf /dev/null "$r/usr/lib/systemd/user/graphical-session.target.wants/apex-folder-icons.service"
+desktop iconswronglink
+expect_rc "a masked folder icons unit fails" 1
+r=$(mkroot noiconsscript)
+rm "$r/usr/libexec/apex-folder-icons"
+desktop noiconsscript
+expect_rc "a folder icons unit without its script fails" 1
+expect_out "and names what it runs" "^FAIL desktop: /usr/lib/systemd/user/apex-folder-icons\.service runs '/usr/libexec/apex-folder-icons', which is not an executable in the image"
 
 r=$(mkroot stock stock)
 printf 'GVariant\000stage { color: #fff; }\n' >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
