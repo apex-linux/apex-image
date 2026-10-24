@@ -488,10 +488,9 @@ impl Container<'_> {
         );
         for p in &pkg.series {
             let out = self.runner.run(
-                &Cmd::new(Program::Git)
-                    .args(["apply", "-p1", "--"])
+                &git_apply(&t)
+                    .args(["-p1", "--"])
                     .arg(pkg.patch(p))
-                    .cwd(&t)
                     .stdout(Stdout::Null)
                     .stderr(Stderr::Null),
             )?;
@@ -513,12 +512,9 @@ impl Container<'_> {
         let fail = |reason: String| self.fail(&b.attempt, reason.as_bytes(), None);
         self.copy_tree(src, &r)?;
         for p in pkg.series.iter().rev() {
-            let out = self.runner.run(
-                &Cmd::new(Program::Git)
-                    .args(["apply", "-R", "-p1", "--"])
-                    .arg(pkg.patch(p))
-                    .cwd(&r),
-            )?;
+            let out = self
+                .runner
+                .run(&git_apply(&r).args(["-R", "-p1", "--"]).arg(pkg.patch(p)))?;
             if !out.ok() {
                 return Err(fail(format!(
                     "{p} is not applied as written in the %prep tree"
@@ -884,4 +880,16 @@ fn mirror_file(work: &Work, nevra: &str) -> PathBuf {
     work.dir
         .join("mirror")
         .join(format!("{}.rpm", rpmout::nevra_file_stem(nevra)))
+}
+
+/// `git apply` in TREE as its own top: inside an enclosing checkout, such as a kept work
+/// directory, it would take paths from that checkout's top and skip the rest unchanged.
+fn git_apply(tree: &Path) -> Cmd {
+    Cmd::new(Program::Git)
+        .env(
+            "GIT_CEILING_DIRECTORIES",
+            tree.parent().unwrap_or(tree).as_os_str(),
+        )
+        .arg("apply")
+        .cwd(tree)
 }

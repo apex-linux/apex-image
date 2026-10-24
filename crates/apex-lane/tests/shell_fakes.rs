@@ -1062,6 +1062,10 @@ impl ContainerTest {
     }
 
     fn run(&self, tools: &Tools, fake: &Fake) -> Result<()> {
+        self.run_keeping(tools, fake, false)
+    }
+
+    fn run_keeping(&self, tools: &Tools, fake: &Fake, keep_work: bool) -> Result<()> {
         if let Some(check) = &tools.check_sh {
             write(&self.src.path().join("packaging/pkgs/demo/check.sh"), check);
         }
@@ -1084,7 +1088,7 @@ impl ContainerTest {
                 source1: Some(self.archive.clone()),
                 source1_tree: Some(self.tree.clone()),
                 locked_evr: None,
-                keep_work: false,
+                keep_work,
             },
             runner: fake,
             report: &self.report,
@@ -1373,6 +1377,21 @@ fn container_build_writes_the_stored_set() {
             "/usr/bin/gpg"
         ]
     );
+}
+
+/// The kept work tree may sit inside a git checkout, whose git apply would skip the paths.
+#[test]
+fn container_build_keeping_its_work_inside_a_checkout_passes_the_exact_tree_check() {
+    let t = ContainerTest::new(DEMO_ENV, DEMO_EDIT);
+    run_git(t.work.path(), &["init", "-q"]);
+    let fake = container_fake(Tools::default());
+    t.run_keeping(&Tools::default(), &fake, true)
+        .expect("built with --keep-work");
+    assert!(
+        t.work.path().join("work/pristine").is_dir(),
+        "the work is kept"
+    );
+    assert!(!t.out("key.txt").is_empty(), "the set is written");
 }
 
 #[test]
