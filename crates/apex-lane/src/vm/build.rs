@@ -34,7 +34,7 @@ impl Outcome {
 impl Vm<'_> {
     pub fn load(&self, name: &str) -> Result<Pkg> {
         let pkg = pkg::load(&self.recipe_root_of(name)?, name, Parse::Full)?;
-        pkg::check_family_unique(&self.recipe_roots(), &pkg)?;
+        pkg::check_family_unique(&self.recipe_roots(), &pkg.name, &pkg.env.family)?;
         Ok(pkg)
     }
 
@@ -54,6 +54,9 @@ impl Vm<'_> {
     }
 
     pub fn build_one(&self, name: &str, signer: &Signer) -> Result<Outcome> {
+        if let Some(pair) = self.load_pair(name)? {
+            return self.build_pair(&pair, signer);
+        }
         let pkg = self.load(name)?;
         self.check_committed(&pkg)?;
         let start = Instant::now();
@@ -149,7 +152,7 @@ impl Vm<'_> {
         Ok(Outcome::Built(key))
     }
 
-    fn move_tree(&self, from: &Path, to: &Path) -> Result<()> {
+    pub(super) fn move_tree(&self, from: &Path, to: &Path) -> Result<()> {
         match std::fs::rename(from, to) {
             Ok(()) => Ok(()),
             Err(e) if e.raw_os_error() == Some(nix::libc::EXDEV) => {
@@ -180,7 +183,7 @@ impl Vm<'_> {
         Ok(())
     }
 
-    fn lock_put(&self, family: &str, line: &[u8], rpms: &[u8]) -> Result<()> {
+    pub(super) fn lock_put(&self, family: &str, line: &[u8], rpms: &[u8]) -> Result<()> {
         let path = self.next_lock_file();
         let old = fs::read_opt(&path)?;
         fs::atomic_write(&path, &lock::put(old.as_deref(), family, line, rpms))
@@ -310,7 +313,7 @@ impl Vm<'_> {
     }
 }
 
-fn remove_tree(path: &Path) -> Result<()> {
+pub(super) fn remove_tree(path: &Path) -> Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

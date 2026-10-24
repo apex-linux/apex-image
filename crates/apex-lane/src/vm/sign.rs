@@ -99,7 +99,7 @@ impl Vm<'_> {
         Ok(signer)
     }
 
-    fn primary_fingerprints(&self, key: &Path) -> Result<Vec<String>> {
+    pub(super) fn primary_fingerprints(&self, key: &Path) -> Result<Vec<String>> {
         let home = temp_dir("a gpg home")?;
         let shown = self.runner.run(
             &Cmd::new(Program::Gpg)

@@ -212,6 +212,14 @@ fn demo_patch() -> String {
     )
 }
 
+struct NoKernelOrg;
+
+impl apex_lane::shell::kernel_org::KernelOrg for NoKernelOrg {
+    fn released(&self, _: &str) -> Option<UtcSecond> {
+        None
+    }
+}
+
 struct NoBodhi;
 
 impl Bodhi for NoBodhi {
@@ -387,6 +395,7 @@ impl VmTest {
             runner: fake,
             clock,
             bodhi: &NoBodhi,
+            kernel_org: &NoKernelOrg,
             report: &self.report,
         }
     }
@@ -472,6 +481,56 @@ fn vm_build_stores_and_records_the_set() {
             .join("_build/lane/demo/in")
             .join(&archive)
             .is_file()
+    );
+}
+
+/// apex-kernel today: the pins and the job, but no pkg.env, so no kernel family.
+#[test]
+fn a_kernel_recipe_without_pkg_env_changes_nothing() {
+    let run = |kernel_files: bool| {
+        let t = VmTest::new(DEMO_ENV);
+        if kernel_files {
+            let k = t.root.path().join("packaging/pkgs/kernel");
+            write(&k.join("kernel.env"), "copr=bieszczaders/kernel-cachyos\n");
+            write(
+                &k.join("nvidia.env"),
+                "kmod_srpm=nvidia-kmod-3:615.78.08-1.fc45.src\n",
+            );
+            write(&k.join("pair.sh"), "#!/bin/bash\n");
+            run_git(t.root.path(), &["add", "-A"]);
+            run_git(t.root.path(), &["commit", "-q", "-m", "kernel pins"]);
+        }
+        let fake = vm_fake(|out, _| {
+            built_set(out, KEY);
+            0
+        });
+        let c = clock();
+        let outcomes = t.vm(&fake, &c).build("all").expect("built");
+        let programs: Vec<String> = fake
+            .log
+            .borrow()
+            .iter()
+            .filter(|c| c.program != Program::Git)
+            .map(|c| argv(c).first().cloned().unwrap_or_default() + " " + c.program.name())
+            .collect();
+        let podman: Vec<String> = fake.calls("podman").concat();
+        let podman = podman
+            .join(" ")
+            .replace(&t.root.path().display().to_string(), "ROOT");
+        let podman = podman.replace(&t.store.path().display().to_string(), "STORE");
+        (outcomes, t.next_lock(), programs.len(), podman)
+    };
+    let (outcomes, lock_text, commands, podman) = run(true);
+    assert_eq!(outcomes, [Built::Built(KEY.into())]);
+    assert!(!lock_text.contains("kernel"));
+    let without = run(false);
+    assert_eq!(
+        (&without.0, &without.1, without.2),
+        (&outcomes, &lock_text, commands)
+    );
+    assert_eq!(
+        without.3, podman,
+        "the same container, mounts and arguments"
     );
 }
 
@@ -884,7 +943,7 @@ fn promote_makes_the_next_lock_the_lock() {
     let (_, next) = promotable(&t);
     let fake = vm_fake(|_, _| 0);
     let c = clock();
-    t.vm(&fake, &c).promote().unwrap();
+    t.vm(&fake, &c).promote(false).unwrap();
     assert_eq!(
         std::fs::read(t.store.path().join("rpms.lock")).unwrap(),
         next
@@ -899,7 +958,7 @@ fn promote_refuses_a_changed_file() {
     std::fs::write(t.store.path().join("rpms.lock"), "old").unwrap();
     let fake = vm_fake(|_, _| 0);
     let c = clock();
-    let err = t.vm(&fake, &c).promote().unwrap_err();
+    let err = t.vm(&fake, &c).promote(false).unwrap_err();
     assert!(
         err.to_string().contains("does not match rpms.lock.next"),
         "{err}"
@@ -924,7 +983,7 @@ fn promote_refuses_a_path_outside_the_store() {
     .unwrap();
     let fake = vm_fake(|_, _| 0);
     let c = clock();
-    let err = t.vm(&fake, &c).promote().unwrap_err();
+    let err = t.vm(&fake, &c).promote(false).unwrap_err();
     assert!(
         err.to_string()
             .contains("not a relative path inside the store"),

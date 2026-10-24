@@ -4,6 +4,7 @@ use super::Vm;
 use super::checkout::Mode;
 use crate::core::lock;
 use crate::core::names::is_patch_name;
+use crate::core::pair;
 use crate::core::status;
 use crate::core::text;
 use crate::error::{Exit, Result, infra, usage};
@@ -29,6 +30,9 @@ fn is_build_of(nvr: &str, srpm: &str) -> bool {
 
 impl Vm<'_> {
     pub fn key(&self, name: &str) -> Result<Exit> {
+        if let Some(pair) = self.load_pair(name)? {
+            return self.pair_key(&pair);
+        }
         let pkg = self.load(name)?;
         self.check_committed(&pkg)?;
         let n = self.release_n(&pkg)?;
@@ -220,12 +224,23 @@ impl Vm<'_> {
         Ok(out)
     }
 
-    pub fn promote(&self) -> Result<()> {
+    /// `allow_degraded` is the owner's publish override (ADR 0015 §4): without it, a lock
+    /// that newly takes a kernel without its NVIDIA set never becomes rpms.lock.
+    pub fn promote(&self, allow_degraded: bool) -> Result<()> {
         let _lock = fs::lock_store(&self.settings.store)?;
         let next = self.next_lock_file();
         let Some(text) = fs::read_opt(&next)? else {
             return Err(infra(format!("no {} to promote", next.display())));
         };
+        let locked = fs::read_opt(&self.lock_file())?.unwrap_or_default();
+        let grown = pair::newly_degraded(&locked, &text);
+        if !grown.is_empty() && !allow_degraded {
+            return Err(infra(format!(
+                "rpms.lock.next takes {} with {}, a degraded set rpms.lock does not have: promoting it is the owner's publish override (just pkg-promote --allow-degraded)",
+                grown.join(" "),
+                pair::DEGRADED_NVIDIA
+            )));
+        }
         for (sha, path) in lock::rpm_files(&text) {
             let shown = text::lossy(&path);
             if !lock::is_store_path(&path) {

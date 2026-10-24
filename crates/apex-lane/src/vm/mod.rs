@@ -1,6 +1,7 @@
 pub mod build;
 pub mod checkout;
 pub mod commands;
+pub mod pair;
 pub mod sign;
 
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ use crate::pkg;
 use crate::shell::bodhi::Bodhi;
 use crate::shell::clock::Clock;
 use crate::shell::cmd::{Cmd, Outcome as CmdOutcome, Program, Runner};
+use crate::shell::kernel_org::KernelOrg;
 use crate::shell::report::Reporter;
 
 pub const IN_CONTAINER_EXE: &str = "/usr/local/libexec/apex-lane";
@@ -39,6 +41,7 @@ pub struct Vm<'a> {
     pub runner: &'a dyn Runner,
     pub clock: &'a dyn Clock,
     pub bodhi: &'a dyn Bodhi,
+    pub kernel_org: &'a dyn KernelOrg,
     pub report: &'a Reporter,
 }
 

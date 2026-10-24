@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::names::is_pkg_name;
-use crate::core::pkg_env::{self, PkgEnv};
+use crate::core::pkg_env::{self, PairEnv, PkgEnv, Recipe};
 use crate::core::series::{self, Files};
 use crate::core::spec_edit::{self, SpecEdit};
 use crate::error::{Result, usage};
@@ -48,6 +48,36 @@ pub enum Parse {
 
 pub fn read_file(path: &Path) -> Result<Vec<u8>> {
     fs::read_opt(path)?.ok_or_else(|| usage(format!("{} not found", path.display())))
+}
+
+/// The kernel pair of a `source=copr-srpm` recipe.
+#[derive(Debug, Clone)]
+pub struct PairPkg {
+    pub name: String,
+    pub recipe_root: PathBuf,
+    pub dir: PathBuf,
+    pub env: PairEnv,
+}
+
+/// `Some` when `name`'s pkg.env is a pair recipe; a Fedora SRPM recipe goes through `load`.
+pub fn load_pair(root: &Path, name: &str) -> Result<Option<PairPkg>> {
+    if !is_pkg_name(name) {
+        return Err(usage(format!("bad package name '{name}'")));
+    }
+    let dir = pkgs_dir(root).join(name);
+    let env_path = dir.join("pkg.env");
+    let Some(bytes) = fs::read_opt(&env_path)? else {
+        return Ok(None);
+    };
+    match pkg_env::parse_recipe(&env_path.display().to_string(), &bytes)? {
+        Recipe::Srpm(_) => Ok(None),
+        Recipe::Pair(env) => Ok(Some(PairPkg {
+            name: name.to_owned(),
+            recipe_root: root.to_path_buf(),
+            dir,
+            env,
+        })),
+    }
 }
 
 pub fn load(root: &Path, name: &str, parse: Parse) -> Result<Pkg> {
@@ -100,18 +130,17 @@ pub fn load(root: &Path, name: &str, parse: Parse) -> Result<Pkg> {
 
 /// One lane package per family: `lock_put` replaces a family's records whole, so a
 /// second package would silently drop the first one's RPMs.
-pub fn check_family_unique(roots: &[PathBuf], pkg: &Pkg) -> Result<()> {
+pub fn check_family_unique(roots: &[PathBuf], name: &str, family: &str) -> Result<()> {
     for root in roots {
         for other in all(root)? {
-            if other == pkg.name {
+            if other == name {
                 continue;
             }
             let path = pkgs_dir(root).join(&other).join("pkg.env");
-            let family = fs::read_opt(&path)?.and_then(|b| pkg_env::family_of(&b));
-            if family.as_deref() == Some(pkg.env.family.as_str()) {
+            let family_of = fs::read_opt(&path)?.and_then(|b| pkg_env::family_of(&b));
+            if family_of.as_deref() == Some(family) {
                 return Err(usage(format!(
-                    "packages {} and {other} share the family {}; the lane takes one package per family",
-                    pkg.name, pkg.env.family
+                    "packages {name} and {other} share the family {family}; the lane takes one package per family"
                 )));
             }
         }
