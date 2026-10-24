@@ -8,6 +8,7 @@ use super::Vm;
 use super::build::{Outcome, remove_tree};
 use super::sign::Signer;
 use super::sources;
+use crate::core::bump_report;
 use crate::core::checksig::checksig_ok;
 use crate::core::hold;
 use crate::core::key::content_key;
@@ -412,7 +413,7 @@ impl Vm<'_> {
     }
 
     /// The key file holds exactly the pinned key, or nothing is mirrored with it.
-    fn mirror_key(&self, fingerprint: &str, url: &str) -> Result<PathBuf> {
+    pub(super) fn mirror_key(&self, fingerprint: &str, url: &str) -> Result<PathBuf> {
         let path = self
             .settings
             .store
@@ -933,7 +934,7 @@ impl Vm<'_> {
         let (nvidia, _) = Self::read_nvidia(&p.dir.join(&p.env.nvidia_env))?;
         self.check_keys(&kernel, &nvidia);
         if let Some(srpm) = &report.point {
-            self.point_bump(&p, &kernel, &kernel_bytes, srpm)?;
+            self.point_bump(&p, (&kernel, &kernel_bytes), &nvidia, srpm)?;
         }
         if let Some((srpm, eol)) = &report.major {
             self.report.log(&format!(
@@ -961,8 +962,8 @@ impl Vm<'_> {
     fn point_bump(
         &self,
         p: &PairPkg,
-        kernel: &KernelPins,
-        kernel_bytes: &[u8],
+        (kernel, kernel_bytes): (&KernelPins, &[u8]),
+        nvidia: &NvidiaPins,
         srpm: &Nevra,
     ) -> Result<()> {
         if !pair::is_point_of(kernel, srpm) {
@@ -985,6 +986,44 @@ impl Vm<'_> {
             ));
             return Ok(());
         }
+        let path = self.mirror_srpm(kernel, srpm)?;
+        let old = self.mirror_srpm(kernel, &kernel.srpm)?;
+        if fs::sha256_file(&old)? != kernel.srpm_sha256 {
+            return Err(infra(format!(
+                "the mirror's {} does not have its pinned sha256",
+                old.display()
+            )));
+        }
+        let findings = self.bump_report(kernel, nvidia, (&old, &path), srpm)?;
+        let shown = bump_report::render(&findings);
+        let mut summary = vec![format!("### kernel-bump: {}", srpm.nvr()), String::new()];
+        summary.extend(shown.lines().map(str::to_owned));
+        self.report.summary(&summary);
+        if findings.config.holds() {
+            self.report.warn(&format!(
+                "kernel: {srpm}: held: the config changes beyond new symbols; the owner reads the report before a bump branch"
+            ));
+            return Ok(());
+        }
+        let sha256 = fs::sha256_file(&path)?;
+        let bumped = pair::bumped_kernel_env(kernel_bytes, srpm, &sha256);
+        pins::parse_kernel("the bumped kernel.env", &bumped)?;
+        let rel = format!("packaging/pkgs/{}/{}", p.name, p.env.kernel_env);
+        let message = format!(
+            "kernel: point bump to {}\n\nWritten by apex-lane kernel-bump: srpm and srpm_sha256 of the COPR-signed SRPM it mirrored, and its tag.\n\n{shown}",
+            srpm.nvr()
+        );
+        let commit = self.commit_file(root, &rel, &bumped, &message)?;
+        self.run_ok(&Self::git_in(root).arg("branch").arg(&branch).arg(&commit))?;
+        self.report.log(&format!(
+            "kernel: {srpm}: committed {rel} on {branch} ({commit}) in {}; the runner pushes it for the bump PR",
+            root.display()
+        ));
+        Ok(())
+    }
+
+    /// A COPR-signed SRPM of the pinned COPR, mirrored at first sight.
+    fn mirror_srpm(&self, kernel: &KernelPins, srpm: &Nevra) -> Result<PathBuf> {
         let mirror = self.settings.store.join("mirror");
         fs::create_dir_all(&mirror)?;
         let key = self.mirror_key(
@@ -1012,21 +1051,7 @@ impl Vm<'_> {
                 .map_err(|e| fs::io_error("cannot store", &path, &e))?;
             self.report.log(&format!("mirror: {file} (first sight)"));
         }
-        let sha256 = fs::sha256_file(&path)?;
-        let bumped = pair::bumped_kernel_env(kernel_bytes, srpm, &sha256);
-        pins::parse_kernel("the bumped kernel.env", &bumped)?;
-        let rel = format!("packaging/pkgs/{}/{}", p.name, p.env.kernel_env);
-        let message = format!(
-            "kernel: point bump to {}\n\nWritten by apex-lane kernel-bump: srpm and srpm_sha256 of the COPR-signed SRPM it mirrored, and its tag.\n",
-            srpm.nvr()
-        );
-        let commit = self.commit_file(root, &rel, &bumped, &message)?;
-        self.run_ok(&Self::git_in(root).arg("branch").arg(&branch).arg(&commit))?;
-        self.report.log(&format!(
-            "kernel: {srpm}: committed {rel} on {branch} ({commit}) in {}; the runner pushes it for the bump PR",
-            root.display()
-        ));
-        Ok(())
+        Ok(path)
     }
 
     /// A commit of HEAD with one file replaced, through a private index: the checkout's

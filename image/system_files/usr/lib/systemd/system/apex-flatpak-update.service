@@ -19,6 +19,27 @@ ExecCondition=/usr/bin/sh -c '\
 # Catches up a first boot without network, and preinstall.d changes of an image update.
 ExecStart=/usr/bin/flatpak preinstall --system --noninteractive
 ExecStart=/usr/bin/flatpak update --system --noninteractive
+ExecStart=/usr/bin/sh -c '\
+    if [ ! -r /sys/module/nvidia/version ]; then echo "no NVIDIA driver loaded: no GL.nvidia extension"; exit 0; fi; \
+    v=$$(/usr/bin/cat /sys/module/nvidia/version); \
+    case "$$v" in ""|*[!0-9.]*) echo "/sys/module/nvidia/version reads $$v, not a driver version" >&2; exit 1 ;; esac; \
+    want=org.freedesktop.Platform.GL.nvidia-$$(printf %%s "$$v" | /usr/bin/tr . -); \
+    /usr/bin/flatpak install --system --noninteractive --or-update flathub "runtime/$$want/x86_64/1.4" || exit 1; \
+    unit=apex-boot-assess.service; \
+    state=$$(/usr/bin/systemctl show -p ActiveState -p Result -p ExecMainStatus "$$unit" | \
+        /usr/bin/sort | /usr/bin/paste -s -d " " -); \
+    id=$$(/usr/bin/systemctl show -p InvocationID --value "$$unit"); \
+    decision=$$(/usr/bin/journalctl --boot "_SYSTEMD_INVOCATION_ID=$$id" --output=cat --no-pager --quiet | \
+        /usr/bin/grep "decision: " | /usr/bin/tail -n 1); \
+    case "$$state $$decision" in \
+    "ActiveState=active ExecMainStatus=0 Result=success "*"(report green "* | \
+    "ActiveState=active ExecMainStatus=0 Result=success "*"(report green)"*) ;; \
+    *) echo "$$unit has not judged this boot green: stale GL.nvidia extensions stay"; exit 0 ;; \
+    esac; \
+    /usr/bin/flatpak list --system --runtime --columns=application | while read -r ext; do \
+        case "$$ext" in "$$want") ;; org.freedesktop.Platform.GL.nvidia-*) \
+            /usr/bin/flatpak uninstall --system --noninteractive "$$ext" || exit 1 ;; esac; \
+    done'
 # As root, flatpak 1.18 (flatpak_dir_list_unused_refs) does not see per-user apps and
 # would remove the runtimes they use: skipped while any user has per-user Flatpaks.
 ExecStart=/usr/bin/sh -c '\

@@ -418,12 +418,17 @@ pub fn parse_bump(out: &[u8]) -> Result<BumpReport, String> {
 }
 
 /// A point bump keeps the major, so only the pins of the SRPM and its tag move.
-pub fn bumped_kernel_env(old: &[u8], srpm: &Nevra, sha256: &str) -> Vec<u8> {
-    let tag = format!(
+/// The `CachyOS` tag of an SRPM: its release starts with the tag's number.
+pub fn tag_of(srpm: &Nevra) -> String {
+    format!(
         "cachyos-{}-{}",
         srpm.version,
         srpm.release.split('.').next().unwrap_or_default()
-    );
+    )
+}
+
+pub fn bumped_kernel_env(old: &[u8], srpm: &Nevra, sha256: &str) -> Vec<u8> {
+    let tag = tag_of(srpm);
     let mut out = Vec::with_capacity(old.len());
     for line in text::lines(old) {
         let replaced = if line.starts_with(b"srpm=") {

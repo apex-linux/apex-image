@@ -1,6 +1,6 @@
 #!/bin/sh
 # The Flatpak units' shell steps, run as systemd would run them (fake/unit-exec), with
-# fake busctl, getent and flatpak; and the timers' schedules.
+# fake busctl, getent, flatpak, systemctl and journalctl; and the timers' schedules.
 . "$(dirname -- "$0")/lib.sh"
 
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found"
@@ -23,20 +23,39 @@ EOF
 cat >"$BIN/flatpak" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$FAKE_FLATPAK_LOG"
+case $1 in
+    list) cat "$FAKE_FLATPAK_LIST" ;;
+    install) [ -z "${FAKE_INSTALL_FAIL:-}" ] || exit 1 ;;
+esac
+EOF
+cat >"$BIN/systemctl" <<'EOF'
+#!/bin/sh
+case "$*" in
+    *--value*) echo 0123abcd ;;
+    *) printf '%s\n' $FAKE_ASSESS ;;
+esac
+EOF
+cat >"$BIN/journalctl" <<'EOF'
+#!/bin/sh
+case "$*" in *_SYSTEMD_INVOCATION_ID=0123abcd*) printf '%s\n' "$FAKE_DECISION" ;; esac
 EOF
 chmod 0755 "$BIN"/*
 
 # unit_run UNIT KEY INDEX: runs that Exec line with /usr/bin/{busctl,getent,flatpak}
 # pointed at the fakes.
 unit_run() {
-    run env FAKE_FLATPAK_LOG="$T/flatpak.log" FAKE_PASSWD="$T/passwd" \
+    run env FAKE_FLATPAK_LOG="$T/flatpak.log" FAKE_PASSWD="$T/passwd" FAKE_FLATPAK_LIST="$T/flatpak.list" \
         "$FAKE/unit-exec" --run "$U/$1" "$2" "$3" \
         /usr/bin/busctl="$BIN/busctl" /usr/bin/getent="$BIN/getent" \
-        /usr/bin/flatpak="$BIN/flatpak" /usr/bin/sh="$(command -v "$SH")"
+        /usr/bin/flatpak="$BIN/flatpak" /usr/bin/sh="$(command -v "$SH")" \
+        /usr/bin/systemctl="$BIN/systemctl" /usr/bin/journalctl="$BIN/journalctl" \
+        /sys/module/nvidia/version="$T/nvidia-version"
 }
 
-FAKE_METERED='' FAKE_GETENT_FAIL=''
-export FAKE_METERED FAKE_GETENT_FAIL
+FAKE_METERED='' FAKE_GETENT_FAIL='' FAKE_INSTALL_FAIL=''
+GREEN='ActiveState=active ExecMainStatus=0 Result=success'
+FAKE_ASSESS=$GREEN FAKE_DECISION='apex-boot-assess: decision: keep (report green)'
+export FAKE_METERED FAKE_GETENT_FAIL FAKE_INSTALL_FAIL FAKE_ASSESS FAKE_DECISION
 
 for unit in apex-flatpak-preinstall.service apex-flatpak-update.service; do
     for m in 1 3; do
@@ -63,7 +82,7 @@ nobody:x:65534:65534:Kernel Overflow User:/:/usr/sbin/nologin
 EOF
 cleanup_step() {
     rm -f "$T/flatpak.log"
-    unit_run apex-flatpak-update.service ExecStart 2
+    unit_run apex-flatpak-update.service ExecStart 3
 }
 
 cleanup_step
@@ -89,10 +108,65 @@ rm -rf "$T/root/.local"
 
 rm -f "$T/flatpak.log"
 FAKE_GETENT_FAIL=1
-unit_run apex-flatpak-update.service ExecStart 2
+unit_run apex-flatpak-update.service ExecStart 3
 FAKE_GETENT_FAIL=''
 expect_rc "getent failing: the step succeeds" 0
 if [ -e "$T/flatpak.log" ]; then not_ok "getent failing: nothing is uninstalled"; else ok "getent failing: nothing is uninstalled"; fi
+
+gl_step() {
+    rm -f "$T/flatpak.log"
+    : >>"$T/flatpak.log"
+    unit_run apex-flatpak-update.service ExecStart 2
+}
+no_uninstall() {
+    if grep -q '^uninstall' "$T/flatpak.log"; then not_ok "$1"; else ok "$1"; fi
+}
+GL=org.freedesktop.Platform.GL
+printf '%s\n' org.freedesktop.Platform $GL.default $GL.nvidia-615-71-09 $GL.nvidia-615-78-08 \
+    $GL.nvidia-615-80-01 org.example.GL.nvidia-1 >"$T/flatpak.list"
+
+rm -f "$T/nvidia-version"
+gl_step
+expect_rc "GL.nvidia without the NVIDIA driver: the step succeeds" 0
+expect_out "and says why" '^no NVIDIA driver loaded: no GL.nvidia extension$'
+if [ -s "$T/flatpak.log" ]; then not_ok "and runs no flatpak"; else ok "and runs no flatpak"; fi
+
+printf '615.78.08\n' >"$T/nvidia-version"
+gl_step
+expect_rc "GL.nvidia of a green boot: the step succeeds" 0
+expect_file "installs the loaded driver's extension, dots as dashes" \
+    "^install --system --noninteractive --or-update flathub runtime/$GL\\.nvidia-615-78-08/x86_64/1\\.4\$" "$T/flatpak.log"
+expect_file "removes a stale one" "^uninstall --system --noninteractive $GL\\.nvidia-615-71-09\$" "$T/flatpak.log"
+expect_file "and a newer one" "^uninstall --system --noninteractive $GL\\.nvidia-615-80-01\$" "$T/flatpak.log"
+expect_true "and nothing else" test "$(grep -c '^uninstall' "$T/flatpak.log")" -eq 2
+
+FAKE_ASSESS='ActiveState=active ExecMainStatus=1 Result=exit-code'
+gl_step
+expect_rc "a boot not judged green: the step succeeds" 0
+expect_file "and installs the extension" '^install ' "$T/flatpak.log"
+no_uninstall "but keeps the stale ones"
+expect_out "and says why" 'has not judged this boot green: stale GL.nvidia extensions stay'
+FAKE_ASSESS=$GREEN
+
+FAKE_DECISION='apex-boot-assess: decision: roll back (report red)'
+gl_step
+no_uninstall "a red decision keeps the stale ones"
+FAKE_DECISION=''
+gl_step
+no_uninstall "no decision in the journal keeps them too"
+FAKE_DECISION='apex-boot-assess: decision: keep (report green)'
+
+FAKE_INSTALL_FAIL=1
+gl_step
+expect_rc "the extension fails to install: the step fails" 1
+no_uninstall "and removes nothing"
+FAKE_INSTALL_FAIL=''
+
+printf 'x\n' >"$T/nvidia-version"
+gl_step
+expect_rc "an unreadable driver version: the step fails" 1
+if grep -q '^install' "$T/flatpak.log"; then not_ok "and installs nothing"; else ok "and installs nothing"; fi
+rm -f "$T/nvidia-version"
 
 expect_file "the preinstall is retried after boot" '^OnBootSec=5min$' "$U/apex-flatpak-preinstall.timer"
 expect_file "the last retry is 4 h after boot" '^OnBootSec=4h$' "$U/apex-flatpak-preinstall.timer"

@@ -1,4 +1,5 @@
 pub mod build;
+pub mod bump;
 pub mod checkout;
 pub mod commands;
 pub mod pair;
