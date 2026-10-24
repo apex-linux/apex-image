@@ -1645,6 +1645,10 @@ ct_kill() { # CHOICES FEATURES: contracts.sh's exit, its output in $CT/out
 }
 check "contracts: every layer feature is a kill-switch choice" 0 "$(ct_kill 'motion spotlight panel' "'motion', 'spotlight', 'panel'")"
 check_true "and says so" grep -q "^contracts: every feature of apex-gnome (.*)'s layer can be turned off" "$CT/out"
+check "contracts: a feature list wrapped over two lines" 0 "$(ct_kill 'motion spotlight panel' "'motion', 'spotlight',
+    'panel'")"
+check "contracts: a wrapped list with a feature the kill switch lacks" 1 "$(ct_kill 'motion spotlight' "'motion',
+    'spotlight', 'dock'")"
 check "contracts: a layer feature the kill switch lacks" 1 "$(ct_kill 'motion spotlight' "'motion', 'spotlight', 'glass', 'dock'")"
 check_true "naming both components and the features" grep -q \
     "^error: contracts: apex-gnome (.*)'s layer has features that apex-desktop (.*)'s disabled-features cannot turn off (not in its <choices>): dock glass$" "$CT/out"
