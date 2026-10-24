@@ -115,12 +115,15 @@ readonly BOOTLOADER_UNIT=bootloader-update.service
 readonly BOOTLOADER_GATE=/usr/lib/systemd/system/bootloader-update.service.d/10-apex-after-green-boot.conf
 readonly TEST_USER=apexqa
 readonly LOCAL_CANDIDATE=localhost/apex-qualify:candidate
+# $kernel is the key script's: Fedora's kernel, or the kernel pair's with its kmod (ADR 0015).
+# shellcheck disable=SC2016 # expanded in the image
 readonly G4_TRIGGER_PACKAGES=(gdm gnome-shell mutter gjs gnome-session accountsservice pam systemd
-    kernel shim-x64 grub2-efi-x64 bootupd)
+    '$kernel' shim-x64 grub2-efi-x64 bootupd)
 # Their releases carry the commit, so their files, not their NEVRAs, key G4.
 readonly G4_PACKAGES_KEYED_BY_FILE_DIGEST=(apex apex-desktop)
 readonly G4_TRIGGER_DIRS=(/usr/lib/bootc/kargs.d)
 readonly G4_OVERLAY=$APEX_ROOT/image/system_files
+readonly G4_PAIR_OVERLAY=$APEX_ROOT/image/variants/pair
 readonly G4_MAX_AGE_DAYS=7
 readonly G4_NOT_DUE=3
 readonly APEX_SCHEMA=io.github.apex_linux.Apex.Desktop
@@ -1171,15 +1174,19 @@ g4_overlay_usr_files() {
 }
 
 g4_key_script() {
-    local -a overlay_files
+    local -a overlay_files pair_files
     mapfile -t overlay_files < <(g4_overlay_usr_files)
     ((${#overlay_files[@]})) || die "no /usr file in $G4_OVERLAY"
+    mapfile -t pair_files < <(cd "$G4_PAIR_OVERLAY" && find usr -type f -printf '/%p\n' | LC_ALL=C sort)
     cat <<EOF
 set -eu
+kernel=kernel
+rpm -q kernel >/dev/null 2>&1 || kernel="kernel-cachyos-core \$(rpm -qa --qf '%{NAME}\n' 'kmod-nvidia*' nvidia-kmod-common | LC_ALL=C sort | paste -sd ' ' -)"
 rpm -q --qf 'package %{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' ${G4_TRIGGER_PACKAGES[*]}
 rpm -q --qf '[file %{FILEDIGESTS} %{FILENAMES}\n]' ${G4_PACKAGES_KEYED_BY_FILE_DIGEST[*]} | awk 'NF == 3'
 find ${G4_TRIGGER_DIRS[*]} -type f -exec sha256sum {} + | awk '{ print "file", \$1, \$2 }'
 sha256sum ${overlay_files[*]} | awk '{ print "file", \$1, \$2 }'
+for f in ${pair_files[*]}; do if [ -f "\$f" ]; then sha256sum "\$f"; fi; done | awk '{ print "file", \$1, \$2 }'
 EOF
 }
 

@@ -32,6 +32,25 @@ The repos stage:
   of 2026-09-29 carried `epiphany-51~rc-1.fc45` and
   `gnome-control-center-51~rc.1-1.fc45`.
 
+The kernel pair (S1c, ADR 0015) is switched on by `rpms.lock` alone: an image takes it
+when the lock has `rpm` lines for the `kernel-cachyos` family, which happens only once
+apex-kernel has a kernel `pkg.env`. Until then every branch below is idle and the image
+is the Fedora-kernel image it was.
+
+- The repos stage writes `rpms/pair-mode`: `none`, `pair`, or `pair-degraded` when the
+  family line says `degraded=nvidia` (the kernel without its NVIDIA set). With a pair,
+  `fedora` and `updates` exclude every package of Fedora's kernel SRPM, found by
+  `%{sourcerpm}` and not by a list, and a second query proves none is left;
+  `[apex]` checks the locked NVIDIA userspace with negativo17's key from the pair's set
+  (`rpms/pair/negativo17.gpg`, which `image.sh context` copies).
+- The compose installs the family's locked names with `--no-initramfs`; the final stage
+  runs `depmod -a`, omits the NVIDIA modules from the initramfs, installs
+  `variants/pair/` (the `module.sig_enforce=1`, `zswap.enabled=0` and
+  `module_blacklist=nouveau,nova_core` kargs, `apex-nvidia.conf`, `61-apex-dgpu.rules`
+  and the preset that disables `nvidia-persistenced`), removes the Fedora kernel's
+  `apex-dgpu.conf` and `61-apex-dgpu-pm.rules`, and labels `pair-degraded` as
+  `degraded=nvidia`. A held pair is `held=kernel-cachyos`, as for any family.
+
 The final stage:
 
 - A preset cannot undo an enablement symlink under `/usr`, so the auto-rebooting
@@ -110,9 +129,10 @@ exits 1 on a FAIL. The final stage runs them with `sh`.
 | `desktop.sh` | the shell as the lane locked it, its theme, the Apex schema, vendor defaults and crash guard |
 | `firmware.sh` | every glob of `firmware-files.txt` matches a firmware file |
 | `icons.sh` | every `.desktop` file's `Icon=` resolves in the default icon theme, what it inherits, hicolor or the unthemed dirs, as GTK resolves it |
-| `kernel.sh` | the one kernel and its initramfs: early KMS, microcode, the LUKS2 unlock |
+| `kernel.sh` | the one kernel and its initramfs: early KMS, microcode, the LUKS2 unlock, no NVIDIA module; with the pair, the locked kernel and no Fedora kernel package, `config-required.txt` line by line, the pair's kargs, and one signer, the build's own key, for every module |
 | `keybindings.sh` | no two default keybindings share a combination |
 | `keys.sh` | the signature policy's trust mapping and the keys it names |
+| `nvidia.sh` | without the pair, no NVIDIA package or pair file; with it, the locked kmod for this kernel, Apex-signed, its userspace at the kmod's version, the modules' vermagic, RTD3, no akmods or Xorg driver, `nvidia-persistenced` off; with `degraded=nvidia`, no NVIDIA set and the label |
 | `legacy.sh` | no banned package, and no GTK2, GTK3 or Xorg user outside `audit/legacy-allowlist.txt` |
 | `overlay.sh` | the rootfs overlay's files parse without a warning |
 | `power.sh` | tuned-ppd and its ppd.conf |

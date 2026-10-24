@@ -139,6 +139,23 @@ lane_lock_states() {
     awk -v s="$2" '$1 == "family" && $3 == s { print $2 }' "$1" | LC_ALL=C sort | paste -sd, -
 }
 
+# The kernel pair's set also holds what the image checks it against: apex-kernel's
+# config-required.txt and negativo17's key as the lane verified it.
+lane_pair_context() {
+    local lane=$1 store=$2 dir
+    dir=$(awk '$1 == "rpm" && $2 == "kernel-cachyos" { sub(/\/[^\/]*$/, "", $7); print $7; exit }' "$lane")
+    [[ -n $dir ]] || return 0
+    [[ ! -e $RPMS_DIR/pair ]] || die "$RPMS_DIR/pair exists twice: the lane and another input both provide it"
+    mkdir -p -- "$RPMS_DIR/pair"
+    [[ -f $store/$dir/config-required.txt ]] || die "the kernel pair's set $store/$dir has no config-required.txt"
+    cp -- "$store/$dir/config-required.txt" "$RPMS_DIR/pair/"
+    if awk '$1 == "rpm" && $2 == "kernel-cachyos" && $3 == "mirror" { f = 1 } END { exit !f }' "$lane"; then
+        [[ -s $store/$dir/negativo17.gpg ]] || die "the kernel pair's set $store/$dir has no negativo17.gpg for its userspace"
+        cp -- "$store/$dir/negativo17.gpg" "$RPMS_DIR/pair/"
+    fi
+    log "lane: the kernel pair from $dir"
+}
+
 lane_context() {
     local lane=$1 store path sha dest n=0
     local -a families
@@ -157,6 +174,7 @@ lane_context() {
         n=$((n + 1))
     done <<<"$list"
     cp -- "$lane" "$RPMS_DIR/rpms.lock"
+    lane_pair_context "$lane" "$store"
     local held stock degraded
     held=$(lane_lock_states "$lane" held)
     stock=$(lane_lock_states "$lane" stock)

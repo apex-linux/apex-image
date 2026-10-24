@@ -59,6 +59,12 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     awk '$1 == "family" { st[$2] = $3 } $1 == "rpm" { if (st[$2] != "built" && st[$2] != "held") { print "ERROR: rpms.lock: an rpm line of " $2 ", which is not built or held" > "/dev/stderr"; exit 1 } print $4, $5 }' "$lock" >/tmp/lock-rpms.raw; \
     sort -u /tmp/lock-rpms.raw >/tmp/lock-rpms; \
     cut -d' ' -f1 /tmp/lock-rpms | sort -u >/tmp/lock-names; \
+    pair=none; \
+    if awk '$1 == "rpm" && $2 == "kernel-cachyos" { f = 1 } END { exit !f }' "$lock"; then \
+        pair=pair; \
+        if awk '$1 == "family" && $2 == "kernel-cachyos" { sub(/ reason=.*/, ""); if (/ degraded=nvidia( |$)/) f = 1 } END { exit !f }' "$lock"; then pair=pair-degraded; fi; \
+    fi; \
+    echo "Kernel: $pair (rpms.lock's kernel-cachyos family)"; \
     createrepo_c /apex; \
     dnf5 -q --repofrompath=apex-probe,/apex --repo=apex-probe repoquery --available --queryformat '%{name} %{release} %{name}-%{epoch}:%{version}-%{release}.%{arch}\n' >/tmp/apex-pkgs; \
     echo "Local Apex repository:"; sed 's/^/  /' /tmp/apex-pkgs; \
@@ -76,6 +82,13 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     ignored=$(cut -d' ' -f1 /tmp/apex-pkgs | sort -u | while read -r n; do grep -Fxq "$n" /tmp/apex-names || printf ' %s' "$n"; done); \
     if [ -n "$ignored" ]; then echo "NOTE: rpms/ also has packages that are not in apex.txt or rpms.lock; [apex] does not admit them:$ignored"; fi; \
     cp /tmp/lock-names /tmp/fedora-excludes; \
+    if [ "$pair" != none ]; then \
+        if ! dnf5 -q --repo=fedora --repo=updates repoquery --available --queryformat '%{name} %{sourcerpm}\n' 'kernel*' >/tmp/fedora-kernel.raw; then echo "ERROR: cannot query Fedora's kernel packages" >&2; exit 1; fi; \
+        awk '$2 ~ /^kernel-[0-9]/ { print $1 }' /tmp/fedora-kernel.raw | sort -u >/tmp/fedora-kernel; \
+        if [ ! -s /tmp/fedora-kernel ]; then echo "ERROR: fedora and updates offer no package of the kernel SRPM to exclude" >&2; exit 1; fi; \
+        cat /tmp/fedora-kernel >>/tmp/fedora-excludes; \
+        echo "The pair's kernel replaces Fedora's: $(paste -sd' ' /tmp/fedora-kernel)"; \
+    fi; \
     if grep -Eq '^libfprint [^ ]*\.apex[0-9]+' /tmp/apex-pkgs; then \
         echo libfprint >>/tmp/fedora-excludes; \
         echo "Apex libfprint present: Fedora's libfprint is excluded"; \
@@ -87,7 +100,12 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
         for f in $(reposfiles); do sed -i -e "/^\[\(fedora\|updates\)\]\$/a excludepkgs=$excludes" "$f"; done; \
         echo "fedora and updates exclude: $excludes"; \
     fi; \
-    printf '%s\n' '[apex]' 'name=Apex packages built by this pipeline (build context rpms/)' 'baseurl=file:///repos/apex' 'enabled=1' 'priority=1' "includepkgs=$apexnames" 'gpgcheck=1' "gpgkey=file:///repos$apexkey file:///repos/apex/${fedorakey##*/}" 'repo_gpgcheck=0' 'skip_if_unavailable=False' >/etc/yum.repos.d/apex.repo; \
+    gpgkeys="file:///repos$apexkey file:///repos/apex/${fedorakey##*/}"; \
+    if awk '$1 == "rpm" && $2 == "kernel-cachyos" && $3 == "mirror" { f = 1 } END { exit !f }' "$lock"; then \
+        if [ ! -s /apex/pair/negativo17.gpg ]; then echo "ERROR: rpms/pair/negativo17.gpg is missing: [apex] verifies the pair's NVIDIA userspace with it (image.sh context copies it from the pair's set)" >&2; exit 1; fi; \
+        gpgkeys="$gpgkeys file:///repos/apex/pair/negativo17.gpg"; \
+    fi; \
+    printf '%s\n' '[apex]' 'name=Apex packages built by this pipeline (build context rpms/)' 'baseurl=file:///repos/apex' 'enabled=1' 'priority=1' "includepkgs=$apexnames" 'gpgcheck=1' "gpgkey=$gpgkeys" 'repo_gpgcheck=0' 'skip_if_unavailable=False' >/etc/yum.repos.d/apex.repo; \
     if [ "${GA_REACHED}" != 1 ] && [ -n "$allow" ]; then \
         vercmp() { rpm -E "%{lua: print(rpm.vercmp('$1', '$2'))}"; }; \
         if [ "$(vercmp 1:51~rc-2.fc45 1:51.0-1.fc45)" != -1 ] || [ "$(vercmp 51.0.1-1.fc45 51.0-1.fc45)" != 1 ]; then echo "ERROR: rpm.vercmp does not order versions as expected" >&2; exit 1; fi; \
@@ -143,11 +161,17 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
             rm -f /etc/yum.repos.d/apex-gnome51.repo; \
         fi; \
     fi; \
+    if [ "$pair" != none ]; then \
+        if ! dnf5 -q --repo=fedora --repo=updates repoquery --available --queryformat '%{name} %{sourcerpm}\n' 'kernel*' >/tmp/fedora-kernel.raw; then echo "ERROR: cannot query Fedora's kernel packages" >&2; exit 1; fi; \
+        left=$(awk '$2 ~ /^kernel-[0-9]/ { printf " %s", $1 }' /tmp/fedora-kernel.raw); \
+        if [ -n "$left" ]; then echo "ERROR: fedora and updates still offer Fedora's kernel after excludepkgs:$left" >&2; exit 1; fi; \
+    fi; \
+    printf '%s\n' "$pair" >/apex/pair-mode; \
     if ! dnf5 -q repo list --enabled >/tmp/repos-enabled; then echo "ERROR: dnf5 repo list failed" >&2; exit 1; fi; \
     if grep -Eq '^updates-testing' /tmp/repos-enabled; then echo "ERROR: updates-testing is still enabled" >&2; exit 1; fi; \
     echo "Enabled repositories:"; dnf5 repo list --enabled; \
     dnf5 clean all; \
-    rm -rf /tmp/apex-pkgs /tmp/apex-names /tmp/apex-names.raw /tmp/apex-nevras /tmp/lock-rpms /tmp/lock-rpms.raw /tmp/lock-names /tmp/lock-offered /tmp/lock-diff /tmp/fedora-excludes /tmp/ut-list /tmp/ut-raw /tmp/ut-avail /tmp/ut-specs /tmp/ut-known /tmp/ut-stable /tmp/ut-one /tmp/repos-enabled /var/cache/libdnf5
+    rm -rf /tmp/apex-pkgs /tmp/apex-names /tmp/apex-names.raw /tmp/apex-nevras /tmp/lock-rpms /tmp/lock-rpms.raw /tmp/lock-names /tmp/lock-offered /tmp/lock-diff /tmp/fedora-excludes /tmp/ut-list /tmp/ut-raw /tmp/ut-avail /tmp/ut-specs /tmp/ut-known /tmp/ut-stable /tmp/ut-one /tmp/repos-enabled /tmp/fedora-kernel /tmp/fedora-kernel.raw /var/cache/libdnf5
 
 # No --no-docs: the recovery runbook relies on the man pages.
 FROM ${BASE} AS builder
@@ -163,6 +187,14 @@ RUN --mount=type=bind,from=repos,src=/,dst=/repos,rw \
     for p in $(list /run/apex-packages/base.txt /run/apex-packages/gnome.txt /run/apex-packages/apex.txt); do set -- "$@" --install "$p"; done; \
     for p in $(list /run/apex-packages/exclude.txt); do set -- "$@" --exclude "$p"; done; \
     for n in ${LOCK:-}; do set -- "$@" --lock "$n"; done; \
+    pair=$(cat /repos/apex/pair-mode); \
+    case $pair in \
+        none) ;; \
+        pair | pair-degraded) \
+            for n in $(awk '$1 == "rpm" && $2 == "kernel-cachyos" { print $4 }' /repos/apex/rpms.lock); do set -- "$@" --install "$n"; done; \
+            set -- "$@" --no-initramfs ;; \
+        *) echo "ERROR: /repos/apex/pair-mode says '$pair'" >&2; exit 1 ;; \
+    esac; \
     set -- "$@" --repo fedora --repo updates --repo apex; \
     if [ -f /repos/etc/yum.repos.d/apex-gnome51.repo ]; then set -- "$@" --repo apex-gnome51; fi; \
     /usr/libexec/bootc-base-imagectl build-rootfs --manifest=minimal "$@" /repos /target-rootfs
@@ -181,9 +213,12 @@ RUN --mount=type=bind,from=repos,src=/,dst=/repos \
     if [ -f /repos/etc/yum.repos.d/apex-gnome51.repo ]; then repos="$repos --repo=apex-gnome51"; fi; \
     guards="--setopt=install_weak_deps=False --setopt=excludepkgs=$(list /run/apex-packages/exclude.txt | paste -sd, -)"; \
     present=$(rpm -q --queryformat '%{NAME}\n' $(list /run/apex-packages/exclude.txt) | grep -v ' ' || true); \
-    if [ -n "$present" ]; then echo "Removing excluded packages from the base:" $present; dnf5 -y $repos remove $present; fi; \
+    pairnames=$(awk '$1 == "rpm" && $2 == "kernel-cachyos" { print $4 }' /repos/apex/rpms.lock); \
+    removing=""; \
+    if [ -n "$pairnames" ]; then present="$present $(rpm -qa --queryformat '%{NAME} %{SOURCERPM}\n' | awk '$2 ~ /^kernel-[0-9]/ { print $1 }')"; removing="--setopt=protect_running_kernel=False"; fi; \
+    if [ -n "${present% }" ]; then echo "Removing excluded packages from the base:" $present; dnf5 -y $repos $removing remove $present; fi; \
     dnf5 -y $repos $guards upgrade; \
-    dnf5 -y $repos $guards install --allowerasing $(list /run/apex-packages/base.txt /run/apex-packages/gnome.txt /run/apex-packages/apex.txt); \
+    dnf5 -y $repos $guards install --allowerasing $(list /run/apex-packages/base.txt /run/apex-packages/gnome.txt /run/apex-packages/apex.txt) $pairnames; \
     dnf5 -y $repos clean all; \
     rm -rf /var/cache/libdnf5 /var/lib/dnf /var/log/dnf5.log* /tmp/* /var/tmp/*
 
@@ -247,6 +282,17 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
             *) echo "ERROR: the lane family $f is stock or degraded, but has no degraded name" >&2; exit 1 ;; \
         esac; \
     done; \
+    pair=$(cat /run/apex-rpms/pair-mode); \
+    omit='nouveau nova_core nova_drm snd_hda_intel'; \
+    case $pair in \
+        none) ;; \
+        pair | pair-degraded) \
+            cp -R /run/apex-image/variants/pair/. /; \
+            rm -f /usr/lib/modprobe.d/apex-dgpu.conf /usr/lib/udev/rules.d/61-apex-dgpu-pm.rules; \
+            omit="$omit nvidia nvidia_drm nvidia_modeset nvidia_uvm nvidia_peermem"; \
+            if [ "$pair" = pair-degraded ]; then echo "NOTE: the kernel ships without its NVIDIA set (degraded=nvidia)"; echo nvidia >>"$degraded"; fi ;; \
+        *) echo "ERROR: rpms/pair-mode says '$pair'" >&2; exit 1 ;; \
+    esac; \
     sort -u "$degraded" >/tmp/apex-degraded.sorted; \
     rm -f /usr/lib/bootupd/updates/BIOS.json; \
     systemctl preset-all; \
@@ -279,11 +325,12 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     set -- /usr/lib/modules/*; \
     if [ "$#" -ne 1 ] || [ ! -d "$1" ]; then echo "ERROR: expected exactly one kernel in /usr/lib/modules, found: $*" >&2; exit 1; fi; \
     kver=${1##*/}; \
+    if [ "$pair" != none ]; then depmod -a "$kver"; fi; \
     plymouth-set-default-theme apex; \
     sed -i '/^Theme=apex$/a DeviceScale=1' /etc/plymouth/plymouthd.conf; \
     DRACUT_NO_XATTR=1 dracut --no-hostonly --reproducible --early-microcode \
         --add 'crypt systemd-cryptsetup' \
-        --add-drivers amdgpu --omit-drivers 'nouveau nova_core nova_drm snd_hda_intel' \
+        --add-drivers amdgpu --omit-drivers "$omit" \
         -f "/usr/lib/modules/$kver/initramfs.img" "$kver"; \
     set --; \
     while IFS= read -r d; do if [ -n "$d" ]; then set -- "$@" --degraded "$d"; fi; done </tmp/apex-degraded.sorted; \
@@ -303,7 +350,7 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     rc=0; \
     for c in /run/apex-image/checks/*.sh; do \
         echo "== ${c##*/}"; \
-        ROOT=/ APEX_IMAGE_DIR=/run/apex-image RELEASE_BUILD="$RELEASE_BUILD" sh "$c" || rc=1; \
+        ROOT=/ APEX_IMAGE_DIR=/run/apex-image APEX_RPMS_DIR=/run/apex-rpms RELEASE_BUILD="$RELEASE_BUILD" sh "$c" || rc=1; \
     done; \
     if [ "$rc" -ne 0 ]; then echo "ERROR: image checks failed (see FAIL lines above)" >&2; exit 1; fi; \
     : >/usr/lib/apex-build-lint-skips; \
