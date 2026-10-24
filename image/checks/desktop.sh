@@ -419,6 +419,20 @@ else
     pass "$SHELL_STATUS is apex-desktop's and sorts after vte.sh, so the terminal gets each command's real exit status"
 fi
 
+# The spec runs no scriptlets, so apex-desktop enables this unit for every user with a static link.
+icons=$USERUNITS/apex-folder-icons.service
+wants=$USERUNITS/graphical-session.target.wants/apex-folder-icons.service
+icons_exec=$(sed -n 's/^ExecStart=//p' "$(rootpath "$icons")" 2>/dev/null | head -n 1)
+if [ ! -f "$(rootpath "$icons")" ]; then
+    fail "no $icons: Projects and Screenshots keep the plain folder icon (apex-desktop)"
+elif [ ! -L "$(rootpath "$wants")" ] || [ "$(readlink "$(rootpath "$wants")")" != ../apex-folder-icons.service ]; then
+    fail "$wants is not a link to ../apex-folder-icons.service: the folder icons are never set (apex-desktop)"
+elif [ -z "$icons_exec" ] || [ ! -x "$(rootpath "$icons_exec")" ]; then
+    fail "$icons runs '${icons_exec:-nothing}', which is not an executable in the image (apex-desktop)"
+else
+    pass "apex-folder-icons.service is enabled for every user through graphical-session.target.wants and runs $icons_exec"
+fi
+
 # gdm's own override names Fedora's logo; Apex's override must sort after it.
 logo=$(gs get org.gnome.login-screen logo 2>/dev/null | tr -d "'" || true)
 if [ "$logo" != "$GDM_LOGO" ]; then
