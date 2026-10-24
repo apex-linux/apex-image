@@ -182,6 +182,10 @@ pkg-promote *flags:
 pkg-stock pkg:
     tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh stock {{ pkg }}
 
+# S1b's absorption check: does each recipe's series apply at fuzz 0 to the newest F45 stable and updates-testing SRPM?
+lane-absorb-report *pkgs:
+    tools/builder-vm/builder-vm.sh run tools/builder-vm/lane-absorb-report.sh {{ pkgs }}
+
 # The kernel pair's bump check in the builder VM: a point bump commits the new pins on a branch of the apex-kernel checkout, a new major waits for the owner.
 kernel-bump:
     tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh kernel-bump
