@@ -1,5 +1,5 @@
 # The component checkouts the image builds from: NAME GIT-URL COMMIT (tools/components.sh).
-apex-system https://github.com/apex-linux/apex-system 38fd06cea1ac511c5f6fda7ccb6afdbe8210c512
-apex-desktop https://github.com/apex-linux/apex-desktop 08bed2301c6a577bc62c2cd118078a5c37acf64a
+apex-system https://github.com/apex-linux/apex-system a9770b680a6e6b8f1f9cf0bc7dff815b3724be09
+apex-desktop https://github.com/apex-linux/apex-desktop f1a2f930f7e16ab7c7fde8f3a178d2e3ad9666ac
 apex-gnome https://github.com/apex-linux/apex-gnome 961bae47bfd1e478b0db15f1102b404c8db6beb1
-apex-kernel https://github.com/apex-linux/apex-kernel 4b49e8e5693879396a775189cc717bc6611c05c5
+apex-kernel https://github.com/apex-linux/apex-kernel a00019d8ddb4774192108fb4fce09f3ad3fbe4e4

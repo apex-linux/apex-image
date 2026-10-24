@@ -201,6 +201,12 @@ exactly what it built before.
 4. **The key**: `KERNEL-NVR-s<12 hex>` over the lane's tool id, the dnf options and
    every file of the recipe directory (`README.md` aside) as the job sees it. A stored
    key is taken unchanged, with no container.
+   **The release**: `APEX_RELEASE=N` makes the kernel release `<COPR release>.apexN.fcNN`
+   (`7.3.0-4.cachyos1.apex1.fc45`). The rule: the same inputs (the same key) give the
+   same N; changed inputs on the same COPR NEVR give N+1, so its first build is 1.
+   `pkgs/kernel/apex-release.txt` keeps `NVR KEY N` lines,
+   written before the job runs and never pruned, so one key keeps its N and no N is
+   given twice. The lane checks that `pair.lock`'s kernel has that release.
 5. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
    container of `REPOS_BASE`, at low CPU weight, the recipe directory read-only at
    `/job`, the module key's tmpfs at `/run/apex-modkey`, ccache in the volume
@@ -216,7 +222,8 @@ exactly what it built before.
    else is exit 1 of the lane. After an exit 0 the lane runs the one gate of ARCHITECTURE 4.2
    that check.sh cannot, since it never sees the last good pair: the modules in the
    pair's RPMs (`rpm -qlp`) within 5 % of the last good pair's, or a `check:` hold.
-   BTF is check.sh's, through `config-required.txt` (`CONFIG_DEBUG_INFO_BTF=y`).
+   BTF is check.sh's, through `config-required.txt` (`CONFIG_DEBUG_INFO_BTF=y`), and
+   pair.sh's: a vmlinux with no `.BTF` section holds with `kernel: vmlinux has no .BTF section`.
 6. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
    each `install=` package and the kmod built for that kernel, and one of kind `mirror`
    for each `userspace=` RPM of the driver the pair was built with, copied from the

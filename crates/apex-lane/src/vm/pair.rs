@@ -43,6 +43,7 @@ const DEBUG_FILES: [&str; 4] = ["vmlinux", "System.map", "config", "kernel.log"]
 /// ARCHITECTURE 4.2: a crash on any of the last few pairs can still be decoded.
 const DEBUG_PAIRS_KEPT: usize = 4;
 const LAST_FAILURE_LOG: &str = "last-failure-kernel.log";
+const RELEASE_LEDGER: &str = "apex-release.txt";
 const LOW_CPU_SHARES: &str = "256";
 const STDERR_TAIL_LINES: usize = 30;
 
@@ -59,6 +60,8 @@ struct Plan {
     dnf: Vec<String>,
     preimage: String,
     key: String,
+    /// The N of the `.apexN` release, and whether the ledger has it yet.
+    apex_release: (u32, bool),
 }
 
 struct Input<'a> {
@@ -196,6 +199,10 @@ impl Vm<'_> {
         }
         let preimage = pair::preimage(&p.name, &self.tool_id()?, &dnf.join(" "), &files);
         let key = content_key(&kernel.srpm.nvr(), &preimage);
+        let ledger = fs::read_opt(&self.store_pkg(&p.name).join(RELEASE_LEDGER))?;
+        let apex_release =
+            pair::release_number(&ledger.unwrap_or_default(), &kernel.srpm.nvr(), &key)
+                .map_err(|e| infra(format!("store: {RELEASE_LEDGER}: {e}")))?;
         Ok(Plan {
             kernel,
             nvidia,
@@ -206,6 +213,7 @@ impl Vm<'_> {
             dnf,
             preimage,
             key,
+            apex_release,
         })
     }
 
@@ -242,9 +250,10 @@ impl Vm<'_> {
             ]);
             return Ok(Outcome::Unchanged(plan.key));
         }
+        self.record_release(p, &plan)?;
         self.report.group(&format!(
-            "{}: the pair {} with {} (pair.sh)",
-            p.name, plan.kernel.srpm, plan.nvidia.kmod_srpm
+            "{}: the pair {} with {} (pair.sh, apex{})",
+            p.name, plan.kernel.srpm, plan.nvidia.kmod_srpm, plan.apex_release.0
         ));
         let job = self.run_pair_job(&work, &plan);
         self.report.endgroup();
@@ -318,6 +327,8 @@ impl Vm<'_> {
             .arg(format!("{MODKEY_DIR}:rw,mode=0700"))
             .args(["-e", "CCACHE_DIR=/var/cache/ccache", "-e"])
             .arg(format!("PAIR_ID={}", plan.key))
+            .arg("-e")
+            .arg(format!("APEX_RELEASE={}", plan.apex_release.0))
             .arg(self.repos_base()?)
             .args(["/usr/bin/bash", "/job/pair.sh", "/mirror", "/out"])
             .args(&plan.dnf)
@@ -598,7 +609,7 @@ impl Vm<'_> {
         let bytes = fs::read(&out.join(lock_name))?;
         let locked = pair::parse_pair_lock(&bytes, lock_name == PAIR_LOCK)
             .map_err(|e| infra(format!("pair.sh's {lock_name}: {e}")))?;
-        check_kernel(&locked, &plan.kernel)?;
+        check_kernel(&locked, &plan.kernel, plan.apex_release.0)?;
         let set = work.join("set");
         remove_tree(&set)?;
         fs::create_dir_all(&set.join("logs"))?;
@@ -829,6 +840,18 @@ impl Vm<'_> {
             side == Side::Kmod && reached,
         ));
         Ok(Outcome::Held)
+    }
+
+    /// Before the job runs, so a set pruned later never gives its N to another key.
+    fn record_release(&self, p: &PairPkg, plan: &Plan) -> Result<()> {
+        let (n, new) = plan.apex_release;
+        if !new {
+            return Ok(());
+        }
+        let store = self.store_pkg(&p.name);
+        fs::create_dir_all(&store)?;
+        let line = format!("{} {} {n}\n", plan.kernel.srpm.nvr(), plan.key);
+        fs::append(&store.join(RELEASE_LEDGER), line.as_bytes())
     }
 
     /// Keeps the newest pairs whole; an older one keeps its RPMs while a lock names it.
@@ -1082,14 +1105,15 @@ impl Vm<'_> {
     }
 }
 
-fn check_kernel(locked: &PairLock, kernel: &KernelPins) -> Result<()> {
+fn check_kernel(locked: &PairLock, kernel: &KernelPins, n: u32) -> Result<()> {
     let built = &locked.kernel;
+    let release = pair::apex_release(&kernel.srpm.release, n);
     if built.name != kernel.srpm.name
         || built.version != kernel.srpm.version
-        || built.release != kernel.srpm.release
+        || built.release != release
     {
         return Err(infra(format!(
-            "pair.sh built {built}, not the pinned {}",
+            "pair.sh built {built}, not the pinned {} as release {release}",
             kernel.srpm
         )));
     }

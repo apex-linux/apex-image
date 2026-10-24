@@ -123,6 +123,7 @@ struct JobDirs {
     out: PathBuf,
     job: PathBuf,
     mirror: PathBuf,
+    apex_release: u32,
 }
 
 struct Fake {
@@ -151,6 +152,23 @@ fn mount(args: &[String], to: &str) -> PathBuf {
         .find(|a| a.contains(&format!(":{to}:")))
         .expect("mount");
     PathBuf::from(spec.split(':').next().unwrap())
+}
+
+/// pair.sh's own check: exit 2 without a positive `APEX_RELEASE`.
+fn apex_release_of(args: &[String]) -> u32 {
+    let value = args
+        .windows(2)
+        .find_map(|w| {
+            (w[0] == "-e")
+                .then(|| w[1].strip_prefix("APEX_RELEASE="))
+                .flatten()
+        })
+        .expect("podman run without -e APEX_RELEASE=N");
+    value
+        .parse()
+        .ok()
+        .filter(|&n| n > 0)
+        .expect("APEX_RELEASE is no positive integer")
 }
 
 /// `name-version-release.arch.rpm`, the kmod at epoch 3 like negativo17's.
@@ -308,6 +326,7 @@ impl Fake {
                         out: mount(&args, "/out"),
                         job: mount(&args, "/job"),
                         mirror: mount(&args, "/mirror"),
+                        apex_release: apex_release_of(&args),
                     };
                     let (code, stderr) = (self.job.borrow())(&dirs);
                     Some(Outcome {
@@ -402,8 +421,11 @@ fn write_pair(dirs: &JobDirs, with_kmod: bool) {
             "the job's mirror has no {file}"
         );
     }
-    let vr = format!("{}-{}", kernel.srpm.version, kernel.srpm.release);
-    let uname = format!("{vr}.x86_64");
+    let release = kernel
+        .srpm
+        .release
+        .replace(".fc45", &format!(".apex{}.fc45", dirs.apex_release));
+    let uname = format!("{}-{release}.x86_64", kernel.srpm.version);
     let mut files: Vec<String> = KERNEL_SIDE
         .iter()
         .map(|n| format!("{n}-{uname}.rpm"))
@@ -655,7 +677,7 @@ fn a_good_pair_is_signed_stored_and_locked() {
             "kernel-cachyos",
             "kernel-cachyos-core",
             "kernel-cachyos-modules",
-            "kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64",
+            "kmod-nvidia-7.3.0-4.cachyos1.apex1.fc45.x86_64",
             "nvidia-kmod-common"
         ],
         "the install= names, the kmod and the userspace; -devel is stored, not locked"
@@ -670,12 +692,12 @@ fn a_good_pair_is_signed_stored_and_locked() {
         "negativo17's RPM, unmodified, from the mirror"
     );
     let kmod = &rpms[3];
-    let file = "kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-615.78.08-1.fc45.x86_64.rpm";
+    let file = "kmod-nvidia-7.3.0-4.cachyos1.apex1.fc45.x86_64-615.78.08-1.fc45.x86_64.rpm";
     let signed = sha256_hex(format!("{file} +signature").as_bytes());
     assert_eq!(
         *kmod,
         format!(
-            "rpm kernel-cachyos built kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64 kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-3:615.78.08-1.fc45.x86_64 {signed} pkgs/kernel/{key}/{file}"
+            "rpm kernel-cachyos built kmod-nvidia-7.3.0-4.cachyos1.apex1.fc45.x86_64 kmod-nvidia-7.3.0-4.cachyos1.apex1.fc45.x86_64-3:615.78.08-1.fc45.x86_64 {signed} pkgs/kernel/{key}/{file}"
         )
     );
     image_sh_accepts(&t.store.path().join("rpms.lock.next"));
@@ -766,7 +788,7 @@ fn the_kernel_moves_before_the_driver() {
     );
     assert!(
         t.next_lock()
-            .contains("kmod-nvidia-7.3.1-1.cachyos1.fc45.x86_64-3:615.78.08-1")
+            .contains("kmod-nvidia-7.3.1-1.cachyos1.apex1.fc45.x86_64-3:615.78.08-1")
     );
     assert!(
         t.next_lock()
@@ -792,11 +814,78 @@ fn the_kernel_moves_before_the_driver() {
     assert!(t.staged_nvidia().contains("nvidia-kmod-3:615.80.01-1"));
     assert!(
         t.next_lock()
-            .contains("kmod-nvidia-7.3.1-1.cachyos1.fc45.x86_64-3:615.80.01-1")
+            .contains("kmod-nvidia-7.3.1-1.cachyos1.apex2.fc45.x86_64-3:615.80.01-1")
     );
     assert!(
         t.next_lock()
             .contains(" nvidia-kmod-common-3:615.80.01-1.fc45.noarch ")
+    );
+}
+
+#[test]
+fn a_vmlinux_without_btf_holds_on_the_kernel_side() {
+    let t = PairTest::new();
+    let good = t.with_good_pair();
+    t.pins("7.3.1-1", "615.78.08-1");
+    t.fake
+        .on_job(failing("kernel: vmlinux has no .BTF section", false));
+    assert_eq!(t.build(T0), Built::Held);
+    assert!(
+        t.family_line()
+            .starts_with(&format!("family kernel-cachyos held {good} "))
+            && t.family_line()
+                .ends_with(" side=kernel reason=kernel: vmlinux has no .BTF section"),
+        "{}",
+        t.family_line()
+    );
+}
+
+#[test]
+fn the_apex_release_counts_rebuilds_of_one_nevr_and_never_moves_for_one_key() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    t.pins("7.3.1-1", "615.78.08-1");
+    t.fake.on_job(failing("kernel: rpmbuild -bb failed", false));
+    assert_eq!(t.build(T0), Built::Held);
+    t.fake.on_job(good_job);
+    let Built::Built(key) = t.build(T0) else {
+        panic!("not built")
+    };
+    assert!(
+        t.next_lock()
+            .contains(" kernel-cachyos-0:7.3.1-1.cachyos1.apex1.fc45.x86_64 "),
+        "the held run took N=1 for this key, and the rerun keeps it"
+    );
+    let releases: Vec<String> = t
+        .fake
+        .log
+        .borrow()
+        .iter()
+        .map(argv)
+        .filter(|a| a.first().is_some_and(|a| a == "/usr/bin/podman"))
+        .filter_map(|a| a.into_iter().find(|a| a.starts_with("APEX_RELEASE=")))
+        .collect();
+    assert_eq!(releases, ["APEX_RELEASE=1"; 3]);
+    let ledger =
+        std::fs::read_to_string(t.store.path().join("pkgs/kernel/apex-release.txt")).unwrap();
+    let lines: Vec<&str> = ledger.lines().collect();
+    assert_eq!(lines.len(), 2, "{ledger}");
+    assert_eq!(
+        lines[1],
+        format!("kernel-cachyos-7.3.1-1.cachyos1.fc45 {key} 1")
+    );
+    std::fs::write(
+        t.store.path().join("pkgs/kernel/apex-release.txt"),
+        format!("{ledger}kernel-cachyos-7.3.1-1.cachyos1.fc45 an-older-pruned-key 4\n"),
+    )
+    .unwrap();
+    t.promote();
+    t.pins("7.3.1-1", "615.80.01-1");
+    assert!(matches!(t.build(T0), Built::Built(_)));
+    assert!(
+        t.next_lock()
+            .contains(" kernel-cachyos-0:7.3.1-1.cachyos1.apex5.fc45.x86_64 "),
+        "a new key of the same NEVR takes one past the ledger's highest"
     );
 }
 
@@ -894,9 +983,9 @@ fn a_kmod_failure_on_a_point_release_holds_72_hours_then_degrades_nvidia() {
     assert_eq!(
         names,
         [
-            "kernel-cachyos-0:7.3.1-1.cachyos1.fc45.x86_64",
-            "kernel-cachyos-core-0:7.3.1-1.cachyos1.fc45.x86_64",
-            "kernel-cachyos-modules-0:7.3.1-1.cachyos1.fc45.x86_64"
+            "kernel-cachyos-0:7.3.1-1.cachyos1.apex1.fc45.x86_64",
+            "kernel-cachyos-core-0:7.3.1-1.cachyos1.apex1.fc45.x86_64",
+            "kernel-cachyos-modules-0:7.3.1-1.cachyos1.apex1.fc45.x86_64"
         ],
         "the new kernel without the NVIDIA set"
     );
@@ -1343,7 +1432,12 @@ fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
     stored.sort();
     assert_eq!(
         stored,
-        [good.as_str(), "last-failure-kernel.log", "last-failure.txt"],
+        [
+            "apex-release.txt",
+            good.as_str(),
+            "last-failure-kernel.log",
+            "last-failure.txt"
+        ],
         "the good pair and the failure's reason and kernel log; nothing new is stored"
     );
     t.fake.modules.borrow_mut().insert("7.3.1-1".into(), 960);

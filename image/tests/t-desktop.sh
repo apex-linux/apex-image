@@ -102,6 +102,15 @@ mkroot() {
         >"$r/usr/share/gnome-shell/gnome-shell-theme.gresource"
     cp "$DESKTOP"/schemas/*.gschema.xml "$DESKTOP"/schemas/*.gschema.override "$r/usr/share/glib-2.0/schemas/"
     upstream_schemas "$r/usr/share/glib-2.0/schemas" "$DESKTOP/schemas/90_apex.gschema.override"
+    # gdm's schema and its own override, which names Fedora's logo.
+    printf '<schemalist><schema id="org.gnome.login-screen" path="/org/gnome/login-screen/"><key name="logo" type="s"><default>%s</default></key></schema></schemalist>\n' \
+        "''" >"$r/usr/share/glib-2.0/schemas/org.gnome.login-screen.gschema.xml"
+    printf "[org.gnome.login-screen]\nlogo='/usr/share/pixmaps/fedora-gdm-logo.png'\n" \
+        >"$r/usr/share/glib-2.0/schemas/org.gnome.login-screen.gschema.override"
+    cp "$DESKTOP/gdm/zz_apex-login-screen.gschema.override" "$r/usr/share/glib-2.0/schemas/"
+    mkdir -p "$r/usr/share/pixmaps" "$r/usr/share/backgrounds/apex"
+    : >"$r/usr/share/pixmaps/apex-gdm-logo.svg"
+    : >"$r/usr/share/backgrounds/apex/apex-greeter-light.png"
     printf '<schemalist><schema id="org.gnome.Ptyxis.Profile"><key name="label" type="s"><default>%s</default></key><key name="palette" type="s"><default>%s</default></key><key name="cell-height-scale" type="d"><range min="1.0" max="2.0"/><default>1.0</default></key></schema></schemalist>\n' \
         "''" "'gnome'" >"$r/usr/share/glib-2.0/schemas/org.gnome.Ptyxis.Profile.gschema.xml"
     # Fedora's dconf profile and an empty locks directory, as the dconf package ships them.
@@ -160,6 +169,26 @@ expect_out "the distro database is compiled" '^PASS desktop: /etc/dconf/db/distr
 expect_out "an empty locks directory holds no lock" '^PASS desktop: no dconf lock in /etc/dconf/db/distro\.d$'
 expect_out "the Ptyxis profile is the default and valid" "^PASS desktop: the $NKEYS dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile [0-9a-f]{32}, and each is a valid setting$"
 expect_out "the committed crash guard verifies" '^PASS desktop: the crash guard is installed'
+expect_out "the greeter's logo and background" '^PASS desktop: the greeter.s logo resolves to /usr/share/pixmaps/apex-gdm-logo\.svg, and /usr/share/backgrounds/apex/apex-greeter-light\.png is installed$'
+
+r=$(mkroot fedoralogo)
+rm "$r/usr/share/glib-2.0/schemas/zz_apex-login-screen.gschema.override"
+desktop fedoralogo
+expect_rc "without Apex's login-screen override, gdm's own wins and fails" 1
+expect_out "and names what resolved" "^FAIL desktop: org\.gnome\.login-screen logo resolves to '/usr/share/pixmaps/fedora-gdm-logo\.png'"
+r=$(mkroot earlylogo)
+mv "$r/usr/share/glib-2.0/schemas/zz_apex-login-screen.gschema.override" "$r/usr/share/glib-2.0/schemas/00_apex-login-screen.gschema.override"
+desktop earlylogo
+expect_rc "an Apex override that sorts before gdm's loses and fails" 1
+r=$(mkroot nologo)
+rm "$r/usr/share/pixmaps/apex-gdm-logo.svg"
+desktop nologo
+expect_rc "a missing logo file fails" 1
+expect_out "and names it" '^FAIL desktop: no /usr/share/pixmaps/apex-gdm-logo\.svg'
+r=$(mkroot nogreeter)
+rm "$r/usr/share/backgrounds/apex/apex-greeter-light.png"
+desktop nogreeter
+expect_rc "a missing greeter background fails" 1
 
 r=$(mkroot held held)
 desktop held
