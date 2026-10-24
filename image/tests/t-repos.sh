@@ -454,4 +454,20 @@ stage v6
 expect_rc "V: no Fedora kernel to exclude fails" 1
 expect_out "V: and says so" '^ERROR: fedora and updates offer no package of the kernel SRPM to exclude$'
 
+# The break-glass image (just image KERNEL=fedora): image.sh's own rewrite of a pair lock,
+# and none of the pair's RPMs in rpms/.
+pair_setup w
+eval "$(sed -n '/^break_glass_lock() {$/,/^}$/p' "$REPO_ROOT/.github/scripts/image.sh")"
+break_glass_lock "$T/w/apex/rpms.lock" >"$T/w/break-glass.lock"
+mv "$T/w/break-glass.lock" "$T/w/apex/rpms.lock"
+rm -rf "$T/w/apex"/kernel-cachyos-* "$T/w/apex"/kmod-nvidia-* "$T/w/apex"/nvidia-* "$T/w/apex/pair"
+expect_file "W: the pair is the owner's stock choice in the image's lock" \
+    '^family kernel-cachyos stock - reason=break-glass: ' "$T/w/apex/rpms.lock"
+stage w
+expect_rc "W: a break-glass image of a pair lock builds" 0
+expect_file "W: on Fedora's kernel" '^none$' "$T/w/apex/pair-mode"
+if grep -q "repoquery.*kernel\*" "$T/w/dnf/log"; then not_ok "W: and never asks for Fedora's kernel"; else ok "W: and never asks for Fedora's kernel"; fi
+expect_file "W: excluding no kernel" '^excludepkgs=gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/w/$REPOS/fedora-fedora.repo"
+expect_file "W: and admitting none of the pair" '^includepkgs=apex,apex-desktop,gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/w/$REPOS/apex.repo"
+
 done_testing

@@ -12,12 +12,16 @@ root).
 
   image.sh context --rpms-ref REF|--rpms-dir DIR --desktop-ref REF|--desktop-dir DIR
                    [--libfprint-ref REF|--libfprint-dir DIR] --lane-lock LANE [--lock FILE]
+                   [--kernel fedora]
                                     put the RPM inputs into the context: the apex RPM
                                     (apex-system's rpms.sh), apex-desktop (apex-desktop's)
                                     and libfprint (apex-kernel's); LANE is the rebuild
                                     lane's lock in its store (the builder VM's
                                     ~/apex-store/rpms.lock.next); FILE (a lock.txt of an
-                                    earlier build) is replayed through --build-arg LOCK
+                                    earlier build) is replayed through --build-arg LOCK;
+                                    --kernel fedora is the break-glass image: Fedora's
+                                    kernel, the pair's rpm lines left out of the image's
+                                    lock (degraded=nvidia); it never promotes
   image.sh build                    podman build image/Containerfile -> localhost/apex:build
   image.sh inspect                  manifest.json, lock list, degraded, held, content key
   image.sh unchanged                exit 0 when the content key equals apex-testing:45's
@@ -156,13 +160,25 @@ lane_pair_context() {
     log "lane: the kernel pair from $dir"
 }
 
+# The image's copy of LANE with the kernel pair as the owner's stock choice: Fedora's kernel,
+# no rpm lines. The store's lock is never touched.
+break_glass_lock() {
+    awk '!(($1 == "family" || $1 == "rpm") && $2 == "kernel-cachyos")' "$1"
+    printf '%s\n' "family kernel-cachyos stock - reason=break-glass: just image KERNEL=fedora, Fedora's kernel without the NVIDIA set"
+}
+
 lane_context() {
-    local lane=$1 store path sha dest n=0
+    local lane=$1 kernel=${2:-pair} store path sha dest n=0
     local -a families
     mapfile -t families < <(lane_families)
+    store=$(cd "$(dirname -- "$lane")" && pwd)
+    if [[ $kernel == fedora ]]; then
+        break_glass_lock "$lane" >"$APEX_WORK/break-glass.lock"
+        lane=$APEX_WORK/break-glass.lock
+        warn "break-glass: Fedora's kernel, without the kernel pair or its NVIDIA set (degraded=nvidia); this image never promotes"
+    fi
     local list
     list=$(lane_lock_check "$lane" "${families[@]}") || die "lane lock $lane is not usable (see above)"
-    store=$(cd "$(dirname -- "$lane")" && pwd)
     while read -r path sha; do
         [[ -n $path ]] || continue
         dest=$RPMS_DIR/${path##*/}
@@ -186,7 +202,7 @@ lane_context() {
 }
 
 cmd_context() {
-    local rpms_ref="" rpms_dir="" desktop_ref="" desktop_dir="" fp_ref="" fp_dir="" lock="" lane=""
+    local rpms_ref="" rpms_dir="" desktop_ref="" desktop_dir="" fp_ref="" fp_dir="" lock="" lane="" kernel=pair
     while (($#)); do
         case $1 in
             --rpms-ref) rpms_ref=$2; shift 2 ;;
@@ -197,6 +213,11 @@ cmd_context() {
             --libfprint-dir) fp_dir=$2; shift 2 ;;
             --lane-lock) lane=$2; shift 2 ;;
             --lock) lock=$2; shift 2 ;;
+            --kernel)
+                [[ ${2:-} == fedora ]] || die "context: --kernel takes fedora, the break-glass image"
+                kernel=fedora
+                shift 2
+                ;;
             *) die "context: unknown option $1" ;;
         esac
     done
@@ -249,7 +270,7 @@ cmd_context() {
         log "replaying $(wc -l <"$lock") locked NEVRAs"
     fi
 
-    lane_context "$lane"
+    lane_context "$lane" "$kernel"
 
     if [[ ! $APEX_SYSTEM_SRC -ef $APEX_ROOT ]]; then
         [[ -z $(git -c safe.directory="$APEX_ROOT" -C "$APEX_ROOT" ls-files -- hardware) ]] ||
