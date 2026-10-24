@@ -857,8 +857,21 @@ from() { cat "$STATE/$1" 2>/dev/null || true; }
 as_root() { [[ "$*" == "podman image inspect --format {{.Id}} localhost/apex:build" ]] && echo cafe; }
 TEST_PASSWORD=$(from password)
 conversations() { echo "${1:-$(from conversations)}" >"$STATE/conversations"; }
+start_asking() {
+    [[ ! -e $STATE/asking ]] || return 0
+    : >"$STATE/asking"
+    conversations "$(($(from conversations) + 1))"
+}
+stop_asking() {
+    [[ -e $STATE/asking ]] || return 0
+    rm "$STATE/asking"
+    conversations "$(($(from conversations) - 1))"
+}
 password_typed() {
-    [[ "$TEST_USER:$(from typed)" == "$(from chpasswd)" ]] || return 0
+    if [[ "$TEST_USER:$(from typed)" != "$(from chpasswd)" ]]; then
+        [[ -e $STATE/no-pam-log ]] || echo 'gdm-password]: pam_unix(gdm-password:auth): authentication failure' >>"$STATE/syslog"
+        return 0
+    fi
     if [[ $(from locked) == yes ]]; then
         echo no >"$STATE/locked"
         echo false >"$STATE/active"
@@ -872,16 +885,35 @@ password_typed() {
     else
         cp "$STATE/session-after-login" "$STATE/session"
         : >"$STATE/manager-active"
+        if [[ -e $STATE/safe-booted ]]; then echo 'Apex: safe mode (apex.safe=1)' >>"$STATE/journal"; fi
         if [[ -e $STATE/tripped ]]; then echo 'Apex: safe mode (layer-enabled is false)' >>"$STATE/journal"; fi
         if [[ -e $STATE/safe-js-error ]]; then echo 'gnome-shell[1236]: JS ERROR: TypeError: y is null' >>"$STATE/journal"; fi
     fi
     conversations "$(($(from conversations) - 1))"
+    rm -f "$STATE/asking"
+}
+qmp_query() { if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi; }
+wait_ssh() { :; }
+vm_reboot() {
+    : >"$STATE/journal"
+    : >"$STATE/syslog"
+    rm -f "$STATE/session" "$STATE/asking" "$STATE/manager-active"
+    conversations 0
+    echo 'c1 60578 wayland' >"$STATE/greeter"
+    if [[ -e $STATE/karg && ! -e $STATE/safe-ignored ]]; then
+        : >"$STATE/safe-booted"
+        rm -f "$STATE/apex-lock"
+    fi
 }
 qmp() {
     local cmd keys
     [[ ! -e $STATE/qmp-down ]] || return 1
     for cmd in "$@"; do
         printf '%s\n' "$cmd" >>"$STATE/qmp"
+        if [[ $cmd == *system_wakeup* ]]; then
+            rm -f "$STATE/suspended"
+            if [[ -e $STATE/resume-unlocks ]]; then echo no >"$STATE/locked"; echo false >"$STATE/active"; fi
+        fi
         keys=$(jq -r 'select(.execute == "send-key") | [.arguments.keys[].data] | join("+")' <<<"$cmd")
         case $keys in
             "") ;;
@@ -889,10 +921,10 @@ qmp() {
                 if [[ -s $STATE/typed ]]; then
                     password_typed
                     : >"$STATE/typed"
-                elif [[ -e $STATE/takes-keys && ! -e $STATE/asking ]]; then
-                    : >"$STATE/asking"
-                    conversations "$(($(from conversations) + 1))"
+                elif [[ -e $STATE/takes-keys ]]; then
+                    start_asking
                 fi ;;
+            esc) [[ -e $STATE/esc-ignored ]] || stop_asking ;;
             *) printf '%s' "$keys" >>"$STATE/typed" ;;
         esac
     done
@@ -937,7 +969,23 @@ vm_ssh() {
         "$(user_cmd "systemctl --user list-units --state=active --plain --no-legend --no-pager 'apex*'")") from agents ;;
         "loginctl show-session 4 -p LockedHint --value") from locked ;;
         "loginctl lock-session 4")
-            [[ -e $STATE/never-locks ]] || { echo yes >"$STATE/locked"; echo true >"$STATE/active"; rm -f "$STATE/asking"; } ;;
+            [[ -e $STATE/never-locks ]] || { echo yes >"$STATE/locked"; echo true >"$STATE/active"; rm -f "$STATE/asking"; }
+            if [[ -e $STATE/apex-lock ]]; then start_asking; fi ;;
+        "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
+        "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
+        "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
+        *"PowerSaveMode i 3")
+            [[ -e $STATE/keeps-asking-blank ]] || { stop_asking; echo 'Apex: lock: screen blank, prompt torn down' >>"$STATE/journal"; } ;;
+        *"PowerSaveMode i 0")
+            echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
+            start_asking ;;
+        "systemd-run --quiet --on-active=2 systemctl suspend") [[ -e $STATE/no-suspend ]] || : >"$STATE/suspended" ;;
+        *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
+            if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
+        *"gsettings reset org.gnome.desktop.a11y.interface reduced-motion") ;;
+        *"gsettings set $APEX_SCHEMA layer-enabled true") ;;
+        "rpm-ostree kargs --append=apex.safe=1") : >"$STATE/karg" ;;
+        "grep -qw apex.safe=1 /proc/cmdline") [[ -e $STATE/safe-booted ]] ;;
         "loginctl unlock-session 4")
             echo no >"$STATE/locked"
             echo false >"$STATE/active"
@@ -1195,6 +1243,49 @@ logged_in
 echo 'foo.service loaded failed failed Foo' >"$GUEST_DIR/state/failed-user-units"
 check "a failed user unit fails" 1 "$(guest login_lock_unlock local)"
 check "at the user units" 1 "$(row local-user-units FAIL)"
+
+# S3b's lock matrix against the fake guest: apex-gnome's single-stage lock asks at once.
+apex_locked_in() {
+    logged_in
+    : >"$GUEST_DIR/state/apex-lock"
+    echo 'gnome-shell[1234]: Apex: feature lock enabled' >>"$GUEST_DIR/state/journal"
+}
+apex_locked_in
+check "login, lock and both unlocks with the Apex lock, which asks at once" 0 "$(guest login_lock_unlock local)"
+check "its unlock row passes" 1 "$(row local-unlock PASS)"
+apex_locked_in
+check "the lock matrix" 0 "$(guest lock_matrix local 1000)"
+for r in wrong-password esc blank-wake suspend reduce-motion; do
+    check "row local-lock-$r passes" 1 "$(row "local-lock-$r" PASS)"
+done
+check_true "the wrong password went in before the right one" grep -qF '"data":"n"' "$GUEST_DIR/state/qmp"
+check_true "Esc was pressed" grep -qF '"data":"esc"' "$GUEST_DIR/state/qmp"
+check_true "the VM was woken" grep -qF system_wakeup "$GUEST_DIR/state/qmp"
+lock_matrix_fails() { # FLAG ROW: with FLAG set, the matrix stops with ROW failed
+    apex_locked_in
+    : >"$GUEST_DIR/state/$1"
+    check "$1: the matrix fails" 1 "$(guest lock_matrix local 1000)"
+    check "$1: at $2" 1 "$(row "$2" FAIL)"
+}
+lock_matrix_fails no-pam-log local-lock-wrong-password
+check_true "naming PAM" grep -q '^| local-lock-wrong-password | FAIL | PAM logged no authentication failure' "$GUEST_DIR/out/results.md"
+lock_matrix_fails esc-ignored local-lock-esc
+lock_matrix_fails keeps-asking-blank local-lock-blank-wake
+lock_matrix_fails no-suspend local-lock-suspend
+lock_matrix_fails resume-unlocks local-lock-suspend
+lock_matrix_fails motion-js-error local-lock-reduce-motion
+logged_in
+check "without the Apex lock, the matrix still runs" 0 "$(guest lock_matrix local 1000)"
+check "and blank and wake is a SKIP, so G4 records no pass" 1 "$(row local-lock-blank-wake SKIP)"
+
+apex_locked_in
+check "apex.safe=1: upstream's two-stage lock" 0 "$(guest safe_karg_lock local)"
+check "passes" 1 "$(row local-lock-safe PASS)"
+check_true "after Return lifted the curtain" grep -q '^| local-lock-safe | PASS | apex.safe=1: .Apex: safe mode (apex.safe=1)., no Apex lock; upstream.s two-stage lock asked only after Return' "$GUEST_DIR/out/results.md"
+apex_locked_in
+: >"$GUEST_DIR/state/safe-ignored"
+check "a boot that ignores apex.safe=1 fails" 1 "$(guest safe_karg_lock local)"
+check "at the safe row" 1 "$(row local-lock-safe FAIL)"
 
 logged_in
 echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
