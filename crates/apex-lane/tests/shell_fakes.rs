@@ -231,6 +231,7 @@ impl Bodhi for NoBodhi {
 fn settings(store: &Path, signing: &Path) -> Settings {
     Settings {
         store: store.to_path_buf(),
+        fedora: "45".into(),
         ga_override: None,
         keep_work: false,
         signing_env: signing.to_path_buf(),

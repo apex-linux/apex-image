@@ -14,7 +14,13 @@ APEX_IMAGE_DIR=${APEX_IMAGE_DIR:-$APEX_CHECKS_DIR/..}
 FEDORA_RPMDB=/usr/lib/sysimage/rpm
 
 FEDORA_45_KEY_FPR=4f50a6114cd5c6976a7f1179655a4b02f577861e
-FEDORA_KEYID=${FEDORA_45_KEY_FPR#????????????????????????}
+FEDORA_46_KEY_FPR=d924b10d3e810dabdd8b56b596e7e91491211fce
+# The next lane's image (image/fedora/46.env) is signed by its own release's key.
+case $(sed -n 's/^VERSION_ID=//p' "$ROOT/usr/lib/os-release" 2>/dev/null | tr -d '"') in
+    46) FEDORA_KEY_FPR=$FEDORA_46_KEY_FPR ;;
+    *) FEDORA_KEY_FPR=$FEDORA_45_KEY_FPR ;;
+esac
+FEDORA_KEYID=${FEDORA_KEY_FPR#????????????????????????}
 # A rotation changes this pin and the public key the image ships in one reviewed change.
 APEX_RPM_KEY_FPR=B9A8301A20A14E732212A4C58DA3252BD6EF25FA
 APEX_RPM_KEYID=${APEX_RPM_KEY_FPR#????????????????????????}

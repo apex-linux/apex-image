@@ -320,7 +320,12 @@ run_in_repo() {
 image() {
     sync_repo
     # Run by path, not fed through `bash -s`: G4's ssh (qualify.sh, no -n) would read the rest of the script.
-    vm_ssh "flock -n $GUEST_BUILD_LOCK bash ~/apex-image/tools/builder-vm/build-image.sh $*" </dev/null
+    local release=
+    if [[ -n ${APEX_FEDORA:-} ]]; then
+        [[ $APEX_FEDORA =~ ^[0-9]{2}$ ]] || die "APEX_FEDORA must be a Fedora release, got '$APEX_FEDORA'"
+        release="env APEX_FEDORA=$APEX_FEDORA "
+    fi
+    vm_ssh "flock -n $GUEST_BUILD_LOCK ${release}bash ~/apex-image/tools/builder-vm/build-image.sh $*" </dev/null
 }
 
 ci_install() {

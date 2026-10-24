@@ -221,8 +221,10 @@ fn settings() -> Result<(Settings, Option<UtcSecond>)> {
         &text("APEX_LANE_NOW"),
     )
     .map_err(usage)?;
+    let fedora = apex_lane::core::fedora::parse(&text("APEX_FEDORA")).map_err(usage)?;
     let settings = Settings {
-        store: env("APEX_STORE").unwrap_or(default_store),
+        store: apex_lane::core::fedora::store(&env("APEX_STORE").unwrap_or(default_store), &fedora),
+        fedora,
         ga_override: std::env::var("APEX_GA_REACHED")
             .ok()
             .filter(|v| !v.is_empty()),

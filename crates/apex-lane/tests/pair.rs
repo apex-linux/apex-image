@@ -582,6 +582,7 @@ struct PairTest {
     released: Cell<Option<UtcSecond>>,
     pair_fault: RefCell<Option<String>>,
     rehearsal: Cell<bool>,
+    fedora: RefCell<String>,
 }
 
 impl PairTest {
@@ -630,6 +631,7 @@ impl PairTest {
             released: Cell::new(None),
             pair_fault: RefCell::default(),
             rehearsal: Cell::new(false),
+            fedora: RefCell::new("45".into()),
         };
         write(
             &t.store.path().join("rpm-signing.env"),
@@ -656,6 +658,7 @@ impl PairTest {
             recipes: vec![self.recipes.path().to_path_buf()],
             settings: Settings {
                 store: self.store.path().to_path_buf(),
+                fedora: self.fedora.borrow().clone(),
                 ga_override: None,
                 keep_work: false,
                 signing_env: self.store.path().join("rpm-signing.env"),
@@ -1855,5 +1858,80 @@ fn a_bump_without_the_tag_pins_says_which_is_missing() {
     assert!(
         err.contains("kernel.env pins no tag_repo, so kernel-bump cannot verify the CachyOS tag"),
         "{err}"
+    );
+}
+
+/// The podman runs of pair.sh, as argv.
+fn pair_jobs(t: &PairTest) -> Vec<Vec<String>> {
+    t.fake
+        .log
+        .borrow()
+        .iter()
+        .map(argv)
+        .filter(|a| a.first().is_some_and(|a| a == "/usr/bin/podman"))
+        .collect()
+}
+
+const NEXT_BASE: &str = concat!(
+    "registry.fedoraproject.org/fedora@sha256:",
+    "4646464646464646464646464646464646464646464646464646464646464646"
+);
+
+#[test]
+fn a_45_pair_job_is_as_before_and_a_next_one_names_its_fedora_and_base() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    let jobs = pair_jobs(&t);
+    assert!(!jobs.is_empty());
+    for job in &jobs {
+        assert!(!job.iter().any(|a| a.starts_with("FEDORA=")), "{job:?}");
+        assert!(job.iter().any(|a| a.ends_with(
+            "@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb"
+        )));
+    }
+    drop(t);
+
+    let t = PairTest::new();
+    write(
+        &t.root.path().join("image/fedora/46.env"),
+        format!("FEDORA=46\nLANE=next\nREPOS_BASE={NEXT_BASE}\nGA_REACHED=1\n"),
+    );
+    *t.fedora.borrow_mut() = "46".into();
+    t.fake.on_job(good_job);
+    assert!(matches!(t.build(T0), Built::Built(_)));
+    let jobs = pair_jobs(&t);
+    assert!(!jobs.is_empty());
+    for job in &jobs {
+        let fedora = job.windows(2).any(|w| w[0] == "-e" && w[1] == "FEDORA=46");
+        assert!(fedora && job.iter().any(|a| a == NEXT_BASE), "{job:?}");
+    }
+}
+
+#[test]
+fn a_next_release_without_its_env_file_is_named() {
+    let t = PairTest::new();
+    *t.fedora.borrow_mut() = "46".into();
+    t.fake.on_job(good_job);
+    let err = t.run(T0, |vm| vm.repos_base().unwrap_err().to_string());
+    assert!(
+        err.contains("APEX_FEDORA=46 has no") && err.contains("image/fedora/46.env"),
+        "{err}"
+    );
+}
+
+#[test]
+fn the_next_lane_never_promotes() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    let locked = std::fs::read(t.store.path().join("rpms.lock")).unwrap();
+    *t.fedora.borrow_mut() = "46".into();
+    let err = t.run(T0, |vm| vm.promote(true).unwrap_err().to_string());
+    assert!(
+        err.contains("APEX_FEDORA=46 is the next lane: it never promotes"),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read(t.store.path().join("rpms.lock")).unwrap(),
+        locked
     );
 }

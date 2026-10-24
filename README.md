@@ -44,6 +44,15 @@ A change across repositories builds from a sibling checkout instead of the pinne
 dev-override and never promotes the lane's lock; the change reaches the image when the
 component's commit lands in `components.lock`.
 
+`just image FEDORA=46` builds the next lane (roadmap S6) from `image/fedora/46.env`, its
+own base and repos pins, never 45's. Its components build in Fedora 46, its lane lives in
+`~/apex-store/next`, its state in `_build/next`, and the image is `localhost/apex:46`,
+labelled `io.github.apex-linux.apex.lane=next`. It gates on G1 only and never promotes,
+pushes or publishes: `lane.sh promote`, `image.sh push` and `publish.sh` refuse it. Until
+Fedora 46 branches, `BASE_SOURCE=rawhide`: the base is a rawhide build, and the build
+summary names its version label. Renovate tracks only `image/Containerfile`'s pins; the
+46 digests move by hand.
+
 CI (`ci.yml`) runs apex-lane's checks, shellcheck, actionlint, the self-test and the dev
 loop's tests, the image checks' tests and the contracts against the pinned components,
 and the privacy and comment guards of [apex-ci](https://github.com/apex-linux/apex-ci).

@@ -360,6 +360,8 @@ publish_layout() {
     local repo=$1 oci=$2 allow=$3 key=$4 json digest version revision fedora degraded pair rc=0 existing pushed
     local sources=${APEX_SOURCES_LAYOUT:-$(dirname -- "${oci%:*}")/sources}
     json=$(skopeo inspect "oci:$oci") || die "cannot inspect the layout $oci (image.sh rechunk writes it)"
+    [[ $(jq -r --arg l "$APEX_LABEL_PREFIX.lane" '.Labels[$l] // ""' <<<"$json") != next ]] ||
+        die "the layout is a next-lane build (label $APEX_LABEL_PREFIX.lane=next): the next lane never publishes"
     digest=$(jq -r '.Digest // ""' <<<"$json")
     version=$(jq -r '.Labels["org.opencontainers.image.version"] // ""' <<<"$json")
     revision=$(jq -r '.Labels["org.opencontainers.image.revision"] // ""' <<<"$json")
@@ -479,6 +481,7 @@ main() {
         sign | tag-testing | promote-copy | promote-tag | version | publish | rehearse) require skopeo jq ;;
         *) usage ;;
     esac
+    ! is_next || die "APEX_FEDORA=$APEX_FEDORA is the next lane: it never publishes, signs or moves a tag"
     case $cmd in
         publish) cmd_publish "$@" ;;
         rehearse) cmd_rehearse "$@" ;;

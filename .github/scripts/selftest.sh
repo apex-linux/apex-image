@@ -856,6 +856,40 @@ APEX_KERNEL=fedora bi_sources
 check "a break-glass image writes none, and leaves no stale one" "no call|no dir" \
     "$([[ -e $BI/steps.log ]] && echo call || echo 'no call')|$([[ -e $BIW/_build/image/sources ]] && echo dir || echo 'no dir')"
 
+# The next lane (APEX_FEDORA=46): its own fedora, _build and store, then G1 only.
+mkdir -p "$BIW/image/fedora"
+cp "$APEX_ROOT/image/fedora/46.env" "$BIW/image/fedora/"
+NEXT_REPOS_BASE=$(sed -n 's/^REPOS_BASE=//p' "$APEX_ROOT/image/fedora/46.env")
+rm -f "$BI/steps.log" "$BI/next-gates"
+# shellcheck disable=SC2016 # expanded by the inner bash
+(cd "$BIW" && rm -rf _build && env HOME="$BI/home" FAKE="$BI" APEX_FEDORA=46 APEX_STORE=/store \
+    APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop APEX_KERNEL_SRC=/pinned/kernel bash -c '
+    . "$1"
+    sudo() {
+        [[ $1 == podman ]] || return 0
+        local a out
+        for a in "$@"; do [[ $a != /build/* ]] || out=$a; done
+        mkdir -p "$BUILD/${out#/build/}" && : >"$BUILD/${out#/build/}/x.rpm"
+        printf "%s\n" "$*" >>"$FAKE/steps.log"
+    }
+    use_components() { :; }
+    build_image() { printf "image %s %s\n" "$IMAGE" "$LANE_LOCK" >>"$FAKE/steps.log"; }
+    gate_g2() { echo g2 >>"$FAKE/next-gates"; }
+    gate_g4() { echo g4 >>"$FAKE/next-gates"; }
+    record_gates() { echo record >>"$FAKE/next-gates"; }
+    main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >"$BI/next-out" 2>&1 || true
+check "next: every component builds in 46.env's REPOS_BASE" 3 \
+    "$(grep -c "^podman run .* -v $BIW/_build/next:/build:z .* $NEXT_REPOS_BASE " "$BI/steps.log")"
+check "next: its RPMs are signed in _build/next, its lane builds" \
+    "sign _build/next/rpms/apex/x.rpm|sign _build/next/rpms/desktop/x.rpm|sign _build/next/libfprint/x.rpm|build all" \
+    "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"
+check "next: the image is localhost/apex:46 from the next store's lane lock" \
+    "image localhost/apex:46 /store/next/rpms.lock.next" \
+    "$(grep '^image ' "$BI/steps.log")"
+check "next: G1 only, so no G2, G4 or gates record" "no gates" "$(cat "$BI/next-gates" 2>/dev/null || echo 'no gates')"
+check_true "and says so" grep -q 'the next lane gates on G1 only and records nothing' "$BI/next-out"
+check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
+
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
 mkdir -p "$QMP_DIR"
@@ -1799,6 +1833,13 @@ if [[ -f $APEX_CONTAINERFILE ]]; then
             is_fedora_pin "$(containerfile_arg "$arg")"
     done
 fi
+for env in "$APEX_ROOT"/image/fedora/*.env; do
+    for arg in BASE REPOS_BASE; do
+        pin=$(sed -n "s/^$arg=//p" "$env")
+        check_true "${env#"$APEX_ROOT"/} $arg is a registry.fedoraproject.org digest pin" is_fedora_pin "$pin"
+        check_false "and not 45's ($arg)" test "$pin" = "$(containerfile_arg "$arg")"
+    done
+done
 IB="$TMP/image-build"
 mkdir -p "$IB/bin" "$IB/work" "$IB/tree/.github" "$IB/tree/image"
 cp -R "$APEX_ROOT/.github/scripts" "$IB/tree/.github/"
@@ -1840,6 +1881,81 @@ check "image.sh build runs to its end against a podman that only records" 0 "$ib
 built_version=$(sed -n 's/^APEX_VERSION=//p' "$IB/work/build.env")
 check_true "it labels the image with the version it gives the manifest" \
     grep -q -- "^build .*--build-arg APEX_VERSION=$built_version .*--label org.opencontainers.image.version=$built_version " "$IB/podman.log"
+# A 45 build is main's, argument for argument: the next lane adds only where it is next.
+ib_steps() { # [ENV...]: image.sh build, inspect's env and rechunk; prints podman's build and run lines
+    rm -f "$IB/podman.log"
+    rm -rf "$IB/work" "$IB/tree/_build" && mkdir -p "$IB/work" && : >"$IB/work/inputs.env"
+    env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' "$@" \
+        "$IB/tree/.github/scripts/image.sh" build >/dev/null 2>&1 || return
+    printf 'DEGRADED=\nHELD=\nCONTENT_KEY=k\nKERNEL_PAIR=none\n' >"$IB/work/image.env"
+    env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_PREVIOUS_BUILD=none "$@" \
+        "$IB/tree/.github/scripts/image.sh" rechunk >/dev/null 2>&1 || return
+    grep -E '^(build|run) ' "$IB/podman.log"
+}
+printf '#!/usr/bin/env bash\necho "{\\"layers\\": []}"\n' >"$IB/bin/skopeo"
+cat >"$IB/bin/podman" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >>"$IB/podman.log"
+[[ "\$1 \$2" != "image inspect" ]] || echo 46.20261024.0
+EOF
+chmod +x "$IB/bin/skopeo"
+sed 's|^$||' "$APEX_CONTAINERFILE" >"$IB/tree/image/Containerfile"
+ib45=$(ib_steps) || ib45="image.sh failed: $ib45"
+ib_v=$(sed -n 's/^APEX_VERSION=//p' "$IB/work/build.env")
+ib_created=$(sed -n 's/^CREATED=//p' "$IB/work/build.env")
+ib_base=$(containerfile_arg BASE)
+check "a 45 build and rechunk take main's arguments, tag and labels" \
+    "build --pull=missing --layers=false --cap-add=SYS_ADMIN,NET_ADMIN --device /dev/fuse \
+--security-opt seccomp=unconfined --security-opt label=disable --build-arg BASE=$ib_base \
+--build-arg REPOS_BASE=$(containerfile_arg REPOS_BASE) --build-arg APEX_VERSION=$ib_v \
+--build-arg APEX_REVISION=$(printf '%040d' 7) --build-arg GA_REACHED=$(containerfile_arg GA_REACHED) \
+--build-arg RELEASE_BUILD=0 --label org.opencontainers.image.version=$ib_v \
+-f $IB/tree/image/Containerfile -t localhost/apex:build $IB/tree
+run --rm --privileged --pull=never --security-opt label=disable \
+--mount type=image,source=localhost/apex:build,target=/apex-rootfs -v $IB/work/oci:/out:z \
+-v $IB/work/rechunk-tmp:/var/tmp:z --entrypoint /usr/bin/rpm-ostree $ib_base \
+compose build-chunked-oci --bootc --format-version=2 --max-layers 127 --rootfs /apex-rootfs \
+--label org.opencontainers.image.version=$ib_v --label org.opencontainers.image.revision=$(printf '%040d' 7) \
+--label org.opencontainers.image.source=$APEX_SOURCE_URL --label org.opencontainers.image.created=$ib_created \
+--label $APEX_LABEL_PREFIX.degraded= --label $APEX_LABEL_PREFIX.held= --label $APEX_LABEL_PREFIX.content-key=k \
+--label $APEX_LABEL_PREFIX.fedora=45 --label $APEX_LABEL_PREFIX.kernel-pair=none --output oci:/out/apex:latest" \
+    "$ib45"
+check "and its version is 45.<date>.<run>" "45.$(date -u +%Y%m%d).0" "$ib_v"
+mkdir -p "$IB/tree/image/fedora"
+cp "$APEX_ROOT/image/fedora/46.env" "$IB/tree/image/fedora/"
+ib_next_env() { sed -n "s/^$1=//p" "$APEX_ROOT/image/fedora/46.env"; }
+ib46=$(ib_steps APEX_FEDORA=46) || ib46="image.sh failed: $ib46"
+check "a 46 build takes 46.env's BASE and REPOS_BASE, never 45's" \
+    "--build-arg BASE=$(ib_next_env BASE) --build-arg REPOS_BASE=$(ib_next_env REPOS_BASE) " \
+    "$(grep -o -- '--build-arg BASE=[^ ]* --build-arg REPOS_BASE=[^ ]* ' <<<"$ib46")"
+check "with its FEDORA and GA date, tagged localhost/apex:46" \
+    "--build-arg FEDORA=46 --build-arg FEDORA_GA_DATE=$(ib_next_env FEDORA_GA_DATE) \
+-f $IB/tree/image/Containerfile -t localhost/apex:46 " \
+    "$(grep -o -- '--build-arg FEDORA=.* -t [^ ]* ' <<<"$ib46")"
+check "its version is 46.<date>.<run>" "46.$(date -u +%Y%m%d).0" "$(sed -n 's/^APEX_VERSION=//p' "$IB/work/build.env")"
+check "and build.env records the base's source and version label, for the report" "rawhide|46.20261024.0" \
+    "$(sed -n 's/^BASE_SOURCE=//p' "$IB/work/build.env")|$(sed -n 's/^BASE_VERSION=//p' "$IB/work/build.env")"
+check "and rechunk labels it Fedora 46 and the next lane, last" \
+    "--label $APEX_LABEL_PREFIX.fedora=46 --label $APEX_LABEL_PREFIX.kernel-pair=none \
+--label $APEX_LABEL_PREFIX.lane=next --output oci:/out/apex:latest" \
+    "$(grep -o -- "--label $APEX_LABEL_PREFIX.fedora=.*" <<<"$ib46")"
+check "rechunk runs 46.env's BASE" 1 "$(grep -c -- "--entrypoint /usr/bin/rpm-ostree $(ib_next_env BASE) " <<<"$ib46")"
+check "a 45 build has no next-lane label or FEDORA argument" 0 "$(grep -c -e '\.lane=' -e 'FEDORA=' <<<"$ib45")"
+mkdir -p "$IB/tree/_build/next/image" && : >"$IB/tree/_build/next/image/inputs.env"
+env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_FEDORA=46 "$IB/tree/.github/scripts/image.sh" build >/dev/null 2>&1 || true
+check_true "a 46 image.sh keeps its state in _build/next/image, not 45's _build/image" \
+    test -s "$IB/tree/_build/next/image/build.env" -a ! -e "$IB/tree/_build/image"
+rm -f "$IB/podman.log"
+ib_rc=0
+ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_FEDORA=46 APEX_WORK="$IB/work" \
+    "$IB/tree/.github/scripts/image.sh" push 2>&1) || ib_rc=$?
+check "image.sh push refuses the next lane" 1 "$ib_rc"
+check_true "and says it never pushes" grep -q 'next lane: it never pushes' <<<"$ib_log"
+check_false "before podman" test -e "$IB/podman.log"
+ib_rc=0
+ib_log=$(env APEX_FEDORA=47 "$IB/tree/.github/scripts/image.sh" build 2>&1) || ib_rc=$?
+check "a release without its image/fedora/N.env is refused" "2|1" \
+    "$ib_rc|$(grep -c 'APEX_FEDORA=47 has no image/fedora/47.env' <<<"$ib_log")"
 wf_quay=$(grep -rhoE 'quay\.io/fedora/[a-z0-9._-]+(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}' \
     "$APEX_ROOT/.github/workflows" || true)
 check "no workflow pins a Fedora image by digest on quay.io" "" "$wf_quay"
@@ -2261,6 +2377,20 @@ check "in order: push, sign, the verified move" \
     "copy oci:/layout docker://ghcr.io/x/apex:45.20260925.151|sign ghcr.io/x/apex@$D1|copy docker://ghcr.io/x/apex@$D1 docker://ghcr.io/x/apex:45 verified" \
     "$(paste -sd'|' "$R/state/log")"
 check "the same layout again is a no-op that passes" 0 "$(publish_rc)"
+layout 45.20260925.152 "$C_A" '' 3
+jq --arg l "$APEX_LABEL_PREFIX.lane" '.Labels[$l] = "next"' "$R/state/layout.json" >"$R/state/next.json"
+mv "$R/state/next.json" "$R/state/layout.json"
+: >"$R/state/log"
+check "a next-lane layout (label lane=next) is refused" 1 "$(publish_rc)"
+check "before anything is pushed, signed or moved" "|none" "$(cat "$R/state/log")|$(published 45.20260925.152)"
+check "publish.sh refuses every command for APEX_FEDORA=46" "1|1" \
+    "$(rc_of env PATH="$R/bin:$PATH" APEX_FEDORA=46 "$APEX_ROOT/.github/scripts/publish.sh" publish /layout)|$(
+        env PATH="$R/bin:$PATH" APEX_FEDORA=46 "$APEX_ROOT/.github/scripts/publish.sh" publish /layout 2>&1 |
+            grep -c 'APEX_FEDORA=46 is the next lane: it never publishes')"
+check "and lane.sh promote too, before it builds anything" "1|1" \
+    "$(rc_of env APEX_FEDORA=46 "$APEX_ROOT/tools/builder-vm/lane.sh" promote)|$(
+        env APEX_FEDORA=46 "$APEX_ROOT/tools/builder-vm/lane.sh" promote 2>&1 |
+            grep -c 'APEX_FEDORA=46 is the next lane: it never promotes')"
 layout 45.20260925.151 "$C_B" '' 2
 check "another image under a version that exists is refused" 1 "$(publish_rc)"
 check "and the tag keeps its image" "$D1" "$(published 45.20260925.151)"

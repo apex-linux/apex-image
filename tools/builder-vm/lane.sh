@@ -11,6 +11,9 @@ readonly checkout
 # shellcheck source=SCRIPTDIR/../../.github/scripts/lib.sh
 . "$checkout/.github/scripts/lib.sh"
 
+# Before any build or the gates record, which is 45's: a next build records none.
+! [[ ${1:-} == promote ]] || ! is_next || die "APEX_FEDORA=$APEX_FEDORA is the next lane: it never promotes"
+
 # The recipes are in the pinned components. An existing state is kept, so a dev-override
 # stays on record until the next fetch.
 components_env=

@@ -333,11 +333,11 @@ impl Container<'_> {
                 key_file.display()
             )));
         }
-        if fedora != "45" {
+        let Some(pinned) = crate::core::fedora::key_fpr(&fedora) else {
             return Err(infra(format!(
                 "no pinned release key fingerprint for Fedora {fedora}"
             )));
-        }
+        };
         let home =
             tempfile::tempdir().map_err(|e| infra(format!("cannot create a gpg home: {e}")))?;
         let shown = self.runner.run(
@@ -350,9 +350,9 @@ impl Container<'_> {
                 .stderr(Stderr::Null),
         )?;
         let fpr = rpmout::first_fingerprint(&shown.stdout);
-        if !fpr.eq_ignore_ascii_case(FEDORA_45_KEY_FPR) {
+        if !fpr.eq_ignore_ascii_case(pinned) {
             return Err(infra(format!(
-                "{} has fingerprint '{fpr}', expected {FEDORA_45_KEY_FPR}",
+                "{} has fingerprint '{fpr}', expected {pinned}",
                 key_file.display()
             )));
         }
@@ -360,7 +360,7 @@ impl Container<'_> {
             &Cmd::new(Program::Rpmkeys).arg("--import").arg(&key_file),
             "rpmkeys --import failed",
         )?;
-        Ok(FEDORA_45_KEY_FPR[FEDORA_45_KEY_FPR.len() - 8..].to_owned())
+        Ok(pinned[pinned.len() - 8..].to_owned())
     }
 
     /// dnf checks a download against the repository metadata only.

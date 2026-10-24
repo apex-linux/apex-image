@@ -127,6 +127,16 @@ APEX=$APEX FEDORA=$FEDORA rpmdb "$T/stockfprint.db" 'libfprint=1.fc45:fedora'
 signing stockfprint
 expect_rc "Fedora's libfprint (degraded=fingerprint) passes" 0
 expect_out "and is named" "^PASS signing: libfprint 1\\.fc45 is Fedora's build, signed by Fedora's key\$"
+F46='RSA/SHA256, Mon 14 Sep 2026 10:00:00 AM UTC, Key ID 96e7e91491211fce'
+r=$(mkroot next)
+mkdir -p "$r/usr/lib" && printf 'NAME="Fedora Linux"\nVERSION_ID=46\n' >"$r/usr/lib/os-release"
+APEX=$APEX FEDORA=$FEDORA rpmdb "$T/next.db" "libfprint=1.fc46:$F46"
+signing next
+expect_rc "a Fedora 46 root takes Fedora 46's key (the next lane)" 0
+expect_out "for its stock libfprint" "^PASS signing: libfprint 1\\.fc46 is Fedora's build, signed by Fedora's key\$"
+APEX=$APEX FEDORA=$FEDORA rpmdb "$T/next.db" 'libfprint=1.fc46:fedora'
+signing next
+expect_rc "and not Fedora 45's" 1
 r=$(mkroot fedoraapexfprint)
 APEX=$APEX FEDORA=$FEDORA rpmdb "$T/fedoraapexfprint.db" 'libfprint=1.fc45.apex1:fedora'
 signing fedoraapexfprint

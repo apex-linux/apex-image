@@ -5,6 +5,7 @@ pub mod checksig;
 pub mod ere;
 pub mod exact_tree;
 pub mod failed;
+pub mod fedora;
 pub mod hash;
 pub mod hold;
 pub mod key;
