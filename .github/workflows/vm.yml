@@ -104,7 +104,7 @@ jobs:
           tar -xf "$RUNNER_TEMP/results.tar" -C "$out" --no-same-owner --no-same-permissions
           logs=$RUNNER_TEMP/logs
           mkdir -p "$logs"
-          for d in qualify-logs absorb; do
+          for d in qualify-logs absorb metrics; do
             if [[ -d $out/$d ]]; then cp -r -- "$out/$d" "$logs/"; fi
           done
           if [[ -n $(ls -A "$logs") ]]; then echo "logs=$logs" >>"$GITHUB_OUTPUT"; fi
@@ -126,6 +126,15 @@ jobs:
               printf '### G4 (results.md)\n\n'
               cat -- "$out/g4-results.md"
             fi
+            if [[ -s $out/metrics/history.tsv ]]; then
+              printf '\n### Metrics (the last 10 builds; S4 budget, warning-only)\n\n'
+              printf '| Finished | Commit | Gates | Size MiB | Change %% | New MiB | Userspace s | Greeter s | Desktop s |\n'
+              printf '|---|---|---|---|---|---|---|---|---|\n'
+              tail -n +2 "$out/metrics/history.tsv" | tail -n 10 | awk -F'\t' '
+                function mib(v) { return v == "-" ? "-" : sprintf("%.0f", v / 1048576) }
+                { printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+                    $1, substr($2, 1, 12), $4, mib($5), $8, mib($9), $15, $16, $17 }'
+            fi
             if [[ -s $out/absorb/report.md ]]; then
               printf '\n### Absorption (lane-absorb-report.sh)\n\n'
               sed '1d' -- "$out/absorb/report.md"
@@ -134,6 +143,11 @@ jobs:
           # Data from the VM: one escaped line each, never a command of its own. Never gating.
           esc() { local v=${1//'%'/%25}; v=${v//$'\r'/%0D}; printf '%s' "${v//$'\n'/%0A}"; }
           esc_prop() { local v; v=$(esc "$1"); v=${v//:/%3A}; printf '%s' "${v//,/%2C}"; }
+          if [[ -s $out/metrics/warnings.tsv ]]; then
+            while IFS=$'\t' read -r metric message; do
+              echo "::warning title=metrics $(esc_prop "$metric")::$(esc "$message")"
+            done <"$out/metrics/warnings.tsv"
+          fi
           if [[ -s $out/absorb/warnings.tsv ]]; then
             while IFS=$'\t' read -r family srpm result detail; do
               echo "::warning title=absorb $(esc_prop "$family")::$(esc "$srpm") (updates-testing): $(esc "$result") $(esc "$detail")"
@@ -141,7 +155,7 @@ jobs:
           fi
           [[ -s $out/gates-passed.txt ]] || { echo "::error::no gates file: G2 or G4 did not pass"; exit 1; }
 
-      - name: G4's screendumps, journals and serial logs, and the absorption report
+      - name: G4's screendumps, journals and serial logs, the absorption report and the metrics
         if: ${{ !cancelled() && steps.results.outputs.logs != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

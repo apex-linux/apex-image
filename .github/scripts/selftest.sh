@@ -2491,6 +2491,95 @@ check "gates: a warning line cannot issue a command of its own" 0 "$(grep -c '^:
 check "gates: and its family cannot end the title property" \
     "::warning title=absorb %3A%3Aerror%3A%3Ainjected::x (updates-testing): fails y" "$(grep 'injected' "$V/log")"
 check_true "gates: the artifact is vm-logs-<sha>" grep -qF "name: vm-logs-\${{ steps.commit.outputs.sha }}" "$APEX_ROOT/.github/workflows/vm.yml"
+vm_reset
+vm_results "gates-passed.txt=x" "metrics/history.tsv=$(printf 'finished\tsha\tversion\tgates\tsize\tlayers\tprevious_size\tsize_change_pct\tnew_bytes\tfamilies\tfirmware\tloader\tkernel\tinitrd\tuserspace\tgreeter\tdesktop\n2026-10-24T03:20:00Z\t%s\t45.1\tyes\t1258291200\t70\t1048576000\t20.0\t209715200\t-\t-\t-\t1.0\t2.0\t12.5\t16.0\t3.0' "$CI_SHA")" \
+    "metrics/warnings.tsv=$(printf 'size\tthe image grew 20.0 %% against x\nuserspace\t12.5 s, more than 20 %% above')"
+check "gates: metrics warnings never fail the step" 0 "$(vm_gates)"
+check "gates: the metrics table, in MiB and seconds" "| 2026-10-24T03:20:00Z | ${CI_SHA:0:12} | yes | 1200 | 20.0 | 200 | 12.5 | 16.0 | 3.0 |" \
+    "$(grep "^| 2026-10-24" "$V/summary")"
+check "gates: one warning per metric" "::warning title=metrics size::the image grew 20.0 %25 against x|::warning title=metrics userspace::12.5 s, more than 20 %25 above" \
+    "$(grep '^::warning title=metrics' "$V/log" | paste -sd'|')"
+check_true "gates: metrics/ joins the artifact" test -s "$V/temp/logs/metrics/history.tsv"
+
+# --- S4's budget: qualify.sh's boot phases and metrics.sh's rows, history and warnings -------
+bp() { bash -c '. "$1"; boot_phases' _ "$APEX_ROOT/.github/scripts/qualify.sh" | paste -sd' '; }
+check "boot phases: firmware to userspace, minutes included" \
+    "firmware 3.123 loader 1.002 kernel 1.234 initrd 2.345 userspace 65.678" \
+    "$(printf 'Startup finished in 3.123s (firmware) + 1.002s (loader) + 1.234s (kernel) + 2.345s (initrd) + 1min 5.678s (userspace) = 1min 13.382s\ngraphical.target reached after 1min 5.5s in userspace.\n' | bp)"
+check "boot phases: a VM without firmware or loader times, in ms" "kernel 0.845 initrd 2.000 userspace 12.345" \
+    "$(echo 'Startup finished in 845ms (kernel) + 2s (initrd) + 12.345s (userspace) = 15.190s' | bp)"
+check "boot phases: an unfinished boot gives none" "" "$(echo 'Bootup is not yet finished (org.freedesktop.systemd1.Manager.FinishTimestampMonotonic=0).' | bp)"
+
+M="$TMP/metrics"
+mkdir -p "$M/co/.github/scripts" "$M/co/tools/builder-vm" "$M/co/_build/image" "$M/co/_build/qualify" "$M/bin" "$M/store"
+cp "$APEX_ROOT/.github/scripts/lib.sh" "$M/co/.github/scripts/"
+cp "$APEX_ROOT/tools/builder-vm/metrics.sh" "$M/co/tools/builder-vm/"
+cat >"$M/bin/skopeo" <<'EOF'
+#!/usr/bin/env bash
+case ${*: -1} in
+    oci:*) cat "$FAKE_M/now.json" ;;
+    docker://*) [[ -s $FAKE_M/prev.json ]] && cat "$FAKE_M/prev.json" || exit 1 ;;
+esac
+EOF
+cat >"$M/bin/image.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "$1 previous=$APEX_PREVIOUS_BUILD" >>"$FAKE_M/image.log"
+EOF
+printf '#!/usr/bin/env bash\nexec "$@"\n' >"$M/bin/sudo"
+chmod +x "$M/bin/"*
+echo 'APEX_VERSION=45.20261024.1' >"$M/co/_build/image/build.env"
+m_manifest() { # CONFIG_SIZE DIGEST:SIZE...
+    local c=$1 l
+    shift
+    printf '{"config":{"size":%s},"layers":[%s]}' "$c" \
+        "$(for l in "$@"; do printf '{"digest":"%s","size":%s}\n' "${l%%:*}" "${l#*:}"; done | paste -sd, -)"
+}
+m_run() { # [gates] [boot USERSPACE GREETER]: one build; prints metrics.sh's exit
+    local rc=0
+    : >"$M/stamp"
+    sleep 0.01
+    rm -f "$M/co/_build/gates-passed.txt" "$M/co/_build/qualify/boot.tsv"
+    if [[ ${1:-} == gates ]]; then echo x >"$M/co/_build/gates-passed.txt"; shift; fi
+    if [[ ${1:-} == boot ]]; then printf 'kernel 1.0\nuserspace %s\ngreeter %s\ndesktop 3.0\n' "$2" "$3" >"$M/co/_build/qualify/boot.tsv"; fi
+    rm -rf "$M/out"
+    env PATH="$M/bin:$PATH" FAKE_M="$M" APEX_STORE="$M/store" APEX_METRICS_IMAGE_SH="$M/bin/image.sh" GITHUB_ACTIONS='' \
+        bash "$M/co/tools/builder-vm/metrics.sh" "$M/out" "$M/stamp" "$CI_SHA" "$M/lock.diff" 2>/dev/null || rc=$?
+    printf '%s' "$rc"
+}
+m_col() { awk -F'\t' -v n="$1" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == n) c = i } NR == 2 { print $c }' "$M/out/metrics.tsv"; }
+m_now() { m_manifest 1000 a:400000 "c$1:$1" >"$M/now.json"; }
+: >"$M/lock.diff"
+rm -f "$M/prev.json"
+m_now 600000
+check "metrics: the first build, before any apex:45, writes its row" 0 "$(m_run gates boot 10.0 15.0)"
+check "metrics: compressed size and layers, no previous to compare" "1001000 2 - - - yes" \
+    "$(for c in size layers previous_size size_change_pct new_bytes gates; do printf '%s ' "$(m_col $c)"; done | sed 's/ $//')"
+check "metrics: rechunked against the published apex:45" "rechunk previous=ghcr.io/apex-linux/apex:45" "$(cat "$M/image.log")"
+check "metrics: boot values from this run's G4" "10.0 15.0 3.0 45.20261024.1" "$(m_col userspace) $(m_col greeter) $(m_col desktop) $(m_col version)"
+check "metrics: no warning on the first build" "" "$(cat "$M/out/warnings.tsv")"
+m_manifest 1000 a:400000 b:600000 >"$M/prev.json"
+m_now 800000
+m_run gates boot 12.5 16.0 >/dev/null
+check "metrics: the change against apex:45, and the bytes of the layers it lacks" "1001000 20.0 800000" \
+    "$(m_col previous_size) $(m_col size_change_pct) $(m_col new_bytes)"
+check "metrics: 20 % growth with no family change, and a 25 % slower userspace, warn" \
+    "size userspace" "$(cut -f1 "$M/out/warnings.tsv" | paste -sd' ')"
+check_true "metrics: the userspace warning names the last green build's time" \
+    grep -q "^userspace	12.5 s, more than 20 % above the last green build's 10.0 s$" "$M/out/warnings.tsv"
+printf -- '-family gnome-shell built k1\n+family gnome-shell built k2\n' >"$M/lock.diff"
+m_run gates boot 12.5 16.0 >/dev/null
+check "metrics: growth that a family change explains does not warn" "gnome-shell|" \
+    "$(m_col families)|$(grep '^size' "$M/out/warnings.tsv")"
+: >"$M/lock.diff"
+rm -f "$M/image.log"
+m_run >/dev/null
+check "metrics: a red build has no size, no rechunk and no boot values" "no - - -|no rechunk" \
+    "$(m_col gates) $(m_col size) $(m_col userspace) $(m_col greeter)|$([[ -e $M/image.log ]] && echo rechunk || echo 'no rechunk')"
+check "metrics: the history keeps every build" 4 "$(($(wc -l <"$M/store/metrics.tsv") - 1))"
+for _ in $(seq 30); do m_run >/dev/null; done
+check "metrics: and only the last 30 of them" "31 31" "$(wc -l <"$M/store/metrics.tsv") $(wc -l <"$M/out/history.tsv")"
+check "metrics: OUT that cannot be written is the one error" 1 \
+    "$(env PATH="$M/bin:$PATH" APEX_STORE="$M/store" bash "$M/co/tools/builder-vm/metrics.sh" /proc/x "$M/stamp" "$CI_SHA" "$M/lock.diff" >/dev/null 2>&1; echo $?)"
 
 # --- .gitignore: biometric file names are never tracked ------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG \

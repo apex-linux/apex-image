@@ -25,8 +25,10 @@ serial logs this run's G4 wrote, each at most 20 MiB and 200 MiB in all (SKIPPED
 the rest). With absorb (vm.yml's daily run), lane-absorb-report.sh runs after the build,
 whatever its result, and absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv:
 one "family, SRPM, result, detail" line for each updates-testing row that is not
-"applies" or "same". The report never changes the exit status. Nothing is pushed or
-signed but the RPMs, and the RPM key and ~/apex-store never leave the VM.
+"applies" or "same". The report never changes the exit status. metrics/ holds
+metrics.sh's metrics.tsv, history.tsv and warnings.tsv (S4's budget, warning-only).
+Nothing is pushed or signed but the RPMs, and the RPM key and ~/apex-store never leave
+the VM.
 
 ~/.config/apex/ci.env may set APEX_CI_REMOTE (default
 https://github.com/apex-linux/apex-image.git); it is read as data, never sourced.
@@ -181,6 +183,10 @@ build() {
     copy_if_newer _build/qualify/results.md "$out/g4-results.md" "$stamp"
     copy_if_newer _build/g4-passed.txt "$out/g4-passed.txt" "$stamp"
     copy_qualify_logs _build/qualify/logs "$out/qualify-logs" "$stamp"
+    if [[ -f tools/builder-vm/metrics.sh ]]; then
+        bash tools/builder-vm/metrics.sh "$out/metrics" "$stamp" "$sha" "$out/lock.diff" 9>&- </dev/null >&2 ||
+            log "metrics: exit $?; they never gate"
+    fi
     [[ -z $absorb ]] || stage_absorb "$out" "$stamp" || true
     ((rc == 0)) || return "$rc"
     log "== promote the lane lock"

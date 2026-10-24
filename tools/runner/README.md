@@ -157,6 +157,9 @@ console and QMP only. On its first run, check in `_build/qualify/` that:
   (`local-luks-wrong`).
 - [ ] **`cp --reflink` works across subvolumes** on the builder VM's btrfs (§8's `/var`
   move in `install_luks`).
+- [ ] **G4's boot metrics have their markers.** `boot.tsv` has all five `systemd-analyze`
+  phases, and `greeter` and `desktop`: gnome-shell still logs "GNOME Shell started at",
+  and the test user's first "session opened for user" line is the greeter's login.
 - [ ] **The counted rollback runs through LUKS2.** Each armed boot and GRUB's fallback
   to the previous deployment ask for the passphrase and open the root with it
   (`logs/local-attempt1-luks-prompt.png` … `logs/local-fallback-luks-prompt.png`).
@@ -231,6 +234,20 @@ file. The artifact `vm-logs-<sha>` holds the logs the run returned, and is kept 
 |---|---|---|
 | `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all; `SKIPPED` names what was left out |
 | `absorb/` | the daily run | the absorption report: `report.md`, `rows.tsv`, `warnings.tsv` and each SRPM's `logs/`, under the same caps |
+| `metrics/` | every run | `metrics.tsv` (this build), `history.tsv` (the last 30) and `warnings.tsv` |
+
+**Metrics** (S4's daily-driver budget, `tools/builder-vm/metrics.sh`) are warning-only. The
+thresholds are a starting point, to tune after the first real runs:
+
+| Metric | Source | Warns when |
+|---|---|---|
+| Size, layers, new bytes | `image.sh rechunk` when the gates passed, against the published `apex:45`: the compressed config and layers, and the bytes of layers `apex:45` lacks (what an update downloads) | the size grows more than 15 % and `lock.diff` changes no family |
+| firmware, loader, kernel, initrd, userspace | G4's login boot on the default layout: `systemd-analyze` (`logs/boot-blame.txt` has `blame`'s top 10) | userspace is more than 20 % above the last green build's |
+| greeter | the same boot: the journal's first "GNOME Shell started at", seconds from the kernel | more than 20 % above the last green build's |
+| desktop | the first "session opened for user" of the test user to its own shell's "GNOME Shell started at" | (shown only) |
+
+The builder VM keeps the rows in `~/apex-store/metrics.tsv`, so the trend survives each
+run; the job summary shows the last 10. Rechunking adds a few minutes to a green build.
 
 The absorption report also joins the summary, with a warning for each family whose
 updates-testing build does not take its series with `git apply`. The selftest runs
