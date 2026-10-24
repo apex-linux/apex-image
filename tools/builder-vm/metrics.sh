@@ -4,13 +4,14 @@ set -uo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: metrics.sh OUT STAMP SHA LOCK_DIFF
+usage: metrics.sh OUT STAMP SHA LOCK_DIFF [size]
 
 S4's daily-driver budget for one CI build, run by ci-build in ~/apex-image after the
 build; warning-only (tools/runner/README.md). STAMP is the run's start: only files newer
 than it count.
 
-  size    when the gates passed, image.sh rechunk, then the layout's compressed size
+  size    with "size" (vm.yml's daily run, the build that publishes) and when the gates
+          passed, image.sh rechunk, then the layout's compressed size
           (config and layers) and layer count, against the published apex:45: its size,
           the change in percent, and the bytes of layers it does not have (what an
           update downloads)
@@ -106,14 +107,14 @@ warnings() {
 }
 
 main() {
-    (($# == 4)) || usage
-    local out=$1 stamp=$2 sha=$3 lock_diff=$4 store=${APEX_STORE:-$HOME/apex-store} version=- gates=no
+    if (($# < 4 || $# > 5)) || [[ ${5:-size} != size ]]; then usage; fi
+    local out=$1 stamp=$2 sha=$3 lock_diff=$4 want_size=${5:-} store=${APEX_STORE:-$HOME/apex-store} version=- gates=no
     local size_cols boot=$checkout/_build/qualify/boot.tsv row phase history header
     mkdir -p -- "$out" || exit 1
     [[ -s $checkout/_build/image/build.env ]] &&
         version=$(bash -c '. "$1" && printf "%s" "${APEX_VERSION:--}"' _ "$checkout/_build/image/build.env")
-    if newer "$checkout/_build/gates-passed.txt" "$stamp"; then
-        gates=yes
+    newer "$checkout/_build/gates-passed.txt" "$stamp" && gates=yes
+    if [[ $gates == yes && -n $want_size ]]; then
         size_cols=$(size_columns "$out")
     else
         size_cols=$(printf -- '-\t-\t-\t-\t-')

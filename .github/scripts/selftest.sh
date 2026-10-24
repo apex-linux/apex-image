@@ -593,8 +593,8 @@ for request in '' ci-build "ci-build $CI_SHA " " ci-build $CI_SHA" "ci-build  $C
     "ci-build ${CI_SHA}a" "ci-build ${CI_SHA:1}" "ci-build $CI_SHA; touch $CI_DIR/pwned" \
     "ci-build \$(touch $CI_DIR/pwned)" "ci-build \`touch $CI_DIR/pwned\`" $'ci-build '"$CI_SHA"$'\ntouch '"$CI_DIR/pwned" \
     "ci-build $CI_SHA $CI_SHA" "ci-promote $CI_SHA" "ci-build HEAD" "ci-build main" "ci-build -h" \
-    "ci-build $CI_SHA absorb " "ci-build $CI_SHA  absorb" "ci-build $CI_SHA absorbx" "ci-build $CI_SHA ABSORB" \
-    "ci-build absorb $CI_SHA" "ci-build $CI_SHA absorb absorb"; do
+    "ci-build $CI_SHA daily " "ci-build $CI_SHA  daily" "ci-build $CI_SHA dailyx" "ci-build $CI_SHA DAILY" \
+    "ci-build daily $CI_SHA" "ci-build $CI_SHA daily daily" "ci-build $CI_SHA absorb"; do
     check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
         "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 done
@@ -647,7 +647,12 @@ EOF
 chmod +x "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh"
 echo 0 >"$CI_DIR/build-rc"
 rm -f "$CI_DIR/absorb.log"
-check "the daily run's absorption report never gates: a failing family, exit 0" 0 "$(ci_request "ci-build $CI_SHA absorb")"
+cat >"$CI_DIR/home/apex-image/tools/builder-vm/metrics.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "metrics ${5:-no-size}" >>"$FAKE/metrics.log"
+EOF
+rm -f "$CI_DIR/metrics.log"
+check "the daily run's absorption report never gates: a failing family, exit 0" 0 "$(ci_request "ci-build $CI_SHA daily")"
 check "its warning names the updates-testing family that fails, with the hunk" \
     "$(printf 'gnome-shell\tgnome-shell-51.1-1.fc45\tfails\t0015-lock.patch: error: patch failed: js/ui/unlockDialog.js:894')" \
     "$(tar -xOf "$CI_DIR/out.tar" ./absorb/warnings.tsv)"
@@ -656,13 +661,16 @@ check "the report, rows and logs go back for the summary and the artifact" \
     "$(tar -tf "$CI_DIR/out.tar" | grep '^\./absorb/.' | grep -v '/logs/$' | sort | paste -sd' ')"
 check "ci-build.txt records the report's own status" "absorb 3" "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^absorb ')"
 rm -f "$CI_DIR/absorb.log"
-check "without absorb no report runs" "0:no report" \
+check "without daily no report runs" "0:no report" \
     "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
+check "metrics run on every build, the image's size only on the daily one" "metrics size|metrics no-size" \
+    "$(paste -sd'|' "$CI_DIR/metrics.log")"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
-    "$(ci_request "ci-build $CI_SHA absorb"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
+    "$(ci_request "ci-build $CI_SHA daily"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
 echo 0 >"$CI_DIR/build-rc"
-rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh"
+rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh" \
+    "$CI_DIR/home/apex-image/tools/builder-vm/metrics.sh"
 
 # --- tools/components.sh: pinned full clones of components.lock, and the dev override ------
 CO="$TMP/components"
@@ -2427,7 +2435,7 @@ check "vm.yml has the three steps the selftest runs" "yes yes yes" \
 vm_reset
 check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
 vm_reset
-check "Commit: the schedule asks for the absorption report" "0|sha=$CI_SHA extra=absorb" \
+check "Commit: the schedule asks for the daily extras" "0|sha=$CI_SHA extra=daily" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=schedule INPUT_SHA=)|$(paste -sd' ' "$V/output")"
 vm_reset
 check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
@@ -2455,8 +2463,8 @@ vm_reset
 echo 0 >"$V/ssh.rc"
 vm_run "$BUILD" SHA="$CI_SHA" EXTRA= >/dev/null
 check "build: a push asks for the build alone" "apex-builder ci-build $CI_SHA" "$(cat "$V/ssh.args")"
-vm_run "$BUILD" SHA="$CI_SHA" EXTRA=absorb >/dev/null
-check "build: the daily run adds absorb" "apex-builder ci-build $CI_SHA absorb" "$(cat "$V/ssh.args")"
+vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily >/dev/null
+check "build: the daily run adds daily" "apex-builder ci-build $CI_SHA daily" "$(cat "$V/ssh.args")"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 vm_reset
@@ -2534,8 +2542,9 @@ m_manifest() { # CONFIG_SIZE DIGEST:SIZE...
     printf '{"config":{"size":%s},"layers":[%s]}' "$c" \
         "$(for l in "$@"; do printf '{"digest":"%s","size":%s}\n' "${l%%:*}" "${l#*:}"; done | paste -sd, -)"
 }
-m_run() { # [gates] [boot USERSPACE GREETER]: one build; prints metrics.sh's exit
-    local rc=0
+m_run() { # [size] [gates] [boot USERSPACE GREETER]: one build; prints metrics.sh's exit
+    local rc=0 size=()
+    if [[ ${1:-} == size ]]; then size=(size); shift; fi
     : >"$M/stamp"
     sleep 0.01
     rm -f "$M/co/_build/gates-passed.txt" "$M/co/_build/qualify/boot.tsv"
@@ -2543,7 +2552,7 @@ m_run() { # [gates] [boot USERSPACE GREETER]: one build; prints metrics.sh's exi
     if [[ ${1:-} == boot ]]; then printf 'kernel 1.0\nuserspace %s\ngreeter %s\ndesktop 3.0\n' "$2" "$3" >"$M/co/_build/qualify/boot.tsv"; fi
     rm -rf "$M/out"
     env PATH="$M/bin:$PATH" FAKE_M="$M" APEX_STORE="$M/store" APEX_METRICS_IMAGE_SH="$M/bin/image.sh" GITHUB_ACTIONS='' \
-        bash "$M/co/tools/builder-vm/metrics.sh" "$M/out" "$M/stamp" "$CI_SHA" "$M/lock.diff" 2>/dev/null || rc=$?
+        bash "$M/co/tools/builder-vm/metrics.sh" "$M/out" "$M/stamp" "$CI_SHA" "$M/lock.diff" "${size[@]}" 2>/dev/null || rc=$?
     printf '%s' "$rc"
 }
 m_col() { awk -F'\t' -v n="$1" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == n) c = i } NR == 2 { print $c }' "$M/out/metrics.tsv"; }
@@ -2551,7 +2560,7 @@ m_now() { m_manifest 1000 a:400000 "c$1:$1" >"$M/now.json"; }
 : >"$M/lock.diff"
 rm -f "$M/prev.json"
 m_now 600000
-check "metrics: the first build, before any apex:45, writes its row" 0 "$(m_run gates boot 10.0 15.0)"
+check "metrics: the first build, before any apex:45, writes its row" 0 "$(m_run size gates boot 10.0 15.0)"
 check "metrics: compressed size and layers, no previous to compare" "1001000 2 - - - yes" \
     "$(for c in size layers previous_size size_change_pct new_bytes gates; do printf '%s ' "$(m_col $c)"; done | sed 's/ $//')"
 check "metrics: rechunked against the published apex:45" "rechunk previous=ghcr.io/apex-linux/apex:45" "$(cat "$M/image.log")"
@@ -2559,7 +2568,7 @@ check "metrics: boot values from this run's G4" "10.0 15.0 3.0 45.20261024.1" "$
 check "metrics: no warning on the first build" "" "$(cat "$M/out/warnings.tsv")"
 m_manifest 1000 a:400000 b:600000 >"$M/prev.json"
 m_now 800000
-m_run gates boot 12.5 16.0 >/dev/null
+m_run size gates boot 12.5 16.0 >/dev/null
 check "metrics: the change against apex:45, and the bytes of the layers it lacks" "1001000 20.0 800000" \
     "$(m_col previous_size) $(m_col size_change_pct) $(m_col new_bytes)"
 check "metrics: 20 % growth with no family change, and a 25 % slower userspace, warn" \
@@ -2567,15 +2576,18 @@ check "metrics: 20 % growth with no family change, and a 25 % slower userspace, 
 check_true "metrics: the userspace warning names the last green build's time" \
     grep -q "^userspace	12.5 s, more than 20 % above the last green build's 10.0 s$" "$M/out/warnings.tsv"
 printf -- '-family gnome-shell built k1\n+family gnome-shell built k2\n' >"$M/lock.diff"
-m_run gates boot 12.5 16.0 >/dev/null
+m_run size gates boot 12.5 16.0 >/dev/null
 check "metrics: growth that a family change explains does not warn" "gnome-shell|" \
     "$(m_col families)|$(grep '^size' "$M/out/warnings.tsv")"
 : >"$M/lock.diff"
 rm -f "$M/image.log"
-m_run >/dev/null
+m_run gates >/dev/null
+check "metrics: a green build that is not the daily one takes no size and rechunks nothing" "yes -|no rechunk" \
+    "$(m_col gates) $(m_col size)|$([[ -e $M/image.log ]] && echo rechunk || echo 'no rechunk')"
+m_run size >/dev/null
 check "metrics: a red build has no size, no rechunk and no boot values" "no - - -|no rechunk" \
     "$(m_col gates) $(m_col size) $(m_col userspace) $(m_col greeter)|$([[ -e $M/image.log ]] && echo rechunk || echo 'no rechunk')"
-check "metrics: the history keeps every build" 4 "$(($(wc -l <"$M/store/metrics.tsv") - 1))"
+check "metrics: the history keeps every build" 5 "$(($(wc -l <"$M/store/metrics.tsv") - 1))"
 for _ in $(seq 30); do m_run >/dev/null; done
 check "metrics: and only the last 30 of them" "31 31" "$(wc -l <"$M/store/metrics.tsv") $(wc -l <"$M/out/history.tsv")"
 check "metrics: OUT that cannot be written is the one error" 1 \

@@ -69,8 +69,8 @@ jobs:
           sha=${INPUT_SHA:-$GITHUB_SHA}
           [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a full commit sha: $sha"; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
-          # The daily run also asks for the lane's absorption report (S1b's early warning).
-          if [[ $GITHUB_EVENT_NAME == schedule ]]; then echo "extra=absorb" >>"$GITHUB_OUTPUT"; fi
+          # The daily run also asks for the absorption report and the image's size metrics.
+          if [[ $GITHUB_EVENT_NAME == schedule ]]; then echo "extra=daily" >>"$GITHUB_OUTPUT"; fi
 
       # ci-build (tools/builder-vm/ci-build.sh) runs every stage in the VM, starting with the
       # components hook for tools/components.sh fetch; the RPM key and ~/apex-store stay there.

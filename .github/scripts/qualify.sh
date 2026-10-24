@@ -1062,7 +1062,6 @@ type_password_after_enter() {
         fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
 }
 
-# Enter picks the user GDM's greeter lists, which starts its password conversation.
 # systemd-analyze's "Startup finished in 3.1s (firmware) + ... + 1min 2.5s (userspace) = ..."
 # as one "PHASE SECONDS" line per phase.
 boot_phases() {
@@ -1110,6 +1109,7 @@ boot_metrics() {
     fi
 }
 
+# Enter picks the user GDM's greeter lists, which starts its password conversation.
 greeter_login() {
     local test=$1-greeter-login
     wait_session "$test" greeter
