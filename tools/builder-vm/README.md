@@ -231,7 +231,11 @@ upstream's sheet.
 `logs/` keeps a screendump of every password prompt and of the unlocked session. A pass
 with no SKIP or WARN row records the image's G4 key, the time and the image ID in
 `~/apex-image/_build/g4-passed.txt`, which `just vm-image` compares against. The
-results are in `~/apex-image/_build/qualify/` (`results.md`, `logs/`). The nested
+results are in `~/apex-image/_build/qualify/` (`results.md`, `logs/`). Each row of
+`results.md` is `| test | result | detail | layer feature |`: the feature of the pinned
+apex-gnome that gates it (`lock`, `motion`, `polkit`) and whether the session enabled it,
+the pin does not list it (the row passes with that note) or safe mode turned it off; `-`
+for an ungated row. vm.yml's summary prints the same table. The nested
 guest gets 3 GiB of RAM; the run takes seven boots, about 20 minutes.
 
 `just qualify-local` prints how to run the other scenarios (fresh, upgrade, counted

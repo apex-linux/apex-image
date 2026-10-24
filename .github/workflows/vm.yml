@@ -123,7 +123,7 @@ jobs:
             section "G2 (result.txt)" g2-result.txt
             section "G4 record (g4-passed.txt)" g4-passed.txt
             if [[ -s $out/g4-results.md ]]; then
-              printf '### G4 (results.md)\n\n'
+              printf '### G4 (results.md)\n\n| Test | Result | Detail | Layer feature |\n|---|---|---|---|\n'
               cat -- "$out/g4-results.md"
             fi
             if [[ -s $out/metrics/history.tsv ]]; then

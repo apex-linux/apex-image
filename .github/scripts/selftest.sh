@@ -1394,6 +1394,11 @@ done
 check_true "the wrong password went in before the right one" grep -qF '"data":"n"' "$GUEST_DIR/state/qmp"
 check_true "Esc was pressed" grep -qF '"data":"esc"' "$GUEST_DIR/state/qmp"
 check_true "the VM was woken" grep -qF system_wakeup "$GUEST_DIR/state/qmp"
+check_true "results.md names the feature gating each row: lock for the blank wake" \
+    grep -q '^| local-lock-blank-wake | PASS | .* | lock: enabled (apex-gnome [0-9a-f]*) |$' "$GUEST_DIR/out/results.md"
+check_true "motion, not in this pin, for Reduce Motion" \
+    grep -q '^| local-lock-reduce-motion | PASS | .* | motion: not in pinned apex-gnome [0-9a-f]* |$' "$GUEST_DIR/out/results.md"
+check_true "and none for an ungated row" grep -q '^| local-lock-wrong-password | PASS | .* | - |$' "$GUEST_DIR/out/results.md"
 lock_matrix_fails() { # FLAG ROW: with FLAG set, the matrix stops with ROW failed
     apex_locked_in
     : >"$GUEST_DIR/state/$1"
@@ -1447,6 +1452,7 @@ logged_in
 check "polkit in safe mode: the stock dialog, the password only" 0 "$(guest polkit_agent local-safe 1000 stock)"
 check "its row passes" 1 "$(row local-safe-polkit PASS)"
 check_true "naming the stock dialog" grep -q '^| local-safe-polkit | PASS | pkexec /usr/bin/id -u as apexqa: the shell.s stock dialog' "$GUEST_DIR/out/results.md"
+check_true "and the feature as off" grep -q '^| local-safe-polkit | PASS | .* | polkit: off (safe mode, upstream.s dialog) |$' "$GUEST_DIR/out/results.md"
 check "and no wrong-password or cancel row" 0 "$(($(row local-safe-polkit-wrong-password PASS) + $(row local-safe-polkit-cancel PASS)))"
 polkit_fails() { # FLAG ROW: with FLAG set, the case stops with ROW failed
     logged_in
@@ -1469,15 +1475,21 @@ check_true "naming what pkexec printed" grep -q "^| local-polkit | FAIL | pkexec
 logged_in
 check "polkit not in the pin: the rows pass" 0 "$(guest polkit_agent local 1000)"
 check_true "with a note naming the pin" grep -q "^| local-polkit | PASS | .*shell.s dialog .*; polkit not in pinned apex-gnome [0-9a-f]* |" "$GUEST_DIR/out/results.md"
+check "and each polkit row names the feature it waits for" 3 \
+    "$(grep -c '^| local-polkit[a-z-]* | PASS | .* | polkit: not in pinned apex-gnome [0-9a-f]* |$' "$GUEST_DIR/out/results.md")"
 pin_features "'spotlight', 'panel', 'lock', 'polkit'"
 logged_in
 echo 'gnome-shell[1234]: Apex: feature polkit enabled' >>"$GUEST_DIR/state/journal"
 check "polkit in the pin and enabled: the rows pass" 0 "$(guest polkit_agent local 1000)"
 check_true "naming the Apex dialog" grep -q '^| local-polkit | PASS | pkexec /usr/bin/id -u as apexqa: the Apex dialog (feature polkit enabled) (logs/local-polkit-dialog.png) took the password; it printed 0 and exited 0 |' "$GUEST_DIR/out/results.md"
+check "and each polkit row names the enabled feature" 3 \
+    "$(grep -c '^| local-polkit[a-z-]* | PASS | .* | polkit: enabled (apex-gnome [0-9a-f]*) |$' "$GUEST_DIR/out/results.md")"
 logged_in
 check "polkit in the pin but never enabled: the case fails" 1 "$(guest polkit_agent local 1000)"
 check_true "at its first row, naming the causes" grep -q "^| local-polkit-wrong-password | FAIL | the pinned apex-gnome [0-9a-f]* lists 'polkit', but the session never logged 'Apex: feature polkit enabled' (the crash guard, disabled-features or a load error" "$GUEST_DIR/out/results.md"
 check_true "and starts no pkexec" test ! -e "$GUEST_DIR/state/pkexec-running"
+check_true "its row names the feature that never ran" \
+    grep -q '^| local-polkit-wrong-password | FAIL | .* | polkit: listed, never enabled (apex-gnome [0-9a-f]*) |$' "$GUEST_DIR/out/results.md"
 logged_in
 echo 'gnome-shell[1234]: Apex: feature polkit enabled' >>"$GUEST_DIR/state/journal"
 check "safe mode with the feature enabled: the case fails" 1 "$(guest polkit_agent local-safe 1000 stock)"
@@ -2802,6 +2814,8 @@ vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "lock.dif
 check "gates: a green build passes" 0 "$(vm_gates)"
 check "gates: with each result in the summary" "## Builder VM|### ci-build|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
     "$(grep -E '^##' "$V/summary" | paste -sd'|')"
+check_true "gates: G4's table has its header with the layer feature column" \
+    grep -qx '| Test | Result | Detail | Layer feature |' "$V/summary"
 check "gates: and G4's logs for the artifact" "logs=$V/temp/logs|local.png" \
     "$(cat "$V/output")|$(ls "$V/temp/logs/qualify-logs")"
 vm_reset
