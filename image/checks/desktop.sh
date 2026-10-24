@@ -18,6 +18,8 @@ USERUNITS=/usr/lib/systemd/user
 MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-theme dark */
 /*! apex-shell-structure */'
+PTYXIS=/usr/bin/ptyxis
+PTYXIS_MARKER='/*! apex-ptyxis */'
 DEV_ONLY_SETTINGS='G_RESOURCE_OVERLAYS
 --unsafe-mode
 APEX_SHELL_TEST_FAULT'
@@ -155,12 +157,19 @@ else
             else
                 fail "ptyxis $tvr is not signed by the Apex RPM key ($APEX_RPM_KEYID)"
             fi
+            if grep -aFq -- "$PTYXIS_MARKER" "$(rootpath "$PTYXIS")" 2>/dev/null; then
+                pass "$PTYXIS carries $PTYXIS_MARKER: the Apex resource is compiled in"
+            else
+                fail "$PTYXIS lacks $PTYXIS_MARKER: the Apex resource did not reach the binary"
+            fi
             ;;
         '' | stock | degraded)
             how="the family is $tstate: degraded=terminal"
             [ -n "$tstate" ] || how="the lane has no ptyxis family"
             if [ "$tapex" -eq 1 ]; then
                 fail "ptyxis $tvr is an Apex build, but ${how%%:*}"
+            elif grep -aFq -- "$PTYXIS_MARKER" "$(rootpath "$PTYXIS")" 2>/dev/null; then
+                fail "$PTYXIS carries $PTYXIS_MARKER, but ${how%%:*}"
             elif signed_by "$FEDORA_KEYID" ptyxis; then
                 pass "ptyxis $tvr is Fedora's build, signed by Fedora's key ($how)"
             else
