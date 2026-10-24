@@ -7,7 +7,7 @@ command -v python3 >/dev/null 2>&1 || skip_all "python3 not found (the fake rpm)
 command -v gpg >/dev/null 2>&1 || skip_all "gpg not found (the check reads the Apex RPM key with it)"
 
 KEY=$IMAGE_DIR/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex
-APEX='EdDSA/SHA512, Tue 29 Sep 2026 07:00:00 AM UTC, Key ID abef111d1fcf882b'
+APEX='EdDSA/SHA512, Tue 29 Sep 2026 07:00:00 AM UTC, Key ID 8da3252bd6ef25fa'
 FEDORA='RSA/SHA256, Mon 14 Sep 2026 10:00:00 AM UTC, Key ID 655a4b02f577861e'
 
 # rpmdb FILE [NAME=RELEASE:SIGNATURE...]: the image's Apex packages and a Fedora one; each
@@ -57,9 +57,9 @@ r=$(mkroot clean)
 signing clean
 expect_rc "a compliant root passes" 0
 expect_out "the shipped key is the pinned Apex RPM key" \
-    '^PASS signing: /usr/share/apex/keys/RPM-GPG-KEY-apex is the Apex RPM key 553A938903DFFEEA647F7CC4ABEF111D1FCF882B$'
+    '^PASS signing: /usr/share/apex/keys/RPM-GPG-KEY-apex is the Apex RPM key B9A8301A20A14E732212A4C58DA3252BD6EF25FA$'
 for p in apex apex-desktop libfprint gnome-shell; do
-    expect_out "$p carries the Apex signature" "^PASS signing: $p [^ ]* carries the Apex RPM signature \\(ABEF111D1FCF882B\\)\$"
+    expect_out "$p carries the Apex signature" "^PASS signing: $p [^ ]* carries the Apex RPM signature \\(8DA3252BD6EF25FA\\)\$"
 done
 expect_no_out "Fedora's mutter is not Apex's" '^[A-Z]+ signing: mutter '
 
@@ -105,7 +105,7 @@ r=$(mkroot twokeys)
 cat "$KEY" >>"$r/usr/share/apex/keys/RPM-GPG-KEY-apex"
 signing twokeys
 expect_rc "a key file with a second key fails" 1
-expect_out "and names what it holds" '^FAIL signing: .* holds \[553A938903DFFEEA647F7CC4ABEF111D1FCF882B 553A938903DFFEEA647F7CC4ABEF111D1FCF882B\], not the Apex RPM key'
+expect_out "and names what it holds" '^FAIL signing: .* holds \[B9A8301A20A14E732212A4C58DA3252BD6EF25FA B9A8301A20A14E732212A4C58DA3252BD6EF25FA\], not the Apex RPM key'
 r=$(mkroot notakey)
 printf 'APEX-PLACEHOLDER-NOT-A-KEY\n' >"$r/usr/share/apex/keys/RPM-GPG-KEY-apex"
 signing notakey
