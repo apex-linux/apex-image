@@ -22,7 +22,14 @@ Sign, tag and promote Apex images. Only digests move; nothing is rebuilt.
                                           apex:<version>, cosign-sign it with
                                           COSIGN_KEY_FILE (default
                                           ~/.config/apex/cosign.key, COSIGN_PASSWORD), then
-                                          move apex:45 to it, policy-verified
+                                          move apex:45 to it, policy-verified. A pair
+                                          image (label apex.kernel-pair) needs its source
+                                          artifact (APEX_SOURCES_LAYOUT, default DIR's
+                                          sibling sources/) accepted by apex-kernel's
+                                          source-check.sh (APEX_SOURCE_CHECK) before any
+                                          push; it goes to apex:sha256-<hex>.source with
+                                          the image as subject, signed and verified
+                                          before apex:45 moves
   publish.sh rehearse OCI                 the same against a throwaway registry:2 on
                                           localhost and a throwaway key; nothing leaves
                                           this host
@@ -43,6 +50,9 @@ readonly COMMITTED_POLICY="$SYSTEM_FILES/usr/share/apex/containers/policy.json"
 readonly TAG_ALREADY_THERE=10
 readonly REHEARSAL_REGISTRY_IMAGE=docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373 # 2
 readonly REHEARSAL_CONTAINER=apex-publish-rehearsal
+readonly SOURCE_ARTIFACT_TYPE=application/vnd.apex-linux.source.v1
+readonly PAIR_KEY_LABEL=io.github.apex-linux.apex.pair-key
+SOURCE_CHECK=${APEX_SOURCE_CHECK:-${APEX_KERNEL_SRC:-$APEX_ROOT/_build/components/apex-kernel}/packaging/pkgs/kernel/source-check.sh}
 
 # Set only by cmd_rehearse: its throwaway trust, never the environment's.
 VERIFY_POLICY=
@@ -84,6 +94,7 @@ checkout_registries_d() {
     printf '%s\n' "$dir"
 }
 
+# DST is docker://REF or another transport's reference.
 verified_copy() {
     local src=$1 dst=$2 policy=$VERIFY_POLICY regd=$VERIFY_REGISTRIES_D
     [[ -n $policy ]] || policy=$(checkout_policy)
@@ -92,8 +103,10 @@ verified_copy() {
     mapfile -t auth < <(skopeo_auth_args)
     log "copy (policy-verified) $src -> $dst"
     retry 3 15 skopeo --policy "$policy" --registries.d "$regd" copy --quiet \
-        --preserve-digests --remove-signatures "${auth[@]}" "docker://$src" "docker://$dst"
+        --preserve-digests --remove-signatures "${auth[@]}" "docker://$src" "$dst"
+    local rc=$?
     [[ -n $VERIFY_POLICY ]] || rm -rf "$policy" "$regd"
+    return "$rc"
 }
 
 candidate_labels() {
@@ -222,7 +235,7 @@ cmd_tag_testing() {
     [[ $labelled == "$version" ]] || die "candidate is labelled $labelled, the build said $version"
     check_increases "$APEX_REPO_TESTING:$APEX_FEDORA" "$digest" "$version" "$revision" || rc=$?
     case $rc in
-        0) verified_copy "$APEX_REPO_TESTING@$digest" "$APEX_REPO_TESTING:$APEX_FEDORA" ;;
+        0) verified_copy "$APEX_REPO_TESTING@$digest" "docker://$APEX_REPO_TESTING:$APEX_FEDORA" ;;
         "$TAG_ALREADY_THERE") ;;
         *) return "$rc" ;;
     esac
@@ -252,7 +265,7 @@ cmd_promote_copy() {
         "$REGISTRY_ABSENT")
             registry_tag_absent "$APEX_REPO_STABLE" "$version" ||
                 die "inspect found no $APEX_REPO_STABLE:$version but list-tags does not confirm it; not overwriting a version tag"
-            verified_copy "$APEX_REPO_TESTING@$digest" "$APEX_REPO_STABLE:$version"
+            verified_copy "$APEX_REPO_TESTING@$digest" "docker://$APEX_REPO_STABLE:$version"
             ;;
         *) die "cannot read $APEX_REPO_STABLE:$version" ;;
     esac
@@ -273,16 +286,79 @@ cmd_promote_tag() {
     case $rc in
         0)
             check_degraded "$APEX_REPO_STABLE:$APEX_FEDORA" "$digest" "$allow"
-            verified_copy "$APEX_REPO_STABLE@$digest" "$APEX_REPO_STABLE:$APEX_FEDORA" ;;
+            verified_copy "$APEX_REPO_STABLE@$digest" "docker://$APEX_REPO_STABLE:$APEX_FEDORA" ;;
         "$TAG_ALREADY_THERE") ;;
         *) return "$rc" ;;
     esac
     summary "\`$APEX_REPO_STABLE:$APEX_FEDORA\` -> \`$digest\` ($version)"
 }
 
+layout_manifest() {
+    local digest
+    digest=$(jq -r '.manifests[0].digest // ""' "$1/index.json") || return 1
+    cat -- "$1/blobs/sha256/${digest#sha256:}"
+}
+
+# The pair's GPL source must ride with the image (ADR 0015, N6): DIR must be pair PAIR's
+# source artifact, and apex-kernel's own check must accept what it holds.
+check_sources() {
+    local dir=$1 pair=$2 manifest config key layer work rc=0
+    [[ -f $dir/oci-layout && -f $dir/index.json ]] ||
+        die "the image carries kernel pair $pair, but $dir holds no source artifact (apex-lane sources); a pair image publishes only with its source"
+    manifest=$(layout_manifest "$dir") || die "$dir: the source artifact has no manifest"
+    config=$(jq -r '.config.digest // ""' <<<"$manifest")
+    key=$(jq -r --arg l "$PAIR_KEY_LABEL" '.config.Labels[$l] // ""' "$dir/blobs/sha256/${config#sha256:}" 2>/dev/null || true)
+    [[ $key == "$pair" ]] || die "$dir is the source artifact of pair '${key:-none}', not of the image's pair $pair"
+    layer=$(jq -r 'if (.layers | length) == 1 then .layers[0].digest else "" end' <<<"$manifest")
+    [[ -n $layer && -f $dir/blobs/sha256/${layer#sha256:} ]] || die "$dir: the source artifact is not one layer"
+    [[ $(sha256sum <"$dir/blobs/sha256/${layer#sha256:}" | cut -d' ' -f1) == "${layer#sha256:}" ]] ||
+        die "$dir: the source layer does not match its digest"
+    [[ -f $SOURCE_CHECK ]] || die "no $SOURCE_CHECK: the pinned apex-kernel's source-check.sh (tools/components.sh fetch)"
+    work=$(mktemp -d)
+    tar -xf "$dir/blobs/sha256/${layer#sha256:}" -C "$work" || die "cannot unpack $dir's source layer"
+    bash "$SOURCE_CHECK" "$work" >"$work.log" 2>&1 || rc=$?
+    rm -rf "$work"
+    case $rc in
+        0) log "source-check.sh accepts pair $pair's source" ;;
+        1) die "source-check.sh refuses pair $pair's source in $dir: $(tail -n 1 "$work.log")" ;;
+        *) die "source-check.sh could not run (exit $rc): $(tail -n 1 "$work.log")" ;;
+    esac
+    rm -f "$work.log"
+}
+
+# REPO:sha256-<hex>.source, an OCI 1.1 referrer of the image (its subject), signed with
+# the image's key and policy-verified. Returns non-zero on any failure, so :45 stays.
+publish_source() {
+    local repo=$1 image=$2 dir=$3 pair=$4 key=$5 work media sha tag
+    local -a auth
+    mapfile -t auth < <(skopeo_auth_args)
+    work=$(mktemp -d)
+    retry 3 15 skopeo inspect --raw "${auth[@]}" "docker://$repo@$image" >"$work/image.json" || return 1
+    media=$(jq -r '.mediaType // "application/vnd.oci.image.manifest.v1+json"' "$work/image.json") || return 1
+    cp -a -- "$dir" "$work/layout" || return 1
+    layout_manifest "$work/layout" |
+        jq -cj --arg t "$SOURCE_ARTIFACT_TYPE" --arg m "$media" --arg d "$image" --argjson s "$(stat -c %s "$work/image.json")" \
+            '. + {artifactType: $t, subject: {mediaType: $m, digest: $d, size: $s}}' >"$work/manifest" || return 1
+    sha=$(sha256sum <"$work/manifest" | cut -d' ' -f1)
+    mv -- "$work/manifest" "$work/layout/blobs/sha256/$sha" || return 1
+    jq -c --arg d "sha256:$sha" --argjson s "$(stat -c %s "$work/layout/blobs/sha256/$sha")" \
+        '.manifests[0].digest = $d | .manifests[0].size = $s' "$work/layout/index.json" >"$work/index.json" &&
+        mv -- "$work/index.json" "$work/layout/index.json" || return 1
+    tag=sha256-${image#sha256:}.source
+    retry 4 30 skopeo copy --quiet --preserve-digests "${auth[@]}" --digestfile "$work/pushed" \
+        "oci:$work/layout:$pair" "docker://$repo:$tag" || return 1
+    [[ $(cat "$work/pushed") == "sha256:$sha" ]] || { warn "pushed $repo:$tag as $(cat "$work/pushed"), not sha256:$sha"; return 1; }
+    retry 3 15 cosign sign --yes --new-bundle-format=false --use-signing-config=false \
+        "${COSIGN_EXTRA[@]}" --key "$key" "$repo@sha256:$sha" || return 1
+    verified_copy "$repo@sha256:$sha" "oci:$work/verified:source" || return 1
+    rm -rf "$work"
+    summary "Source artifact \`$repo:$tag\` = \`sha256:$sha\` (pair $pair), signed, refers to \`$image\`."
+}
+
 # REPO:<version> is immutable, and REPO:45 moves only after the signature verifies.
 publish_layout() {
-    local repo=$1 oci=$2 allow=$3 key=$4 json digest version revision fedora degraded rc=0 existing pushed
+    local repo=$1 oci=$2 allow=$3 key=$4 json digest version revision fedora degraded pair rc=0 existing pushed
+    local sources=${APEX_SOURCES_LAYOUT:-$(dirname -- "${oci%:*}")/sources}
     json=$(skopeo inspect "oci:$oci") || die "cannot inspect the layout $oci (image.sh rechunk writes it)"
     digest=$(jq -r '.Digest // ""' <<<"$json")
     version=$(jq -r '.Labels["org.opencontainers.image.version"] // ""' <<<"$json")
@@ -294,6 +370,9 @@ publish_layout() {
     [[ $fedora == "$APEX_FEDORA" && $version == "$APEX_FEDORA".* ]] ||
         die "the layout is Fedora '$fedora' version '$version', not Fedora $APEX_FEDORA"
     [[ $revision =~ ^[0-9a-f]{40}$ ]] || die "the layout has no valid revision label (got '$revision')"
+    pair=$(jq -r --arg l "$APEX_LABEL_PREFIX.kernel-pair" '.Labels[$l] // ""' <<<"$json")
+    [[ -n $pair ]] || die "the layout has no $APEX_LABEL_PREFIX.kernel-pair label: rechunk it with this checkout (image.sh inspect, rechunk)"
+    [[ $pair == none ]] || check_sources "$sources" "$pair"
 
     existing=$(registry_digest "$repo:$version") || rc=$?
     case $rc in
@@ -319,7 +398,11 @@ publish_layout() {
     # Legacy .sig tags, as cmd_sign: containers/image cannot verify the new bundle format yet.
     retry 3 15 cosign sign --yes --new-bundle-format=false --use-signing-config=false \
         "${COSIGN_EXTRA[@]}" --key "$key" "$repo@$digest"
-    verified_copy "$repo@$digest" "$repo:$APEX_FEDORA"
+    if [[ $pair != none ]] && ! publish_source "$repo" "$digest" "$sources" "$pair" "$key"; then
+        die "the source artifact of $repo@$digest did not publish: $repo:$version is pushed and signed without it," \
+            "and $repo:$APEX_FEDORA stays where it was; run just publish again"
+    fi
+    verified_copy "$repo@$digest" "docker://$repo:$APEX_FEDORA"
     set_output version "$version"
     set_output digest "$digest"
     summary "Published \`$repo:$version\` = \`$digest\`, signed; \`$repo:$APEX_FEDORA\` moved to it after the policy verified the signature."
@@ -374,6 +457,19 @@ cmd_rehearse() {
     grep -Eqi 'source image rejected|signature' "$dir/refusal" ||
         die "the copy under a policy trusting another key failed, but not on the signature: $(tr '\n' ' ' <"$dir/refusal")"
     summary "Rehearsal: $repo:$APEX_FEDORA = \`$other\`; a policy with another key refuses it."
+    local pair tag subject
+    pair=$(skopeo inspect "oci:$oci" | jq -r --arg l "$APEX_LABEL_PREFIX.kernel-pair" '.Labels[$l] // "none"')
+    [[ $pair != none ]] || return 0
+    tag=$repo:sha256-${other#sha256:}.source
+    subject=$(skopeo inspect --raw "docker://$tag" | jq -r '.subject.digest // ""') || die "the rehearsal left no $tag"
+    [[ $subject == "$other" ]] || die "the rehearsal's $tag refers to '${subject:-nothing}', not to $other"
+    if skopeo --policy "$dir/other/policy.json" --registries.d "$dir/registries.d" copy --quiet \
+        "docker://$tag" "oci:$dir/check-source:x" >/dev/null 2>"$dir/refusal"; then
+        die "a policy trusting another key accepted $tag: its signature was never checked"
+    fi
+    grep -Eqi 'source image rejected|signature' "$dir/refusal" ||
+        die "the copy of $tag under a policy trusting another key failed, but not on the signature: $(tr '\n' ' ' <"$dir/refusal")"
+    summary "Rehearsal: \`$tag\` refers to \`$other\`; a policy with another key refuses it too."
 }
 
 main() {

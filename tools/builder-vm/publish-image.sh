@@ -12,6 +12,9 @@ names it and its components were pinned: image.sh rechunk against apex:45, then
 publish.sh publish, which pushes apex:<version>, signs it with the owner's cosign key and
 moves apex:45 to it after the committed policy verifies the signature. The image must
 carry the checkout's release.pub, so a build from before the owner's key never publishes.
+An image with the kernel pair publishes only with its source artifact, the one
+_build/image/sources holds and the pinned source-check.sh accepts, pushed and signed
+as apex:sha256-<digest>.source before apex:45 moves.
 
 --allow-degraded is the owner's override for a candidate degraded in a component apex:45
 is not. --rehearse runs the same steps against a throwaway registry and key on this host
