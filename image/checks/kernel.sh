@@ -80,6 +80,12 @@ else
     pass "nouveau and nova-core not in the initramfs"
 fi
 
+if initramfs_has '/nvidia(-drm|-modeset|-uvm|-peermem)?\.ko(\.(xz|zst|gz))?$'; then
+    fail "an NVIDIA module is in the initramfs; the kmod's modules load from the root"
+else
+    pass "no NVIDIA module in the initramfs"
+fi
+
 # lsinitrd prints the dracut modules one per line between "dracut modules:" and the next
 # line of '=' characters; the file listing follows.
 awk '/^=+$/ { if (m) exit } m && NF { print $1 } $0 == "dracut modules:" { m = 1 }' \
@@ -137,6 +143,82 @@ if [ -n "$blacklisted" ]; then
     pass "nouveau blacklisted by $blacklisted"
 else
     fail "nouveau is not blacklisted in /usr/lib/modprobe.d, /etc/modprobe.d or /usr/lib/bootc/kargs.d"
+fi
+
+# The kernel pair (ADR 0015), when rpms.lock carries it; nvidia.sh checks its NVIDIA half.
+if [ "$(pair_mode)" = none ]; then
+    finish
+fi
+
+core=$(pair_locked kernel-cachyos-core)
+installed=$(root_rpm -q --queryformat '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}' kernel-cachyos-core 2>/dev/null || true)
+if [ -n "$core" ] && [ "$installed" = "$core" ]; then
+    pass "the pair's kernel: $core"
+else
+    fail "kernel-cachyos-core is ${installed:-not installed}, but rpms.lock locks ${core:-none}"
+fi
+if [ "${core#kernel-cachyos-core-*:}" = "$kver" ]; then
+    pass "/usr/lib/modules holds that kernel"
+else
+    fail "/usr/lib/modules holds $kver, not the locked kernel"
+fi
+
+fedora=$(root_rpm -qa --queryformat '%{NAME} %{SOURCERPM}\n' | awk '$2 ~ /^kernel-[0-9]/ { printf " %s", $1 }')
+if [ -z "$fedora" ]; then
+    pass "no package of Fedora's kernel"
+else
+    fail "packages of Fedora's kernel next to the pair's:$fedora"
+fi
+
+required=${APEX_RPMS_DIR:-/run/apex-rpms}/pair/config-required.txt
+config=$MODDIR/$kver/config
+if [ ! -f "$required" ]; then
+    fail "no $required: image.sh context copies it from the pair's set"
+elif [ ! -f "$config" ]; then
+    fail "no /usr/lib/modules/$kver/config"
+else
+    missing=
+    while IFS= read -r line; do
+        grep -Fxq -- "$line" "$config" || missing="$missing $line"
+    done <<EOF_REQUIRED
+$(read_list "$required")
+EOF_REQUIRED
+    if [ -z "$missing" ]; then
+        pass "the kernel config has every line of config-required.txt"
+    else
+        fail "the kernel config lacks:$missing"
+    fi
+fi
+
+kargs=$(rootpath /usr/lib/bootc/kargs.d/20-apex-pair.toml)
+for k in module.sig_enforce=1 zswap.enabled=0 module_blacklist=nouveau,nova_core; do
+    if [ -f "$kargs" ] && grep -Fq "\"$k\"" "$kargs"; then
+        pass "kernel argument $k"
+    else
+        fail "kernel argument $k missing from /usr/lib/bootc/kargs.d/20-apex-pair.toml"
+    fi
+done
+
+find "$MODDIR/$kver" -type f -name '*.ko*' >"$TMPD/modules.list"
+nmod=$(wc -l <"$TMPD/modules.list")
+if ! command -v modinfo >/dev/null 2>&1; then
+    fail "modinfo not found on PATH; cannot read the module signers"
+elif [ "$nmod" -eq 0 ]; then
+    fail "no module under /usr/lib/modules/$kver"
+else
+    tr '\n' '\0' <"$TMPD/modules.list" | xargs -0 modinfo -F signer >"$TMPD/signers"
+    nsig=$(grep -c . "$TMPD/signers" || true)
+    signers=$(sort -u "$TMPD/signers" | grep . || true)
+    if [ "$nsig" -ne "$nmod" ]; then
+        fail "$((nmod - nsig)) of $nmod modules carry no signature"
+    elif [ "$(printf '%s\n' "$signers" | wc -l)" -ne 1 ]; then
+        fail "the modules carry more than one signer: $(printf '%s\n' "$signers" | paste -sd ',' -)"
+    else
+        case $signers in
+            "Apex kernel "*) pass "all $nmod modules are signed by the build's own key ($signers)" ;;
+            *) fail "the modules are signed by '$signers', not the pair's own key" ;;
+        esac
+    fi
 fi
 
 finish

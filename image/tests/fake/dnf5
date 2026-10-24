@@ -1,16 +1,19 @@
 #!/usr/bin/python3
 """The dnf5 calls of the Containerfile's repos stage, answered from FAKE_DNF_DIR:
 
-  testing.txt   updates-testing: "name epoch version release arch" lines
+  testing.txt   updates-testing: "name epoch version release arch [sourcerpm]" lines
   stable.txt    fedora + updates, same format
   fail-testing, fail-stable, fail-repolist, fail-apexprobe
                 that query exits 1, as dnf5 does on a metadata error
   ignore-includes
                 an includepkgs list is ignored, as libdnf does when it matches nothing
+  ignore-excludes
+                fedora's and updates' excludepkgs lines are ignored
   log           every invocation, one line each
 """
 
 import configparser
+import fnmatch
 import glob
 import os
 import re
@@ -35,8 +38,10 @@ def packages(name):
         with open(path, encoding="utf-8") as f:
             for line in f:
                 parts = line.split()
-                if len(parts) == 5:
-                    out.append(dict(zip(("name", "epoch", "version", "release", "arch"), parts)))
+                if len(parts) in (5, 6):
+                    pkg = dict(zip(("name", "epoch", "version", "release", "arch", "sourcerpm"), parts))
+                    pkg.setdefault("sourcerpm", "%s-%s-%s.src.rpm" % (parts[0], parts[2], parts[3]))
+                    out.append(pkg)
     return out
 
 
@@ -54,8 +59,8 @@ def fmt(qf, pkg):
     if pkg["epoch"] != "0":
         evr = "%s:%s" % (pkg["epoch"], evr)
     qf = qf.replace("%{evr}", evr)
-    for key in ("name", "epoch", "version", "release", "arch"):
-        qf = qf.replace("%%{%s}" % key, pkg[key])
+    for key in ("name", "epoch", "version", "release", "arch", "sourcerpm"):
+        qf = qf.replace("%%{%s}" % key, pkg.get(key, ""))
     return qf
 
 
@@ -123,7 +128,7 @@ def main(argv):
         cfg = repo_sections()
         excluded = set()
         for repo in repos:
-            if "--setopt=%s.excludepkgs=" % repo not in opts:
+            if "--setopt=%s.excludepkgs=" % repo not in opts and not flag("ignore-excludes"):
                 excluded.update(s for s in re.split(r"[,\s]+", cfg.get(repo, "excludepkgs", fallback="")) if s)
         pkgs = [p for p in packages("stable.txt") if p["name"] not in excluded]
     else:
@@ -132,7 +137,7 @@ def main(argv):
     if arches:
         pkgs = [p for p in pkgs if p["arch"] in arches]
     if names:
-        pkgs = [p for p in pkgs if p["name"] in names]
+        pkgs = [p for p in pkgs if any(fnmatch.fnmatchcase(p["name"], n) for n in names)]
     for p in pkgs:
         sys.stdout.write(fmt(qf or "%{name}-%{version}-%{release}.%{arch}\n", p))
     return 0

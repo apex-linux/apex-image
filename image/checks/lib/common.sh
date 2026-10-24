@@ -69,6 +69,23 @@ signed_by() {
         grep -iq -- "$1"
 }
 
+# none, pair or pair-degraded, from rpms.lock as the repos stage reads it.
+pair_mode() {
+    _lock=$(rootpath /usr/share/apex/rpms.lock)
+    if [ ! -f "$_lock" ] || ! awk '$1 == "rpm" && $2 == "kernel-cachyos" { f = 1 } END { exit !f }' "$_lock"; then
+        echo none
+    elif awk '$1 == "family" && $2 == "kernel-cachyos" { sub(/ reason=.*/, ""); if (/ degraded=nvidia( |$)/) f = 1 } END { exit !f }' "$_lock"; then
+        echo pair-degraded
+    else
+        echo pair
+    fi
+}
+
+pair_locked() {
+    awk -v n="$1" '$1 == "rpm" && $2 == "kernel-cachyos" && $4 == n { print $5; exit }' \
+        "$(rootpath /usr/share/apex/rpms.lock)"
+}
+
 read_list() {
     sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' "$1"
 }

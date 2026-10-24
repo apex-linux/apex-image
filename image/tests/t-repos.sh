@@ -372,4 +372,86 @@ stage u2
 expect_rc "U: without Fedora's key it fails" 1
 expect_out "U: and names it" '^ERROR: /pki/RPM-GPG-KEY-fedora-45-primary is missing: \[apex\] verifies its packages with it$'
 
+# pair_setup NAME [degraded]: scenario NAME with a kernel pair in rpms.lock, and Fedora's
+# kernel in the stable repositories next to a kernel-headers that another SRPM builds.
+pair_setup() {
+    setup "$1"
+    sha=$(printf '%064d' 0 | tr 0 a)
+    uname=7.3.0-4.cachyos1.fc45.x86_64
+    {
+        if [ "${2:-}" = degraded ]; then
+            printf 'family kernel-cachyos built kernel-cachyos-7.3.0-4.cachyos1.fc45-s0123456789ab since=2026-12-01T00:00:00Z degraded=nvidia side=kmod reason=kmod: it does not build\n'
+        else
+            printf 'family kernel-cachyos built kernel-cachyos-7.3.0-4.cachyos1.fc45-s0123456789ab\n'
+        fi
+        for n in kernel-cachyos kernel-cachyos-core kernel-cachyos-modules; do
+            printf 'rpm kernel-cachyos built %s %s-0:%s %s pkgs/kernel/k/%s-%s.rpm\n' "$n" "$n" "$uname" "$sha" "$n" "$uname"
+            : >"$S/apex/$n-$uname.rpm"
+        done
+        if [ "${2:-}" != degraded ]; then
+            k=kmod-nvidia-$uname
+            printf 'rpm kernel-cachyos built %s %s-0:615.78.08-1.fc45.x86_64 %s pkgs/kernel/k/%s-615.78.08-1.fc45.x86_64.rpm\n' "$k" "$k" "$sha" "$k"
+            : >"$S/apex/$k-615.78.08-1.fc45.x86_64.rpm"
+            printf 'rpm kernel-cachyos mirror nvidia-kmod-common nvidia-kmod-common-0:615.78.08-1.fc45.noarch %s pkgs/kernel/k/nvidia-kmod-common-615.78.08-1.fc45.noarch.rpm\n' "$sha"
+            : >"$S/apex/nvidia-kmod-common-615.78.08-1.fc45.noarch.rpm"
+            mkdir -p "$S/apex/pair"
+            printf 'negativo17 key\n' >"$S/apex/pair/negativo17.gpg"
+        fi
+    } >>"$S/apex/rpms.lock"
+    for n in kernel kernel-core kernel-modules kernel-modules-core; do
+        printf '%s 0 7.2.9 200.fc45 x86_64 kernel-7.2.9-200.fc45.src.rpm\n' "$n"
+    done >>"$S/dnf/stable.txt"
+    printf 'kernel-headers 0 7.2.3 200.fc45 x86_64 kernel-headers-7.2.3-200.fc45.src.rpm\n' >>"$S/dnf/stable.txt"
+}
+
+setup v0
+stage v0
+expect_rc "V: without a kernel pair it builds as before" 0
+expect_out "V: and says so" '^Kernel: none '
+expect_file "V: and leaves none for the compose" '^none$' "$T/v0/apex/pair-mode"
+if grep -q "repoquery.*kernel\*" "$T/v0/dnf/log"; then not_ok "V: and never asks for Fedora's kernel"; else ok "V: and never asks for Fedora's kernel"; fi
+
+pair_setup v
+stage v
+expect_rc "V: a kernel pair builds" 0
+expect_file "V: and tells the compose" '^pair$' "$T/v/apex/pair-mode"
+expect_file "V: Fedora's kernel, by its SRPM, is excluded with the lane's names, kernel-headers is not" \
+    '^excludepkgs=gnome-shell,gnome-shell-common,kernel,kernel-cachyos,kernel-cachyos-core,kernel-cachyos-modules,kernel-core,kernel-modules,kernel-modules-core,kmod-nvidia-7\.3\.0-4\.cachyos1\.fc45\.x86_64,libfprint,mutter,mutter-common,nvidia-kmod-common$' \
+    "$T/v/$REPOS/fedora-fedora.repo"
+expect_file "V: [apex] admits the pair" '^includepkgs=apex,apex-desktop,gnome-shell,gnome-shell-common,kernel-cachyos,kernel-cachyos-core,kernel-cachyos-modules,kmod-nvidia-7\.3\.0-4\.cachyos1\.fc45\.x86_64,libfprint,mutter,mutter-common,nvidia-kmod-common$' "$T/v/$REPOS/apex.repo"
+expect_file "V: and checks the userspace with negativo17's key" \
+    '^gpgkey=file:///repos/apex/RPM-GPG-KEY-apex file:///repos/apex/RPM-GPG-KEY-fedora-45-primary file:///repos/apex/pair/negativo17\.gpg$' "$T/v/$REPOS/apex.repo"
+
+pair_setup v2 degraded
+stage v2
+expect_rc "V: a kernel without its NVIDIA set builds" 0
+expect_file "V: as pair-degraded" '^pair-degraded$' "$T/v2/apex/pair-mode"
+expect_file "V: Fedora's kernel is still excluded" '^excludepkgs=.*,kernel-core,' "$T/v2/$REPOS/fedora-fedora.repo"
+expect_file "V: and no negativo17 key is needed" \
+    '^gpgkey=file:///repos/apex/RPM-GPG-KEY-apex file:///repos/apex/RPM-GPG-KEY-fedora-45-primary$' "$T/v2/$REPOS/apex.repo"
+
+pair_setup v3
+sed -i 's/ reason=.*//; s/^\(family kernel-cachyos \)built \(kernel-cachyos-[^ ]*\)$/\1held \2 since=2026-12-01T00:00:00Z side=kmod reason=kmod: degraded=nvidia next/' "$T/v3/apex/rpms.lock"
+stage v3
+expect_rc "V: a held pair builds" 0
+expect_file "V: as a whole pair, whatever its reason says" '^pair$' "$T/v3/apex/pair-mode"
+
+pair_setup v4
+rm "$T/v4/apex/pair/negativo17.gpg"
+stage v4
+expect_rc "V: a userspace without negativo17's key fails" 1
+expect_out "V: and names it" '^ERROR: rpms/pair/negativo17\.gpg is missing'
+
+pair_setup v5
+: >"$T/v5/dnf/ignore-excludes"
+stage v5
+expect_rc "V: Fedora's kernel left after excludepkgs fails" 1
+expect_out "V: and names it" "^ERROR: fedora and updates still offer Fedora's kernel after excludepkgs: kernel kernel-core kernel-modules kernel-modules-core$"
+
+pair_setup v6
+sed -i '/ kernel-[0-9.]*-200\.fc45\.src\.rpm$/d' "$T/v6/dnf/stable.txt"
+stage v6
+expect_rc "V: no Fedora kernel to exclude fails" 1
+expect_out "V: and says so" '^ERROR: fedora and updates offer no package of the kernel SRPM to exclude$'
+
 done_testing

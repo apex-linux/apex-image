@@ -48,3 +48,18 @@ im-chooser
 
 power-profiles-daemon
 iptables-legacy
+
+# The kernel pair (ADR 0015): its kmod is built for exactly the image's kernel, never on
+# the machine, and only the Wayland userspace ships.
+akmods
+akmod-nvidia
+dkms
+dkms-nvidia
+kmodtool
+xorg-x11-nvidia
+nvidia-settings
+nvidia-xconfig
+nvidia-libXNVCtrl
+libnvidia-fbc
+libnvidia-fmdrv
+libnvidia-imex

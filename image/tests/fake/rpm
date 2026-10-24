@@ -8,7 +8,8 @@ database FAKE_RPMDB:
               "provides": ["gtk3", "libgtk-3.so.0()(64bit)", ...],
               "files": ["/usr/lib64/libgtk-3.so.0"],
               "modified": [],
-              "signature": "RSA/SHA256, Mon Sep 14 2026, Key ID 655a4b02f577861e"}, ...}
+              "signature": "RSA/SHA256, Mon Sep 14 2026, Key ID 655a4b02f577861e",
+              "sourcerpm": "gtk3-3.24.52-6.fc45.src.rpm"}, ...}
 
 "requires" is the rpm header's: unlike the repodata it keeps requirements a package
 satisfies itself. "modified" lists files whose digest changed. --root and --dbpath are
@@ -164,7 +165,8 @@ def fmt_pkg(fmt, name, pkg):
     return (fmt.replace("%{NAME}", name).replace("%{name}", name)
             .replace("%{VERSION}", version).replace("%{RELEASE}", release or "")
             .replace("%{release}", release or "").replace("%{ARCH}", pkg["arch"])
-            .replace("%{EPOCHNUM}", epoch or "0"))
+            .replace("%{EPOCHNUM}", epoch or "0")
+            .replace("%{SOURCERPM}", pkg.get("sourcerpm") or "%s-%s-%s.src.rpm" % (name, version, release)))
 
 
 def main(argv):

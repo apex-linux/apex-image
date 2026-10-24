@@ -1,0 +1,8 @@
+# The kernel pair's (ADR 0015): only modules signed with the build's own key load, zram
+# alone compresses swap, and nouveau and nova-core never load, from the initramfs on.
+kargs = [
+  "module.sig_enforce=1",
+  "zswap.enabled=0",
+  "module_blacklist=nouveau,nova_core",
+]
+match-architectures = ["x86_64"]

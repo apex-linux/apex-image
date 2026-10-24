@@ -1,0 +1,6 @@
+# Runtime PM on every NVIDIA display or audio function, bound or not, so the GA107 reaches
+# D3cold also without its driver (degraded=nvidia); negativo17's rule sets "on" at unbind.
+
+ACTION=="add|bind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", \
+  ATTR{class}=="0x030000|0x030200|0x040300", \
+  TEST=="power/control", ATTR{power/control}="auto"

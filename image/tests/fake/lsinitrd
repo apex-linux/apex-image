@@ -1,0 +1,4 @@
+#!/bin/sh
+# lsinitrd IMAGE: a fake initramfs is the text lsinitrd would print.
+set -eu
+cat "$1"

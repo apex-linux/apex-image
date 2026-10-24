@@ -348,7 +348,11 @@ G4_DIR="$TMP/g4"
 mkdir -p "$G4_DIR"
 key_script=$(bash -c '. "$1"; g4_key_script' _ "$APEX_ROOT/.github/scripts/qualify.sh")
 check_true "the key names the NEVRAs of what G4's install, login and lock run on" \
-    grep -qF "rpm -q --qf 'package %{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' gdm gnome-shell mutter gjs gnome-session accountsservice pam systemd kernel shim-x64 grub2-efi-x64 bootupd" <<<"$key_script"
+    grep -qF "rpm -q --qf 'package %{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' gdm gnome-shell mutter gjs gnome-session accountsservice pam systemd \$kernel shim-x64 grub2-efi-x64 bootupd" <<<"$key_script"
+check_true "the kernel is Fedora's, or the pair's with its kmod and nvidia-kmod-common" \
+    grep -qF "rpm -q kernel >/dev/null 2>&1 || kernel=\"kernel-cachyos-core \$(rpm -qa --qf '%{NAME}\n' 'kmod-nvidia*' nvidia-kmod-common" <<<"$key_script"
+check_true "the pair's own overlay files, where the image has them" \
+    grep -qF "for f in /usr/lib/bootc/kargs.d/20-apex-pair.toml /usr/lib/modprobe.d/apex-nvidia.conf " <<<"$key_script"
 check_true "every file of apex and apex-desktop by its digest, not their commit-stamped releases" \
     grep -qF "rpm -q --qf '[file %{FILEDIGESTS} %{FILENAMES}\n]' apex apex-desktop" <<<"$key_script"
 overlay_line=$(grep '^sha256sum ' <<<"$key_script")
