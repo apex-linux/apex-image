@@ -134,6 +134,8 @@ struct Fake {
     configs: RefCell<BTreeMap<String, String>>,
     tag_signer: RefCell<String>,
     archive_matches: Cell<bool>,
+    /// Modules in kernel-cachyos-modules, by kernel version-release; 1000 otherwise.
+    modules: RefCell<BTreeMap<String, usize>>,
     real: StdRunner,
 }
 
@@ -177,6 +179,7 @@ impl Fake {
             configs: RefCell::default(),
             tag_signer: RefCell::new(TAG_FPR.into()),
             archive_matches: Cell::new(true),
+            modules: RefCell::default(),
             real: StdRunner::inherit(),
         }
     }
@@ -193,6 +196,40 @@ impl Fake {
                 c.program == program || argv(c).first().is_some_and(|a| a == program.path())
             })
             .count()
+    }
+
+    /// The tools of `kernel-bump`'s report, past `bump.sh`.
+    fn report_tools(&self, cmd: &Cmd) -> Option<Outcome> {
+        let args = argv(cmd);
+        let has = |a: &str| args.iter().any(|x| x == a);
+        match cmd.program {
+            Program::Rpm if has("[%{PATCH}\\n]") => ok("anatase-1.patch\nanatase-2.patch\n"),
+            Program::Bash if args[1].contains("cmp -s") => Some(Outcome {
+                code: i32::from(!self.archive_matches.get()),
+                ..Outcome::default()
+            }),
+            Program::Tar if has("-tzf") => {
+                let tarball = args.last().unwrap().rsplit('/').next().unwrap();
+                let top = tarball.strip_suffix(".tar.gz").unwrap();
+                ok(&format!("{top}/\n{top}/Makefile\n"))
+            }
+            Program::Git if has("fetch") => {
+                assert!(has("https://github.com/CachyOS/linux.git"), "{args:?}");
+                ok("")
+            }
+            Program::Git if has("verify-tag") => {
+                let fpr = self.tag_signer.borrow();
+                Some(Outcome {
+                    code: 0,
+                    stdout: Vec::new(),
+                    stderr: format!(
+                        "[GNUPG:] GOODSIG X Peter\n[GNUPG:] VALIDSIG {fpr} 2026-10-23 1 0 4 0 22 10 00 {fpr}\n"
+                    )
+                    .into_bytes(),
+                })
+            }
+            _ => None,
+        }
     }
 
     fn script(&self, cmd: &Cmd) -> Option<Outcome> {
@@ -239,7 +276,23 @@ impl Fake {
                 std::fs::write(rpm, bytes).unwrap();
                 ok("")
             }
-            Program::Rpm if has("[%{PATCH}\\n]") => ok("anatase-1.patch\nanatase-2.patch\n"),
+            Program::Rpm if has("-qlp") => {
+                let files = &args[args.iter().position(|a| a == "--").unwrap() + 1..];
+                let mut listing = String::new();
+                for f in files {
+                    let name = f.rsplit('/').next().unwrap();
+                    let Some(rest) = name.strip_prefix("kernel-cachyos-modules-") else {
+                        let _ = writeln!(listing, "/usr/share/doc/{name}/README");
+                        continue;
+                    };
+                    let vr = rest.split(".cachyos").next().unwrap();
+                    let n = self.modules.borrow().get(vr).copied().unwrap_or(1000);
+                    for i in 0..n {
+                        let _ = writeln!(listing, "/lib/modules/{vr}/kernel/m{i}.ko.xz");
+                    }
+                }
+                ok(&listing)
+            }
             Program::Rpm => {
                 let files = &args[args.iter().position(|a| a == "--").unwrap() + 1..];
                 let lines: String = files
@@ -249,30 +302,6 @@ impl Fake {
                 ok(&lines)
             }
             Program::Bash if args[0].ends_with("/bump.sh") => ok(&self.bump.borrow()),
-            Program::Bash if args[1].contains("cmp -s") => Some(Outcome {
-                code: i32::from(!self.archive_matches.get()),
-                ..Outcome::default()
-            }),
-            Program::Tar if has("-tzf") => {
-                let tarball = args.last().unwrap().rsplit('/').next().unwrap();
-                let top = tarball.strip_suffix(".tar.gz").unwrap();
-                ok(&format!("{top}/\n{top}/Makefile\n"))
-            }
-            Program::Git if has("fetch") => {
-                assert!(has("https://github.com/CachyOS/linux.git"), "{args:?}");
-                ok("")
-            }
-            Program::Git if has("verify-tag") => {
-                let fpr = self.tag_signer.borrow();
-                Some(Outcome {
-                    code: 0,
-                    stdout: Vec::new(),
-                    stderr: format!(
-                        "[GNUPG:] GOODSIG X Peter\n[GNUPG:] VALIDSIG {fpr} 2026-10-23 1 0 4 0 22 10 00 {fpr}\n"
-                    )
-                    .into_bytes(),
-                })
-            }
             Program::Sudo => match args[0].as_str() {
                 "/usr/bin/podman" => {
                     let dirs = JobDirs {
@@ -302,7 +331,7 @@ impl Fake {
 impl Runner for Fake {
     fn run(&self, cmd: &Cmd) -> Result<Outcome> {
         self.log.borrow_mut().push(cmd.clone());
-        if let Some(out) = self.script(cmd) {
+        if let Some(out) = self.report_tools(cmd).or_else(|| self.script(cmd)) {
             return Ok(out);
         }
         match cmd.program {
@@ -1167,5 +1196,41 @@ fn a_tag_or_source0_that_does_not_verify_stops_the_bump() {
     assert_eq!(
         git(t.recipes.path(), &["branch", "--list", "kernel-bump/*"]),
         ""
+    );
+}
+
+#[test]
+fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
+    let t = PairTest::new();
+    let good = t.with_good_pair();
+    t.pins("7.3.1-1", "615.78.08-1");
+    t.fake.modules.borrow_mut().insert("7.3.1-1".into(), 949);
+    t.fake.on_job(good_job);
+    assert_eq!(t.build(T0), Built::Held);
+    assert_eq!(
+        t.family_line(),
+        format!(
+            "family kernel-cachyos held {good} since={T0} limit=2026-12-04T00:00:00Z newer=kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src security=1 side=kernel reason=check: the pair has 949 modules, the last good pair {good} 1000: more than 5 % apart"
+        )
+    );
+    let stored = std::fs::read_dir(t.store.path().join("pkgs/kernel"))
+        .unwrap()
+        .count();
+    assert_eq!(
+        stored, 2,
+        "the good pair and last-failure.txt; nothing new is stored"
+    );
+    t.fake.modules.borrow_mut().insert("7.3.1-1".into(), 960);
+    let Built::Built(key) = t.build("2026-12-01T01:00:00Z") else {
+        panic!("not built")
+    };
+    assert_eq!(
+        t.family_line(),
+        format!("family kernel-cachyos built {key}")
+    );
+    assert!(
+        String::from_utf8_lossy(&t.report.captured()).contains(&format!(
+            "modules: 960 in the pair, 1000 in the last good pair {good}"
+        ))
     );
 }

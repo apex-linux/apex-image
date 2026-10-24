@@ -289,6 +289,9 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
         none) ;; \
         pair | pair-degraded) \
             cp -R /run/apex-image/variants/pair/. /; \
+            rule=/run/apex-hw/61-apex-mutter-ignore-dgpu.rules; \
+            if [ ! -f "$rule" ]; then echo "ERROR: hardware/m7400qc/generated has no 61-apex-mutter-ignore-dgpu.rules (apex-system renders it): mutter would open the dGPU" >&2; exit 1; fi; \
+            install -m 0644 "$rule" /usr/lib/udev/rules.d/; \
             rm -f /usr/lib/modprobe.d/apex-dgpu.conf /usr/lib/udev/rules.d/61-apex-dgpu-pm.rules; \
             omit="$omit nvidia nvidia_drm nvidia_modeset nvidia_uvm nvidia_peermem"; \
             if [ "$pair" = pair-degraded ]; then echo "NOTE: the kernel ships without its NVIDIA set (degraded=nvidia)"; echo nvidia >>"$degraded"; fi ;; \
