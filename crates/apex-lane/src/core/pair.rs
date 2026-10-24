@@ -427,14 +427,34 @@ fn release_in_range(n: u32, rehearsal: bool) -> Result<(), String> {
     }
 }
 
+/// How long a newer negativo17 build has aged against nvidia.env's `soak_days`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Soak {
+    /// Old enough: a driver bump may take it.
+    Soaked,
+    /// Whole days still to go.
+    Soaking(u32),
+    /// An apex-kernel before the soak, whose bump.sh does not say.
+    Unknown,
+}
+
+fn soak(field: &str) -> Option<Soak> {
+    if field == "soaked" {
+        return Some(Soak::Soaked);
+    }
+    let days = field.strip_prefix("soaking-")?.strip_suffix('d')?;
+    let ok = !days.starts_with('0') && days.bytes().all(|c| c.is_ascii_digit());
+    days.parse().ok().filter(|_| ok).map(Soak::Soaking)
+}
+
 /// bump.sh's report: a point line, a major line, or both, the point first; or `none`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BumpReport {
     pub point: Option<Nevra>,
     /// The new major's SRPM and the pinned major's EOL countdown (`12d`, `unknown`).
     pub major: Option<(Nevra, String)>,
-    /// `nvidia NEVRA SHA256 newer`: builds newer than the pins, which wait for the owner.
-    pub nvidia_newer: Vec<String>,
+    /// `nvidia NEVRA SHA256 newer [SOAK]`: builds newer than the pins, which wait for the owner.
+    pub nvidia_newer: Vec<(String, Soak)>,
     pub nvidia_missing: Vec<String>,
 }
 
@@ -466,7 +486,15 @@ pub fn parse_bump(out: &[u8]) -> Result<BumpReport, String> {
                 report.major = Some((srpm(nevra)?, eol.to_owned()));
             }
             ["none"] if i == 0 => none = true,
-            ["nvidia", nevra, _, "newer"] if i > 0 => report.nvidia_newer.push(nevra.to_owned()),
+            ["nvidia", nevra, _, "newer"] if i > 0 => {
+                report.nvidia_newer.push((nevra.to_owned(), Soak::Unknown));
+            }
+            ["nvidia", nevra, _, "newer", state] if i > 0 => {
+                let state = soak(state).ok_or_else(|| {
+                    format!("bump.sh printed '{line}' as line {}: '{state}' is not soaked or soaking-Nd", i + 1)
+                })?;
+                report.nvidia_newer.push((nevra.to_owned(), state));
+            }
             ["nvidia", _, _, "pinned" | "older"] if i > 0 => {}
             ["nvidia", name, "missing"] if i > 0 => report.nvidia_missing.push(name.to_owned()),
             _ => return Err(format!("bump.sh printed '{line}' as line {}", i + 1)),
@@ -755,8 +783,44 @@ mod tests {
     fn bump_reports() {
         let r = parse_bump(b"point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nnvidia nvidia-kmod-3:615.78.08-1.fc45.src abc pinned\nnvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 abc newer\nnvidia nvidia-modprobe missing\n").unwrap();
         assert!(r.point.is_some_and(|n| n.version == "7.3.1") && r.major.is_none());
-        assert_eq!(r.nvidia_newer, ["nvidia-driver-3:615.80.01-1.fc45.x86_64"]);
+        assert_eq!(
+            r.nvidia_newer,
+            [(
+                "nvidia-driver-3:615.80.01-1.fc45.x86_64".to_owned(),
+                Soak::Unknown
+            )]
+        );
         assert_eq!(r.nvidia_missing, ["nvidia-modprobe"]);
+        let r = parse_bump(b"none\nnvidia nvidia-kmod-3:615.80.01-1.fc45.src abc newer soaked\nnvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 abc newer soaking-5d\nnvidia nvidia-settings-3:615.78.08-1.fc45.x86_64 abc pinned\n").unwrap();
+        assert_eq!(
+            r.nvidia_newer,
+            [
+                (
+                    "nvidia-kmod-3:615.80.01-1.fc45.src".to_owned(),
+                    Soak::Soaked
+                ),
+                (
+                    "nvidia-driver-3:615.80.01-1.fc45.x86_64".to_owned(),
+                    Soak::Soaking(5)
+                ),
+            ]
+        );
+        for state in [
+            "soaking",
+            "soaking-d",
+            "soaking-0d",
+            "soaking-05d",
+            "soaking-5",
+            "ready",
+        ] {
+            let text =
+                format!("none\nnvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 abc newer {state}\n");
+            let err = parse_bump(text.as_bytes()).err().unwrap_or_default();
+            assert!(
+                err.contains("is not soaked or soaking-Nd"),
+                "{state}: {err}"
+            );
+        }
         let r = parse_bump(
             b"major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-12d\n",
         )

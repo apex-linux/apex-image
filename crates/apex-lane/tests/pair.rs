@@ -1203,7 +1203,7 @@ fn key_prints_the_pairs_key_without_a_container() {
 fn a_point_bump_commits_the_new_pins_on_a_branch() {
     let t = PairTest::new();
     let head = git(t.recipes.path(), &["rev-parse", "HEAD"]);
-    *t.fake.bump.borrow_mut() = "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nnvidia nvidia-kmod-3:615.80.01-1.fc45.src abc newer\n".into();
+    *t.fake.bump.borrow_mut() = "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nnvidia nvidia-kmod-3:615.80.01-1.fc45.src abc newer\nnvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 abc newer soaking-3d\nnvidia nvidia-settings-3:615.80.01-1.fc45.x86_64 abc newer soaked\n".into();
     t.run(T0, |vm| vm.kernel_bump().unwrap());
     let branch = "kernel-bump/kernel-cachyos-7.3.1-1.cachyos1.fc45";
     let env = git(
@@ -1232,7 +1232,13 @@ fn a_point_bump_commits_the_new_pins_on_a_branch() {
     assert_eq!(git(t.recipes.path(), &["status", "--porcelain"]), "");
     let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
     assert!(shown.contains(&format!("on {branch}")), "{shown}");
-    assert!(shown.contains("nvidia-kmod-3:615.80.01-1.fc45.src is newer than the pins; a new driver waits for the owner"));
+    for line in [
+        "nvidia-kmod-3:615.80.01-1.fc45.src is newer than the pins (not yet known to be soaked); a new driver waits for the owner",
+        "nvidia-driver-3:615.80.01-1.fc45.x86_64 is newer than the pins (soaking, 3d to go)",
+        "nvidia-settings-3:615.80.01-1.fc45.x86_64 is newer than the pins (soaked, ready for a driver bump)",
+    ] {
+        assert!(shown.contains(line), "{line}: {shown}");
+    }
     t.run(T0, |vm| vm.kernel_bump().unwrap());
     assert!(String::from_utf8_lossy(&t.report.captured()).contains("already exists"));
 }
