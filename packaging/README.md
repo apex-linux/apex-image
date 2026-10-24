@@ -53,6 +53,17 @@ the checkout. The binary embeds the tree id of `crates/apex-lane` it was built f
 | `just pkg-promote [--allow-degraded]` | `apex-lane promote` | `rpms.lock.next` becomes `rpms.lock`, after an image built from it passed its gates; `--allow-degraded` is the owner's override for a new `degraded=nvidia` |
 | `just pkg-stock PKG` | `apex-lane stock PKG` | the owner's choice at a hold limit: the next image takes Fedora's build of the family |
 | `just kernel-bump` | `apex-lane kernel-bump` | the kernel pair's bump check: a point bump becomes a commit on a branch of the apex-kernel checkout; a new major waits for the owner |
+| `just lane-absorb-report [PKG...]` | `tools/builder-vm/lane-absorb-report.sh` | S1b's exit checked early: does each series apply at fuzz 0 to the newest F45 SRPM (below)? |
+
+**The absorption report** runs in a fresh `REPOS_BASE` container. For each recipe it takes
+the newest F45 SRPM from `fedora` + `updates` and, when newer, from `updates-testing`,
+checks it with `rpmkeys -K` against the pinned Fedora 45 key, and runs Fedora's own
+`%prep`. The series then goes on in order with `git apply`, as `%autosetup -S git` does:
+`applies`. A patch only `patch --fuzz=2` takes is `fuzz` (a re-export, no moved hunk);
+one neither takes `fails`, with its hunks, and the rest are not tried. gnome-shell's
+rows add mutter, the pin: the spec's `mutter-devel >=` against the newest `mutter-devel`.
+`_build/absorb/report.md` holds the table and `logs/` each run; exit 3 unless every
+series applies.
 
 The recipes sync the checkout into the VM first, and `lane.sh` takes the recipes from the
 pinned components (`tools/components.sh`). The lane builds committed inputs only,

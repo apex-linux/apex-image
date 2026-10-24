@@ -2083,6 +2083,38 @@ check "an artifact labelled with another key is a miss" 5 "$(lookup_rc k1 k2 1)"
 check "an absent artifact is a miss" 3 "$(lookup_rc k1 k1 1 ghcr.io/x/missing)"
 check "a bad workflow name is refused" 1 \
     "$(PATH="$O/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" lookup ghcr.io/x/y k '../evil')"
+# --- lane-absorb-report.sh: a series is applies, fuzz or fails, as git apply and patch say -------
+AB="$TMP/absorb"
+mkdir -p "$AB/pristine" "$AB/recipe/patches"
+seq -f 'line %g' 1 30 >"$AB/pristine/f.txt"
+ab_patch() { # NAME SED [FROM-SED]: a -p1 patch of f.txt, made against FROM-SED's text when given
+    mkdir -p "$AB/mk/a" "$AB/mk/b"
+    sed "${3:-}" "$AB/pristine/f.txt" >"$AB/mk/a/f.txt"
+    sed "$2" "$AB/mk/a/f.txt" >"$AB/mk/b/f.txt"
+    (cd "$AB/mk" && diff -u a/f.txt b/f.txt) >"$AB/recipe/patches/$1" || true
+}
+ab_patch clean.patch 's/^line 5$/line five/'
+ab_patch fuzzy.patch 's/^line 20$/line twenty/' 's/^line 17$/line seventeen/'
+ab_patch broken.patch 's/^line 25 gone$/x/;s/^line 25$/line 25 again/' 's/^line 25$/line 25 gone/'
+ab_patch after.patch 's/^line 28$/line 28!/'
+absorb() { # PATCH...: apply_series on a fresh copy of the pristine tree
+    rm -rf "$AB/tree"
+    cp -r "$AB/pristine" "$AB/tree"
+    printf '# a comment\n' >"$AB/recipe/series"
+    printf '%s\n' "$@" >>"$AB/recipe/series"
+    bash -c '. "$1"; apply_series "$2" "$3"' _ "$APEX_ROOT/tools/builder-vm/lane-absorb-report.sh" "$AB/tree" "$AB/recipe"
+}
+check "a series that git apply takes applies" "$(printf 'applies\t1 patch(es)')" "$(absorb clean.patch)"
+check_true "and changes the tree" grep -qx 'line five' "$AB/tree/f.txt"
+check "a patch only patch --fuzz takes is fuzz" "fuzz" "$(absorb clean.patch fuzzy.patch | cut -f1)"
+check_true "naming the patch" grep -q 'fuzzy.patch: git apply refuses' <<<"$(absorb clean.patch fuzzy.patch)"
+check "a patch neither takes fails" "fails" "$(absorb clean.patch broken.patch after.patch | cut -f1)"
+check_true "with its name, its hunks and the patches not tried" \
+    grep -q '^fails	broken.patch: error: .*FAILED.*(later patches not tried)$' <<<"$(absorb clean.patch broken.patch after.patch)"
+check_false "the patches after a failure are not applied" grep -qx 'line 28!' "$AB/tree/f.txt"
+check "an argument that looks like an option is a usage error" 2 \
+    "$(rc_of "$APEX_ROOT/tools/builder-vm/lane-absorb-report.sh" --help)"
+
 # --- .gitignore: biometric file names are never tracked ------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG \
     var/lib/fprint/u/1 image/system_files/var/lib/fprint/u/1; do
