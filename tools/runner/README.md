@@ -59,7 +59,8 @@ and exits 1 on any FAIL: `/dev/kvm`, nested KVM, rootless podman with pasta, sub
 subgid ranges, cgroup v2, disk for the builder VM (45 GiB build, 25 GiB kernel scratch,
 15 GiB ccache), RAM and threads for `APEX_VM_MEM` and `APEX_VM_CPUS`, HTTPS to GitHub,
 ghcr.io, Fedora and the COPR, the runner's key and its forced command once they exist,
-and time sync. Fix every FAIL, then go on with step 1.
+that the runner knows the builder VM's current host key (a VM made again after
+`builder-vm.sh destroy` has a new one: `just runner key`), and time sync. Fix every FAIL, then go on with step 1.
 
 ```bash
 just runner-preflight
