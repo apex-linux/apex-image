@@ -24,6 +24,11 @@ layer_features() {
         sed -e 's/^const FEATURES_IN_ENABLE_ORDER = \[//' -e 's/\];.*$//' | tr -d "' \n" | tr ',' '\n' | grep .
 }
 
+# The kernel pair's store key in an rpms.lock on stdin, or "none" (no pair, or break-glass).
+lock_pair_key() {
+    awk '$1 == "family" && $2 == "kernel-cachyos" && $3 != "stock" && $4 != "" { k = $4 } END { print (k == "" ? "none" : k) }'
+}
+
 # NAME@SHORT-SHA of a component checkout DIR, or NAME and the path when it is no clone.
 component_at() {
     local sha
@@ -194,7 +199,8 @@ registry_tag_absent() {
     err=$(mktemp)
     out=$(retry 3 "${APEX_RETRY_DELAY:-5}" skopeo list-tags "${auth[@]}" "docker://$repo" 2>"$err") || rc=$?
     if ((rc != 0)); then
-        if grep -Eqi 'name unknown' "$err"; then
+        # ghcr.io says "name unknown"; registry:2 "repository name not known to registry".
+        if grep -Eqi 'name unknown|name not known to registry' "$err"; then
             rm -f "$err"
             return 0
         fi

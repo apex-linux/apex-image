@@ -2000,6 +2000,7 @@ cat >"$P/bin/skopeo" <<'EOF'
 ref=${*: -1}
 ref=${ref#docker://}
 if [[ $1 == list-tags ]]; then
+    [[ ! -f $FAKE_REG/list-tags.err ]] || { cat "$FAKE_REG/list-tags.err" >&2; exit 1; }
     [[ -f $FAKE_REG/tags.json ]] || { echo 'Error: listing tags: 502 Bad Gateway' >&2; exit 1; }
     cat "$FAKE_REG/tags.json"
     exit 0
@@ -2042,6 +2043,11 @@ check "an absent tag that list-tags still lists is refused" 1 \
 rm -f "$P/reg/tags.json"
 check "an absent tag that list-tags cannot confirm is refused" 1 \
     "$(increases ghcr.io/x/t:45 "$D2" 45.20260925.151 "$C_B")"
+echo 'time="2026-10-24T19:06:34Z" level=fatal msg="Error listing repository tags: fetching tags list: repository name not known to registry"' \
+    >"$P/reg/list-tags.err"
+check "a repository registry:2 does not know yet is a first publication" 0 \
+    "$(increases ghcr.io/x/t:45 "$D2" 45.20260925.151 "$C_B")"
+rm -f "$P/reg/list-tags.err"
 
 # --- publish.sh: a stable move never adds a degraded component without the owner -------
 degraded_json() { # DIGEST_CHAR DEGRADED
@@ -2151,7 +2157,7 @@ case $cmd in
         if [[ $last == oci:* ]]; then cat "$FAKE_REG2/layout.json"; exit 0; fi
         f=$(ref_file "$last")
         [[ -n $f && -f $f ]] || { echo "Error: reading manifest x in y: manifest unknown" >&2; exit 1; }
-        if [[ " $* " == *" --raw "* ]]; then echo '{}'; else cat "$f"; fi ;;
+        if [[ " $* " == *" --raw "* ]]; then jq -c 'if .Subject then {subject: {digest: .Subject}} else {} end' "$f"; else cat "$f"; fi ;;
     list-tags)
         repo=${last#docker://}
         d=$FAKE_REG2/tags/${repo//\//_}
@@ -2164,7 +2170,16 @@ case $cmd in
             echo 'Error: writing blob: no space left on device' >&2
             exit 1
         fi
-        if [[ $src == oci:* ]]; then json=$FAKE_REG2/layout.json; else json=$(ref_file "$src"); fi
+        d=${src#oci:}
+        d=${d%:*}
+        if [[ $src == oci:* && ! -f $d/index.json ]]; then json=$FAKE_REG2/layout.json
+        elif [[ $src == oci:* ]]; then
+            [[ ! -e $FAKE_REG2/source-push-fails ]] || { echo 'Error: writing manifest: unauthorized' >&2; exit 1; }
+            m=$(jq -r '.manifests[0].digest' "$d/index.json")
+            json=$FAKE_REG2/source.json
+            jq --arg m "$m" '{Digest: $m, Subject: .subject.digest, ArtifactType: .artifactType}' \
+                "$d/blobs/sha256/${m#sha256:}" >"$json"
+        else json=$(ref_file "$src"); fi
         [[ -n $json && -f $json ]] || { echo "Error: reading manifest: manifest unknown" >&2; exit 1; }
         digest=$(jq -r .Digest "$json")
         if [[ -n $policy ]]; then
@@ -2199,10 +2214,11 @@ cat >"$R/bin/podman" <<'EOF'
 printf 'podman %s\n' "$*" >>"$FAKE_REG2/log"
 EOF
 chmod +x "$R/bin/"*
-layout() { # VERSION REVISION DEGRADED DIGEST_CHAR
+layout() { # VERSION REVISION DEGRADED DIGEST_CHAR [KERNEL_PAIR]
     jq -n --arg v "$1" --arg r "$2" --arg g "$3" --arg d "sha256:$(printf "$4%.0s" {1..64})" --arg l "$APEX_LABEL_PREFIX" \
+        --arg p "${5:-none}" \
         '{Digest: $d, Labels: {"org.opencontainers.image.version": $v, "org.opencontainers.image.revision": $r,
-          ($l + ".fedora"): "45", ($l + ".degraded"): $g}}' >"$R/state/layout.json"
+          ($l + ".fedora"): "45", ($l + ".degraded"): $g, ($l + ".kernel-pair"): $p}}' >"$R/state/layout.json"
 }
 reset_registry() {
     rm -rf "$R/state" "$R/keys"
@@ -2218,6 +2234,7 @@ trust() { # PUB: a policy for ghcr.io/x/apex that trusts only PUB
 publish_rc() { # ALLOW
     # shellcheck disable=SC2016 # expanded by the inner bash
     PATH="$R/bin:$PATH" FAKE_REG2="$R/state" APEX_GIT_ROOT="$G" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
+        APEX_SOURCES_LAYOUT="$R/sources" APEX_SOURCE_CHECK="$R/source-check.sh" \
         rc_of bash -c '. "$1"; VERIFY_POLICY=$2; VERIFY_REGISTRIES_D=$3; publish_layout ghcr.io/x/apex /layout "$4" "$5"' \
         _ "$APEX_ROOT/.github/scripts/publish.sh" "$R/keys/policy.json" "$R/keys/registries.d" "${1:-0}" "$R/keys/cosign.key"
 }
@@ -2263,6 +2280,83 @@ layout 45.20260925.151 "$C_A" '' 1
 check "a refusal for any reason but the signature fails the rehearsal" 1 \
     "$(cd "$R" && PATH="$R/bin:$PATH" FAKE_REG2="$R/state" APEX_GIT_ROOT="$G" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
         rc_of "$APEX_ROOT/.github/scripts/publish.sh" rehearse oci:/layout)"
+
+# A pair image publishes only with its source set, which apex-kernel's check accepts.
+cat >"$R/source-check.sh" <<'EOF'
+[[ -f $1/SHA256SUMS ]] || { echo 'not ok: SHA256SUMS lists every other file' >&2; exit 1; }
+rc=$(cat "$FAKE_REG2/check-rc" 2>/dev/null || echo 0)
+echo "source-check exit $rc" >&2
+exit "$rc"
+EOF
+put_blob() { local sha; sha=$(sha256sum <"$1" | cut -c1-64); mv "$1" "$R/sources/blobs/sha256/$sha"; printf 'sha256:%s' "$sha"; }
+sources() { # PAIR_KEY: _build/image/sources as apex-lane sources writes it
+    rm -rf "$R/sources" "$R/src-root"
+    mkdir -p "$R/sources/blobs/sha256" "$R/src-root/srpms"
+    echo rpm >"$R/src-root/srpms/kernel-cachyos.src.rpm"
+    echo sums >"$R/src-root/SHA256SUMS"
+    tar -cf "$R/layer.tar" -C "$R/src-root" .
+    local layer config manifest
+    layer=$(put_blob "$R/layer.tar")
+    jq -nc --arg k "$1" '{config: {Labels: {"io.github.apex-linux.apex.pair-key": $k}}}' >"$R/config.json"
+    config=$(put_blob "$R/config.json")
+    jq -nc --arg c "$config" --arg l "$layer" '{schemaVersion: 2, config: {digest: $c}, layers: [{digest: $l}]}' >"$R/m.json"
+    manifest=$(put_blob "$R/m.json")
+    jq -nc --arg m "$manifest" --arg k "$1" \
+        '{schemaVersion: 2, manifests: [{digest: $m, size: 1, annotations: {"org.opencontainers.image.ref.name": $k}}]}' \
+        >"$R/sources/index.json"
+    echo '{"imageLayoutVersion":"1.0.0"}' >"$R/sources/oci-layout"
+}
+pair_publish() { # [SOURCES_KEY]: a fresh registry and a pair-k1 layout with its sources
+    reset_registry
+    trust "$R/keys/cosign.pub"
+    layout 45.20260925.151 "$C_A" '' 1 k1
+    sources "${1:-k1}"
+}
+S1="ghcr.io/x/apex:sha256-${D1#sha256:}.source"
+pair_publish
+check "a pair image publishes with its source artifact" 0 "$(publish_rc)"
+art=$(jq -r .Digest "$R/state/tags/ghcr.io_x_apex/sha256-${D1#sha256:}.source.json")
+check "in order: the image and its signature, the source to <repo>:sha256-<image>.source, its signature and verified copy, then :45" \
+    "copy oci:TMP docker://ghcr.io/x/apex:45.20260925.151|sign ghcr.io/x/apex@$D1|copy oci:TMP docker://$S1|sign ghcr.io/x/apex@ART|copy docker://ghcr.io/x/apex@ART oci:TMP verified|copy docker://ghcr.io/x/apex@$D1 docker://ghcr.io/x/apex:45 verified" \
+    "$(sed -E "s#oci:/[^ ]*#oci:TMP#g; s#$art#ART#g" "$R/state/log" | paste -sd'|')"
+check "it refers to the image" "$D1" "$(jq -r .Subject "$R/state/tags/ghcr.io_x_apex/sha256-${D1#sha256:}.source.json")"
+check "as an apex source artifact" application/vnd.apex-linux.source.v1 \
+    "$(jq -r .ArtifactType "$R/state/tags/ghcr.io_x_apex/sha256-${D1#sha256:}.source.json")"
+check ":45 moves to the image" "$D1" "$(published 45)"
+pair_publish
+rm -rf "$R/sources"
+check "a pair image without its source artifact is refused" 1 "$(publish_rc)"
+check "before anything is pushed" 0 "$(grep -c . "$R/state/log" 2>/dev/null || echo 0)"
+pair_publish k0
+check "the source artifact of another pair is refused" 1 "$(publish_rc)"
+check "before anything is pushed" 0 "$(grep -c . "$R/state/log" 2>/dev/null || echo 0)"
+pair_publish
+echo 1 >"$R/state/check-rc"
+check "a source set source-check.sh refuses is refused" 1 "$(publish_rc)"
+check "before anything is pushed" 0 "$(grep -c . "$R/state/log" 2>/dev/null || echo 0)"
+pair_publish
+echo 2 >"$R/state/check-rc"
+check "a source-check.sh that cannot run refuses too" 1 "$(publish_rc)"
+pair_publish
+rm "$R/src-root/SHA256SUMS"
+tar -cf "$R/layer.tar" -C "$R/src-root" .
+cp "$R/layer.tar" "$R/sources/blobs/sha256/$(jq -r '.manifests[0].digest' "$R/sources/index.json" | cut -c8- | xargs -I{} jq -r '.layers[0].digest' "$R/sources/blobs/sha256/{}" | cut -c8-)"
+check "a source layer that no longer matches its digest is refused" 1 "$(publish_rc)"
+pair_publish
+: >"$R/state/source-push-fails"
+check "a source push that fails stops the publication" 1 "$(publish_rc)"
+check "after apex:<version> was pushed" "$D1" "$(published 45.20260925.151)"
+check ":45 stays where it was" none "$(published 45)"
+pair_publish
+jq --arg l "$APEX_LABEL_PREFIX.kernel-pair" 'del(.Labels[$l])' "$R/state/layout.json" >"$R/state/l" && mv "$R/state/l" "$R/state/layout.json"
+check "a layout without the kernel-pair label is refused" 1 "$(publish_rc)"
+check "before anything is pushed" 0 "$(grep -c . "$R/state/log" 2>/dev/null || echo 0)"
+pair_publish
+check "the rehearsal of a pair image" 0 \
+    "$(cd "$R" && PATH="$R/bin:$PATH" FAKE_REG2="$R/state" APEX_GIT_ROOT="$G" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
+        APEX_SOURCES_LAYOUT="$R/sources" APEX_SOURCE_CHECK="$R/source-check.sh" \
+        rc_of "$APEX_ROOT/.github/scripts/publish.sh" rehearse oci:/layout)"
+check_true "pushes the source to localhost" test -f "$R/state/tags/localhost:5000_apex/sha256-${D1#sha256:}.source.json"
 
 # --- oci-artifact.sh lookup: a cache hit must be attested by the workflow on main ------
 O="$TMP/oci"

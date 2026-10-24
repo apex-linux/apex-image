@@ -388,13 +388,16 @@ cmd_inspect() {
         "$APEX_WORK/manifest.json" >/dev/null ||
         die "manifest.json does not match the build ($APEX_VERSION, $APEX_REVISION) or manifest schema 1"
 
-    local degraded held key
+    podman_ run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/rpms.lock \
+        >"$APEX_WORK/image-rpms.lock" || die "$IMAGE has no /usr/share/apex/rpms.lock"
+    local degraded held key pair
+    pair=$(lock_pair_key <"$APEX_WORK/image-rpms.lock")
     degraded=$(jq -r '.degraded | sort | join(",")' "$APEX_WORK/manifest.json")
     held=$(jq -r '.held | sort | join(",")' "$APEX_WORK/manifest.json")
     manifest_lock_list <"$APEX_WORK/manifest.json" >"$APEX_WORK/lock.txt"
     key=$(content_key "$degraded" "$held")
 
-    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\n' "$degraded" "$held" "$key" >"$APEX_WORK/image.env"
+    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\nKERNEL_PAIR=%q\n' "$degraded" "$held" "$key" "$pair" >"$APEX_WORK/image.env"
     summary "Manifest: $(jq '.packages | length' "$APEX_WORK/manifest.json") packages;" \
         "degraded: \`${degraded:-none}\`; held: \`${held:-none}\`; content key \`$key\`"
     set_output version "$APEX_VERSION"
@@ -445,6 +448,7 @@ rechunk_once() {
         --label "$APEX_LABEL_PREFIX.held=$HELD" \
         --label "$APEX_LABEL_PREFIX.content-key=$CONTENT_KEY" \
         --label "$APEX_LABEL_PREFIX.fedora=$APEX_FEDORA" \
+        --label "$APEX_LABEL_PREFIX.kernel-pair=${KERNEL_PAIR:?image.env has no KERNEL_PAIR: run image.sh inspect again}" \
         --output "oci:/out/$OCI_REF:latest"
 }
 

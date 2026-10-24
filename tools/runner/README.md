@@ -178,6 +178,9 @@ against a throwaway one. On the owner's first real `just publish` (S1d), check t
 - [ ] **cosign authenticates to ghcr.io in the builder VM.** `cosign sign` pushes the
   `.sig` tag with the credentials skopeo uses (`REGISTRY_AUTH_FILE`), or with a login of
   its own that the run then names.
+- [ ] **ghcr.io takes the source artifact.** A pair image's
+  `apex:sha256-<digest>.source` (an OCI 1.1 manifest with `subject` and `artifactType`)
+  pushes, `cosign sign` signs it, and ghcr's package page lists it beside the image.
 - [ ] **An older image finds the new `:45`.** A VM booted from the previous published
   digest runs `apexctl update check`, which finds the new `apex:45` and verifies it
   against the image's own policy (S1d's exit).
