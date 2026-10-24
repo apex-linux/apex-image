@@ -14,7 +14,7 @@ use crate::core::hold;
 use crate::core::key::content_key;
 use crate::core::lock;
 use crate::core::manifest::{self, header_field};
-use crate::core::pair::{self, Moves, PairLock, Side};
+use crate::core::pair::{self, Moves, PairLock, Side, Soak};
 use crate::core::pins::{self, KernelPins, Nevra, NvidiaPins};
 use crate::core::repos::{self, Repos};
 use crate::core::text;
@@ -982,9 +982,14 @@ impl Vm<'_> {
             self.report
                 .log("kernel: no newer build of the pinned major");
         }
-        for nevra in &report.nvidia_newer {
+        for (nevra, soak) in &report.nvidia_newer {
+            let state = match soak {
+                Soak::Soaked => "soaked, ready for a driver bump".to_owned(),
+                Soak::Soaking(days) => format!("soaking, {days}d to go"),
+                Soak::Unknown => "not yet known to be soaked".to_owned(),
+            };
             self.report.log(&format!(
-                "nvidia: {nevra} is newer than the pins; a new driver waits for the owner (ADR 0015 §4)"
+                "nvidia: {nevra} is newer than the pins ({state}); a new driver waits for the owner (ADR 0015 §4)"
             ));
         }
         for name in &report.nvidia_missing {

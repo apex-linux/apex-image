@@ -262,12 +262,13 @@ fn check_pins(dir: &std::path::Path, report: &Reporter) -> Result<Exit> {
         apex_lane::core::pins::check_pins(&read("kernel.env")?, &read("nvidia.env")?)
             .map_err(|e| usage(format!("{}: {}", dir.display(), e.0)))?;
     report.log(&format!(
-        "check-pins: {}: {} with {}, tag {} from {}",
+        "check-pins: {}: {} with {}, tag {} from {}, NVIDIA soak {} days",
         dir.display(),
         kernel.srpm,
         nvidia.kmod_srpm,
         kernel.tag.unwrap_or_default(),
-        kernel.tag_repo.unwrap_or_default()
+        kernel.tag_repo.unwrap_or_default(),
+        nvidia.soak_days
     ));
     Ok(Exit::Ok)
 }

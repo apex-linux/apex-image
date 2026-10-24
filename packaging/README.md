@@ -184,6 +184,7 @@ the pair job reads them with `sed`.
 | `userspace` | no, repeated | `NEVRA SHA256` of one x86_64 or noarch binary RPM |
 | `negativo17_key` | yes | negativo17's key fingerprint |
 | `negativo17_key_expires` | no | `YYYY-MM-DD` |
+| `soak_days` | no | days a newer driver build ages before `bump.sh` calls it soaked: a whole number, 1 or more; 7 when absent |
 
 `apex-lane check-pins DIR` parses DIR's `kernel.env` and `nvidia.env` exactly as the lane does
 and requires the tag pins; the contracts job runs it on the pinned apex-kernel, so a pin
