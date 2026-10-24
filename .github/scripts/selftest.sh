@@ -317,13 +317,19 @@ run_armed_attempts() {
     local attempt_timeout=${*: -1}
     printf '%s\n' "$@" | head -n -1 >"$Q/plan"
     : >"$Q/qemu.log"
-    rm -f "$Q/ssh.log" "$Q/out/results.md" "$Q/out/logs/"*
+    rm -f "$Q/ssh.log" "$Q/unlock.log" "$Q/out/results.md" "$Q/out/logs/"*
     local rc=0
+    # shellcheck disable=SC2016 # expanded by the inner bash
     PATH="$Q/bin:$PATH" QUALIFY_OUT="$Q/out" QUALIFY_POLL=0.1 QUALIFY_ATTEMPT_TIMEOUT="$attempt_timeout" \
         OVMF_CODE="$Q/code.fd" OVMF_VARS="$Q/vars.fd" GITHUB_ACTIONS='' \
-        FAKE_QEMU_LOG="$Q/qemu.log" FAKE_QEMU_PLAN="$Q/plan" FAKE_SSH_LOG="$Q/ssh.log" \
-        bash -c '. "$1"; require_kvm() { :; }; armed_attempts red "$APEX_BOOT_ATTEMPTS"' \
-        _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$Q/stderr.log" 2>&1 || rc=$?
+        FAKE_QEMU_LOG="$Q/qemu.log" FAKE_QEMU_PLAN="$Q/plan" FAKE_SSH_LOG="$Q/ssh.log" FAKE_LUKS=${FAKE_LUKS:-} \
+        bash -c '. "$1"; require_kvm() { :; }; fake=$2
+            if [[ -n $FAKE_LUKS ]]; then
+                LUKS_PASSPHRASE=x
+                luks_unlock() { printf "%s %s %s\n" "$1" "$2" "${3:-}" >>"$fake/unlock.log"; }
+            fi
+            armed_attempts red "$APEX_BOOT_ATTEMPTS"' \
+        _ "$APEX_ROOT/.github/scripts/qualify.sh" "$Q" >"$Q/stderr.log" 2>&1 || rc=$?
     if [[ -f $Q/out/red.pid ]]; then kill "$(cat "$Q/out/red.pid")" 2>/dev/null || true; fi
     return "$rc"
 }
@@ -345,6 +351,14 @@ check "an attempt that does not reboot fails" 1 "$rc"
 check "the failing attempt is named" 1 "$(grep -c '^| red-attempt2 | FAIL |' "$Q/out/results.md" 2>/dev/null || true)"
 check "no attempt after the failed one" 2 "$(wc -l <"$Q/qemu.log")"
 check_false "no ssh before the failure" test -s "$Q/ssh.log"
+
+rc=0
+FAKE_LUKS=1 run_armed_attempts reboot reboot reboot stay 20 || rc=$?
+check "on LUKS2, three self-reboots, then the fallback boot" 0 "$rc"
+((rc == 0)) || cat "$Q/stderr.log" >&2
+check "each of the four boots is unlocked from its own console's start, with no wrong passphrase" \
+    "red-attempt1-luks 0 |red-attempt2-luks 0 |red-attempt3-luks 0 |red-fallback-luks 0 " \
+    "$(tr '\n' '|' <"$Q/unlock.log" | sed 's/|$//')"
 
 rc=0
 PATH="$Q/bin:$PATH" bash -c '. "$1"' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$Q/stderr.log" 2>&1 || rc=$?

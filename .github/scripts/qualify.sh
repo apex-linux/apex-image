@@ -756,11 +756,13 @@ armed_attempts() {
     group "Boot the armed target of $name without logging in (expect $attempts self-reboots)"
     for ((n = 1; n <= attempts; n++)); do
         start_vm "$name" "$name-attempt$n" -no-reboot
+        [[ -z $LUKS_PASSPHRASE ]] || luks_unlock "$name-attempt$n-luks" 0
         wait_vm_exit "$QUALIFY_ATTEMPT_TIMEOUT" ||
             fail "$name-attempt$n" "the armed, failing boot did not reboot itself within ${QUALIFY_ATTEMPT_TIMEOUT}s"
         result "$name-attempt$n" PASS "the guest rebooted itself (console: logs/$name-attempt$n.serial.log)"
     done
     start_vm "$name" "$name-fallback" -no-reboot
+    [[ -z $LUKS_PASSPHRASE ]] || luks_unlock "$name-fallback-luks" 0
     endgroup
 }
 
@@ -1650,15 +1652,11 @@ cmd_local() {
     save_bootc_status_fixture booted
     vm_ssh 'command -v apexctl' >/dev/null || fail local-install "$image has no apexctl, so nothing can arm the boot counter"
 
-    if [[ $QUALIFY_LAYOUT == separate-boot ]]; then
+    if [[ $QUALIFY_LAYOUT == separate-boot || $QUALIFY_LAYOUT == luks ]]; then
         stage_local_candidate local-stage "$digest"
         counted_rollback local "$digest" "$LOCAL_CANDIDATE_DIGEST"
     else
-        if [[ $QUALIFY_LAYOUT == luks ]]; then
-            result local-red SKIP "QUALIFY_LAYOUT=luks: every boot of the counted rollback would wait for the passphrase"
-        else
-            result local-red SKIP "QUALIFY_LAYOUT=$QUALIFY_LAYOUT: GRUB cannot save the counter on a btrfs /boot"
-        fi
+        result local-red SKIP "QUALIFY_LAYOUT=$QUALIFY_LAYOUT: GRUB cannot save the counter on a btrfs /boot"
         create_test_user local
         vm_reboot
         assert_green local-rebooted "$digest"

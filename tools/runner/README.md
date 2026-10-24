@@ -146,6 +146,9 @@ console and QMP only. On its first run, check in `_build/qualify/` that:
   (`local-luks-wrong`).
 - [ ] **`cp --reflink` works across subvolumes** on the builder VM's btrfs (§8's `/var`
   move in `install_luks`).
+- [ ] **The counted rollback runs through LUKS2.** Each armed boot and GRUB's fallback
+  to the previous deployment ask for the passphrase and open the root with it
+  (`logs/local-attempt1-luks-prompt.png` … `logs/local-fallback-luks-prompt.png`).
 
 ## Upkeep
 
