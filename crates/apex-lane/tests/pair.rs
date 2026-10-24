@@ -100,7 +100,7 @@ fn kernel_env(vr: &str) -> String {
     let srpm = format!("kernel-cachyos-0:{vr}.cachyos1.fc45.src");
     let file = Nevra::parse(&srpm).unwrap().file_name();
     format!(
-        "# pins\ncopr=bieszczaders/kernel-cachyos\nchroot=fedora-45-x86_64\nsrpm={srpm}\nsrpm_sha256={}\ncopr_key={COPR_FPR}\ntag=cachyos-{vr}\ntag_key={TAG_FPR}\n",
+        "# pins\ncopr=bieszczaders/kernel-cachyos\nchroot=fedora-45-x86_64\nsrpm={srpm}\nsrpm_sha256={}\ncopr_key={COPR_FPR}\ntag=cachyos-{vr}\ntag_repo=https://github.com/CachyOS/linux.git\ntag_key={TAG_FPR}\ntag_key_url=https://keys.openpgp.org/vks/v1/by-fingerprint/{TAG_FPR}\n",
         sha_of_name(&file)
     )
 }
@@ -1232,5 +1232,22 @@ fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
         String::from_utf8_lossy(&t.report.captured()).contains(&format!(
             "modules: 960 in the pair, 1000 in the last good pair {good}"
         ))
+    );
+}
+
+#[test]
+fn a_bump_without_the_tag_pins_says_which_is_missing() {
+    let t = PairTest::new();
+    let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
+    let text = std::fs::read_to_string(&k).unwrap();
+    let without = text.replace("tag_repo=https://github.com/CachyOS/linux.git\n", "");
+    assert_ne!(without, text);
+    write(&k, without);
+    commit_all(t.recipes.path());
+    *t.fake.bump.borrow_mut() = POINT.into();
+    let err = t.run(T0, |vm| vm.kernel_bump().unwrap_err().to_string());
+    assert!(
+        err.contains("kernel.env pins no tag_repo, so kernel-bump cannot verify the CachyOS tag"),
+        "{err}"
     );
 }

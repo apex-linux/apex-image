@@ -165,6 +165,7 @@ the pair job reads them with `sed`.
 | `copr_key` | yes | the COPR key's fingerprint, 40 uppercase hex digits |
 | `tag`, `tag_key` | no | the CachyOS tag and its key's fingerprint |
 | `copr_key_expires`, `tag_key_expires` | no | `YYYY-MM-DD` |
+| `tag_repo`, `tag_key_url` | for `kernel-bump` | `https://` URLs: the CachyOS git repository, and `tag_key`'s key file |
 
 | `nvidia.env` | Required | Value |
 |---|---|---|
@@ -238,9 +239,9 @@ One run may print both kernel lines, the point line first.
 - `point NEVRA`: mirrors that SRPM after checking it against the COPR key (and the
   pinned one, against its pinned sha256), then writes the bump report:
   - the CachyOS tag (`cachyos-VERSION-N`, N the release's first number), fetched from
-    `github.com/CachyOS/linux` into `~/apex-store/mirror/cachyos-linux.git`, and
-    `git verify-tag` against `tag_key` alone (from keys.openpgp.org, mirrored at first
-    sight);
+    `tag_repo` into `~/apex-store/mirror/cachyos-linux.git`, and `git verify-tag`
+    against `tag_key` alone (fetched from `tag_key_url`, its fingerprint checked,
+    mirrored at first sight); a `kernel.env` without these pins is exit 1;
   - the new SRPM's Source0 against the tag's `git archive`, both uncompressed, byte for
     byte;
   - the BORE patch (`0001-bore-cachy.patch`) and the `config` against the pinned SRPM's:

@@ -12,8 +12,6 @@ use crate::error::{Result, infra};
 use crate::shell::cmd::{Cmd, Program, Stderr};
 use crate::shell::fs;
 
-const CACHYOS_GIT: &str = "https://github.com/CachyOS/linux.git";
-const KEYS_OPENPGP: &str = "https://keys.openpgp.org/vks/v1/by-fingerprint";
 const BORE_PATCH: &str = "0001-bore-cachy.patch";
 const CONFIG: &str = "config";
 
@@ -26,9 +24,16 @@ impl Vm<'_> {
         (old, new): (&Path, &Path),
         srpm: &Nevra,
     ) -> Result<Report> {
-        let tag_key = kernel.tag_key.as_deref().ok_or_else(|| {
-            infra("kernel.env pins no tag_key, so kernel-bump cannot verify the CachyOS tag")
-        })?;
+        let pin = |value: &Option<String>, key: &str| {
+            value.clone().ok_or_else(|| {
+                infra(format!(
+                    "kernel.env pins no {key}, so kernel-bump cannot verify the CachyOS tag"
+                ))
+            })
+        };
+        let tag_key = pin(&kernel.tag_key, "tag_key")?;
+        let tag_repo = pin(&kernel.tag_repo, "tag_repo")?;
+        let tag_key_url = pin(&kernel.tag_key_url, "tag_key_url")?;
         let work = self.lane_work("kernel-bump");
         remove_tree(&work)?;
         let (old_dir, new_dir) = (work.join("old"), work.join("new"));
@@ -39,7 +44,7 @@ impl Vm<'_> {
         if !new_dir.join(&source0).is_file() {
             return Err(infra(format!("{srpm} holds no Source0 {source0}")));
         }
-        self.verify_tag(&tag, tag_key)?;
+        self.verify_tag(&tag, (&tag_key, &tag_key_url), &tag_repo)?;
         self.check_archive(&tag, &new_dir.join(&source0))?;
         let read = |dir: &Path, name: &str| fs::read(&dir.join(name));
         let sha = |dir: &Path, name: &str| fs::sha256_file(&dir.join(name));
@@ -62,7 +67,7 @@ impl Vm<'_> {
             from: kernel.srpm.nvr(),
             to: srpm.nvr(),
             tag,
-            tag_key: tag_key.to_owned(),
+            tag_key,
             source0,
             config,
             bore,
@@ -85,8 +90,13 @@ impl Vm<'_> {
     }
 
     /// The tag is fetched into a bare mirror and checked in a keyring of the pinned key alone.
-    fn verify_tag(&self, tag: &str, tag_key: &str) -> Result<()> {
-        let key = self.mirror_key(tag_key, &format!("{KEYS_OPENPGP}/{tag_key}"))?;
+    fn verify_tag(
+        &self,
+        tag: &str,
+        (tag_key, key_url): (&str, &str),
+        repo_url: &str,
+    ) -> Result<()> {
+        let key = self.mirror_key(tag_key, key_url)?;
         let repo = self.settings.store.join("mirror/cachyos-linux.git");
         if !repo.join("HEAD").is_file() {
             self.run_ok(
@@ -97,7 +107,7 @@ impl Vm<'_> {
         }
         self.run_ok(
             &Self::git_in(&repo)
-                .args(["fetch", "-q", "--depth", "1", "--no-tags", CACHYOS_GIT])
+                .args(["fetch", "-q", "--depth", "1", "--no-tags", "--", repo_url])
                 .arg(format!("+refs/tags/{tag}:refs/tags/{tag}")),
         )?;
         let home =
