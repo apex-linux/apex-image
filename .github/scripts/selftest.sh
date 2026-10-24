@@ -257,6 +257,13 @@ check_false "unknown state dies" grubenv_check sideways <<<"$env_plain"
 check "the reason names both variables" "still armed: apex_target=$D1 apex_counter=-1" \
     "$(grubenv_check disarmed <<<"$env_counted" || true)"
 
+green_state() {
+    bash -c '. "$1"; has=$2; vm_ssh() { [[ $* == "test -e $APEX_MENU_SNIPPET" && $has == yes ]]; }; green_grubstate' \
+        _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1"
+}
+check "a green boot of an image with the menu snippet is confirmed" confirmed "$(green_state yes)"
+check "a green boot of an older image is only disarmed" disarmed "$(green_state no)"
+
 deny=$(printf '{"digests":[{"digest":"%s","reason":"fallback","at":1}],"extra":1}' "$D1")
 check_true "denylisted" denylist_has "$D1" <<<"$deny"
 check_false "not denylisted" denylist_has "$D2" <<<"$deny"
