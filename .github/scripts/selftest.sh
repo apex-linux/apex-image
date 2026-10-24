@@ -2274,7 +2274,9 @@ pf_root() {
     : >"$PF/root/sys/fs/cgroup/cgroup.controllers"
     printf 'MemTotal:       32768000 kB\n' >"$PF/root/proc/meminfo"
     printf 'ssh-ed25519 AAAAkey apex-runner\n' >"$PF/home/.config/apex/runner/ssh/id_ed25519.pub"
-    for f in id_ed25519 known_hosts config; do echo x >"$PF/home/.config/apex/runner/ssh/$f"; done
+    for f in id_ed25519 config; do echo x >"$PF/home/.config/apex/runner/ssh/$f"; done
+    mkdir -p "$PF/home/vm/ssh"
+    printf '[127.0.0.1]:2222 ssh-ed25519 AAAAhost\n' | tee "$PF/home/.config/apex/runner/ssh/known_hosts" >"$PF/home/vm/ssh/known_hosts"
     chmod 600 "$PF/home/.config/apex/runner/ssh/id_ed25519"
 }
 cat >"$PF/bin/podman" <<'EOF'
@@ -2288,6 +2290,10 @@ cat >"$PF/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 [[ ${*: -1} == *"${FAKE_UNREACHABLE:-none}"* ]] && { printf 000; exit 6; }
 printf 200
+EOF
+cat >"$PF/bin/ssh-keygen" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == -F ]] && grep -F "$2 " "$4"
 EOF
 cat >"$PF/bin/df" <<'EOF'
 #!/usr/bin/env bash
@@ -2323,6 +2329,7 @@ pf_root
 check "a ready host passes" "rc=0" "$(pf)"
 check "with a row for each check" "kvm nested-kvm podman subids cgroup-v2 disk ram cpus net:github.com" \
     "$(awk 'NF > 2 { print $2 }' "$PF/out" | head -n 9 | paste -sd' ')"
+check "and the builder VM's host key the runner knows" PASS "$(pf_row vm-host-key)"
 check "and no row that fails or skips" 0 "$(grep -cE '^(FAIL|SKIP) ' "$PF/out")"
 check "the forced command is found in the builder VM" PASS "$(pf >/dev/null; pf_row ci-build)"
 pf_fails() { # ROW SETUP [VAR=VALUE...]: the row fails and the exit is 1
@@ -2348,6 +2355,7 @@ pf_fails net:ghcr.io : FAKE_UNREACHABLE=ghcr.io
 pf_fails runner-key 'chmod 644 "$PF/home/.config/apex/runner/ssh/id_ed25519"'
 pf_fails ci-build : FAKE_BINDING=no-restriction
 pf_fails time-sync : FAKE_NTP=no
+pf_fails vm-host-key 'printf "[127.0.0.1]:2222 ssh-ed25519 AAAAnew\n" >"$PF/home/vm/ssh/known_hosts"'
 }
 pf_root
 mkdir -p "$PF/home/vm"
@@ -2358,8 +2366,8 @@ check "a smaller VM asks for less RAM and fewer threads" "rc=0" "$(pf APEX_VM_ME
 check "the VM's own disk counts toward its space" PASS "$(pf FAKE_AVAIL=91268055040 >/dev/null; pf_row disk)"
 pf_root
 rm "$PF/home/.config/apex/runner/ssh/"*
-check "before runner.sh key the key rows skip, and the host still passes" "rc=0 SKIP SKIP" \
-    "$(pf) $(pf_row runner-key) $(pf_row ci-build)"
+check "before runner.sh key the key rows skip, and the host still passes" "rc=0 SKIP SKIP SKIP" \
+    "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
 check "a stopped builder VM skips the binding" "rc=0 SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build)"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"

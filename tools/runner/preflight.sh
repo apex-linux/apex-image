@@ -23,6 +23,8 @@ and exit 1 when any row fails.
   runner-key   the runner's ssh key, known_hosts and config (after runner.sh key)
   ci-build     the key's forced command in the builder VM (after just vm-ci-install,
                while the VM runs)
+  vm-host-key  the runner's known_hosts holds the builder VM's current host key (a new VM,
+               after builder-vm.sh destroy and create, has a new one)
   time-sync    the clock is synchronised (signatures and tokens check times)
 EOF
     exit 2
@@ -43,6 +45,7 @@ root=${APEX_PREFLIGHT_ROOT:-}
 user=$(id -un)
 vm_dir=${APEX_VM_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/apex/builder}
 ssh_dir=${XDG_CONFIG_HOME:-$HOME/.config}/apex/runner/ssh
+ssh_port=${APEX_VM_SSH_PORT:-2222}
 builder_vm=${APEX_PREFLIGHT_BUILDER_VM:-$here/../builder-vm/builder-vm.sh}
 fails=0
 
@@ -200,6 +203,23 @@ check_runner_key() {
     fi
 }
 
+host_keys() { ssh-keygen -F "[127.0.0.1]:$ssh_port" -f "$1" 2>/dev/null | awk '!/^#/ { print $(NF - 1), $NF }' | sort; }
+
+check_host_key() {
+    local runner_keys vm_keys
+    if [[ ! -s $ssh_dir/known_hosts || ! -s $vm_dir/ssh/known_hosts ]]; then
+        row SKIP vm-host-key "no runner known_hosts or no builder VM known_hosts yet (just vm-start, then just runner key)"
+        return
+    fi
+    runner_keys=$(host_keys "$ssh_dir/known_hosts")
+    vm_keys=$(host_keys "$vm_dir/ssh/known_hosts")
+    if [[ -n $vm_keys && $runner_keys == "$vm_keys" ]]; then
+        row PASS vm-host-key "the runner knows the builder VM's current host key"
+    else
+        row FAIL vm-host-key "the runner's known_hosts does not hold the builder VM's current host key: just runner key"
+    fi
+}
+
 check_time() {
     local synced
     synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
@@ -221,6 +241,7 @@ main() {
     check_ram_cpus
     check_net
     check_runner_key
+    check_host_key
     check_time
     if ((fails > 0)); then
         printf '\npreflight: %d row(s) failed; fix them before the setup in tools/runner/README.md\n' "$fails"
