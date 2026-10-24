@@ -214,6 +214,20 @@ lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.m
   VM, or rerun `just vm-ci-install` with a new key from `just runner key` after you
   delete `~/.config/apex/runner/ssh/`.
 
+## Upgrades
+
+Owner steps that a change on `main` needs on the host, newest first.
+
+- **`ci-build` takes `next` (the next lane, ROADMAP S6).** The forced command's grammar
+  is now `ci-build <sha> [daily | next]`, plus `ci-build modes`. An older copy refuses
+  both. Run `just vm-ci-install` with the VM running, from a checkout of current `main`.
+  Then `tools/runner/preflight.sh` shows `PASS ci-build-modes ... daily next`; before
+  that it fails the row. Until the upgrade, `vm.yml`'s `next-compose` asks
+  `ci-build modes`, gets a refusal, warns, and sends nothing; the 45 run is unaffected.
+  `next-compose` stays off until the repository variable `APEX_NEXT_COMPOSE` is `on`
+  (Settings, Secrets and variables, Actions, Variables), around Fedora 46's branch
+  point (2027-02-09).
+
 ## Troubleshooting
 
 - **`ci-build stale` warning.** The builder VM runs the copy of `ci-build` that
@@ -244,6 +258,19 @@ for the VM's log. In the VM, `ci-build` then:
 6. on the daily run only (`ci-build <sha> daily`), runs `lane-absorb-report.sh`
    whatever the build's result: does each lane series apply at fuzz 0 to the newest
    F45 stable and updates-testing SRPM? It never changes the exit status.
+
+With `APEX_NEXT_COMPOSE=on`, the scheduled run then has a second job, `next-compose`,
+after the 45 build whatever its result. It asks `ci-build modes`. When the host takes
+`next`, it runs `ci-build <sha> next`: the commit's next release (the one
+`image/fedora/N.env` with `LANE=next`) through the components, the lane in
+`~/apex-store/next`, the image and G1, as `APEX_FEDORA=N`. Without a fedora-N kernel
+pair from apex-kernel, the kernel family stays stock and the report says the pair is
+unavailable. A userspace family that fails to build on the release stays stock too, with
+its failing step and log, and the run goes on: the report lists every family that fell
+back (their logs are the `next-logs-<sha>` artifact) and G1's result on the image, which
+is labelled `degraded=` for each of them. On 45 a failure still holds or stops the lane
+as before. The job is report-only: it warns on a failure and never fails the run, and
+nothing it builds is promoted, pushed or published.
 
 The gates step writes the results to the job summary. It fails when there is no gates
 file. The artifact `vm-logs-<sha>` holds the logs the run returned, and is kept 14 days:

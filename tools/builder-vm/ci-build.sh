@@ -11,7 +11,10 @@ The builder VM's one entry point for the self-hosted runner (tools/runner/README
 /usr/local/libexec/apex/ci-build, and binds the runner's key to it in authorized_keys
 with restrict,command=. It takes nothing but SSH_ORIGINAL_COMMAND, which must be exactly
 
-  ci-build <40 lowercase hex digits> [daily]
+  ci-build <40 lowercase hex digits> [daily | next]
+
+or `ci-build modes`, which prints the modes this copy takes ("daily next"): vm.yml asks
+before it sends next, which an older copy refuses.
 
 It fetches main from APEX_CI_REMOTE, refuses a commit that main does not contain, checks
 the commit out in a clean ~/apex-image (keeping _build/, where the G4 record lives), and
@@ -27,7 +30,17 @@ budget, warning-only). With daily (vm.yml's scheduled run), metrics.sh also take
 image's size, and lane-absorb-report.sh runs after the build, whatever its result:
 absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv, one "family, SRPM,
 result, detail" line for each updates-testing row that is not "applies" or "same".
-Neither ever changes the exit status. When this installed copy differs from the
+Neither ever changes the exit status.
+
+With next (vm.yml's next-compose, report-only), it builds the commit's next release, the
+one image/fedora/N.env with LANE=next, as APEX_FEDORA=N: the components, the lane in
+~/apex-store/next, the image and G1, never G2, G4, metrics or a promotion. next/ holds
+build.env (BASE_SOURCE, BASE_VERSION), image.env and the next lane's rpms.lock.next;
+ci-build.txt names the release, whether the kernel pair was available, and each family
+that fell back to Fedora's build ("fallback FAMILY at STEP (LOG): REASON"; next/failures/ holds
+those logs). A commit
+without a next release builds nothing and says "next none". When this installed copy
+differs from the
 commit's tools/builder-vm/ci-build.sh, ci-build.txt says "stale"; it never updates
 itself from the checkout, which would let any commit of main rewrite the forced command.
 Nothing is pushed or signed but the RPMs, and the RPM key and ~/apex-store never leave
@@ -63,8 +76,8 @@ git_() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directo
 
 requested_sha() {
     local request=${SSH_ORIGINAL_COMMAND-}
-    [[ $request =~ ^ci-build\ ([0-9a-f]{40})(\ daily)?$ ]] || return 1
-    printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]:+daily}"
+    [[ $request =~ ^ci-build\ ([0-9a-f]{40})(\ (daily|next))?$ ]] || return 1
+    printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
 }
 
 ci_remote() {
@@ -177,6 +190,75 @@ stage_absorb() {
         "$out/absorb/rows.tsv" >"$out/absorb/warnings.tsv"
 }
 
+# The one image/fedora/N.env with LANE=next, as N; none is no error, two are.
+next_release() {
+    local env release found=
+    for env in image/fedora/*.env; do
+        grep -qx 'LANE=next' "$env" 2>/dev/null || continue
+        release=$(sed -n 's/^FEDORA=//p' "$env" | head -n 1)
+        if [[ -n $found || ! $release =~ ^[0-9]{2}$ || $env != "image/fedora/$release.env" ]]; then
+            log "next: $env is not the one next release (FEDORA=$release, after '${found:-none}')"
+            return 1
+        fi
+        found=$release
+    done
+    printf '%s\n' "${found:-none}"
+}
+
+# Whether the next image took the kernel pair, from the next lane's lock.
+pair_state() {
+    local line reason
+    line=$(awk '$1 == "family" && $2 == "kernel-cachyos"' "$1" 2>/dev/null)
+    case $(awk '{ print $3 }' <<<"$line") in
+        '') echo "pair none: no kernel-cachyos family in the next lane's lock" ;;
+        stock)
+            reason=${line#*reason=}
+            [[ $reason == "pair unavailable"* ]] || reason="pair stock: $reason"
+            echo "$reason" ;;
+        *) echo "pair available: $(awk '{ print $3, $4 }' <<<"$line")" ;;
+    esac
+}
+
+# The families that fell back to Fedora's build on the next release: the port's to-do list.
+fallbacks() {
+    awk '$1 == "family" && $3 == "stock" && / reason=next lane fallback / {
+        f = $2; sub(/^.* reason=next lane fallback /, ""); print "fallback " f " " $0 }' "$1" 2>/dev/null || true
+}
+
+copy_failures() {
+    local store=$1 destination=$2 stamp=$3 log name
+    for log in "$store"/*/last-failure.txt; do
+        [[ -s $log && $log -nt $stamp ]] || continue
+        name=${log%/last-failure.txt}
+        mkdir -p -- "$destination"
+        cp -- "$log" "$destination/${name##*/}.txt"
+    done
+}
+
+build_next() {
+    local sha=$1 out=$2 rc=0 release
+    fetch_main
+    check_out "$sha"
+    cd -- "$CHECKOUT"
+    check_installed >>"$out/ci-build.txt"
+    release=$(next_release) || return 1
+    printf 'next %s\n' "$release" >>"$out/ci-build.txt"
+    [[ $release != none ]] || { log "next: this commit has no image/fedora/*.env with LANE=next"; return 0; }
+    export APEX_FEDORA=$release
+    stage_components 9>&- </dev/null >&2
+    log "== build-image.sh, the next lane (Fedora $release): components, lane, image, G1"
+    bash tools/builder-vm/build-image.sh 9>&- </dev/null >&2 || rc=$?
+    printf 'build-image %s\n' "$rc" >>"$out/ci-build.txt"
+    mkdir -p -- "$out/next"
+    copy_if_newer _build/next/image/build.env "$out/next/build.env" "$out/.started"
+    copy_if_newer _build/next/image/image.env "$out/next/image.env" "$out/.started"
+    copy_if_newer "$STORE/next/rpms.lock.next" "$out/next/rpms.lock.next" "$out/.started"
+    pair_state "$out/next/rpms.lock.next" >>"$out/ci-build.txt"
+    fallbacks "$out/next/rpms.lock.next" >>"$out/ci-build.txt"
+    copy_failures "$STORE/next/pkgs" "$out/next/failures" "$out/.started"
+    return "$rc"
+}
+
 build() {
     local sha=$1 out=$2 daily=$3 rc=0 promote
     local stamp=$out/.started
@@ -213,9 +295,13 @@ main() {
         '') ;;
         *) usage >&2; exit "$EXIT_REFUSED" ;;
     esac
-    local sha daily out rc request
-    request=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha> [daily]'"
-    read -r sha daily <<<"$request"
+    local sha mode out rc request
+    if [[ ${SSH_ORIGINAL_COMMAND-} == "ci-build modes" ]]; then
+        echo "daily next"
+        exit 0
+    fi
+    request=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha> [daily | next]'"
+    read -r sha mode <<<"$request"
 
     # stdout carries only the results tar.
     exec 3>&1 1>&2
@@ -228,7 +314,11 @@ main() {
     printf 'sha %s\nstarted %s\n' "$sha" "$(utc_now)" >"$out/ci-build.txt"
     # Not under ||, which would switch errexit off inside the build.
     set +e
-    (set -e; build "$sha" "$out" "$daily")
+    if [[ $mode == next ]]; then
+        (set -e; : >"$out/.started"; build_next "$sha" "$out")
+    else
+        (set -e; build "$sha" "$out" "${mode:+daily}")
+    fi
     rc=$?
     set -e
     printf 'finished %s\nexit %s\n' "$(utc_now)" "$rc" >>"$out/ci-build.txt"
