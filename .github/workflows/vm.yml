@@ -69,19 +69,22 @@ jobs:
           sha=${INPUT_SHA:-$GITHUB_SHA}
           [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a full commit sha: $sha"; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          # The daily run also asks for the lane's absorption report (S1b's early warning).
+          if [[ $GITHUB_EVENT_NAME == schedule ]]; then echo "extra=absorb" >>"$GITHUB_OUTPUT"; fi
 
       # ci-build (tools/builder-vm/ci-build.sh) runs every stage in the VM, starting with the
       # components hook for tools/components.sh fetch; the RPM key and ~/apex-store stay there.
       - name: Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)
         env:
           SHA: ${{ steps.commit.outputs.sha }}
+          EXTRA: ${{ steps.commit.outputs.extra }}
         run: |
           # The VM's build log is not trusted to issue workflow commands.
           token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
           echo "::stop-commands::$token"
           rc=0
           # shellcheck disable=SC2029 # the sha is the remote command, checked above and by ci-build
-          ssh apex-builder ci-build "$SHA" >"$RUNNER_TEMP/results.tar" || rc=$?
+          ssh apex-builder ci-build "$SHA" ${EXTRA:+"$EXTRA"} >"$RUNNER_TEMP/results.tar" || rc=$?
           echo "::$token::"
           case $rc in
             0) ;;
@@ -99,7 +102,12 @@ jobs:
           mkdir -p "$out"
           [[ -s $RUNNER_TEMP/results.tar ]] || { echo "::error::the builder VM returned no results"; exit 1; }
           tar -xf "$RUNNER_TEMP/results.tar" -C "$out" --no-same-owner --no-same-permissions
-          if [[ -d $out/qualify-logs ]]; then echo "qualify-logs=$out/qualify-logs" >>"$GITHUB_OUTPUT"; fi
+          logs=$RUNNER_TEMP/logs
+          mkdir -p "$logs"
+          for d in qualify-logs absorb; do
+            if [[ -d $out/$d ]]; then cp -r -- "$out/$d" "$logs/"; fi
+          done
+          if [[ -n $(ls -A "$logs") ]]; then echo "logs=$logs" >>"$GITHUB_OUTPUT"; fi
           section() {
             [[ -s $out/$2 ]] || return 0
             printf '### %s\n\n```\n' "$1"
@@ -118,14 +126,25 @@ jobs:
               printf '### G4 (results.md)\n\n'
               cat -- "$out/g4-results.md"
             fi
+            if [[ -s $out/absorb/report.md ]]; then
+              printf '\n### Absorption (lane-absorb-report.sh)\n\n'
+              sed '1d' -- "$out/absorb/report.md"
+            fi
           } >>"$GITHUB_STEP_SUMMARY"
+          # Data from the VM: one escaped line each, never a command of its own. Never gating.
+          esc() { local v=${1//'%'/%25}; v=${v//$'\r'/%0D}; printf '%s' "${v//$'\n'/%0A}"; }
+          if [[ -s $out/absorb/warnings.tsv ]]; then
+            while IFS=$'\t' read -r family srpm result detail; do
+              echo "::warning title=absorb $(esc "$family")::$(esc "$srpm") (updates-testing): $(esc "$result") $(esc "$detail")"
+            done <"$out/absorb/warnings.tsv"
+          fi
           [[ -s $out/gates-passed.txt ]] || { echo "::error::no gates file: G2 or G4 did not pass"; exit 1; }
 
-      - name: G4's screendumps, journals and serial logs
-        if: ${{ !cancelled() && steps.results.outputs.qualify-logs != '' }}
+      - name: G4's screendumps, journals and serial logs, and the absorption report
+        if: ${{ !cancelled() && steps.results.outputs.logs != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: qualify-logs-${{ steps.commit.outputs.sha }}
-          path: ${{ steps.results.outputs.qualify-logs }}
+          path: ${{ steps.results.outputs.logs }}
           retention-days: 14
           if-no-files-found: ignore

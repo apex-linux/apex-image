@@ -19,8 +19,8 @@ GitHub ── JIT config ──▶ runner.sh once (systemd user service)
 |---|---|
 | A fresh runner for every job | `runner.sh once` asks GitHub for a just-in-time (JIT) runner config, which is valid for one job, and runs the runner in a new rootless podman container (`--rm`, all capabilities dropped, `no-new-privileges`). The container is removed when the job ends. `apex-runner.service` then starts the next one, so one runner is always waiting. |
 | Only `vm.yml` on `main` gets the runner | The runner group `apex-kvm` serves only `apex-image` and only the workflow `apex-linux/apex-image/.github/workflows/vm.yml@refs/heads/main`. `vm.yml` has no `pull_request` trigger, and each of its jobs checks the repository and `refs/heads/main`. |
-| The runner can only build `main` | The container mounts a key whose `authorized_keys` line is `restrict,command="/usr/local/libexec/apex/ci-build"`: no shell, no pty, no forwarding. `ci-build` accepts only `SSH_ORIGINAL_COMMAND` = `ci-build` plus 40 lowercase hex digits. It matches that against a regular expression and never evaluates it. After a fetch it refuses a commit that `origin/main` does not contain. |
-| The RPM key and the store stay in the VM | `ci-build` returns only a tar of the result files: `ci-build.txt`, `gates-passed.txt`, `g2-result.txt`, `g4-results.md`, `g4-passed.txt` and `lock.diff`. `~/.local/share/apex/rpm-gnupg` and `~/apex-store` never leave the VM. |
+| The runner can only build `main` | The container mounts a key whose `authorized_keys` line is `restrict,command="/usr/local/libexec/apex/ci-build"`: no shell, no pty, no forwarding. `ci-build` accepts only `SSH_ORIGINAL_COMMAND` = `ci-build` plus 40 lowercase hex digits, and optionally the word `absorb` (the daily run's absorption report). It matches that against a regular expression and never evaluates it. After a fetch it refuses a commit that `origin/main` does not contain. |
+| The RPM key and the store stay in the VM | `ci-build` returns only a tar of the result files: `ci-build.txt`, `gates-passed.txt`, `g2-result.txt`, `g4-results.md`, `g4-passed.txt`, `lock.diff`, G4's logs and, on the daily run, `absorb/`. `~/.local/share/apex/rpm-gnupg` and `~/apex-store` never leave the VM. |
 | Nothing is published | No registry push, no image signing: that waits for the cosign keys (S1d). The workflow token has no permissions (`permissions: {}`), and the job uses no actions. |
 | The container reaches only the VM's sshd on the host | Its network is pasta with only `127.0.0.1:2222` forwarded to the host's loopback, and `--no-map-gw`. `runner.sh check` tests this. |
 | Builds never overlap | `ci-build`, `builder-vm.sh sync`, `run` and `image` all take `~/.apex-build.lock` in the VM. A CI build waits up to 30 minutes for the lock, then exits 75. `just vm-sync` refuses while a CI build runs. |
@@ -219,12 +219,17 @@ for the VM's log. In the VM, `ci-build` then:
 4. runs `build-image.sh`: the RPMs, libfprint, the rebuild lane, the image, G2 twice,
    G4 when `qualify.sh g4-due` says it is due, and `_build/gates-passed.txt`;
 5. runs `lane.sh promote` when the gates passed and `rpms.lock.next` differs from
-   `rpms.lock`.
+   `rpms.lock`;
+6. on the daily run only (`ci-build <sha> absorb`), runs `lane-absorb-report.sh`
+   whatever the build's result: does each lane series apply at fuzz 0 to the newest
+   F45 stable and updates-testing SRPM? It never changes the exit status.
 
 The gates step writes the results to the job summary. It fails when there is no gates
 file. When G4 ran, its screendumps, journals and serial logs follow as the artifact
 `qualify-logs-<sha>`, kept 14 days: each file at most 20 MiB and 200 MiB in all, with
-`SKIPPED` naming what was left out.
+`SKIPPED` naming what was left out. The daily run's absorption report joins the summary
+and that artifact (`absorb/`), with a warning for each family whose updates-testing
+build does not take its series with `git apply`.
 
 The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and
