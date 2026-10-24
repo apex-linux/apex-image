@@ -13,7 +13,7 @@ use crate::error::ConfigError;
 pub const KERNEL_NAME: &str = "kernel-cachyos";
 pub const KMOD_SRPM_NAME: &str = "nvidia-kmod";
 
-const KERNEL_KEYS: [&str; 9] = [
+const KERNEL_KEYS: [&str; 11] = [
     "copr",
     "chroot",
     "srpm",
@@ -21,7 +21,9 @@ const KERNEL_KEYS: [&str; 9] = [
     "copr_key",
     "copr_key_expires",
     "tag",
+    "tag_repo",
     "tag_key",
+    "tag_key_url",
     "tag_key_expires",
 ];
 const KERNEL_REQUIRED: [&str; 5] = ["copr", "chroot", "srpm", "srpm_sha256", "copr_key"];
@@ -92,7 +94,9 @@ pub struct KernelPins {
     pub copr_key: String,
     pub copr_key_expires: Option<String>,
     pub tag: Option<String>,
+    pub tag_repo: Option<String>,
     pub tag_key: Option<String>,
+    pub tag_key_url: Option<String>,
     pub tag_key_expires: Option<String>,
 }
 
@@ -139,6 +143,13 @@ fn is_fingerprint(s: &str) -> bool {
 
 fn is_date(s: &str) -> bool {
     UtcSecond::parse(format!("{s}T00:00:00Z").as_bytes()).is_some()
+}
+
+fn is_https_url(s: &str) -> bool {
+    s.len() > "https://".len()
+        && s.starts_with("https://")
+        && s.bytes()
+            .all(|b| b.is_ascii_graphic() && !b"\"'`$\\".contains(&b))
 }
 
 fn is_word(s: &str) -> bool {
@@ -252,6 +263,9 @@ pub fn parse_kernel(file: &str, bytes: &[u8]) -> Result<KernelPins, ConfigError>
         "a 40-digit uppercase fingerprint",
     )?;
     v.check("tag", is_word, "a git tag name")?;
+    for key in ["tag_repo", "tag_key_url"] {
+        v.check(key, is_https_url, "an https:// URL")?;
+    }
     for key in ["copr_key_expires", "tag_key_expires"] {
         v.check(key, is_date, "a date, YYYY-MM-DD")?;
     }
@@ -270,7 +284,9 @@ pub fn parse_kernel(file: &str, bytes: &[u8]) -> Result<KernelPins, ConfigError>
         copr_key: v.get("copr_key"),
         copr_key_expires: v.opt("copr_key_expires"),
         tag: v.opt("tag"),
+        tag_repo: v.opt("tag_repo"),
         tag_key: v.opt("tag_key"),
+        tag_key_url: v.opt("tag_key_url"),
         tag_key_expires: v.opt("tag_key_expires"),
     })
 }
@@ -332,7 +348,9 @@ mod tests {
         "copr_key_expires=2028-01-23\n",
         "\n",
         "tag=cachyos-7.3.0-4\n",
+        "tag_repo=https://github.com/CachyOS/linux.git\n",
         "tag_key=E8B9AA39F054E30E8290D492C3C4820857F654FE\n",
+        "tag_key_url=https://keys.openpgp.org/vks/v1/by-fingerprint/E8B9AA39F054E30E8290D492C3C4820857F654FE\n",
         "tag_key_expires=2028-03-31\n",
     );
     const NVIDIA_ENV: &str = concat!(
@@ -362,6 +380,15 @@ mod tests {
             ("7.3", "7.3")
         );
         assert_eq!(k.tag.as_deref(), Some("cachyos-7.3.0-4"));
+        assert_eq!(
+            k.tag_repo.as_deref(),
+            Some("https://github.com/CachyOS/linux.git")
+        );
+        assert!(
+            k.tag_key_url
+                .unwrap()
+                .ends_with("/E8B9AA39F054E30E8290D492C3C4820857F654FE")
+        );
         let n = parse_nvidia("nvidia.env", NVIDIA_ENV.as_bytes()).unwrap();
         assert_eq!(
             n.kmod_srpm.file_name(),
@@ -410,6 +437,14 @@ mod tests {
             (
                 KERNEL_ENV.replace("2028-01-23", "2028-02-30"),
                 "copr_key_expires must be a date",
+            ),
+            (
+                KERNEL_ENV.replace("tag_repo=https://", "tag_repo=http://"),
+                "tag_repo must be an https:// URL",
+            ),
+            (
+                KERNEL_ENV.replace("tag_key_url=https://keys", "tag_key_url=https://$keys"),
+                "tag_key_url must be an https:// URL",
             ),
             (
                 KERNEL_ENV.replace("copr=bieszczaders/", "copr=bieszczaders "),

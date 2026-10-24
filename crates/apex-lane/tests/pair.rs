@@ -28,6 +28,7 @@ use apex_lane::vm::{Outcome as Built, Settings, Vm};
 const APEX_FPR: &str = "553A938903DFFEEA647F7CC4ABEF111D1FCF882B";
 const COPR_FPR: &str = "537DEED33436B0367F5B26D5B3E3132CF10859CF";
 const NEGATIVO17_FPR: &str = "0C5D0F470484AE2FC40A9B6597F3008993E8909B";
+const TAG_FPR: &str = "E8B9AA39F054E30E8290D492C3C4820857F654FE";
 const PKG_ENV: &str = "source=copr-srpm\nfamily=kernel-cachyos\ninstall=kernel-cachyos kernel-cachyos-core kernel-cachyos-modules\nkernel_env=kernel.env\nnvidia_env=nvidia.env\n";
 const T0: &str = "2026-12-01T00:00:00Z";
 const KERNEL_SIDE: [&str; 4] = [
@@ -99,7 +100,7 @@ fn kernel_env(vr: &str) -> String {
     let srpm = format!("kernel-cachyos-0:{vr}.cachyos1.fc45.src");
     let file = Nevra::parse(&srpm).unwrap().file_name();
     format!(
-        "# pins\ncopr=bieszczaders/kernel-cachyos\nchroot=fedora-45-x86_64\nsrpm={srpm}\nsrpm_sha256={}\ncopr_key={COPR_FPR}\ntag=cachyos-{vr}\n",
+        "# pins\ncopr=bieszczaders/kernel-cachyos\nchroot=fedora-45-x86_64\nsrpm={srpm}\nsrpm_sha256={}\ncopr_key={COPR_FPR}\ntag=cachyos-{vr}\ntag_repo=https://github.com/CachyOS/linux.git\ntag_key={TAG_FPR}\ntag_key_url=https://keys.openpgp.org/vks/v1/by-fingerprint/{TAG_FPR}\n",
         sha_of_name(&file)
     )
 }
@@ -129,6 +130,10 @@ struct Fake {
     keyrings: RefCell<BTreeMap<String, String>>,
     job: RefCell<Box<Job>>,
     bump: RefCell<String>,
+    /// Each SRPM's `config` by its version, `CONFIG_A=y` when not set.
+    configs: RefCell<BTreeMap<String, String>>,
+    tag_signer: RefCell<String>,
+    archive_matches: Cell<bool>,
     /// Modules in kernel-cachyos-modules, by kernel version-release; 1000 otherwise.
     modules: RefCell<BTreeMap<String, usize>>,
     real: StdRunner,
@@ -171,6 +176,9 @@ impl Fake {
                 panic!("no job expected")
             })),
             bump: RefCell::default(),
+            configs: RefCell::default(),
+            tag_signer: RefCell::new(TAG_FPR.into()),
+            archive_matches: Cell::new(true),
             modules: RefCell::default(),
             real: StdRunner::inherit(),
         }
@@ -190,6 +198,40 @@ impl Fake {
             .count()
     }
 
+    /// The tools of `kernel-bump`'s report, past `bump.sh`.
+    fn report_tools(&self, cmd: &Cmd) -> Option<Outcome> {
+        let args = argv(cmd);
+        let has = |a: &str| args.iter().any(|x| x == a);
+        match cmd.program {
+            Program::Rpm if has("[%{PATCH}\\n]") => ok("anatase-1.patch\nanatase-2.patch\n"),
+            Program::Bash if args[1].contains("cmp -s") => Some(Outcome {
+                code: i32::from(!self.archive_matches.get()),
+                ..Outcome::default()
+            }),
+            Program::Tar if has("-tzf") => {
+                let tarball = args.last().unwrap().rsplit('/').next().unwrap();
+                let top = tarball.strip_suffix(".tar.gz").unwrap();
+                ok(&format!("{top}/\n{top}/Makefile\n"))
+            }
+            Program::Git if has("fetch") => {
+                assert!(has("https://github.com/CachyOS/linux.git"), "{args:?}");
+                ok("")
+            }
+            Program::Git if has("verify-tag") => {
+                let fpr = self.tag_signer.borrow();
+                Some(Outcome {
+                    code: 0,
+                    stdout: Vec::new(),
+                    stderr: format!(
+                        "[GNUPG:] GOODSIG X Peter\n[GNUPG:] VALIDSIG {fpr} 2026-10-23 1 0 4 0 22 10 00 {fpr}\n"
+                    )
+                    .into_bytes(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn script(&self, cmd: &Cmd) -> Option<Outcome> {
         let args = argv(cmd);
         let has = |a: &str| args.iter().any(|x| x == a);
@@ -201,6 +243,8 @@ impl Fake {
                     format!("KEY:{COPR_FPR}")
                 } else if url.ends_with("RPM-GPG-KEY-slaanesh") {
                     format!("KEY:{NEGATIVO17_FPR}")
+                } else if url.contains("keys.openpgp.org") {
+                    format!("KEY:{TAG_FPR}")
                 } else {
                     url.rsplit('/').next().unwrap().to_owned()
                 };
@@ -287,7 +331,7 @@ impl Fake {
 impl Runner for Fake {
     fn run(&self, cmd: &Cmd) -> Result<Outcome> {
         self.log.borrow_mut().push(cmd.clone());
-        if let Some(out) = self.script(cmd) {
+        if let Some(out) = self.report_tools(cmd).or_else(|| self.script(cmd)) {
             return Ok(out);
         }
         match cmd.program {
@@ -296,8 +340,41 @@ impl Runner for Fake {
         }
     }
 
+    /// rpm2cpio | cpio of a kernel SRPM: its Source0, config and BORE patch.
     fn pipe(&self, first: &Cmd, second: &Cmd) -> Result<(Outcome, Outcome)> {
-        panic!("unexpected pipe: {first} | {second}")
+        assert_eq!(
+            (first.program, second.program),
+            (Program::Rpm2cpio, Program::Cpio)
+        );
+        let srpm = argv(first)[0].rsplit('/').next().unwrap().to_owned();
+        let nevra = Nevra::parse(&format!(
+            "kernel-cachyos-0:{}",
+            srpm.strip_prefix("kernel-cachyos-")
+                .unwrap()
+                .strip_suffix(".rpm")
+                .unwrap()
+        ))
+        .unwrap();
+        let dir = second.cwd.clone().unwrap();
+        let tag = format!(
+            "cachyos-{}-{}",
+            nevra.version,
+            nevra.release.split('.').next().unwrap()
+        );
+        write(&dir.join(format!("{tag}.tar.gz")), &tag);
+        let vr = format!(
+            "{}-{}",
+            nevra.version,
+            nevra.release.split('.').next().unwrap()
+        );
+        let config = self.configs.borrow().get(&vr).cloned();
+        write(
+            &dir.join("config"),
+            config.unwrap_or_else(|| "CONFIG_A=y\n".into()),
+        );
+        write(&dir.join("0001-bore-cachy.patch"), "bore");
+        write(&dir.join("kernel-cachyos.spec"), "spec");
+        Ok((Outcome::default(), Outcome::default()))
     }
 
     fn sleep(&self, _: Duration) {}
@@ -1042,6 +1119,98 @@ fn a_point_and_a_major_bump_together() {
     assert!(shown.contains("7.4.0-1.cachyos1.fc45.src is a new major: waiting for owner; the pinned 7.3 reaches its EOL in 9d"), "{shown}");
 }
 
+const POINT: &str = "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\n";
+const POINT_BRANCH: &str = "kernel-bump/kernel-cachyos-7.3.1-1.cachyos1.fc45";
+
+#[test]
+fn a_point_bump_carries_its_report() {
+    let t = PairTest::new();
+    t.fake.configs.borrow_mut().insert(
+        "7.3.1-1".into(),
+        "CONFIG_A=y\n# CONFIG_B is not set\n".into(),
+    );
+    *t.fake.bump.borrow_mut() = POINT.into();
+    t.run(T0, |vm| vm.kernel_bump().unwrap());
+    let message = git(
+        t.recipes.path(),
+        &["log", "-1", "--format=%B", POINT_BRANCH],
+    );
+    for line in [
+        "Bump report: kernel-cachyos-7.3.0-4.cachyos1.fc45 -> kernel-cachyos-7.3.1-1.cachyos1.fc45",
+        &format!("- tag cachyos-7.3.1-1: git verify-tag gives VALIDSIG for {TAG_FPR} alone"),
+        "- Source0 cachyos-7.3.1-1.tar.gz: byte-identical to the tag's git archive",
+        "- BORE patch: byte-identical",
+        "- config: 1 new, 0 changed, 0 removed",
+        "  + CONFIG_B=n",
+        "- NVIDIA kmod patches: the kmod SRPM is not mirrored yet",
+    ] {
+        assert!(message.contains(line), "no '{line}' in:\n{message}");
+    }
+    let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
+    assert!(
+        shown.contains("### kernel-bump: kernel-cachyos-7.3.1-1.cachyos1.fc45"),
+        "{shown}"
+    );
+    assert!(
+        t.store
+            .path()
+            .join("mirror/kernel-cachyos-7.3.0-4.cachyos1.fc45.src.rpm")
+            .is_file(),
+        "the pinned SRPM is mirrored for the diff"
+    );
+}
+
+#[test]
+fn a_config_change_beyond_new_symbols_holds_the_bump() {
+    let t = PairTest::new();
+    t.with_good_pair();
+    t.fake
+        .configs
+        .borrow_mut()
+        .insert("7.3.1-1".into(), "CONFIG_A=m\n".into());
+    *t.fake.bump.borrow_mut() = POINT.into();
+    t.run(T0, |vm| vm.kernel_bump().unwrap());
+    assert_eq!(
+        git(t.recipes.path(), &["branch", "--list", "kernel-bump/*"]),
+        "",
+        "no bump branch"
+    );
+    let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
+    for line in [
+        "  ~ CONFIG_A: y -> m",
+        "- NVIDIA kmod patches: anatase-1.patch anatase-2.patch",
+        "Held: the config changes beyond new symbols",
+        "held: the config changes beyond new symbols; the owner reads the report",
+    ] {
+        assert!(shown.contains(line), "no '{line}' in:\n{shown}");
+    }
+}
+
+#[test]
+fn a_tag_or_source0_that_does_not_verify_stops_the_bump() {
+    let t = PairTest::new();
+    *t.fake.bump.borrow_mut() = POINT.into();
+    *t.fake.tag_signer.borrow_mut() = COPR_FPR.into();
+    let err = t.run(T0, |vm| vm.kernel_bump().unwrap_err().to_string());
+    assert!(
+        err.contains(&format!(
+            "the CachyOS tag cachyos-7.3.1-1 has no good signature by {TAG_FPR}"
+        )),
+        "{err}"
+    );
+    *t.fake.tag_signer.borrow_mut() = TAG_FPR.into();
+    t.fake.archive_matches.set(false);
+    let err = t.run(T0, |vm| vm.kernel_bump().unwrap_err().to_string());
+    assert!(
+        err.contains("cachyos-7.3.1-1.tar.gz is not the CachyOS tag cachyos-7.3.1-1's git archive"),
+        "{err}"
+    );
+    assert_eq!(
+        git(t.recipes.path(), &["branch", "--list", "kernel-bump/*"]),
+        ""
+    );
+}
+
 fn with_key_expiry(t: &PairTest, date: &str) {
     let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
     let mut text = std::fs::read_to_string(&k).unwrap();
@@ -1189,5 +1358,22 @@ fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
         String::from_utf8_lossy(&t.report.captured()).contains(&format!(
             "modules: 960 in the pair, 1000 in the last good pair {good}"
         ))
+    );
+}
+
+#[test]
+fn a_bump_without_the_tag_pins_says_which_is_missing() {
+    let t = PairTest::new();
+    let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
+    let text = std::fs::read_to_string(&k).unwrap();
+    let without = text.replace("tag_repo=https://github.com/CachyOS/linux.git\n", "");
+    assert_ne!(without, text);
+    write(&k, without);
+    commit_all(t.recipes.path());
+    *t.fake.bump.borrow_mut() = POINT.into();
+    let err = t.run(T0, |vm| vm.kernel_bump().unwrap_err().to_string());
+    assert!(
+        err.contains("kernel.env pins no tag_repo, so kernel-bump cannot verify the CachyOS tag"),
+        "{err}"
     );
 }
