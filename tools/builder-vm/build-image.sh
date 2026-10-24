@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: build-image.sh [--image-only]
+usage: build-image.sh [--image-only] [--kernel fedora]
 
 Guest-side image build for `builder-vm.sh image`, run in ~/apex-image inside the
 builder VM. The Apex RPM key signs every RPM; nothing is pushed, the image is not
@@ -22,6 +22,10 @@ apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECI
 
 --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
 or image/ changes), and only says whether G4 is due.
+
+--kernel fedora builds the break-glass image (just image KERNEL=fedora, ADR 0015):
+Fedora's kernel, with the kernel pair's rpm lines left out of the image's lock
+(degraded=nvidia). Its gates run, but nothing is recorded, so it never promotes.
 EOF
 }
 
@@ -105,8 +109,10 @@ build_inputs() {
 
 build_image() {
     echo "== 4/4 image"
+    local -a kernel_args=()
+    [[ ${APEX_KERNEL:-} != fedora ]] || kernel_args=(--kernel fedora)
     .github/scripts/image.sh context --rpms-dir _build/rpms/apex --desktop-dir _build/rpms/desktop \
-        "${libfprint_args[@]}" --lane-lock "$LANE_LOCK"
+        "${libfprint_args[@]}" --lane-lock "$LANE_LOCK" "${kernel_args[@]}"
     .github/scripts/image.sh build
     .github/scripts/image.sh inspect
     tools/builder-vm/lane.sh status
@@ -148,6 +154,10 @@ gate_g4() {
 
 record_gates() {
     local id image_lock lane_lock
+    if [[ ${APEX_KERNEL:-} == fedora ]]; then
+        echo "break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded, so just pkg-promote refuses it"
+        return 0
+    fi
     id=$(image_id) || return
     image_lock=$(sed -n 's/^lock-sha256 //p' "$G2_RESULT")
     lane_lock=$(sha256_of "$LANE_LOCK") || return
@@ -163,12 +173,19 @@ record_gates() {
 
 main() {
     local image_only=0
-    case ${1:-} in
-        --image-only) image_only=1 ;;
-        -h | --help) usage; exit 0 ;;
-        '') ;;
-        *) usage >&2; exit 2 ;;
-    esac
+    APEX_KERNEL=
+    while (($#)); do
+        case $1 in
+            --image-only) image_only=1; shift ;;
+            --kernel)
+                [[ ${2:-} == fedora ]] || { usage >&2; exit 2; }
+                APEX_KERNEL=fedora
+                shift 2
+                ;;
+            -h | --help) usage; exit 0 ;;
+            *) usage >&2; exit 2 ;;
+        esac
+    done
 
     cd "$HOME/apex-image"
     rm -f "$GATES_PASSED"
