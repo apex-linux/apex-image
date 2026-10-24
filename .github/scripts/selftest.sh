@@ -976,6 +976,19 @@ password_typed() {
     conversations "$(($(from conversations) - 1))"
     rm -f "$STATE/asking"
 }
+pkexec_typed() {
+    if [[ "$TEST_USER:$(from typed)" == "$(from chpasswd)" ]]; then
+        if [[ -e $STATE/pkexec-not-root ]]; then echo 1000 >"$STATE/pkexec.out"; else echo 0 >"$STATE/pkexec.out"; fi
+        echo 0 >"$STATE/pkexec.rc"
+        echo 0 >"$STATE/polkit"
+        rm -f "$STATE/pkexec-running"
+        return 0
+    fi
+    [[ -e $STATE/no-polkit-log ]] ||
+        echo 'Operator of unix-session:4 FAILED to authenticate to gain authorization for action org.freedesktop.policykit.exec' >>"$STATE/polkit-log"
+    if [[ -e $STATE/wrong-ends-pkexec ]]; then echo 127 >"$STATE/pkexec.rc"; rm -f "$STATE/pkexec-running"; fi
+    if [[ -e $STATE/no-retry ]]; then echo 0 >"$STATE/polkit"; fi
+}
 qmp_query() { if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi; }
 wait_ssh() { :; }
 vm_reboot() {
@@ -1002,13 +1015,24 @@ qmp() {
         case $keys in
             "") ;;
             ret)
-                if [[ -s $STATE/typed ]]; then
+                if [[ -e $STATE/pkexec-running ]]; then
+                    pkexec_typed
+                    : >"$STATE/typed"
+                elif [[ -s $STATE/typed ]]; then
                     password_typed
                     : >"$STATE/typed"
                 elif [[ -e $STATE/takes-keys ]]; then
                     start_asking
                 fi ;;
-            esc) [[ -e $STATE/esc-ignored ]] || stop_asking ;;
+            esc)
+                if [[ -e $STATE/pkexec-running ]]; then
+                    [[ -e $STATE/esc-ignored ]] && continue
+                    if [[ -e $STATE/cancel-127 ]]; then echo 127 >"$STATE/pkexec.rc"; else echo 126 >"$STATE/pkexec.rc"; fi
+                    [[ -e $STATE/cancel-keeps-helper ]] || echo 0 >"$STATE/polkit"
+                    rm -f "$STATE/pkexec-running"
+                else
+                    [[ -e $STATE/esc-ignored ]] || stop_asking
+                fi ;;
             *) printf '%s' "$keys" >>"$STATE/typed" ;;
         esac
     done
@@ -1086,6 +1110,15 @@ vm_ssh() {
         "rm -f ~$TEST_USER/$TEST_FAULT_FILE") rm -f "$STATE/fault-file" ;;
         *"systemctl --user list-units --state=failed"*) from failed-user-units ;;
         "cat $MANIFEST") from manifest ;;
+        "usermod -aG wheel $TEST_USER") : >"$STATE/wheel" ;;
+        "rm -f /run/user/1000/$PKEXEC_UNIT.rc /run/user/1000/$PKEXEC_UNIT.out") rm -f "$STATE/pkexec.rc" "$STATE/pkexec.out" ;;
+        "$(user_cmd "systemd-run --user --quiet --collect --unit=$PKEXEC_UNIT sh -c 'pkexec /usr/bin/id -u >\$XDG_RUNTIME_DIR/$PKEXEC_UNIT.out 2>&1; echo \$? >\$XDG_RUNTIME_DIR/$PKEXEC_UNIT.rc'")")
+            : >"$STATE/pkexec-running"
+            [[ -e $STATE/no-agent ]] || echo 1 >"$STATE/polkit" ;;
+        "pgrep -c -f 'polkit-agent-helpe[r]'") n=$(from polkit); echo "${n:-0}"; ((${n:-0} > 0)) ;;
+        "cat /run/user/1000/$PKEXEC_UNIT.rc") from pkexec.rc | grep . ;;
+        "cat /run/user/1000/$PKEXEC_UNIT.out") from pkexec.out ;;
+        "journalctl -b --since @999 -o cat --no-pager --grep 'FAILED to authenticate'") from polkit-log | grep . ;;
         "sh -s") cat >/dev/null; from key ;;
         *) printf 'unexpected vm_ssh: %s\n' "$cmd" >&2; return 99 ;;
     esac
@@ -1391,6 +1424,40 @@ check "no pinned apex-gnome checkout fails" 1 "$(guest lock_matrix local 1000)"
 # shellcheck disable=SC2016 # the row names the variable, unexpanded
 check_true "and says how to get one" grep -q '^| local-lock-blank-wake | FAIL | no feature list in \$APEX_GNOME_SRC' "$GUEST_DIR/out/results.md"
 pin_features "'spotlight', 'panel', 'lock'"
+
+# S3b board 13: pkexec through the shell's polkit agent, then its stock dialog in safe mode.
+logged_in
+check "polkit: wrong password, Esc, then the password" 0 "$(guest polkit_agent local)"
+for r in local-polkit-wrong-password local-polkit-cancel local-polkit; do
+    check "row $r passes" 1 "$(row "$r" PASS)"
+done
+check_true "the test user became an administrator" test -e "$GUEST_DIR/state/wheel"
+check "the keys: the wrong password, Esc, the password" \
+    "$(printf 'n o t t h e p a s s w o r d 0 ret esc %s ret' "$(fold -w1 <<<0123456789abcdef01234567 | paste -sd' ')")" \
+    "$(keys_sent)"
+check_true "and a screendump of each dialog" grep -qF 'local-polkit-dialog.png' "$GUEST_DIR/state/qmp"
+logged_in
+check "polkit in safe mode: the stock dialog, the password only" 0 "$(guest polkit_agent local-safe stock)"
+check "its row passes" 1 "$(row local-safe-polkit PASS)"
+check_true "naming the stock dialog" grep -q '^| local-safe-polkit | PASS | pkexec /usr/bin/id -u as apexqa: the shell.s stock dialog' "$GUEST_DIR/out/results.md"
+check "and no wrong-password or cancel row" 0 "$(($(row local-safe-polkit-wrong-password PASS) + $(row local-safe-polkit-cancel PASS)))"
+polkit_fails() { # FLAG ROW: with FLAG set, the case stops with ROW failed
+    logged_in
+    : >"$GUEST_DIR/state/$1"
+    check "polkit $1: the case fails" 1 "$(guest polkit_agent local)"
+    check "polkit $1: at $2" 1 "$(row "$2" FAIL)"
+}
+polkit_fails no-agent local-polkit-wrong-password
+check_true "naming the missing dialog" grep -q '^| local-polkit-wrong-password | FAIL | pkexec opened no authentication dialog' "$GUEST_DIR/out/results.md"
+polkit_fails no-polkit-log local-polkit-wrong-password
+polkit_fails wrong-ends-pkexec local-polkit-wrong-password
+polkit_fails no-retry local-polkit-wrong-password
+polkit_fails esc-ignored local-polkit-cancel
+polkit_fails cancel-127 local-polkit-cancel
+check_true "naming the exit" grep -q '^| local-polkit-cancel | FAIL | pkexec exited 127 after Esc, not 126' "$GUEST_DIR/out/results.md"
+polkit_fails cancel-keeps-helper local-polkit-cancel
+polkit_fails pkexec-not-root local-polkit
+check_true "naming what pkexec printed" grep -q "^| local-polkit | FAIL | pkexec /usr/bin/id -u exited 0 and printed '1000', not 0 and 0" "$GUEST_DIR/out/results.md"
 
 apex_locked_in
 check "apex.safe=1: upstream's two-stage lock" 0 "$(guest safe_karg_lock local)"

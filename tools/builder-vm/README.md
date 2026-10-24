@@ -170,9 +170,15 @@ just vm-qualify
   then a second lock and `loginctl unlock-session`: each time gnome-shell's
   `LockedHint` and `org.gnome.ScreenSaver` follow, the shell survives, and it logs no
   `JS ERROR` from lock to unlock; no failed user unit;
+- polkit through the shell's agent (S3b, board 13): `apexqa`, made an administrator
+  (`wheel`), runs `pkexec /usr/bin/id -u` from its user manager. The shell's dialog must
+  open (a `polkit-agent-helper-1` conversation, screendumped), refuse a wrong password
+  (polkitd logs it) and ask again while pkexec waits, end pkexec with 126 on Esc, and
+  take the password, after which pkexec prints 0 and exits 0;
 - the crash guard: a login with `APEX_SHELL_TEST_FAULT=abort-after-enable` in
   `apexqa`'s `~/.config/environment.d/` aborts the shell, `apex-shell-safe.service`
-  turns the layer off, and the next login runs in safe mode.
+  turns the layer off, and the next login runs in safe mode, where the stock polkit
+  dialog still takes the password (`local-safe-polkit`).
 
 The bootloader rows prove the order after the assessment and the green-boot condition
 (the fallback boot's row); in the builder VM `bootupctl` finds no update, so they
