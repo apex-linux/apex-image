@@ -301,12 +301,14 @@ One run may print both kernel lines, the point line first.
 
 **`apex-lane sources --lock LOCK --out DIR`** writes the kernel pair's public source
 artifact (ARCHITECTURE 4.2, N6) for the pair LOCK records: an OCI layout whose one layer
-holds `srpms/` (the kernel SRPM and, for a whole pair, the nvidia-kmod SRPM, from the
-mirror, each against its pinned sha256), `recipe/` (the recipe directory as the job saw
-it, pins, spec patch and series included, kept in the stored set) and `SHA256SUMS`. The
-same pair gives the same digest. A LOCK without a pair writes nothing; a set stored before
-the recipe was kept is exit 1. `build-image.sh` writes it to `_build/image/sources`, except
-for a break-glass image; the runner pushes it.
+is pair.sh's `OUT/source/` as it is, kept in the stored set as `source/`: `srpms/` (both
+pinned SRPMs, after a kmod failure too), `recipe/`, `licenses/`, `README.source` and
+`SHA256SUMS` (apex-kernel's `packaging/pkgs/kernel/README.md`, "The public source set").
+It first runs the pinned apex-kernel's `source-check.sh` on the stored set: a set it
+refuses (exit 1) gives no artifact and names the reason, and one it cannot check (exit 2)
+is an error too. The same pair gives the same digest. A LOCK without a pair writes
+nothing; a set stored before pair.sh wrote `source/` is exit 1. `build-image.sh` writes it
+to `_build/image/sources`, except for a break-glass image; the runner pushes it.
 
 ### `series`
 

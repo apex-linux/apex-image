@@ -1,7 +1,6 @@
-//! The kernel pair's public source artifact (N6): both SRPMs, the pins and the recipe the
-//! job built from, as an OCI layout beside the image build. The runner pushes it.
+//! The kernel pair's public source artifact (N6): pair.sh's source set, checked with
+//! apex-kernel's source-check.sh, as an OCI layout beside the image build. The runner pushes it.
 
-use std::fmt::Write as _;
 use std::path::Path;
 
 use serde_json::json;
@@ -9,14 +8,15 @@ use serde_json::json;
 use super::Vm;
 use super::build::remove_tree;
 use crate::core::lock;
-use crate::core::manifest::header_field;
-use crate::core::pins::{self, Nevra};
+use crate::core::pins;
 use crate::core::text;
 use crate::error::{Exit, Result, infra};
-use crate::shell::cmd::{Cmd, Program};
+use crate::shell::cmd::{Cmd, Program, Stderr};
 use crate::shell::fs;
 
-pub const SOURCE_RECIPE: &str = "recipe";
+/// pair.sh's `OUT/source`, kept in the stored set under this name.
+pub const SOURCE_SET: &str = "source";
+const SOURCE_CHECK: &str = "source-check.sh";
 const PAIR_FAMILY: &str = "kernel-cachyos";
 const LAYER_TYPE: &str = "application/vnd.oci.image.layer.v1.tar";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -48,78 +48,80 @@ impl Vm<'_> {
                 lock_path.display()
             )));
         }
-        let pkg = self.the_pair()?.name;
-        let set = self.store_pkg(&pkg).join(key);
-        if !set.join(SOURCE_RECIPE).is_dir() {
+        let pair = self.the_pair()?;
+        let set = self.store_pkg(&pair.name).join(key).join(SOURCE_SET);
+        if !set.is_dir() {
             return Err(infra(format!(
-                "store: {} has no {SOURCE_RECIPE}/: the pair predates the source artifact; build it again",
+                "store: {} is missing: the pair predates pair.sh's source set; build it again",
                 set.display()
             )));
         }
-        let kernel =
-            pins::parse_kernel("the stored kernel.env", &fs::read(&set.join("kernel.env"))?)?;
-        let nvidia =
-            pins::parse_nvidia("the stored nvidia.env", &fs::read(&set.join("nvidia.env"))?)?;
-        let whole = header_field(&fs::read(&set.join("manifest.txt"))?, "kmod") != b"-";
-        let mut srpms = vec![(&kernel.srpm, kernel.srpm_sha256.as_str())];
-        if whole {
-            srpms.push((&nvidia.kmod_srpm, nvidia.kmod_srpm_sha256.as_str()));
-        }
+        self.source_check(&pair.dir.join(SOURCE_CHECK), &set)?;
+        let srpms = Self::set_srpms(&set)?;
         let partial = out.with_extension("partial");
         remove_tree(&partial)?;
-        let root = partial.join("root");
-        fs::create_dir_all(&root.join("srpms"))?;
-        for (nevra, sha256) in &srpms {
-            self.stage_srpm(nevra, sha256, &root.join("srpms"))?;
-        }
-        let mut from = set.join(SOURCE_RECIPE).into_os_string();
-        from.push("/.");
-        fs::create_dir_all(&root.join(SOURCE_RECIPE))?;
-        self.run_ok(
-            &Cmd::new(Program::Cp)
-                .args(["-a", "--"])
-                .arg(from)
-                .arg(root.join(SOURCE_RECIPE)),
-        )?;
-        let mut sums = String::new();
-        for path in fs::files_under(&root, &|_| true)? {
-            let rel = path
-                .strip_prefix(&root)
-                .unwrap_or(&path)
-                .display()
-                .to_string();
-            let _ = writeln!(sums, "{}  {rel}", fs::sha256_file(&path)?);
-        }
-        fs::write(&root.join("SHA256SUMS"), sums.as_bytes())?;
-        self.write_layout(&partial, key, &srpms)?;
-        remove_tree(&root)?;
+        self.write_layout(&partial, &set, key, &srpms)?;
         remove_tree(out)?;
         self.move_tree(&partial, out)?;
         self.report.log(&format!(
             "sources: {} for {key} ({})",
             out.display(),
-            srpms
-                .iter()
-                .map(|(n, _)| n.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            srpms.join(", ")
         ));
         Ok(Exit::Ok)
     }
 
-    fn stage_srpm(&self, nevra: &Nevra, sha256: &str, dir: &Path) -> Result<()> {
-        let from = self.settings.store.join("mirror").join(nevra.file_name());
-        if !from.is_file() || fs::sha256_file(&from)? != sha256 {
+    /// apex-kernel's own check: exit 1 names what the set lacks, exit 2 that it could not run.
+    fn source_check(&self, script: &Path, set: &Path) -> Result<()> {
+        if !script.is_file() {
             return Err(infra(format!(
-                "the mirror has no {} with its pinned sha256",
-                nevra.file_name()
+                "{} is missing: the pinned apex-kernel predates the source set",
+                script.display()
             )));
         }
-        fs::copy_with_mode(&from, &dir.join(nevra.file_name()))
+        let checked = self.runner.run(
+            &Cmd::new(Program::Bash)
+                .arg(script)
+                .arg(set)
+                .capture()
+                .stderr(Stderr::Capture),
+        )?;
+        let last = text::lossy(text::tail_lines(&checked.stderr, 1))
+            .trim()
+            .to_owned();
+        match checked.code {
+            0 => Ok(()),
+            1 => Err(infra(format!(
+                "{SOURCE_CHECK} refused {}: {last}; no source artifact",
+                set.display()
+            ))),
+            code => Err(infra(format!(
+                "{SOURCE_CHECK} could not run (exit {code}): {last}"
+            ))),
+        }
     }
 
-    /// One uncompressed layer, its bytes fixed by sorted names, zero times and owners.
-    fn write_layout(&self, dir: &Path, key: &str, srpms: &[(&Nevra, &str)]) -> Result<()> {
+    /// The pinned SRPMs the set holds, as NEVRAs, for the artifact's label.
+    fn set_srpms(set: &Path) -> Result<Vec<String>> {
+        let recipe = set.join("recipe");
+        let kernel = pins::parse_kernel(
+            "the source set's kernel.env",
+            &fs::read(&recipe.join("kernel.env"))?,
+        )?;
+        let nvidia = pins::parse_nvidia(
+            "the source set's nvidia.env",
+            &fs::read(&recipe.join("nvidia.env"))?,
+        )?;
+        Ok([kernel.srpm, nvidia.kmod_srpm]
+            .into_iter()
+            .filter(|n| set.join("srpms").join(n.file_name()).is_file())
+            .map(|n| n.to_string())
+            .collect())
+    }
+
+    /// One uncompressed layer of SET as it is, its bytes fixed by sorted names, zero
+    /// times and owners.
+    fn write_layout(&self, dir: &Path, set: &Path, key: &str, srpms: &[String]) -> Result<()> {
         let blobs = dir.join("blobs/sha256");
         fs::create_dir_all(&blobs)?;
         let layer = dir.join("layer.tar");
@@ -137,7 +139,7 @@ impl Vm<'_> {
                 ])
                 .arg(&layer)
                 .arg("-C")
-                .arg(dir.join("root"))
+                .arg(set)
                 .arg("."),
         )?;
         let layer_sha = fs::sha256_file(&layer)?;
@@ -146,14 +148,13 @@ impl Vm<'_> {
             .len();
         std::fs::rename(&layer, blobs.join(&layer_sha))
             .map_err(|e| fs::io_error("cannot move", &layer, &e))?;
-        let names: Vec<String> = srpms.iter().map(|(n, _)| n.to_string()).collect();
         let config = json!({
             "architecture": "amd64",
             "os": "linux",
             "config": {"Labels": {
                 "io.github.apex-linux.apex.pair-key": key,
-                "io.github.apex-linux.apex.srpms": names.join(","),
-                "org.opencontainers.image.description": "The kernel pair's corresponding source: its SRPMs, pins and recipe",
+                "io.github.apex-linux.apex.srpms": srpms.join(","),
+                "org.opencontainers.image.description": "The kernel pair's corresponding source: its SRPMs, recipe, licences and README.source",
             }},
             "rootfs": {"type": "layers", "diff_ids": [format!("sha256:{layer_sha}")]},
         });
