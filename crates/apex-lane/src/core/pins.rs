@@ -321,8 +321,29 @@ pub fn parse_nvidia(file: &str, bytes: &[u8]) -> Result<NvidiaPins, ConfigError>
 mod tests {
     use super::*;
 
-    const KERNEL_ENV: &str = "# pins\n\ncopr=bieszczaders/kernel-cachyos\nchroot=fedora-45-x86_64\nsrpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src\nsrpm_sha256=e6b57189499ce41b78255deadc86f38e318e24e895283b7e1f412a23de9cf49f\ncopr_key=537DEED33436B0367F5B26D5B3E3132CF10859CF\ncopr_key_expires=2028-01-23\n\ntag=cachyos-7.3.0-4\ntag_key=E8B9AA39F054E30E8290D492C3C4820857F654FE\ntag_key_expires=2028-03-31\n";
-    const NVIDIA_ENV: &str = "kmod_srpm=nvidia-kmod-3:615.78.08-1.fc45.src\nkmod_srpm_sha256=2a16e83c24605b0f3c436caacb133c7b1b7724b105ed7c970ddf1a6809668532\n\nuserspace=nvidia-driver-3:615.78.08-1.fc45.x86_64 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4\nuserspace=nvidia-driver-selinux-0:0.1-3.fc45.noarch 338924e031cf136ca842d2f1b4d7c53aec24b1c1072147ac90a44667f89d73c4\nnegativo17_key=0C5D0F470484AE2FC40A9B6597F3008993E8909B\nnegativo17_key_expires=2029-08-31\n";
+    const KERNEL_ENV: &str = concat!(
+        "# pins\n",
+        "\n",
+        "copr=bieszczaders/kernel-cachyos\n",
+        "chroot=fedora-45-x86_64\n",
+        "srpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src\n",
+        "srpm_sha256=e6b57189499ce41b78255deadc86f38e318e24e895283b7e1f412a23de9cf49f\n",
+        "copr_key=537DEED33436B0367F5B26D5B3E3132CF10859CF\n",
+        "copr_key_expires=2028-01-23\n",
+        "\n",
+        "tag=cachyos-7.3.0-4\n",
+        "tag_key=E8B9AA39F054E30E8290D492C3C4820857F654FE\n",
+        "tag_key_expires=2028-03-31\n",
+    );
+    const NVIDIA_ENV: &str = concat!(
+        "kmod_srpm=nvidia-kmod-3:615.78.08-1.fc45.src\n",
+        "kmod_srpm_sha256=2a16e83c24605b0f3c436caacb133c7b1b7724b105ed7c970ddf1a6809668532\n",
+        "\n",
+        "userspace=nvidia-driver-3:615.78.08-1.fc45.x86_64 2099da1e492b1abf2651c49b1a98f27ca215517bdddad06438769d0e25d2a6e4\n",
+        "userspace=nvidia-driver-selinux-0:0.1-3.fc45.noarch 338924e031cf136ca842d2f1b4d7c53aec24b1c1072147ac90a44667f89d73c4\n",
+        "negativo17_key=0C5D0F470484AE2FC40A9B6597F3008993E8909B\n",
+        "negativo17_key_expires=2029-08-31\n",
+    );
 
     #[test]
     fn the_pins_of_apex_kernel() {
