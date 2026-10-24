@@ -367,9 +367,12 @@ cmd_rehearse() {
     COSIGN_PASSWORD='' publish_layout "$repo" "$oci" 0 "$dir/cosign.key"
     other=$(registry_digest "$repo:$APEX_FEDORA") || die "the rehearsal left no $repo:$APEX_FEDORA"
     if skopeo --policy "$dir/other/policy.json" --registries.d "$dir/registries.d" copy --quiet \
-        "docker://$repo:$APEX_FEDORA" "oci:$dir/check:x" >/dev/null 2>&1; then
+        "docker://$repo:$APEX_FEDORA" "oci:$dir/check:x" >/dev/null 2>"$dir/refusal"; then
         die "a policy trusting another key accepted $repo:$APEX_FEDORA: the signature was never checked"
     fi
+    # Only the policy's own refusal counts; a network or registries.d failure proves nothing.
+    grep -Eqi 'source image rejected|signature' "$dir/refusal" ||
+        die "the copy under a policy trusting another key failed, but not on the signature: $(tr '\n' ' ' <"$dir/refusal")"
     summary "Rehearsal: $repo:$APEX_FEDORA = \`$other\`; a policy with another key refuses it."
 }
 

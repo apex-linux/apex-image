@@ -1848,6 +1848,10 @@ case $cmd in
     copy)
         src=${*: -2:1} digestfile=
         for ((i = 1; i <= $#; i++)); do [[ ${!i} != --digestfile ]] || { j=$((i + 1)); digestfile=${!j}; }; done
+        if [[ $last == oci:* && -e $FAKE_REG2/oci-write-fails ]]; then
+            echo 'Error: writing blob: no space left on device' >&2
+            exit 1
+        fi
         if [[ $src == oci:* ]]; then json=$FAKE_REG2/layout.json; else json=$(ref_file "$src"); fi
         [[ -n $json && -f $json ]] || { echo "Error: reading manifest: manifest unknown" >&2; exit 1; }
         digest=$(jq -r .Digest "$json")
@@ -1941,6 +1945,12 @@ check "the rehearsal: a throwaway registry, key and policy" 0 \
         rc_of "$APEX_ROOT/.github/scripts/publish.sh" rehearse oci:/layout)"
 check "pushes to localhost and moves its :45" "$D1" "$(jq -r .Digest "$R/state/tags/localhost:5000_apex/45.json")"
 check_true "starts and removes the registry" grep -q '^podman run -d --rm --name apex-publish-rehearsal -p 127.0.0.1:5000:5000 ' "$R/state/log"
+reset_registry
+layout 45.20260925.151 "$C_A" '' 1
+: >"$R/state/oci-write-fails"
+check "a refusal for any reason but the signature fails the rehearsal" 1 \
+    "$(cd "$R" && PATH="$R/bin:$PATH" FAKE_REG2="$R/state" APEX_GIT_ROOT="$G" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
+        rc_of "$APEX_ROOT/.github/scripts/publish.sh" rehearse oci:/layout)"
 
 # --- oci-artifact.sh lookup: a cache hit must be attested by the workflow on main ------
 O="$TMP/oci"
