@@ -57,7 +57,7 @@ cosign sign --yes --new-bundle-format=false --use-signing-config=false \
 ## RPM-GPG-KEY-apex
 
 The public half of the Apex RPM key: OpenPGP Ed25519, fingerprint
-`553A 9389 03DF FEEA 647F 7CC4 ABEF 111D 1FCF 882B`. It signs every RPM the builder VM
+`B9A8 301A 20A1 4E73 2212 A4C5 8DA3 252B D6EF 25FA`. It signs every RPM the builder VM
 builds. The image build's `[apex]` repository verifies with it, and G1 checks that this
 file holds exactly the key pinned in `image/checks/lib/common.sh`. Its private half lives
 only in the builder VM, with one offline backup (packaging/README.md, "Signing";

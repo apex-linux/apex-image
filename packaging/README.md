@@ -297,7 +297,7 @@ after the build container exited, so the private key never meets a build script.
 
 | | |
 |---|---|
-| Key | OpenPGP v4, Ed25519, signing only, no expiry, no passphrase (builds sign unattended); fingerprint `553A 9389 03DF FEEA 647F 7CC4 ABEF 111D 1FCF 882B` |
+| Key | OpenPGP v4, Ed25519, signing only, no expiry, no passphrase (builds sign unattended); fingerprint `B9A8 301A 20A1 4E73 2212 A4C5 8DA3 252B D6EF 25FA` |
 | Public half | `image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex`, shipped as `/usr/share/apex/keys/RPM-GPG-KEY-apex`; pinned in `image/checks/lib/common.sh` |
 | Private half | the builder VM only: the GnuPG home `~/.local/share/apex/rpm-gnupg` |
 | Offline backup | one armoured export of the secret key (`gpg --armor --export-secret-keys`), kept by the owner on offline media |
@@ -307,7 +307,7 @@ after the build container exited, so the private key never meets a build script.
 unknown or repeated key, or a malformed value, exits 2.
 
 ```
-APEX_RPM_KEY_FPR=553A938903DFFEEA647F7CC4ABEF111D1FCF882B
+APEX_RPM_KEY_FPR=B9A8301A20A14E732212A4C58DA3252BD6EF25FA
 APEX_RPM_GNUPGHOME=/home/builder/.local/share/apex/rpm-gnupg
 ```
 
@@ -341,7 +341,7 @@ the shipped key is the pinned one and that every Apex package carries its signat
 Fedora's instead), and `desktop.sh`, the locked gnome-shell. By hand, in the VM:
 
 ```bash
-rpm -qpi FILE.rpm | sed -n '/^Signature/,/^Source/p'   # EdDSA/SHA512, ..., Key ID abef111d1fcf882b
+rpm -qpi FILE.rpm | sed -n '/^Signature/,/^Source/p'   # EdDSA/SHA512, ..., Key ID 8da3252bd6ef25fa
 ```
 
 **A new builder VM.** `builder-vm.sh destroy` deletes the key with the disk. From the
@@ -351,7 +351,7 @@ host, import the offline backup (`BACKUP.asc` below), then name it:
 tools/builder-vm/builder-vm.sh ssh 'umask 077; install -d -m 0700 ~/.local/share/apex/rpm-gnupg &&
     GNUPGHOME=~/.local/share/apex/rpm-gnupg gpg --batch --import' <BACKUP.asc
 tools/builder-vm/builder-vm.sh ssh 'umask 077; mkdir -p ~/.config/apex && printf "%s\n" \
-    APEX_RPM_KEY_FPR=553A938903DFFEEA647F7CC4ABEF111D1FCF882B \
+    APEX_RPM_KEY_FPR=B9A8301A20A14E732212A4C58DA3252BD6EF25FA \
     "APEX_RPM_GNUPGHOME=$HOME/.local/share/apex/rpm-gnupg" >~/.config/apex/rpm-signing.env'
 ```
 
@@ -361,7 +361,7 @@ home that `rpm-signing.env` then names:
 ```bash
 install -d -m 0700 ~/.local/share/apex/rpm-gnupg-new
 GNUPGHOME=~/.local/share/apex/rpm-gnupg-new gpg --batch --pinentry-mode loopback --passphrase '' \
-    --quick-gen-key 'Apex RPM signing key (github.com/SekiroKenjii/apex-fedora)' ed25519 sign never
+    --quick-gen-key 'Apex RPM signing key (github.com/apex-linux)' ed25519 sign never
 ```
 
 Its public half (`gpg --armor --export-options export-minimal --export FPR`) replaces
