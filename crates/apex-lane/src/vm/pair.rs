@@ -342,6 +342,12 @@ impl Vm<'_> {
                     .iter()
                     .flat_map(|f| ["-e".to_owned(), format!("APEX_PAIR_FAULT={f}")]),
             )
+            .args(
+                crate::core::fedora::is_next(&self.settings.fedora)
+                    .then(|| ["-e".to_owned(), format!("FEDORA={}", self.settings.fedora)])
+                    .into_iter()
+                    .flatten(),
+            )
             .arg(self.repos_base()?)
             .args(["/usr/bin/bash", "/job/pair.sh", "/mirror", "/out"])
             .args(&plan.dnf)

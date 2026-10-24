@@ -227,6 +227,12 @@ impl Vm<'_> {
     /// `allow_degraded` is the owner's publish override (ADR 0015 §4): without it, a lock
     /// that newly takes a kernel without its NVIDIA set never becomes rpms.lock.
     pub fn promote(&self, allow_degraded: bool) -> Result<()> {
+        if crate::core::fedora::is_next(&self.settings.fedora) {
+            return Err(usage(format!(
+                "APEX_FEDORA={} is the next lane: it never promotes",
+                self.settings.fedora
+            )));
+        }
         let _lock = fs::lock_store(&self.settings.store)?;
         let next = self.next_lock_file();
         let Some(text) = fs::read_opt(&next)? else {

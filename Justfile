@@ -34,8 +34,9 @@ devloop-test:
     tests/devloop/run.sh
 
 # How to build the image; `just image KERNEL=fedora` builds the break-glass image in the VM: Fedora's kernel, degraded=nvidia, never promoted.
+# `just image FEDORA=46` builds the next lane (image/fedora/46.env): G1 only, never promoted or published.
 image *args:
-    @if [ -z '{{ args }}' ]; then {{ just_executable() }} --justfile '{{ justfile() }}' _image-help; elif [ '{{ args }}' = KERNEL=fedora ]; then tools/builder-vm/builder-vm.sh image --kernel fedora; else echo 'usage: just image [KERNEL=fedora]' >&2; exit 2; fi
+    @if [ -z '{{ args }}' ]; then {{ just_executable() }} --justfile '{{ justfile() }}' _image-help; elif [ '{{ args }}' = KERNEL=fedora ]; then tools/builder-vm/builder-vm.sh image --kernel fedora; elif [ '{{ args }}' = FEDORA=46 ]; then APEX_FEDORA=46 tools/builder-vm/builder-vm.sh image; else echo 'usage: just image [KERNEL=fedora | FEDORA=46]' >&2; exit 2; fi
 
 # How to build the image (it runs in the Fedora 45 builder VM, not on this host).
 _image-help:

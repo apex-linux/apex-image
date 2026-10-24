@@ -53,9 +53,9 @@ EOF
     exit 2
 }
 
-: "${APEX_WORK:=$APEX_ROOT/_build/image}"
+: "${APEX_WORK:=$APEX_ROOT/_build/$(is_next && echo next/)image}"
 : "${APEX_SCRATCH:=$APEX_WORK}"
-readonly IMAGE=${APEX_IMAGE:-localhost/apex:build}
+readonly IMAGE=${APEX_IMAGE:-localhost/apex:$(is_next && echo "$APEX_FEDORA" || echo build)}
 readonly CONTEXT=$APEX_ROOT
 readonly RPMS_DIR=$CONTEXT/rpms
 readonly OCI_REF=apex
@@ -297,17 +297,21 @@ cmd_context() {
     summary "### Build inputs" "" '```' "$(cat "$RPMS_DIR/SHA256SUMS")" '```'
 }
 
+pin_source() {
+    if is_next; then printf '%s in image/fedora/%s.env' "$1" "$APEX_FEDORA"; else printf 'ARG %s in image/Containerfile' "$1"; fi
+}
+
 cmd_build() {
     require podman git sha256sum
     mkdir -p "$APEX_WORK"
     [[ -f $APEX_WORK/inputs.env ]] || die "run 'image.sh context' first"
     local base repos_base version revision ga run
-    base=$(containerfile_arg BASE)
+    base=$(release_arg BASE)
     is_fedora_pin "$base" ||
-        die "ARG BASE in image/Containerfile must be a digest pin on registry.fedoraproject.org (registry.fedoraproject.org/<repo>[:tag]@sha256:...), got '$base'"
-    repos_base=$(containerfile_arg REPOS_BASE)
+        die "$(pin_source BASE) must be a digest pin on registry.fedoraproject.org (registry.fedoraproject.org/<repo>[:tag]@sha256:...), got '$base'"
+    repos_base=$(release_arg REPOS_BASE)
     is_fedora_pin "$repos_base" ||
-        die "ARG REPOS_BASE in image/Containerfile must be a digest pin on registry.fedoraproject.org (registry.fedoraproject.org/<repo>[:tag]@sha256:...), got '$repos_base'"
+        die "$(pin_source REPOS_BASE) must be a digest pin on registry.fedoraproject.org (registry.fedoraproject.org/<repo>[:tag]@sha256:...), got '$repos_base'"
     run=${APEX_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-0}}
     [[ $run =~ ^[0-9]+$ ]] || die "invalid run number '$run'"
     version="$APEX_FEDORA.$(date -u +%Y%m%d).$run"
@@ -325,6 +329,14 @@ cmd_build() {
         retry 5 20 podman_ pull --quiet "$ref" >/dev/null
     done < <(containerfile_from_images "$APEX_CONTAINERFILE" "BASE=$base" "REPOS_BASE=$repos_base")
     endgroup
+    if is_next; then
+        local base_source base_version
+        base_source=$(release_arg BASE_SOURCE)
+        base_version=$(podman_ image inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "$base") ||
+            base_version=
+        printf 'BASE_SOURCE=%q\nBASE_VERSION=%q\n' "$base_source" "${base_version:-unknown}" >>"$APEX_WORK/build.env"
+        summary "Next lane: Fedora $APEX_FEDORA on a ${base_source:-?} base, \`$base\` version ${base_version:-unknown}."
+    fi
 
     local -a args=(
         --build-arg "BASE=$base"
@@ -342,6 +354,7 @@ cmd_build() {
         args+=(--build-arg "LOCK=$(paste -sd' ' "$APEX_WORK/replay.lock")")
     fi
     [[ -z ${APEX_COMPOSE:-} ]] || args+=(--build-arg "COMPOSE=$APEX_COMPOSE")
+    ! is_next || args+=(--build-arg "FEDORA=$APEX_FEDORA" --build-arg "FEDORA_GA_DATE=$(release_arg FEDORA_GA_DATE)")
     [[ -z ${APEX_TARGET:-} ]] || args+=(--target "$APEX_TARGET")
 
     group "podman build ($version)"
@@ -424,6 +437,10 @@ cmd_unchanged() {
     return 1
 }
 
+# publish.sh refuses an image with this label: the next lane never publishes.
+NEXT_LABEL=()
+! is_next || NEXT_LABEL=(--label "$APEX_LABEL_PREFIX.lane=next")
+
 # shellcheck disable=SC2153 # BASE, DEGRADED, HELD, ... come from load_env
 rechunk_once() {
     local out=$1 tmp=$2
@@ -449,7 +466,7 @@ rechunk_once() {
         --label "$APEX_LABEL_PREFIX.content-key=$CONTENT_KEY" \
         --label "$APEX_LABEL_PREFIX.fedora=$APEX_FEDORA" \
         --label "$APEX_LABEL_PREFIX.kernel-pair=${KERNEL_PAIR:?image.env has no KERNEL_PAIR: run image.sh inspect again}" \
-        --output "oci:/out/$OCI_REF:latest"
+        "${NEXT_LABEL[@]}" --output "oci:/out/$OCI_REF:latest"
 }
 
 cmd_rechunk() {
@@ -481,6 +498,7 @@ cmd_rechunk() {
 }
 
 cmd_push() {
+    ! is_next || die "APEX_FEDORA=$APEX_FEDORA is the next lane: it never pushes"
     require skopeo git
     load_env build.env
     local out="$APEX_SCRATCH/oci" run tag digestfile digest

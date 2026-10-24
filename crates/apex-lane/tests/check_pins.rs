@@ -103,3 +103,42 @@ fn a_soak_days_that_is_not_whole_days_is_a_usage_error() {
         "{shown}"
     );
 }
+
+/// The binary's own store rule: a 46 run reaches only <store>/next, never the 45 rpms.lock.
+#[test]
+fn a_46_run_cannot_reach_the_45_lock() {
+    let store = tempfile::tempdir().unwrap();
+    std::fs::write(store.path().join("rpms.lock"), "the 45 lock\n").unwrap();
+    std::fs::write(store.path().join("rpms.lock.next"), "the 45 next lock\n").unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_apex-lane"))
+        .arg("promote")
+        .current_dir(&root)
+        .env("APEX_FEDORA", "46")
+        .env("APEX_STORE", store.path())
+        .env("GITHUB_ACTIONS", "")
+        .output()
+        .unwrap();
+    let shown = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{shown}");
+    assert!(shown.contains("never promotes"), "{shown}");
+    assert_eq!(
+        std::fs::read_to_string(store.path().join("rpms.lock")).unwrap(),
+        "the 45 lock\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(store.path().join("rpms.lock.next")).unwrap(),
+        "the 45 next lock\n"
+    );
+    assert!(!store.path().join("next/rpms.lock").exists());
+
+    let bad = std::process::Command::new(env!("CARGO_BIN_EXE_apex-lane"))
+        .arg("promote")
+        .current_dir(&root)
+        .env("APEX_FEDORA", "f46")
+        .env("APEX_STORE", store.path())
+        .env("GITHUB_ACTIONS", "")
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+}

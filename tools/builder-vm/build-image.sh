@@ -29,15 +29,30 @@ OCI layout) goes to _build/image/sources when the lane lock has a pair; nothing 
 --kernel fedora builds the break-glass image (just image KERNEL=fedora, ADR 0015):
 Fedora's kernel, with the kernel pair's rpm lines left out of the image's lock
 (degraded=nvidia). Its gates run, but nothing is recorded, so it never promotes.
+
+APEX_FEDORA=46 builds the next lane from image/fedora/46.env: the components in its
+REPOS_BASE, the lane in ~/apex-store/next, _build/next, localhost/apex:46. It gates on
+G1 only and records nothing, so it never promotes; image.sh never pushes it.
 EOF
 }
 
-readonly FEDORA=registry.fedoraproject.org/fedora:45
-readonly LANE_LOCK=${APEX_STORE:-$HOME/apex-store}/rpms.lock.next
+# shellcheck disable=SC2016 # lib.sh's helpers, run by a child shell of this checkout
+lib() { bash -c '. .github/scripts/lib.sh && "$@"' lib "$@"; }
+
+# A next release (APEX_FEDORA=46) has its own store, tag and fedora (lib.sh apex_store).
+FEDORA=registry.fedoraproject.org/fedora:45
+STORE=${APEX_STORE:-$HOME/apex-store}
+IMAGE=localhost/apex:build
+BUILD=_build
+if [[ ${APEX_FEDORA:-45} != 45 ]]; then
+    STORE+=/next
+    IMAGE=localhost/apex:$APEX_FEDORA
+    BUILD=_build/next
+fi
+readonly LANE_LOCK=$STORE/rpms.lock.next IMAGE BUILD
 readonly GATES_PASSED=_build/gates-passed.txt
 readonly G2_RESULT=_build/g2/latest/result.txt
 readonly G4_KEY=_build/image/g4-key.txt
-readonly IMAGE=localhost/apex:build
 readonly G2_RUNS_PER_BUILD=2
 readonly G4_NOT_DUE=3
 
@@ -47,15 +62,12 @@ G4_VERDICT=
 in_component() {
     local src=$1 rc=0
     shift
-    sudo podman run --rm --pull=newer -v "$src:/component:z" -v "$PWD/_build:/build:z" -w /component \
+    sudo podman run --rm --pull=newer -v "$src:/component:z" -v "$PWD/$BUILD:/build:z" -w /component \
         "${COMPONENT_ENV[@]}" "$FEDORA" "$@" || rc=$?
     sudo chown -R "$(id -u):$(id -g)" -- "$src"
     return "$rc"
 }
 COMPONENT_ENV=()
-
-# shellcheck disable=SC2016 # lib.sh's helpers, run by a child shell of this checkout
-lib() { bash -c '. .github/scripts/lib.sh && "$@"' lib "$@"; }
 
 use_components() {
     [[ -f components.lock ]] || { echo "no components.lock in $PWD" >&2; return 1; }
@@ -76,7 +88,7 @@ image_id() { sudo podman image inspect --format '{{.Id}}' "$IMAGE"; }
 sha256_of() { sha256sum <"$1" | cut -d' ' -f1; }
 qualify() { .github/scripts/qualify.sh "$@"; }
 run_g2() {
-    G2_RUNS=$G2_RUNS_PER_BUILD G2_IMAGE_DIR=$PWD/image G2_REPOS_BASE=$(lib containerfile_arg REPOS_BASE) \
+    G2_RUNS=$G2_RUNS_PER_BUILD G2_IMAGE_DIR=$PWD/image G2_REPOS_BASE=$(lib release_arg REPOS_BASE) \
         G2_OUT_DIR=$PWD/_build/g2 "$APEX_GNOME_SRC/tests/shots/run.sh" "$IMAGE"
 }
 run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 qualify local "$IMAGE"; }
@@ -84,17 +96,19 @@ run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 qualify local "$IMAGE"; }
 build_inputs() {
     echo "== 1/4 the apex RPM (apex-system) and apex-desktop (apex-desktop)"
     in_component "$APEX_SYSTEM_SRC" .github/scripts/rpms.sh build /build/rpms/apex
-    sign_rpms _build/rpms/apex
+    sign_rpms "$BUILD/rpms/apex"
     in_component "$APEX_DESKTOP_SRC" .github/scripts/rpms.sh build /build/rpms/desktop
-    sign_rpms _build/rpms/desktop
+    sign_rpms "$BUILD/rpms/desktop"
 
     echo "== 2/4 libfprint (apex-kernel)"
     local rc=0
     COMPONENT_ENV=(-e "GA_REACHED=$(lib ga_reached)" -e "TESTING_INCLUDEPKGS=$(lib testing_includepkgs)")
+    # apex-kernel's libfprint build knows only 45's key; a next release names its own.
+    [[ $BUILD == _build ]] || COMPONENT_ENV+=(-e "FEDORA_KEY_FPR=$(lib release_arg FEDORA_KEY_FPR)")
     in_component "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh build /build/libfprint || rc=$?
     COMPONENT_ENV=()
     case $rc in
-        0) sign_rpms _build/libfprint ;;
+        0) sign_rpms "$BUILD/libfprint" ;;
         3) echo "libfprint: patches do not apply; the image uses Fedora's libfprint (degraded=fingerprint)"
            libfprint_args=() ;;
         *) echo "libfprint: build failed (exit $rc)" >&2; exit "$rc" ;;
@@ -114,7 +128,7 @@ build_image() {
     echo "== 4/4 image"
     local -a kernel_args=()
     [[ ${APEX_KERNEL:-} != fedora ]] || kernel_args=(--kernel fedora)
-    .github/scripts/image.sh context --rpms-dir _build/rpms/apex --desktop-dir _build/rpms/desktop \
+    .github/scripts/image.sh context --rpms-dir "$BUILD/rpms/apex" --desktop-dir "$BUILD/rpms/desktop" \
         "${libfprint_args[@]}" --lane-lock "$LANE_LOCK" "${kernel_args[@]}"
     .github/scripts/image.sh build
     .github/scripts/image.sh inspect
@@ -124,12 +138,12 @@ build_image() {
 
 # The pair's GPL source, next to the image it was built into; the runner pushes it.
 source_artifact() {
-    rm -rf _build/image/sources
+    rm -rf "$BUILD/image/sources"
     if [[ ${APEX_KERNEL:-} == fedora ]]; then
         echo "sources: a break-glass image takes no kernel pair, so no source artifact"
         return 0
     fi
-    tools/builder-vm/lane.sh sources --lock "$LANE_LOCK" --out _build/image/sources
+    tools/builder-vm/lane.sh sources --lock "$LANE_LOCK" --out "$BUILD/image/sources"
 }
 
 gate_g2() {
@@ -202,13 +216,17 @@ main() {
     done
 
     cd "$HOME/apex-image"
+    if [[ ${APEX_FEDORA:-45} != 45 ]]; then
+        FEDORA=$(lib release_arg REPOS_BASE) || exit 2
+        echo "== the next lane: Fedora $APEX_FEDORA, $IMAGE, $LANE_LOCK; nothing promotes or pushes"
+    fi
     rm -f "$GATES_PASSED"
     # Every full run starts from empty outputs: the containers write them as root, and a
     # stale RPM next to a new one would let dnf pick either.
     if ((!image_only)); then
-        sudo rm -rf _build/rpms _build/libfprint
-    elif [[ ! -s _build/rpms/apex/SHA256SUMS || ! -s _build/rpms/desktop/SHA256SUMS ]]; then
-        echo "--image-only needs the RPMs of an earlier full run in _build/rpms" >&2
+        sudo rm -rf "$BUILD/rpms" "$BUILD/libfprint"
+    elif [[ ! -s $BUILD/rpms/apex/SHA256SUMS || ! -s $BUILD/rpms/desktop/SHA256SUMS ]]; then
+        echo "--image-only needs the RPMs of an earlier full run in $BUILD/rpms" >&2
         exit 1
     elif [[ ! -s $LANE_LOCK ]]; then
         echo "--image-only needs the lane's $LANE_LOCK of an earlier full run (or just pkg-build)" >&2
@@ -220,15 +238,19 @@ main() {
     tools/builder-vm/snapshot.sh
     use_components
 
-    libfprint_args=(--libfprint-dir _build/libfprint)
+    libfprint_args=(--libfprint-dir "$BUILD/libfprint")
     if ((image_only)); then
-        echo "== 1/4 to 3/4 skipped (--image-only): reusing _build/rpms, _build/libfprint and $LANE_LOCK"
-        [[ -d _build/libfprint && -n $(ls -A _build/libfprint) ]] || libfprint_args=()
+        echo "== 1/4 to 3/4 skipped (--image-only): reusing $BUILD/rpms, $BUILD/libfprint and $LANE_LOCK"
+        [[ -d $BUILD/libfprint && -n $(ls -A "$BUILD/libfprint") ]] || libfprint_args=()
     else
         build_inputs
     fi
     build_image
 
+    if [[ $BUILD != _build ]]; then
+        echo "build-image: the next lane gates on G1 only and records nothing; state in ~/apex-image/_build/next"
+        return 0
+    fi
     gate_g2 || exit
     gate_g4 "$image_only" || exit
     [[ $G4_VERDICT == due ]] || record_gates || exit

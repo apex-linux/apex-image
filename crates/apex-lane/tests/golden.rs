@@ -202,6 +202,7 @@ fn test_vm<'a>(
         kernel_org: &NoKernelOrg,
         settings: Settings {
             store: store.to_path_buf(),
+            fedora: "45".into(),
             ga_override: None,
             keep_work: false,
             signing_env: store.join("no-signing"),

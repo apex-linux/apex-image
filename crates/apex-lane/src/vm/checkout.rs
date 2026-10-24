@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::{DNF_CACHE_VOLUME, IN_CONTAINER_EXE, LANE_TREE_PATH, Vm};
+use crate::core::fedora;
 use crate::core::repos::{self, is_fedora_pin};
 use crate::core::source1::{archive_name, member_ok};
 use crate::core::text;
@@ -147,24 +148,39 @@ impl Vm<'_> {
         )?)
     }
 
+    /// NAME of this release: image/Containerfile's ARG for 45, image/fedora/N.env's line
+    /// for a next release; and where it came from.
+    fn release_arg(&self, name: &str) -> Result<(String, String)> {
+        let fedora = &self.settings.fedora;
+        if !fedora::is_next(fedora) {
+            let containerfile = fs::read(&self.root.join("image/Containerfile"))?;
+            return Ok((
+                repos::containerfile_arg(&containerfile, name),
+                "image/Containerfile".to_owned(),
+            ));
+        }
+        let path = fedora::env_path(&self.root, fedora);
+        let text = fs::read_opt(&path)?
+            .ok_or_else(|| usage(format!("APEX_FEDORA={fedora} has no {}", path.display())))?;
+        Ok((
+            fedora::env_value(&text, name),
+            format!("image/fedora/{fedora}.env"),
+        ))
+    }
+
     pub fn repos_base(&self) -> Result<String> {
-        let containerfile = fs::read(&self.root.join("image/Containerfile"))?;
-        let base = repos::containerfile_arg(&containerfile, "REPOS_BASE");
+        let (base, from) = self.release_arg("REPOS_BASE")?;
         if !is_fedora_pin(&base) {
             return Err(usage(format!(
-                "image/Containerfile REPOS_BASE '{base}' is not a registry.fedoraproject.org digest pin"
+                "{from} REPOS_BASE '{base}' is not a registry.fedoraproject.org digest pin"
             )));
         }
         Ok(base)
     }
 
     pub fn ga_reached(&self) -> Result<u8> {
-        let containerfile = fs::read(&self.root.join("image/Containerfile"))?;
-        repos::ga_reached(
-            self.settings.ga_override.as_deref(),
-            &repos::containerfile_arg(&containerfile, "GA_REACHED"),
-        )
-        .map_err(infra)
+        let (ga, _) = self.release_arg("GA_REACHED")?;
+        repos::ga_reached(self.settings.ga_override.as_deref(), &ga).map_err(infra)
     }
 
     fn archive(&self, root: &Path, tree: &str, out: &Path) -> Result<()> {

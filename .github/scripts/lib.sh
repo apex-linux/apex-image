@@ -1,7 +1,6 @@
 # shellcheck shell=bash disable=SC2034 # constants and helpers for the scripts that source this file
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-readonly APEX_FEDORA=45
 readonly APEX_REGISTRY=ghcr.io
 readonly APEX_NAMESPACE=ghcr.io/apex-linux
 readonly APEX_REPO_TESTING=ghcr.io/apex-linux/apex-testing
@@ -11,6 +10,13 @@ readonly APEX_LABEL_PREFIX=io.github.apex-linux.apex
 
 APEX_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly APEX_ROOT
+# 45 is image/Containerfile's release; another needs its image/fedora/N.env (the next lane).
+APEX_FEDORA=${APEX_FEDORA:-45}
+if [[ $APEX_FEDORA != 45 && ! -f $APEX_ROOT/image/fedora/$APEX_FEDORA.env ]]; then
+    printf 'error: APEX_FEDORA=%s has no image/fedora/%s.env\n' "$APEX_FEDORA" "$APEX_FEDORA" >&2
+    exit 2
+fi
+readonly APEX_FEDORA
 # The pinned component checkouts of tools/components.sh fetch, unless its env names others.
 : "${APEX_SYSTEM_SRC:=$APEX_ROOT/_build/components/apex-system}"
 : "${APEX_DESKTOP_SRC:=$APEX_ROOT/_build/components/apex-desktop}"
@@ -274,9 +280,26 @@ containerfile_from_images() {
     done | LC_ALL=C sort -u
 }
 
+is_next() { [[ $APEX_FEDORA != 45 ]]; }
+
+# NAME of this release: image/Containerfile's ARG for 45, image/fedora/N.env's line for next.
+release_arg() {
+    if is_next; then
+        sed -n "s/^$1=//p" "$APEX_ROOT/image/fedora/$APEX_FEDORA.env" | head -n 1
+    else
+        containerfile_arg "$1"
+    fi
+}
+
+# The lane's store; a next release's lives below it, so the 45 rpms.lock is out of its reach.
+apex_store() {
+    local store=${APEX_STORE:-$HOME/apex-store}
+    if is_next; then printf '%s/next\n' "$store"; else printf '%s\n' "$store"; fi
+}
+
 ga_reached() {
     local v=${APEX_GA_REACHED:-}
-    [[ -n $v ]] || v=$(containerfile_arg GA_REACHED)
+    [[ -n $v ]] || v=$(release_arg GA_REACHED)
     [[ -n $v ]] || v=0
     [[ $v == 0 || $v == 1 ]] || die "GA_REACHED must be 0 or 1, got '$v'"
     printf '%s\n' "$v"

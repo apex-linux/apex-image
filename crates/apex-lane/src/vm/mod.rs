@@ -25,7 +25,10 @@ pub const LANE_TREE_PATH: &str = "crates/apex-lane";
 
 #[derive(Debug, Clone)]
 pub struct Settings {
+    /// The release's store: for a next release, `next/` below the 45 one.
     pub store: PathBuf,
+    /// `APEX_FEDORA`: 45, or a next release with its image/fedora/N.env.
+    pub fedora: String,
     pub ga_override: Option<String>,
     pub keep_work: bool,
     pub signing_env: PathBuf,
