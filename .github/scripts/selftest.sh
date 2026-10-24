@@ -1897,7 +1897,7 @@ check_true "it labels the image with the version it gives the manifest" \
 ib_steps() { # [ENV...]: image.sh build, inspect's env and rechunk; prints podman's build and run lines
     rm -f "$IB/podman.log"
     rm -rf "$IB/work" "$IB/tree/_build" && mkdir -p "$IB/work" && : >"$IB/work/inputs.env"
-    env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' "$@" \
+    env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 "$@" \
         "$IB/tree/.github/scripts/image.sh" build >/dev/null 2>&1 || return
     printf 'DEGRADED=\nHELD=\nCONTENT_KEY=k\nKERNEL_PAIR=none\n' >"$IB/work/image.env"
     env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_PREVIOUS_BUILD=none "$@" \
