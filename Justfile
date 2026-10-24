@@ -182,6 +182,10 @@ pkg-stock pkg:
 kernel-bump:
     tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh kernel-bump
 
+# S1c's lane rehearsals in a scratch store: point (a bump published to a throwaway registry), kmod (an injected kmod failure held, then degraded=nvidia), or all.
+lane-rehearsal scenario="all":
+    tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane-rehearsal.sh {{ scenario }}
+
 # ---- Desktop VM: the built image in a window on this host (tools/builder-vm/README.md) ---
 
 # Install the last vm-image build onto the desktop VM disk (desktop-install --replace redoes it).
