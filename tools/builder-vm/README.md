@@ -1,10 +1,13 @@
 # Fedora 45 builder VM
 
-The development host is Ubuntu, so it cannot run rootful podman, `bootc-base-imagectl
-build-rootfs` or `rpmbuild` against Fedora 45. This VM runs them
+This VM runs rootful podman, `bootc-base-imagectl build-rootfs` and `rpmbuild` against
+Fedora 45, which an Ubuntu host cannot and a Fedora host should not do as root
 ([ADR 0013](https://github.com/apex-linux/apex/blob/main/docs/adr/0013-build-pipeline.md)):
 
 - QEMU with KVM, user-mode networking and UEFI (OVMF), started as your normal user.
+  The host packages are `qemu-system-x86 qemu-utils ovmf curl gpgv rsync socat` on
+  Ubuntu and `qemu-system-x86-core qemu-img edk2-ovmf curl gnupg2 rsync socat` on Fedora.
+  The firmware is found in either place, or set `APEX_OVMF_CODE` and `APEX_OVMF_VARS`.
 - **No root on the host.** `/dev/kvm` is usable through its ACL.
 - The repository is copied in with `rsync` and runs from a disk local to the VM. The VM
   never mounts host directories.

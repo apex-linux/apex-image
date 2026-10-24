@@ -4,8 +4,8 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Local Fedora 45 builder VM (ADR 0013): user-mode QEMU with KVM, no root on the host.
-The VM runs what this Ubuntu host cannot: rootful podman, build-rootfs, rpmbuild and
+Local Fedora 45 builder VM (ADR 0013): user-mode QEMU with KVM, no root on the host,
+which runs Ubuntu or Fedora. The VM runs rootful podman, build-rootfs, rpmbuild and
 (with nested KVM) the qualification boots. The repository is copied in with rsync; the
 VM never mounts host directories.
 
@@ -52,8 +52,6 @@ readonly FEDORA_KEY_URL=https://src.fedoraproject.org/rpms/fedora-repos/raw/f45/
 readonly IMAGE_BASE_URL=https://download.fedoraproject.org/pub/fedora/linux/releases/test/45_Beta/Cloud/x86_64/images
 readonly IMAGE_NAME=Fedora-Cloud-Base-Generic-45_Beta-1.3.x86_64.qcow2
 readonly CHECKSUM_NAME=Fedora-Cloud-images-45_Beta-1.3-x86_64-CHECKSUM
-readonly OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
-readonly OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS_4M.fd
 readonly QEMU_PROCESS_NAME=apex-builder
 # The guest's Linux 7.2 panicked in KVM's async page fault path during G4 (2026-09-29):
 # "Host injected async #PF in interrupt disabled region".
@@ -74,6 +72,8 @@ SSH_PORT=${APEX_VM_SSH_PORT:-2222}
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd -- "$HERE/../.." && pwd)
 readonly HERE REPO
+# shellcheck source=SCRIPTDIR/firmware.sh
+. "$HERE/firmware.sh"
 
 BASE_DIR=$VM_DIR/base
 DISK=$VM_DIR/disk.qcow2
@@ -158,11 +158,13 @@ launch() {
     local seed_url=${1:-} args
     running && die "the VM is already running (pid $(cat "$PIDFILE"))"
     [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable by $(id -un)"
+    find_ovmf
+    check_vars "$VARS"
     # shellcheck disable=SC2054 # QEMU option values are comma-separated key=value lists
     args=(-name "apex-builder,process=$QEMU_PROCESS_NAME"
         -machine q35,accel=kvm -cpu "$QEMU_CPU" -smp "$CPUS" -m "$MEM"
-        -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
-        -drive "if=pflash,format=raw,file=$VARS"
+        -drive "if=pflash,format=$OVMF_FORMAT,readonly=on,file=$OVMF_CODE"
+        -drive "if=pflash,format=$OVMF_FORMAT,file=$VARS"
         -drive "file=$DISK,if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,cache=writeback"
         -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22"
         -device virtio-net-pci,netdev=n0
@@ -242,7 +244,7 @@ provision() {
 create() {
     require_tools qemu-system-x86_64 qemu-img curl gpg gpgv sha256sum ssh ssh-keygen rsync socat python3
     [[ -e $DISK ]] && die "$DISK already exists (builder-vm.sh destroy --yes first)"
-    [[ -r $OVMF_CODE && -r $OVMF_VARS_TEMPLATE ]] || die "OVMF firmware not found under /usr/share/OVMF"
+    find_ovmf
     mkdir -p "$VM_DIR/ssh"
     chmod 0700 "$VM_DIR" "$VM_DIR/ssh"
     ensure_base
