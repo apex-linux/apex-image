@@ -163,10 +163,12 @@ LUKS_PASSPHRASE=
 FEATURE_NOTE=
 SAFE_LOGIN_SINCE=
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
+# The layer feature that gates each row, as results.md's fourth column names it.
+declare -A ROW_GATE=()
 
 result() {
     local test=$1 status=$2 detail=$3
-    printf '| %s | %s | %s |\n' "$test" "$status" "$detail" >>"$QUALIFY_OUT/results.md"
+    printf '| %s | %s | %s | %s |\n' "$test" "$status" "$detail" "${ROW_GATE[$test]:--}" >>"$QUALIFY_OUT/results.md"
     log "[$status] $test: $detail"
 }
 
@@ -177,7 +179,7 @@ fail() {
 
 publish_results() {
     [[ -f $QUALIFY_OUT/results.md ]] || return 0
-    summary "### Qualification (${QUALIFY_LAYOUT})" "" "| Test | Result | Detail |" "|---|---|---|" \
+    summary "### Qualification (${QUALIFY_LAYOUT})" "" "| Test | Result | Detail | Layer feature |" "|---|---|---|---|" \
         "$(cat "$QUALIFY_OUT/results.md")"
 }
 
@@ -1288,17 +1290,23 @@ pinned_features() {
 pinned_gnome() { printf 'apex-gnome %s' "$(git -C "$APEX_GNOME_SRC" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"; }
 
 # A feature the pin lacks is no regression; one the pin lists must have run in the session.
-# Returns 1, with FEATURE_NOTE set, when the pinned apex-gnome does not list FEATURE.
+# Returns 1, with FEATURE_NOTE set, when the pin lacks FEATURE; ROWs (default TEST) name it.
 feature_gate() {
-    local test=$1 feature=$2 since=$3 features
+    local test=$1 feature=$2 since=$3 features row
+    local -a rows=("${@:4}")
+    ((${#rows[@]})) || rows=("$test")
     features=$(pinned_features) ||
         fail "$test" "no feature list in \$APEX_GNOME_SRC/$APEX_LAYER_JS (tools/components.sh env sets APEX_GNOME_SRC)"
     if ! grep -qx "$feature" <<<"$features"; then
         FEATURE_NOTE="$feature not in pinned $(pinned_gnome)"
+        for row in "${rows[@]}"; do ROW_GATE[$row]="$feature: not in pinned $(pinned_gnome)"; done
         return 1
     fi
-    user_journal_has "$since" "Apex: feature $feature enabled" ||
+    for row in "${rows[@]}"; do ROW_GATE[$row]="$feature: enabled ($(pinned_gnome))"; done
+    if ! user_journal_has "$since" "Apex: feature $feature enabled"; then
+        ROW_GATE[$test]="$feature: listed, never enabled ($(pinned_gnome))"
         fail "$test" "the pinned $(pinned_gnome) lists '$feature', but the session never logged 'Apex: feature $feature enabled' (the crash guard, disabled-features or a load error turned it off)"
+    fi
 }
 
 matrix_wrong_password() {
@@ -1515,8 +1523,10 @@ polkit_agent() {
         ! user_journal_has "$login_since" "Apex: feature polkit enabled" ||
             fail "$name-polkit" "the safe login logged 'Apex: feature polkit enabled': the dialog under test is not upstream's"
         dialog="the shell's stock dialog"
+        ROW_GATE[$name-polkit]="polkit: off (safe mode, upstream's dialog)"
     else
-        if feature_gate "$name-polkit-wrong-password" polkit "$login_since"; then
+        if feature_gate "$name-polkit-wrong-password" polkit "$login_since" \
+            "$name-polkit-wrong-password" "$name-polkit-cancel" "$name-polkit"; then
             dialog="the Apex dialog (feature polkit enabled)"
         else
             note="; $FEATURE_NOTE"
