@@ -245,6 +245,9 @@ impl Vm<'_> {
                 )));
             }
         }
+        if let Some(reason) = self.module_gate(p, &plan, &out)? {
+            return self.record_pair_failure(p, &plan, &out, reason.as_bytes(), signer);
+        }
         self.store_pair_set(p, &plan, &plan.key, &plan.preimage, PAIR_LOCK, signer)?;
         self.record_pair(p, &plan.key, format!("built {}", plan.key).as_bytes())?;
         let manifest_text = fs::read(&stored.join("manifest.txt"))?;
@@ -471,6 +474,42 @@ impl Vm<'_> {
             )));
         }
         Ok(())
+    }
+
+    fn module_count(&self, files: &[PathBuf]) -> Result<usize> {
+        let out = self.run_ok(
+            &Cmd::new(Program::Rpm)
+                .args(["-qlp", "--nosignature", "--"])
+                .args(files)
+                .capture(),
+        )?;
+        Ok(pair::count_modules(&out.stdout))
+    }
+
+    /// ARCHITECTURE 4.2's gate that check.sh cannot run: it never sees the last good pair.
+    fn module_gate(&self, p: &PairPkg, plan: &Plan, out: &Path) -> Result<Option<String>> {
+        let Some(good) = &plan.good else {
+            return Ok(None);
+        };
+        let set = self.store_pkg(&p.name).join(good);
+        let listed = fs::read(&set.join("manifest.txt"))?;
+        let previous: Vec<PathBuf> = manifest::entries(&listed)
+            .iter()
+            .filter(|e| e.kind == b"built")
+            .map(|e| set.join(text::lossy(e.file)))
+            .collect();
+        let locked = pair::parse_pair_lock(&fs::read(&out.join(PAIR_LOCK))?, true)
+            .map_err(|e| infra(format!("pair.sh's {PAIR_LOCK}: {e}")))?;
+        let now: Vec<PathBuf> = locked
+            .rpms
+            .iter()
+            .map(|(file, _)| out.join("rpms").join(file))
+            .collect();
+        let (previous, now) = (self.module_count(&previous)?, self.module_count(&now)?);
+        self.report.log(&format!(
+            "modules: {now} in the pair, {previous} in the last good pair {good}"
+        ));
+        Ok(pair::module_drift(previous, now, good))
     }
 
     fn rpm_nevras(&self, files: &[PathBuf]) -> Result<Vec<Nevra>> {
