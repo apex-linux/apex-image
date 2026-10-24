@@ -161,6 +161,7 @@ TEST_PASSWORD=
 LOCAL_CANDIDATE_DIGEST=
 LUKS_PASSPHRASE=
 FEATURE_NOTE=
+SAFE_LOGIN_SINCE=
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 
 result() {
@@ -1458,6 +1459,7 @@ crash_guard_logins() {
     log_out "$name-safe-login" "$uid"
     vm_ssh "rm -f ~$TEST_USER/$TEST_FAULT_FILE" || fail "$name-safe-login" "cannot remove ~$TEST_USER/$TEST_FAULT_FILE"
     since=$(vm_ssh 'date +%s') || fail "$name-safe-login" "cannot read the guest's clock"
+    SAFE_LOGIN_SINCE=$since
     greeter_login "$name-safe"
     wait_until "$name-safe-login" "$QUALIFY_LOGIN_TIMEOUT" \
         "the gnome-shell of session $SESSION_ID never answered on org.gnome.ScreenSaver" shell_answers "$SESSION_UID"
@@ -1503,12 +1505,22 @@ type_into_dialog() {
     { type_text "$2" && qmp "$(key_press ret)"; } || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
 }
 
-# S3b board 13: pkexec through the shell's polkit agent; with STOCK, the layer is off.
+# S3b board 13: pkexec through the shell's polkit agent, from the login at LOGIN_SINCE;
+# with STOCK, the layer is off.
 polkit_agent() {
-    local name=$1 stock=${2:-} test since rc out
+    local name=$1 login_since=$2 stock=${3:-} test since rc out note='' dialog="the shell's dialog"
     wait_session "$name-polkit" user "$TEST_USER"
     vm_ssh "usermod -aG wheel $TEST_USER" || fail "$name-polkit" "cannot make $TEST_USER an administrator (wheel)"
-    if [[ -z $stock ]]; then
+    if [[ -n $stock ]]; then
+        ! user_journal_has "$login_since" "Apex: feature polkit enabled" ||
+            fail "$name-polkit" "the safe login logged 'Apex: feature polkit enabled': the dialog under test is not upstream's"
+        dialog="the shell's stock dialog"
+    else
+        if feature_gate "$name-polkit-wrong-password" polkit "$login_since"; then
+            dialog="the Apex dialog (feature polkit enabled)"
+        else
+            note="; $FEATURE_NOTE"
+        fi
         test=$name-polkit-wrong-password
         since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
         open_polkit_dialog "$test"
@@ -1518,14 +1530,14 @@ polkit_agent() {
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the dialog did not ask again after the wrong password" polkit_asking
         ! pkexec_done || fail "$test" "pkexec ended (exit $(pkexec_rc)) on a wrong password"
         screendump "$test"
-        result "$test" PASS "the shell's dialog refused the wrong password (polkitd: FAILED to authenticate) and asked again; pkexec kept waiting (logs/$test.png)"
+        result "$test" PASS "the shell's dialog refused the wrong password (polkitd: FAILED to authenticate) and asked again; pkexec kept waiting (logs/$test.png)$note"
         test=$name-polkit-cancel
         qmp "$(key_press esc)" || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "pkexec did not end after Esc on the dialog" pkexec_done
         rc=$(pkexec_rc)
         [[ $rc == 126 ]] || fail "$test" "pkexec exited $rc after Esc, not 126 (a dismissed dialog, pkexec(1))"
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after Esc" polkit_quiet
-        result "$test" PASS "Esc dismissed the dialog: pkexec exited 126, as pkexec(1) documents"
+        result "$test" PASS "Esc dismissed the dialog: pkexec exited 126, as pkexec(1) documents$note"
     fi
     test=$name-polkit
     open_polkit_dialog "$test"
@@ -1534,7 +1546,7 @@ polkit_agent() {
     rc=$(pkexec_rc)
     out=$(vm_ssh "cat /run/user/$SESSION_UID/$PKEXEC_UNIT.out" 2>/dev/null || true)
     [[ $rc == 0 && $out == 0 ]] || fail "$test" "pkexec /usr/bin/id -u exited $rc and printed '$out', not 0 and 0"
-    result "$test" PASS "pkexec /usr/bin/id -u as $TEST_USER: the shell's ${stock:+stock }dialog (logs/$test-dialog.png) took the password; it printed 0 and exited 0"
+    result "$test" PASS "pkexec /usr/bin/id -u as $TEST_USER: $dialog (logs/$test-dialog.png) took the password; it printed 0 and exited 0$note"
 }
 
 # G1 parses these files strictly; only polkitd on a booted guest reads them as the dialog's
@@ -1804,10 +1816,10 @@ cmd_local() {
     [[ $QUALIFY_LAYOUT != separate-boot ]] || boot_metrics local
     login_lock_unlock local
     lock_matrix local "$since"
-    polkit_agent local
+    polkit_agent local "$since"
     polkit_actions local
     crash_guard_logins local
-    polkit_agent local-safe stock
+    polkit_agent local-safe "$SAFE_LOGIN_SINCE" stock
     safe_karg_lock local
     if [[ $QUALIFY_LAYOUT == luks ]]; then
         result local-g4 SKIP "QUALIFY_LAYOUT=luks is the install rehearsal: only the default layout records G4 passes"
