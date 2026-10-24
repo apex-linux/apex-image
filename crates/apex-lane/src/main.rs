@@ -68,9 +68,8 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Parse DIR's kernel.env and nvidia.env (apex-kernel's pins) as the lane does, and
-    /// require the tag pins kernel-bump needs; the contracts job runs it on the pinned
-    /// apex-kernel. No lane checkout or store is needed.
+    /// apex-kernel's kernel.env and nvidia.env in DIR, parsed as the lane does, with the
+    /// tag pins kernel-bump needs (the contracts job's check; no checkout or store needed).
     CheckPins { dir: PathBuf },
     /// Sign RPMs in place with the Apex RPM key: the builder VM's apex, apex-desktop and
     /// libfprint builds. A manifest.txt beside them records it.
