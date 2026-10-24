@@ -53,7 +53,7 @@ db = {
     "mutter-common": {"evr": "51.0-1.fc45", "arch": "noarch", "signature": fedora},
     "ptyxis": {"evr": "51.0-1.fc45", "signature": fedora},
     "apex-desktop": {"evr": "0.1.0-0.fc45", "arch": "noarch", "signature": apex,
-                     "files": ["/etc/profile.d/apex-prompt.sh"]},
+                     "files": ["/etc/profile.d/apex-prompt.sh", "/etc/profile.d/zz-apex-shell-status.sh"]},
 }
 for edit in sys.argv[2:]:
     key, value = edit.split("=", 1)
@@ -112,7 +112,7 @@ mkroot() {
     printf '[Unit]\nDescription=Disable GNOME Shell extensions after failure\nDefaultDependencies=no\n\n[Service]\nType=simple\nExecStart=/usr/bin/true\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell-disable-extensions.service"
     mkdir -p "$r/etc/profile.d"
-    cp "$DESKTOP/ptyxis/apex-prompt.sh" "$r/etc/profile.d/"
+    cp "$DESKTOP/ptyxis/apex-prompt.sh" "$DESKTOP/ptyxis/zz-apex-shell-status.sh" "$r/etc/profile.d/"
     : >"$r/etc/profile.d/vte.sh"
     # GLib's NEWS names G_RESOURCE_OVERLAYS, and libgio reads it: neither sets it.
     printf 'Overview of changes in GLib 2.51.1\n* Add G_RESOURCE_OVERLAYS\n' >"$r/usr/share/doc/glib2/NEWS"
@@ -137,6 +137,7 @@ expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
 expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
 expect_out "the Apex prompt" '^PASS desktop: /etc/profile.d/apex-prompt.sh is apex-desktop.s and sorts before vte.sh'
+expect_out "the exit-status fix" '^PASS desktop: /etc/profile.d/zz-apex-shell-status.sh is apex-desktop.s and sorts after vte.sh'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
     expect_out "the theme carries /*! $v */" "^PASS desktop: .*gnome-shell-theme\\.gresource carries /\\*! $v \\*/\$"
 done
@@ -399,6 +400,12 @@ rm "$r/etc/profile.d/apex-prompt.sh"
 desktop noprompt
 expect_rc "an image without the Apex prompt fails" 1
 expect_out "and says so" '^FAIL desktop: no /etc/profile.d/apex-prompt.sh'
+r=$(mkroot nostatus)
+rm "$r/etc/profile.d/zz-apex-shell-status.sh"
+desktop nostatus
+expect_rc "an image without the exit-status fix fails" 1
+expect_out "and says why" "^FAIL desktop: no /etc/profile.d/zz-apex-shell-status.sh: the terminal reads every command.s exit status as 0"
+
 r=$(mkroot strayprompt)
 rpmdb "$T/strayprompt.db" 'apex-desktop.files=[]'
 desktop strayprompt

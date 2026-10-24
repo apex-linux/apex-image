@@ -20,6 +20,7 @@ MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-structure */'
 PTYXIS=/usr/bin/ptyxis
 PROMPT=/etc/profile.d/apex-prompt.sh
+SHELL_STATUS=/etc/profile.d/zz-apex-shell-status.sh
 PTYXIS_MARKER='/*! apex-ptyxis */'
 DEV_ONLY_SETTINGS='G_RESOURCE_OVERLAYS
 --unsafe-mode
@@ -386,6 +387,18 @@ elif [ -f "$(rootpath /etc/profile.d/vte.sh)" ] &&
     fail "$PROMPT sorts after vte.sh, so VTE's shell integration would lose the Apex prompt"
 else
     pass "$PROMPT is apex-desktop's and sorts before vte.sh, which wraps it with the shell-integration markers"
+fi
+# It replaces vte.sh's precmd, which reports a status already reset to 0, so it must load after it.
+owner=''
+if root_rpm -qf --qf '%{NAME}\n' "$SHELL_STATUS" >"$TMPD/owner" 2>/dev/null; then owner=$(head -n 1 "$TMPD/owner"); fi
+if [ ! -f "$(rootpath "$SHELL_STATUS")" ]; then
+    fail "no $SHELL_STATUS: the terminal reads every command's exit status as 0 (apex-desktop)"
+elif [ "$owner" != apex-desktop ]; then
+    fail "$SHELL_STATUS belongs to '${owner:-no package}', not apex-desktop"
+elif [ "$(printf '%s\n' vte.sh zz-apex-shell-status.sh | LC_ALL=C sort | head -n 1)" != vte.sh ]; then
+    fail "$SHELL_STATUS sorts before vte.sh, which would put its own precmd back"
+else
+    pass "$SHELL_STATUS is apex-desktop's and sorts after vte.sh, so the terminal gets each command's real exit status"
 fi
 
 finish
