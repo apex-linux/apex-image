@@ -19,7 +19,9 @@ readonly APEX_LAYER_JS=desktop/shell/js/ui/apex/layer.js
 
 # apex-gnome's layer features, one per line, from its layer.js FILE; fails without a list.
 layer_features() {
-    sed -n "s/^const FEATURES_IN_ENABLE_ORDER = \[\(.*\)\];\$/\1/p" "$1" | tr -d "' " | tr ',' '\n' | grep .
+    # eslint's max-len wraps the list once it grows, so it is read up to its closing bracket.
+    awk '/^const FEATURES_IN_ENABLE_ORDER = \[/ { on = 1 } on { print } on && /\];/ { exit }' "$1" |
+        sed -e 's/^const FEATURES_IN_ENABLE_ORDER = \[//' -e 's/\];.*$//' | tr -d "' \n" | tr ',' '\n' | grep .
 }
 
 # NAME@SHORT-SHA of a component checkout DIR, or NAME and the path when it is no clone.
