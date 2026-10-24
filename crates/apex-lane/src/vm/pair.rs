@@ -329,6 +329,12 @@ impl Vm<'_> {
             .arg(format!("PAIR_ID={}", plan.key))
             .arg("-e")
             .arg(format!("APEX_RELEASE={}", plan.apex_release.0))
+            .args(
+                self.settings
+                    .pair_fault
+                    .iter()
+                    .flat_map(|f| ["-e".to_owned(), format!("APEX_PAIR_FAULT={f}")]),
+            )
             .arg(self.repos_base()?)
             .args(["/usr/bin/bash", "/job/pair.sh", "/mirror", "/out"])
             .args(&plan.dnf)

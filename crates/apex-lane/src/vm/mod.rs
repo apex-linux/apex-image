@@ -33,6 +33,8 @@ pub struct Settings {
     pub uid: u32,
     pub gid: u32,
     pub is_root: bool,
+    /// `APEX_PAIR_FAULT`, forwarded to pair.sh; only a rehearsal sets it.
+    pub pair_fault: Option<String>,
 }
 
 pub struct Vm<'a> {

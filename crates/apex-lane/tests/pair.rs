@@ -124,6 +124,7 @@ struct JobDirs {
     job: PathBuf,
     mirror: PathBuf,
     apex_release: u32,
+    fault: Option<String>,
 }
 
 struct Fake {
@@ -327,6 +328,12 @@ impl Fake {
                         job: mount(&args, "/job"),
                         mirror: mount(&args, "/mirror"),
                         apex_release: apex_release_of(&args),
+                        fault: args.windows(2).find_map(|w| {
+                            (w[0] == "-e")
+                                .then(|| w[1].strip_prefix("APEX_PAIR_FAULT="))
+                                .flatten()
+                                .map(str::to_owned)
+                        }),
                     };
                     let (code, stderr) = (self.job.borrow())(&dirs);
                     Some(Outcome {
@@ -460,6 +467,30 @@ fn write_pair(dirs: &JobDirs, with_kmod: bool) {
     }
 }
 
+/// pair.sh with its hook: `APEX_PAIR_FAULT=kmod` takes the kmod-failure path.
+fn pair_sh(dirs: &JobDirs) -> (i32, String) {
+    match dirs.fault.as_deref() {
+        None => good_job(dirs),
+        Some("kmod") => {
+            let nvidia =
+                pins::parse_nvidia("n", &std::fs::read(dirs.job.join("nvidia.env")).unwrap())
+                    .unwrap();
+            write_pair(dirs, false);
+            (
+                1,
+                format!(
+                    "kmod: {} does not build for this kernel\n",
+                    nvidia.kmod_srpm
+                ),
+            )
+        }
+        Some(other) => (
+            2,
+            format!("APEX_PAIR_FAULT is kmod or empty, not '{other}'\n"),
+        ),
+    }
+}
+
 fn failing(reason: &'static str, keep_kernel: bool) -> impl Fn(&JobDirs) -> (i32, String) {
     move |dirs| {
         if keep_kernel {
@@ -499,6 +530,7 @@ struct PairTest {
     report: Reporter,
     fake: Fake,
     released: Cell<Option<UtcSecond>>,
+    pair_fault: RefCell<Option<String>>,
 }
 
 impl PairTest {
@@ -544,6 +576,7 @@ impl PairTest {
             report: Reporter::capturing(),
             fake: Fake::new(),
             released: Cell::new(None),
+            pair_fault: RefCell::default(),
         };
         write(
             &t.store.path().join("rpm-signing.env"),
@@ -577,6 +610,7 @@ impl PairTest {
                 uid: 1000,
                 gid: 1000,
                 is_root: false,
+                pair_fault: self.pair_fault.borrow().clone(),
             },
             runner: &self.fake,
             clock: &clock,
@@ -945,6 +979,42 @@ fn a_kernel_failure_without_a_known_release_counts_from_the_first_failure() {
     assert_eq!(t.build(T0), Built::Held);
     assert!(t.family_line().contains("limit=2026-12-04T00:00:00Z"));
     assert!(t.family_line().contains("side=kernel"));
+}
+
+#[test]
+fn a_rehearsal_injects_the_kmod_failure_through_pair_sh_and_reaches_degraded() {
+    let t = PairTest::new();
+    let good = t.with_good_pair();
+    t.fake.on_job(pair_sh);
+    t.pins("7.3.1-1", "615.78.08-1");
+    *t.pair_fault.borrow_mut() = Some("kmod".into());
+    assert_eq!(t.build(T0), Built::Held);
+    assert!(
+        t.family_line().starts_with(&format!("family kernel-cachyos held {good} since={T0} limit=2026-12-04T00:00:00Z "))
+            && t.family_line().ends_with(" side=kmod reason=kmod: nvidia-kmod-3:615.78.08-1.fc45.src does not build for this kernel"),
+        "{}",
+        t.family_line()
+    );
+    assert_eq!(t.build("2026-12-04T00:00:01Z"), Built::Degraded);
+    assert!(t.family_line().contains(" degraded=nvidia side=kmod "));
+    let faults = t
+        .fake
+        .log
+        .borrow()
+        .iter()
+        .map(argv)
+        .filter(|a| a.first().is_some_and(|a| a == "/usr/bin/podman"))
+        .map(|a| {
+            a.iter()
+                .filter(|a| a.starts_with("APEX_PAIR_FAULT="))
+                .count()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        faults,
+        [0, 1, 1],
+        "only the rehearsal's jobs carry the hook"
+    );
 }
 
 #[test]

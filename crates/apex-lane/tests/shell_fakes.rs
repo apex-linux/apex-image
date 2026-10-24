@@ -238,6 +238,7 @@ fn settings(store: &Path, signing: &Path) -> Settings {
         uid: 1000,
         gid: 1000,
         is_root: false,
+        pair_fault: None,
     }
 }
 

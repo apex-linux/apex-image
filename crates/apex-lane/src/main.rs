@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use apex_lane::container::{self, Container, ModeKind, Paths};
+use apex_lane::core::utc::UtcSecond;
 use apex_lane::error::{Exit, LaneError, Result, infra, usage};
 use apex_lane::shell::bodhi::CurlBodhi;
-use apex_lane::shell::clock::SystemClock;
+use apex_lane::shell::clock::{Clock, FixedClock, SystemClock};
 use apex_lane::shell::cmd::StdRunner;
 use apex_lane::shell::kernel_org::CurlKernelOrg;
 use apex_lane::shell::report::Reporter;
@@ -204,14 +205,24 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
 }
 
-fn settings() -> Result<Settings> {
+fn settings() -> Result<(Settings, Option<UtcSecond>)> {
     let env = |name: &str| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    Ok(Settings {
-        store: env("APEX_STORE").unwrap_or_else(|| home().join("apex-store")),
+    let text = |name: &str| std::env::var(name).unwrap_or_default();
+    let default_store = home().join("apex-store");
+    let rehearsal = apex_lane::core::rehearsal::parse(
+        &text("APEX_LANE_REHEARSAL"),
+        env("APEX_STORE").as_deref(),
+        &default_store,
+        &text("APEX_PAIR_FAULT"),
+        &text("APEX_LANE_NOW"),
+    )
+    .map_err(usage)?;
+    let settings = Settings {
+        store: env("APEX_STORE").unwrap_or(default_store),
         ga_override: std::env::var("APEX_GA_REACHED")
             .ok()
             .filter(|v| !v.is_empty()),
@@ -223,7 +234,9 @@ fn settings() -> Result<Settings> {
         uid: nix::unistd::getuid().as_raw(),
         gid: nix::unistd::getgid().as_raw(),
         is_root: nix::unistd::geteuid().is_root(),
-    })
+        pair_fault: rehearsal.pair_fault,
+    };
+    Ok((settings, rehearsal.now))
 }
 
 fn recipe_roots() -> Result<Vec<PathBuf>> {
@@ -273,12 +286,16 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
         ))
     })?;
     let runner = StdRunner::cleared(&home());
+    let (settings, now) = settings()?;
+    let fixed = now.map(FixedClock);
     let vm = Vm {
         root,
         recipes: recipe_roots()?,
-        settings: settings()?,
+        settings,
         runner: &runner,
-        clock: &SystemClock,
+        clock: fixed
+            .as_ref()
+            .map_or(&SystemClock as &dyn Clock, |c| c as &dyn Clock),
         bodhi: &CurlBodhi { runner: &runner },
         kernel_org: &CurlKernelOrg { runner: &runner },
         report,
