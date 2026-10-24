@@ -79,6 +79,8 @@ pair_root() {
         return 0
     fi
     cp -R "$IMAGE_DIR/variants/pair/." "$R/"
+    printf '%s\n' 'SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{DEVTYPE}=="drm_minor", SUBSYSTEMS=="pci", ATTRS{vendor}=="0x10de", ATTRS{device}=="0x25a2", TAG+="mutter-device-ignore"' \
+        >"$R/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules"
     for mod in fs/erofs/erofs fs/overlayfs/overlay arch/x86/crypto/aesni-intel; do
         printf -- '-rw-r--r--   1 root root 0 Jan  1 00:00 usr/lib/modules/%s/kernel/%s.ko.xz\n' "$KVER" "$mod"
     done >>"$m/initramfs.img"

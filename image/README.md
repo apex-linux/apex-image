@@ -50,6 +50,10 @@ is the Fedora-kernel image it was.
   and the preset that disables `nvidia-persistenced`), removes the Fedora kernel's
   `apex-dgpu.conf` and `61-apex-dgpu-pm.rules`, and labels `pair-degraded` as
   `degraded=nvidia`. A held pair is `held=kernel-cachyos`, as for any family.
+- With a pair, the final stage also installs apex-system's
+  `hardware/m7400qc/generated/61-apex-mutter-ignore-dgpu.rules`, rendered from the
+  profile's `drives_displays = false`, so mutter never opens the NVIDIA card; the
+  build stops without it.
 - The break-glass image, `just image KERNEL=fedora` (`build-image.sh --kernel fedora`,
   `image.sh context --kernel fedora`), builds on Fedora's kernel whatever the lock says:
   the image's copy of the lock records the pair as the owner's `stock` choice with a
