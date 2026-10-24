@@ -232,11 +232,24 @@ image build (exit 1), as for the other families; the pair has no `stock`.
 
 One run may print both kernel lines, the point line first.
 
-- `point NEVRA`: mirrors that SRPM after checking it against the COPR key, and commits
-  `kernel.env` with the new `srpm`, its sha256 and `tag` on the branch
+- `point NEVRA`: mirrors that SRPM after checking it against the COPR key (and the
+  pinned one, against its pinned sha256), then writes the bump report:
+  - the CachyOS tag (`cachyos-VERSION-N`, N the release's first number), fetched from
+    `github.com/CachyOS/linux` into `~/apex-store/mirror/cachyos-linux.git`, and
+    `git verify-tag` against `tag_key` alone (from keys.openpgp.org, mirrored at first
+    sight);
+  - the new SRPM's Source0 against the tag's `git archive`, both uncompressed, byte for
+    byte;
+  - the BORE patch (`0001-bore-cachy.patch`) and the `config` against the pinned SRPM's:
+    new symbols, changed values and removed symbols;
+  - the patches of the pinned kmod SRPM, when it is mirrored.
+
+  A tag or a Source0 that does not verify is exit 1, with no branch. A config that
+  changes beyond new symbols holds the bump: the report goes to the summary with a
+  warning, and no branch is written. Otherwise the lane commits `kernel.env` with the
+  new `srpm`, its sha256 and `tag`, the report in the commit message, on the branch
   `kernel-bump/NVR` of the recipe's checkout, through a private index: HEAD and the
-  work tree stay. The runner pushes it and opens the bump PR; the bump report (the tag's
-  `git verify-tag`, the Source0, config and BORE diffs) is still to come.
+  work tree stay. The runner pushes it and opens the bump PR.
 - `major NEVRA waiting-for-owner EOL-in-Nd`: prints "waiting for owner" with the EOL
   countdown.
 - each newer NVIDIA build: a new driver waits for the owner.

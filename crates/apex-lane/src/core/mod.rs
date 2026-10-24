@@ -1,5 +1,6 @@
 //! Pure decisions and formats: no file system, process, environment or clock.
 
+pub mod bump_report;
 pub mod checksig;
 pub mod ere;
 pub mod exact_tree;
