@@ -1012,7 +1012,7 @@ guest() {
     local rc=0
     : >"$GUEST_DIR/out/results.md"
     QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=1 QUALIFY_LOCK_TIMEOUT=1 \
-        QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' \
+        QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' APEX_GNOME_SRC="$GUEST_DIR/gnome" \
         bash "$TMP/qualify-fake-guest.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$GUEST_DIR/state" "$@" \
         >"$GUEST_DIR/stderr" 2>&1 || rc=$?
     printf '%s\n' "$rc"
@@ -1245,6 +1245,15 @@ check "a failed user unit fails" 1 "$(guest login_lock_unlock local)"
 check "at the user units" 1 "$(row local-user-units FAIL)"
 
 # S3b's lock matrix against the fake guest: apex-gnome's single-stage lock asks at once.
+pin_features() { # the pinned apex-gnome's FEATURES_IN_ENABLE_ORDER
+    mkdir -p "$GUEST_DIR/gnome/desktop/shell/js/ui/apex"
+    printf 'const FEATURES_IN_ENABLE_ORDER = [%s];\n' "$1" >"$GUEST_DIR/gnome/desktop/shell/js/ui/apex/layer.js"
+    [[ -d $GUEST_DIR/gnome/.git ]] || git -C "$GUEST_DIR/gnome" init -q
+    git -C "$GUEST_DIR/gnome" add -A
+    git -C "$GUEST_DIR/gnome" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m pin
+}
+pin_features "'spotlight', 'panel', 'lock'"
+GNOME_PIN=$(git -C "$GUEST_DIR/gnome" rev-parse --short=8 HEAD)
 apex_locked_in() {
     logged_in
     : >"$GUEST_DIR/state/apex-lock"
@@ -1275,8 +1284,29 @@ lock_matrix_fails no-suspend local-lock-suspend
 lock_matrix_fails resume-unlocks local-lock-suspend
 lock_matrix_fails motion-js-error local-lock-reduce-motion
 logged_in
-check "without the Apex lock, the matrix still runs" 0 "$(guest lock_matrix local 1000)"
-check "and blank and wake is a SKIP, so G4 records no pass" 1 "$(row local-lock-blank-wake SKIP)"
+check "the pin lists lock, but the session never enabled it: the matrix fails" 1 "$(guest lock_matrix local 1000)"
+check_true "at blank and wake, naming the pin" grep -q "^| local-lock-blank-wake | FAIL | the pinned apex-gnome $GNOME_PIN lists 'lock', but the session never logged 'Apex: feature lock enabled'" "$GUEST_DIR/out/results.md"
+pin_features "'spotlight', 'panel'"
+GNOME_PIN=$(git -C "$GUEST_DIR/gnome" rev-parse --short=8 HEAD)
+logged_in
+check "a pin without lock: the matrix runs" 0 "$(guest lock_matrix local 1000)"
+check_true "and blank and wake passes with the note" grep -q "^| local-lock-blank-wake | PASS | lock not in pinned apex-gnome $GNOME_PIN: no Apex prompt" "$GUEST_DIR/out/results.md"
+check_true "as does Reduce Motion, which the pin has no feature for" grep -q "^| local-lock-reduce-motion | PASS | .*; motion not in pinned apex-gnome $GNOME_PIN" "$GUEST_DIR/out/results.md"
+pin_features "'spotlight', 'panel', 'lock', 'motion'"
+apex_locked_in
+echo 'gnome-shell[1234]: Apex: feature motion enabled' >>"$GUEST_DIR/state/journal"
+check "a pin with motion, enabled in the session: the matrix passes" 0 "$(guest lock_matrix local 1000)"
+check_false "with no note on Reduce Motion" grep -q '^| local-lock-reduce-motion | PASS | .*not in pinned' "$GUEST_DIR/out/results.md"
+apex_locked_in
+check "a pin with motion the session never enabled fails" 1 "$(guest lock_matrix local 1000)"
+check "at Reduce Motion" 1 "$(row local-lock-reduce-motion FAIL)"
+pin_features "'spotlight', 'panel', 'lock'"
+rm -rf "$GUEST_DIR/gnome"
+apex_locked_in
+check "no pinned apex-gnome checkout fails" 1 "$(guest lock_matrix local 1000)"
+# shellcheck disable=SC2016 # the row names the variable, unexpanded
+check_true "and says how to get one" grep -q '^| local-lock-blank-wake | FAIL | no feature list in \$APEX_GNOME_SRC' "$GUEST_DIR/out/results.md"
+pin_features "'spotlight', 'panel', 'lock'"
 
 apex_locked_in
 check "apex.safe=1: upstream's two-stage lock" 0 "$(guest safe_karg_lock local)"

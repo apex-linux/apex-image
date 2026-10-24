@@ -143,6 +143,7 @@ readonly APEX_LOCK_REBUILT='Apex: lock: screen on, prompt rebuilt'
 readonly APEX_SAFE_KARG=apex.safe=1
 readonly APEX_SAFE_KARG_LINE='Apex: safe mode (apex.safe=1)'
 readonly WRONG_PASSWORD=notthepassword0
+readonly APEX_LAYER_JS=desktop/shell/js/ui/apex/layer.js
 
 VM_NAME=
 VM_SERIAL=
@@ -152,6 +153,7 @@ SESSION_UID=
 SESSION_TYPE=
 TEST_PASSWORD=
 LOCAL_CANDIDATE_DIGEST=
+FEATURE_NOTE=
 declare -a LOOPS=() MOUNTS=()
 
 result() {
@@ -1122,10 +1124,27 @@ no_fingerprint_conversation() {
     ((n == 0)) || fail "$test" "$n fingerprint conversation(s) (pam/gdm-fingerprint) ran on a VM with no reader"
 }
 
-# The Apex lock's own lines exist only when apex-gnome's lock feature runs in this session.
-apex_lock_enabled() {
-    local since=$1
-    user_journal_has "$since" "$APEX_LOCK_FEATURE"
+# The features of the apex-gnome checkout the image was built from (components.sh env).
+pinned_features() {
+    local js=${APEX_GNOME_SRC:-}/$APEX_LAYER_JS
+    [[ -n ${APEX_GNOME_SRC:-} && -f $js ]] || return 1
+    sed -n "s/^const FEATURES_IN_ENABLE_ORDER = \[\(.*\)\];\$/\1/p" "$js" | tr -d "' " | tr ',' '\n' | grep .
+}
+
+pinned_gnome() { printf 'apex-gnome %s' "$(git -C "$APEX_GNOME_SRC" rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"; }
+
+# A feature the pin lacks is no regression; one the pin lists must have run in the session.
+# Returns 1, with FEATURE_NOTE set, when the pinned apex-gnome does not list FEATURE.
+feature_gate() {
+    local test=$1 feature=$2 since=$3 features
+    features=$(pinned_features) ||
+        fail "$test" "no feature list in \$APEX_GNOME_SRC/$APEX_LAYER_JS (tools/components.sh env sets APEX_GNOME_SRC)"
+    if ! grep -qx "$feature" <<<"$features"; then
+        FEATURE_NOTE="$feature not in pinned $(pinned_gnome)"
+        return 1
+    fi
+    user_journal_has "$since" "Apex: feature $feature enabled" ||
+        fail "$test" "the pinned $(pinned_gnome) lists '$feature', but the session never logged 'Apex: feature $feature enabled' (the crash guard, disabled-features or a load error turned it off)"
 }
 
 matrix_wrong_password() {
@@ -1198,13 +1217,14 @@ matrix_suspend() {
 }
 
 matrix_reduce_motion() {
-    local test=$1-lock-reduce-motion pid=$2 base=$3 since
+    local test=$1-lock-reduce-motion pid=$2 base=$3 login_since=$4 since note=
+    if ! feature_gate "$test" motion "$login_since"; then note="; $FEATURE_NOTE"; fi
     user_run "$SESSION_UID" gsettings set org.gnome.desktop.a11y.interface reduced-motion "\"'reduce'\"" ||
         fail "$test" "cannot set reduced-motion to 'reduce'"
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_session "$test"
     type_password_after_enter "$test" "the lock screen with Reduce Motion" "$base"
-    assert_unlocked "$test" "$pid" "$since" "Reduce Motion (reduced-motion 'reduce'): lock, then the password"
+    assert_unlocked "$test" "$pid" "$since" "Reduce Motion (reduced-motion 'reduce'): lock, then the password$note"
     user_run "$SESSION_UID" gsettings reset org.gnome.desktop.a11y.interface reduced-motion ||
         fail "$test" "cannot reset reduced-motion"
 }
@@ -1217,13 +1237,13 @@ lock_matrix() {
     base=$(password_conversations)
     matrix_wrong_password "$name" "$pid" "$base"
     matrix_esc "$name" "$pid" "$base"
-    if apex_lock_enabled "$login_since"; then
+    if feature_gate "$name-lock-blank-wake" lock "$login_since"; then
         matrix_blank_wake "$name" "$pid" "$base"
     else
-        result "$name-lock-blank-wake" SKIP "no '$APEX_LOCK_FEATURE' at login: this image's apex-gnome has no Apex lock to tear down"
+        result "$name-lock-blank-wake" PASS "$FEATURE_NOTE: no Apex prompt to tear down"
     fi
     matrix_suspend "$name" "$pid" "$base"
-    matrix_reduce_motion "$name" "$pid" "$base"
+    matrix_reduce_motion "$name" "$pid" "$base" "$login_since"
 }
 
 # apex.safe=1 turns the layer off at shell start: upstream's two-stage lock asks only after a key.
