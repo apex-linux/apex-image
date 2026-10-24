@@ -203,7 +203,10 @@ exactly what it built before.
    `debug/` in the set; a lock without all four is exit 1 of the lane.
    Exit 1: a hold (below), the reason the last line of its stderr, and `debug/kernel.log`,
    when the kernel got that far, kept as `pkgs/kernel/last-failure-kernel.log`. Anything
-   else is exit 1 of the lane.
+   else is exit 1 of the lane. After an exit 0 the lane runs the one gate of ARCHITECTURE 4.2
+   that check.sh cannot, since it never sees the last good pair: the modules in the
+   pair's RPMs (`rpm -qlp`) within 5 % of the last good pair's, or a `check:` hold.
+   BTF is check.sh's, through `config-required.txt` (`CONFIG_DEBUG_INFO_BTF=y`).
 5. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
    each `install=` package and the kmod built for that kernel, and one of kind `mirror`
    for each `userspace=` RPM of the driver the pair was built with, copied from the
