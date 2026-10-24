@@ -225,11 +225,18 @@ for the VM's log. In the VM, `ci-build` then:
    F45 stable and updates-testing SRPM? It never changes the exit status.
 
 The gates step writes the results to the job summary. It fails when there is no gates
-file. When G4 ran, its screendumps, journals and serial logs follow as the artifact
-`qualify-logs-<sha>`, kept 14 days: each file at most 20 MiB and 200 MiB in all, with
-`SKIPPED` naming what was left out. The daily run's absorption report joins the summary
-and that artifact (`absorb/`), with a warning for each family whose updates-testing
-build does not take its series with `git apply`.
+file. The artifact `vm-logs-<sha>` holds the logs the run returned, and is kept 14 days:
+
+| Directory | When | Size |
+|---|---|---|
+| `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all; `SKIPPED` names what was left out |
+| `absorb/` | the daily run | the absorption report: `report.md`, `rows.tsv`, `warnings.tsv` and each SRPM's `logs/`, under the same caps |
+
+The absorption report also joins the summary, with a warning for each family whose
+updates-testing build does not take its series with `git apply`. The selftest runs
+vm.yml's Commit, build and gates steps, taken from the workflow itself, against a fake
+`ssh` and canned results: a green build, a red one, a busy VM (75), a refused commit
+(2), an empty tar and a daily run with warnings.
 
 The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and
