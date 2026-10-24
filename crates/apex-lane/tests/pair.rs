@@ -410,6 +410,7 @@ impl PairTest {
         write(&k.join("kernel.env"), kernel_env("7.3.0-4"));
         write(&k.join("nvidia.env"), nvidia_env("615.78.08-1"));
         write(&k.join("pair.sh"), "#!/bin/bash\n");
+        write(&k.join("config-required.txt"), "CONFIG_MODULE_SIG=y\n");
         write(&k.join("bump.sh"), "#!/bin/bash\n");
         init_repo(recipes.path());
         let t = Self {
@@ -584,6 +585,8 @@ fn a_good_pair_is_signed_stored_and_locked() {
         "nvidia.env",
         "signing_key.x509",
         "key-input.txt",
+        "config-required.txt",
+        "negativo17.gpg",
         "logs/kernel.log",
     ] {
         assert!(set.join(kept).is_file(), "the stored pair has no {kept}");

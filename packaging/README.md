@@ -196,7 +196,9 @@ exactly what it built before.
    `/job`, the module key's tmpfs at `/run/apex-modkey`, ccache in the volume
    `apex-lane-ccache`. Exit 0: the RPMs of `pair.lock`, each sha256 checked and
    queried with `rpm -qp`, are signed with the Apex RPM key and stored under
-   `pkgs/kernel/KEY/` with `pair.lock`, the pins, the module certificate and the logs.
+   `pkgs/kernel/KEY/` with `pair.lock`, the pins, the module certificate and the logs,
+   and, for the image's checks, the recipe's `config-required.txt` and (a whole pair)
+   negativo17's key file as mirrored, `negativo17.gpg`.
    Exit 1: a hold (below), the reason the last line of its stderr. Anything else is
    exit 1 of the lane.
 5. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
