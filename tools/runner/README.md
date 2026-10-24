@@ -145,6 +145,11 @@ dispatched run that runs G4, check in `_build/qualify/` that:
   (`local-lock-suspend`).
 - [ ] **`rpm-ostree kargs --append=apex.safe=1` works on the bootc image.** The next
   boot has `apex.safe=1` in `/proc/cmdline` (`local-lock-safe`).
+- [ ] **pkexec from the user's manager reaches the shell's agent.** polkit takes the
+  display session's agent for a process outside any session (`systemd-run --user`), and
+  the dialog runs `polkit-agent-helper-1` while it asks (`local-polkit*`; the
+  screendumps show the dialog). polkitd logs "FAILED to authenticate" for the wrong
+  password.
 
 The selftest proves the LUKS2 rehearsal (`just vm-qualify-luks`) against a fake serial
 console and QMP only. On its first run, check in `_build/qualify/` that:

@@ -147,6 +147,7 @@ readonly APEX_LOCK_REBUILT='Apex: lock: screen on, prompt rebuilt'
 readonly APEX_SAFE_KARG=apex.safe=1
 readonly APEX_SAFE_KARG_LINE='Apex: safe mode (apex.safe=1)'
 readonly WRONG_PASSWORD=notthepassword0
+readonly PKEXEC_UNIT=apex-qualify-pkexec
 readonly APEX_LAYER_JS=desktop/shell/js/ui/apex/layer.js
 
 VM_NAME=
@@ -1471,6 +1472,70 @@ crash_guard_logins() {
     result "$name-safe-login" PASS "the next login logged 'Apex: safe mode (layer-enabled is false)' with layer-enabled false and no JS ERROR (logs/${log##*/}); G2's guard phase 'next' proves that this start loads upstream's sheet"
 }
 
+# The dialog's PAM conversation runs in polkit's helper, as the lock's runs in GDM's worker.
+polkit_conversations() { vm_ssh "pgrep -c -f 'polkit-agent-helpe[r]'" || true; }
+polkit_asking() { (($(polkit_conversations) > 0)); }
+polkit_quiet() { (($(polkit_conversations) == 0)); }
+pkexec_rc() { vm_ssh "cat /run/user/$SESSION_UID/$PKEXEC_UNIT.rc" 2>/dev/null || true; }
+pkexec_done() { [[ -n $(pkexec_rc) ]]; }
+polkit_failed() {
+    vm_ssh "journalctl -b --since @$(($1 - 1)) -o cat --no-pager --grep 'FAILED to authenticate'" 2>/dev/null | grep -q .
+}
+
+# In the user's manager, outside any logind session: polkit asks the display session's
+# agent, the shell, as it does for an app the user started.
+open_polkit_dialog() {
+    local test=$1
+    vm_ssh "rm -f /run/user/$SESSION_UID/$PKEXEC_UNIT.rc /run/user/$SESSION_UID/$PKEXEC_UNIT.out" ||
+        fail "$test" "cannot clear pkexec's last result"
+    user_run "$SESSION_UID" "systemd-run --user --quiet --collect --unit=$PKEXEC_UNIT sh -c 'pkexec /usr/bin/id -u >\$XDG_RUNTIME_DIR/$PKEXEC_UNIT.out 2>&1; echo \$? >\$XDG_RUNTIME_DIR/$PKEXEC_UNIT.rc'" ||
+        fail "$test" "systemd-run --user could not start pkexec as $TEST_USER"
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "pkexec opened no authentication dialog: no polkit-agent-helper-1 ran (is the shell the session's polkit agent?)" \
+        polkit_asking
+    # The dialog takes keys only once its conversation has reached PAM.
+    sleep "$QUALIFY_POLL"
+    screendump "$test-dialog"
+}
+
+type_into_dialog() {
+    local test=$1
+    { type_text "$2" && qmp "$(key_press ret)"; } || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
+}
+
+# S3b board 13: pkexec through the shell's polkit agent; with STOCK, the layer is off.
+polkit_agent() {
+    local name=$1 stock=${2:-} test since rc out
+    wait_session "$name-polkit" user "$TEST_USER"
+    vm_ssh "usermod -aG wheel $TEST_USER" || fail "$name-polkit" "cannot make $TEST_USER an administrator (wheel)"
+    if [[ -z $stock ]]; then
+        test=$name-polkit-wrong-password
+        since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+        open_polkit_dialog "$test"
+        type_into_dialog "$test" "$WRONG_PASSWORD"
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "polkitd logged no failed authentication for the wrong password" \
+            polkit_failed "$since"
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the dialog did not ask again after the wrong password" polkit_asking
+        ! pkexec_done || fail "$test" "pkexec ended (exit $(pkexec_rc)) on a wrong password"
+        screendump "$test"
+        result "$test" PASS "the shell's dialog refused the wrong password (polkitd: FAILED to authenticate) and asked again; pkexec kept waiting (logs/$test.png)"
+        test=$name-polkit-cancel
+        qmp "$(key_press esc)" || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "pkexec did not end after Esc on the dialog" pkexec_done
+        rc=$(pkexec_rc)
+        [[ $rc == 126 ]] || fail "$test" "pkexec exited $rc after Esc, not 126 (a dismissed dialog, pkexec(1))"
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after Esc" polkit_quiet
+        result "$test" PASS "Esc dismissed the dialog: pkexec exited 126, as pkexec(1) documents"
+    fi
+    test=$name-polkit
+    open_polkit_dialog "$test"
+    type_into_dialog "$test" "$TEST_PASSWORD"
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "pkexec did not end after the password" pkexec_done
+    rc=$(pkexec_rc)
+    out=$(vm_ssh "cat /run/user/$SESSION_UID/$PKEXEC_UNIT.out" 2>/dev/null || true)
+    [[ $rc == 0 && $out == 0 ]] || fail "$test" "pkexec /usr/bin/id -u exited $rc and printed '$out', not 0 and 0"
+    result "$test" PASS "pkexec /usr/bin/id -u as $TEST_USER: the shell's ${stock:+stock }dialog (logs/$test-dialog.png) took the password; it printed 0 and exited 0"
+}
+
 # Apply arms only for another digest whose manifest version is higher.
 stage_local_candidate() {
     local test=$1 booted=$2 manifest version status dir=$GUEST_TMP/candidate
@@ -1719,7 +1784,9 @@ cmd_local() {
     [[ $QUALIFY_LAYOUT != separate-boot ]] || boot_metrics local
     login_lock_unlock local
     lock_matrix local "$since"
+    polkit_agent local
     crash_guard_logins local
+    polkit_agent local-safe stock
     safe_karg_lock local
     if [[ $QUALIFY_LAYOUT == luks ]]; then
         result local-g4 SKIP "QUALIFY_LAYOUT=luks is the install rehearsal: only the default layout records G4 passes"
