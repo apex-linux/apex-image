@@ -19,7 +19,6 @@ ExecCondition=/usr/bin/sh -c '\
 # Catches up a first boot without network, and preinstall.d changes of an image update.
 ExecStart=/usr/bin/flatpak preinstall --system --noninteractive
 ExecStart=/usr/bin/flatpak update --system --noninteractive
-# ADR 0015 §6: the GL extension of the loaded driver; stale ones go once a boot is green.
 ExecStart=/usr/bin/sh -c '\
     if [ ! -r /sys/module/nvidia/version ]; then echo "no NVIDIA driver loaded: no GL.nvidia extension"; exit 0; fi; \
     v=$$(/usr/bin/cat /sys/module/nvidia/version); \
