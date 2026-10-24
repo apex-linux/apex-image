@@ -1042,6 +1042,64 @@ fn a_point_and_a_major_bump_together() {
     assert!(shown.contains("7.4.0-1.cachyos1.fc45.src is a new major: waiting for owner; the pinned 7.3 reaches its EOL in 9d"), "{shown}");
 }
 
+fn with_key_expiry(t: &PairTest, date: &str) {
+    let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
+    let mut text = std::fs::read_to_string(&k).unwrap();
+    let _ = writeln!(text, "copr_key_expires={date}");
+    write(&k, text);
+    commit_all(t.recipes.path());
+}
+
+#[test]
+fn a_pinned_key_inside_14_days_is_in_the_build_summary() {
+    let t = PairTest::new();
+    with_key_expiry(&t, "2026-12-10");
+    t.fake.on_job(good_job);
+    assert!(matches!(t.build(T0), Built::Built(_)));
+    let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
+    let line =
+        format!("the COPR key {COPR_FPR} expires on 2026-12-10, in 9 days: pin its successor now");
+    assert!(
+        shown.contains(&format!("### A pinned key expires soon\n\n{line}\n")),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_pinned_key_that_expires_soon_warns_and_an_expired_one_holds() {
+    let t = PairTest::new();
+    with_key_expiry(&t, "2027-01-15");
+    let Built::Built(good) = ({
+        t.fake.on_job(good_job);
+        t.build(T0)
+    }) else {
+        panic!("not built")
+    };
+    assert!(
+        String::from_utf8_lossy(&t.report.captured()).contains(&format!(
+            "the COPR key {COPR_FPR} expires on 2027-01-15, in 45 days"
+        ))
+    );
+    t.promote();
+    let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
+    let text = std::fs::read_to_string(&k)
+        .unwrap()
+        .replace("2027-01-15", "2026-11-30");
+    write(&k, text);
+    commit_all(t.recipes.path());
+    let (curls, podmans) = (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman));
+    t.fake.on_job(good_job);
+    assert_eq!(t.build(T0), Built::Held);
+    assert!(t.family_line().starts_with(&format!(
+        "family kernel-cachyos held {good} since={T0} side=kernel reason=the COPR key {COPR_FPR} expired on 2026-11-30"
+    )), "{}", t.family_line());
+    assert_eq!(
+        (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman)),
+        (curls, podmans),
+        "nothing is downloaded or built with an expired key"
+    );
+}
+
 #[test]
 fn the_store_keeps_the_last_4_pairs_debug_files_and_prunes_what_no_lock_names() {
     let t = PairTest::new();
