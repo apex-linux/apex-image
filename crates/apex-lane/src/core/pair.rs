@@ -13,9 +13,10 @@ pub const KEY_SCHEMA: u32 = 1;
 const KERNEL_HOLD_HOURS: i64 = 72;
 const KMOD_POINT_HOLD_HOURS: i64 = 72;
 const KMOD_MAJOR_HOLD_DAYS: i64 = 14;
-/// K7: a pinned key's expiry is announced well before it stops every verification.
+/// K7: a pinned key's expiry is announced well before it stops every verification,
+/// and the pair holds while there is still time to pin and check its successor.
 const KEY_WARN_DAYS: i64 = 60;
-const KEY_URGENT_DAYS: i64 = 14;
+const KEY_HOLD_DAYS: i64 = 14;
 pub const DEGRADED_NVIDIA: &str = "degraded=nvidia";
 
 /// pair.sh's reason prefixes. Anything but `kmod:` stops the kernel itself: an input
@@ -233,7 +234,7 @@ pub fn pinned_keys(kernel: &KernelPins, nvidia: &crate::core::pins::NvidiaPins) 
 pub enum KeyExpiry {
     Fine,
     Warn(String),
-    Expired(String),
+    Hold(String),
 }
 
 /// Days are counted to the start of the expiry date, UTC.
@@ -246,13 +247,14 @@ pub fn key_expiry(key: &PinnedKey, now: UtcSecond) -> KeyExpiry {
         "{} {} expires on {}",
         key.what, key.fingerprint, key.expires
     );
+    let successor = "pin its successor, checked against a second source";
     if now >= at {
-        KeyExpiry::Expired(format!(
-            "{} {} expired on {}: pin its successor, checked against a second source",
+        KeyExpiry::Hold(format!(
+            "{} {} expired on {}: {successor}",
             key.what, key.fingerprint, key.expires
         ))
-    } else if days < KEY_URGENT_DAYS {
-        KeyExpiry::Warn(format!("{named}, in {days} days: pin its successor now"))
+    } else if days < KEY_HOLD_DAYS {
+        KeyExpiry::Hold(format!("{named}, in {days} days: {successor}"))
     } else if days < KEY_WARN_DAYS {
         KeyExpiry::Warn(format!("{named}, in {days} days"))
     } else {
@@ -606,14 +608,17 @@ mod tests {
             key_expiry(&key("2027-01-15"), now),
             KeyExpiry::Warn("the COPR key F expires on 2027-01-15, in 44 days".into())
         );
+        assert!(
+            matches!(key_expiry(&key("2026-12-16"), now), KeyExpiry::Warn(r) if r.ends_with("in 14 days"))
+        );
         assert_eq!(
             key_expiry(&key("2026-12-10"), now),
-            KeyExpiry::Warn(
-                "the COPR key F expires on 2026-12-10, in 8 days: pin its successor now".into()
+            KeyExpiry::Hold(
+                "the COPR key F expires on 2026-12-10, in 8 days: pin its successor, checked against a second source".into()
             )
         );
         assert!(
-            matches!(key_expiry(&key("2026-12-01"), now), KeyExpiry::Expired(r) if r.starts_with("the COPR key F expired on 2026-12-01"))
+            matches!(key_expiry(&key("2026-12-01"), now), KeyExpiry::Hold(r) if r.starts_with("the COPR key F expired on 2026-12-01"))
         );
         assert_eq!(key_expiry(&key("not a date"), now), KeyExpiry::Fine);
     }

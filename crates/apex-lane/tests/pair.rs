@@ -1019,7 +1019,7 @@ fn with_key_expiry(t: &PairTest, date: &str) {
 }
 
 #[test]
-fn a_pinned_key_that_expires_soon_warns_and_an_expired_one_holds() {
+fn a_pinned_key_that_expires_soon_warns_and_one_inside_14_days_holds() {
     let t = PairTest::new();
     with_key_expiry(&t, "2027-01-15");
     let Built::Built(good) = ({
@@ -1037,18 +1037,18 @@ fn a_pinned_key_that_expires_soon_warns_and_an_expired_one_holds() {
     let k = t.recipes.path().join("packaging/pkgs/kernel/kernel.env");
     let text = std::fs::read_to_string(&k)
         .unwrap()
-        .replace("2027-01-15", "2026-11-30");
+        .replace("2027-01-15", "2026-12-10");
     write(&k, text);
     commit_all(t.recipes.path());
     let (curls, podmans) = (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman));
     t.fake.on_job(good_job);
     assert_eq!(t.build(T0), Built::Held);
     assert!(t.family_line().starts_with(&format!(
-        "family kernel-cachyos held {good} since={T0} side=kernel reason=the COPR key {COPR_FPR} expired on 2026-11-30"
+        "family kernel-cachyos held {good} since={T0} side=kernel reason=the COPR key {COPR_FPR} expires on 2026-12-10, in "
     )), "{}", t.family_line());
     assert_eq!(
         (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman)),
         (curls, podmans),
-        "nothing is downloaded or built with an expired key"
+        "nothing is downloaded or built with a key about to expire"
     );
 }

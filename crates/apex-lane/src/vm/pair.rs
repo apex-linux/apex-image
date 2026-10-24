@@ -360,20 +360,20 @@ impl Vm<'_> {
         Ok(())
     }
 
-    /// Warns of a pinned key that expires soon; an expired one is the reason to hold.
+    /// Warns of a pinned key that expires soon; one inside the hold window is the reason to hold.
     fn check_keys(&self, kernel: &KernelPins, nvidia: &NvidiaPins) -> Option<String> {
-        let mut expired = None;
+        let mut hold = None;
         for key in pair::pinned_keys(kernel, nvidia) {
             match pair::key_expiry(&key, self.clock.now()) {
                 pair::KeyExpiry::Fine => {}
                 pair::KeyExpiry::Warn(message) => self.report.warn(&message),
-                pair::KeyExpiry::Expired(message) => {
+                pair::KeyExpiry::Hold(message) => {
                     self.report.warn(&message);
-                    expired.get_or_insert(message);
+                    hold.get_or_insert(message);
                 }
             }
         }
-        expired
+        hold
     }
 
     fn download(&self, url: &str, to: &Path) -> Result<()> {

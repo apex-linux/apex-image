@@ -183,10 +183,10 @@ exactly what it built before.
    moved, the job takes the new kernel with the old driver; the new driver follows once
    that image is promoted.
 2. **Pinned keys (K7).** A key whose `*_key_expires` is less than 60 days away is
-   warned about at every run and in `kernel-bump` (and, inside 14 days, told to be
-   replaced now). An expired one holds the pair before anything is downloaded, with
-   the key, its fingerprint and the date as the reason: from then on no input could
-   verify against it.
+   warned about at every run and in `kernel-bump`. One less than 14 days away, or
+   expired, holds the pair before anything is downloaded, with the key, its
+   fingerprint and the date as the reason: the successor is pinned and checked
+   against a second source while the old key still verifies.
 3. **Mirror at first sight** into `~/apex-store/mirror/`: each key file
    (`keys/FPR.gpg`, exactly the pinned key) and every pinned SRPM and binary, the
    waiting driver's too, each checked against its pinned sha256 and, with `rpmkeys -Kv`
