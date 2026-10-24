@@ -147,6 +147,7 @@ exits 1 on a FAIL. The final stage runs them with `sh`.
 | `composefs.sh` | composefs holds the deployed root, in the image and in the initramfs |
 | `desktop.sh` | the shell as the lane locked it, its theme, the Apex schema, vendor defaults and crash guard |
 | `firmware.sh` | every glob of `firmware-files.txt` matches a firmware file |
+| `icon-cache.sh` | every `Apex` and `Apex-<accent>` icon theme has an `icon-theme.cache` that `gtk-update-icon-cache --validate` accepts and that lists every icon in its directories, and nothing else (apex-desktop's `%install` builds them) |
 | `icons.sh` | every `.desktop` file's `Icon=` resolves in the default icon theme, what it inherits, hicolor or the unthemed dirs, as GTK resolves it |
 | `kernel.sh` | the one kernel and its initramfs: early KMS, microcode, the LUKS2 unlock, no NVIDIA module; with the pair, the locked kernel and no Fedora kernel package, `config-required.txt` line by line, the pair's kargs, erofs, overlay and aesni-intel early, and one signer, the build's own key, for every module |
 | `keybindings.sh` | no two default keybindings share a combination |
