@@ -54,7 +54,15 @@ _image-help:
     @echo '  $APEX_GNOME_SRC/tests/shots/run.sh  # G2, the headless shell, twice, with G2_IMAGE_DIR and G2_REPOS_BASE'
     @echo '  .github/scripts/qualify.sh g4-due _build/image/g4-key.txt && .github/scripts/qualify.sh local localhost/apex:build   # G4 when due'
     @echo ''
-    @echo 'Nothing publishes yet: push, sign and tag come in roadmap S1d.'
+    @echo 'just publish then publishes that image once its gates passed: rechunk, push apex:<version>, cosign-sign, move apex:45.'
+
+# Publish the last gated vm-image build (S1d): rechunk, push apex:<version>, sign with the owner's cosign key, move apex:45.
+publish *flags:
+    tools/builder-vm/builder-vm.sh run tools/builder-vm/publish-image.sh {{ flags }}
+
+# The same steps against a throwaway registry and key in the builder VM; nothing is published.
+publish-rehearsal:
+    tools/builder-vm/builder-vm.sh run tools/builder-vm/publish-image.sh --rehearse
 
 # How to run the KVM qualification locally (in the builder VM, with nested KVM).
 qualify-local:

@@ -34,6 +34,8 @@ Environment:
   APEX_WORK         the state: build.env, manifest.json, lock.txt, image.env, digest
                     (default _build/image)
   APEX_SCRATCH      the OCI layout and the rechunk work tree (default APEX_WORK)
+  APEX_PREVIOUS_BUILD  the image rechunk keeps chunks stable against (default
+                    apex-testing:45; `none` for no previous build)
   APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
   APEX_RPMS_KEY, APEX_DESKTOP_KEY, APEX_LIBFPRINT_KEY   input keys for the content
                     key (the context step records them from the artifacts when unset)
@@ -448,13 +450,18 @@ cmd_rechunk() {
     require podman skopeo jq
     load_env build.env image.env
     local out="$APEX_SCRATCH/oci" tmp="$APEX_SCRATCH/rechunk-tmp" rc=0
+    local previous=${APEX_PREVIOUS_BUILD:-$APEX_REPO_TESTING:$APEX_FEDORA}
 
     local -a prev=()
-    registry_digest "$APEX_REPO_TESTING:$APEX_FEDORA" >/dev/null || rc=$?
+    if [[ $previous == none ]]; then
+        rc=$REGISTRY_ABSENT
+    else
+        registry_digest "$previous" >/dev/null || rc=$?
+    fi
     case $rc in
-        0) prev=(--previous-build "docker://$APEX_REPO_TESTING:$APEX_FEDORA") ;;
-        "$REGISTRY_ABSENT") notice "no $APEX_REPO_TESTING:$APEX_FEDORA yet: rechunking without --previous-build" ;;
-        *) warn "cannot read $APEX_REPO_TESTING:$APEX_FEDORA: rechunking without --previous-build" ;;
+        0) prev=(--previous-build "docker://$previous") ;;
+        "$REGISTRY_ABSENT") notice "no previous build ($previous): rechunking without --previous-build" ;;
+        *) warn "cannot read $previous: rechunking without --previous-build" ;;
     esac
 
     group "rpm-ostree compose build-chunked-oci"
