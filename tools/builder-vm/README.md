@@ -77,6 +77,8 @@ The other recipes:
 | `just vm-image-only` | Rebuild only the image, reusing the RPMs and the lane's `rpms.lock.next` of the last `just vm-image`. |
 | `just vm-qualify-luks` | INSTALL.md's USB SSD rehearsal (ADR 0010) as G4 on the last build: root in LUKS2 with btrfs subvolumes `root` and `var`, a wrong passphrase refused and the right one typed into Plymouth's prompt over QMP at every boot. It records no G4 pass. |
 | `just vm-g2 [IMAGE]` | G2 on the last build: its headless shell, run twice and asserted (apex-gnome's `tests/shots`). |
+| `just publish [--allow-degraded]` | Publish the last `just vm-image` build whose gates passed (S1d): rechunk against `apex:45`, push `apex:<version>`, sign it with the owner's cosign key (`~/.config/apex/cosign.key`, `COSIGN_PASSWORD`), and move `apex:45` once the committed policy verifies it. It refuses while `release.pub` is the placeholder. |
+| `just publish-rehearsal` | The same steps against a throwaway `registry:2` on the VM's localhost, a throwaway key and a policy that trusts only it. Then a policy with another key must refuse the image. Nothing is published. |
 | `just vm-ci-install` | Install `ci-build`, the self-hosted runner's only entry point, and bind the runner's key to it ([tools/runner](../runner/README.md)). |
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
