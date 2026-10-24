@@ -697,8 +697,12 @@ cat >"$CIW/tools/builder-vm/build-image.sh" <<'EOF'
 echo "build-image APEX_FEDORA=${APEX_FEDORA:-}" >>"$FAKE/next.log"
 mkdir -p _build/next/image "$APEX_STORE/next"
 printf 'BASE_SOURCE=rawhide\nBASE_VERSION=46.20261024.0\n' >_build/next/image/build.env
-printf 'family kernel-cachyos stock - since=2026-10-24T00:00:00Z reason=%s\n' \
-    'pair unavailable for Fedora 46: no fedora-46 pins in packaging/pkgs/kernel' >"$APEX_STORE/next/rpms.lock.next"
+printf 'family %s stock - since=2026-10-24T00:00:00Z reason=%s\n' \
+    kernel-cachyos 'pair unavailable for Fedora 46: no fedora-46 pins in packaging/pkgs/kernel' \
+    gnome-shell "next lane fallback at build.log ($APEX_STORE/next/pkgs/gnome-shell/last-failure.txt): rpmbuild failed" \
+    >"$APEX_STORE/next/rpms.lock.next"
+mkdir -p "$APEX_STORE/next/pkgs/gnome-shell"
+echo 'rpmbuild failed' >"$APEX_STORE/next/pkgs/gnome-shell/last-failure.txt"
 exit "$(cat "$FAKE/build-rc")"
 EOF
 chmod +x "$CIW/tools/builder-vm/build-image.sh"
@@ -716,10 +720,12 @@ check "ci-build <sha> next builds the next release" 0 "$(ci_request "ci-build $C
 check "as APEX_FEDORA=46, with no metrics" "build-image APEX_FEDORA=46" "$(cat "$CI_DIR/next.log")"
 check_false "and no promotion" test -e "$CI_DIR/lane.log"
 check "ci-build.txt names the release and the pair it could not take" \
-    "next 46|build-image 0|pair unavailable for Fedora 46: no fedora-46 pins in packaging/pkgs/kernel|exit 0" \
+    "next 46|build-image 0|pair unavailable for Fedora 46: no fedora-46 pins in packaging/pkgs/kernel|$(
+        printf 'fallback gnome-shell at build.log (%s): rpmbuild failed' "$CI_DIR/store/next/pkgs/gnome-shell/last-failure.txt")|exit 0" \
     "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -Ev '^(sha|started|finished) ' | paste -sd'|')"
-check "next/ holds the base's version and the next lane's lock, for the report" \
-    "./next/build.env ./next/rpms.lock.next" "$(tar -tf "$CI_DIR/out.tar" | grep '^\./next/.' | sort | paste -sd' ')"
+check "next/ holds the base's version, the next lane's lock and each fallback's log" \
+    "./next/build.env ./next/failures/gnome-shell.txt ./next/rpms.lock.next" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep '^\./next/.' | grep -v '/$' | sort | paste -sd' ')"
 check "and never the 45 lane's lock" 0 "$(tar -tf "$CI_DIR/out.tar" | grep -c 'lock.diff')"
 echo 1 >"$CI_DIR/build-rc"
 check "a failed next build exits with its status and still returns its results" "1|build-image 1" \
@@ -3091,14 +3097,19 @@ check "build: a failed next build warns, and never fails the job" "0|apex-builde
 check_true "build: the VM's log runs with workflow commands stopped" vm_stopped
 echo 0 >"$V/ssh.rc"
 vm_reset
-vm_results "ci-build.txt=$(printf 'sha %s\nnext 46\nbuild-image 0\npair unavailable for Fedora 46: no fedora-46 pins\nexit 0' "$CI_SHA")" \
-    "next/build.env=$(printf 'BASE_SOURCE=rawhide\nBASE_VERSION=46.20261024.0')" \
+vm_results "ci-build.txt=$(printf 'sha %s\nnext 46\nbuild-image 0\npair unavailable for Fedora 46: no fedora-46 pins\n%s\nexit 0' \
+    "$CI_SHA" 'fallback gnome-shell at build.log (/s/next/pkgs/gnome-shell/last-failure.txt): rpmbuild failed')" \
+    "next/build.env=$(printf 'BASE_SOURCE=rawhide\nBASE_VERSION=46.20261024.0')" "next/failures/gnome-shell.txt=rpmbuild failed" \
     "next/rpms.lock.next=family kernel-cachyos stock - reason=pair unavailable for Fedora 46: no fedora-46 pins"
 cp "$V/results.tar" "$V/temp/next.tar"
 check "report: one line with the release, its rawhide base, the build and the pair" \
     "0|Fedora 46, base rawhide 46.20261024.0: build-image 0, pair unavailable for Fedora 46: no fedora-46 pins" \
     "$(vm_run "$NEXT_REPORT")|$(sed -n 3p "$V/summary")"
 check_true "report: and the next lane's lock" grep -q '^family kernel-cachyos stock - reason=pair unavailable' "$V/summary"
+check "report: G1's result, and each family that fell back, with its step and log" \
+    "G1 passed on the image that built.|- **gnome-shell** at build.log (/s/next/pkgs/gnome-shell/last-failure.txt): rpmbuild failed" \
+    "$(grep -E '^(G1 |- )' "$V/summary" | paste -sd'|')"
+check "report: their logs go to the next-logs artifact" "logs=$V/temp/next/next/failures" "$(cat "$V/output")"
 vm_reset
 check "report: no results warn, and never fail the job" "0|1" \
     "$(vm_run "$NEXT_REPORT")|$(grep -c 'returned no results' "$V/log")"

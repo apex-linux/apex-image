@@ -204,6 +204,7 @@ jobs:
           ((rc == 0)) || echo "::warning title=next-compose::the next lane's build in the builder VM failed (exit $rc)"
 
       - name: Next lane report
+        id: report
         if: ${{ !cancelled() && steps.modes.outputs.next == '1' }}
         run: |
           out=$RUNNER_TEMP/next
@@ -214,12 +215,24 @@ jobs:
           fi
           tar -xf "$RUNNER_TEMP/next.tar" -C "$out" --no-same-owner --no-same-permissions
           field() { sed -n "s/^$1=//p" "$out/next/build.env" 2>/dev/null | head -n 1; }
+          if [[ -d $out/next/failures ]]; then echo "logs=$out/next/failures" >>"$GITHUB_OUTPUT"; fi
+          built=$(sed -n 's/^build-image //p' "$out/ci-build.txt")
           {
             echo "## Next lane (report-only)"
             echo
             echo "Fedora $(sed -n 's/^next //p' "$out/ci-build.txt"), base $(field BASE_SOURCE) $(field BASE_VERSION):" \
-              "build-image $(sed -n 's/^build-image //p' "$out/ci-build.txt")," \
+              "build-image $built," \
               "$(grep '^pair ' "$out/ci-build.txt" || echo 'pair: no lane lock')"
+            echo
+            if [[ $built == 0 ]]; then
+              echo "G1 passed on the image that built."
+            else
+              echo "The image or G1 failed (build-image ${built:-did not run})."
+            fi
+            if grep -q '^fallback ' "$out/ci-build.txt"; then
+              printf '\n### Fell back to Fedora'"'"'s build (artifact next-logs)\n\n'
+              sed -n 's/^fallback \([^ ]*\) /- **\1** /p' "$out/ci-build.txt"
+            fi
             echo
             printf '### ci-build\n\n```\n'
             cat -- "$out/ci-build.txt"
@@ -230,3 +243,12 @@ jobs:
               printf '```\n'
             fi
           } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: The logs of the families that fell back
+        if: ${{ !cancelled() && steps.report.outputs.logs != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: next-logs-${{ github.sha }}
+          path: ${{ steps.report.outputs.logs }}
+          retention-days: 14
+          if-no-files-found: ignore

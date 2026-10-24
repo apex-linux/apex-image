@@ -36,7 +36,9 @@ With next (vm.yml's next-compose, report-only), it builds the commit's next rele
 one image/fedora/N.env with LANE=next, as APEX_FEDORA=N: the components, the lane in
 ~/apex-store/next, the image and G1, never G2, G4, metrics or a promotion. next/ holds
 build.env (BASE_SOURCE, BASE_VERSION), image.env and the next lane's rpms.lock.next;
-ci-build.txt names the release and whether the kernel pair was available. A commit
+ci-build.txt names the release, whether the kernel pair was available, and each family
+that fell back to Fedora's build ("fallback FAMILY at STEP (LOG): REASON"; next/failures/ holds
+those logs). A commit
 without a next release builds nothing and says "next none". When this installed copy
 differs from the
 commit's tools/builder-vm/ci-build.sh, ci-build.txt says "stale"; it never updates
@@ -217,6 +219,22 @@ pair_state() {
     esac
 }
 
+# The families that fell back to Fedora's build on the next release: the port's to-do list.
+fallbacks() {
+    awk '$1 == "family" && $3 == "stock" && / reason=next lane fallback / {
+        f = $2; sub(/^.* reason=next lane fallback /, ""); print "fallback " f " " $0 }' "$1" 2>/dev/null || true
+}
+
+copy_failures() {
+    local store=$1 destination=$2 stamp=$3 log name
+    for log in "$store"/*/last-failure.txt; do
+        [[ -s $log && $log -nt $stamp ]] || continue
+        name=${log%/last-failure.txt}
+        mkdir -p -- "$destination"
+        cp -- "$log" "$destination/${name##*/}.txt"
+    done
+}
+
 build_next() {
     local sha=$1 out=$2 rc=0 release
     fetch_main
@@ -236,6 +254,8 @@ build_next() {
     copy_if_newer _build/next/image/image.env "$out/next/image.env" "$out/.started"
     copy_if_newer "$STORE/next/rpms.lock.next" "$out/next/rpms.lock.next" "$out/.started"
     pair_state "$out/next/rpms.lock.next" >>"$out/ci-build.txt"
+    fallbacks "$out/next/rpms.lock.next" >>"$out/ci-build.txt"
+    copy_failures "$STORE/next/pkgs" "$out/next/failures" "$out/.started"
     return "$rc"
 }
 

@@ -4,6 +4,7 @@ use std::time::Instant;
 use super::Vm;
 use super::checkout::{Mode, Source1};
 use super::sign::Signer;
+use crate::core::fedora;
 use crate::core::hold::{self, FailureRoute, Timer};
 use crate::core::lock;
 use crate::core::manifest::{self, header_field};
@@ -221,6 +222,9 @@ impl Vm<'_> {
         if let Some(failed) = &failed {
             fs::write(&store.join("last-failure.txt"), failed)?;
         }
+        if fedora::is_next(&self.settings.fedora) {
+            return self.next_fallback(pkg, failed.as_deref(), &reason);
+        }
         let next_text = fs::read_opt(&self.next_lock_file())?.unwrap_or_default();
         let current = lock::family_line(&next_text, family);
         match hold::route_failure(pkg.env.on_fail == OnFail::Degrade, &current, &reason, now) {
@@ -294,6 +298,34 @@ impl Vm<'_> {
         Ok(Outcome::Held)
     }
 
+    /// The next lane reports every family that breaks on its release, so none stops the run.
+    fn next_fallback(&self, pkg: &Pkg, failed: Option<&[u8]>, reason: &[u8]) -> Result<Outcome> {
+        let family = &pkg.env.family;
+        let step = failed.map_or_else(|| "?".into(), failed_step);
+        let log = self.store_pkg(&pkg.name).join("last-failure.txt");
+        let line = format!(
+            "stock - since={} reason=next lane fallback at {step} ({}): {}",
+            self.clock.now(),
+            log.display(),
+            text::lossy(reason)
+        );
+        self.lock_put(family, line.as_bytes(), b"")?;
+        self.report.summary(&[
+            format!(
+                "### {}: failed on Fedora {}, stays stock",
+                pkg.name, self.settings.fedora
+            ),
+            String::new(),
+            text::lossy(reason),
+            String::new(),
+            format!(
+                "Step {step}; the log is {}. The next image takes Fedora's build of {family}.",
+                log.display()
+            ),
+        ]);
+        Ok(Outcome::KeptStock)
+    }
+
     pub fn stock(&self, name: &str) -> Result<()> {
         let pkg = self.load(name)?;
         let _lock = fs::lock_store(&self.settings.store)?;
@@ -311,6 +343,18 @@ impl Vm<'_> {
         ]);
         Ok(())
     }
+}
+
+/// The log a failed.txt quotes, which names the step that failed.
+fn failed_step(failed: &[u8]) -> String {
+    text::lossy(failed)
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("last 60 lines of ")?
+                .strip_suffix(':')
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "?".into())
 }
 
 pub(super) fn remove_tree(path: &Path) -> Result<()> {

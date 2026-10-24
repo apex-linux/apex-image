@@ -265,7 +265,11 @@ after the 45 build whatever its result. It asks `ci-build modes`. When the host 
 `image/fedora/N.env` with `LANE=next`) through the components, the lane in
 `~/apex-store/next`, the image and G1, as `APEX_FEDORA=N`. Without a fedora-N kernel
 pair from apex-kernel, the kernel family stays stock and the report says the pair is
-unavailable. The job is report-only: it warns on a failure and never fails the run, and
+unavailable. A userspace family that fails to build on the release stays stock too, with
+its failing step and log, and the run goes on: the report lists every family that fell
+back (their logs are the `next-logs-<sha>` artifact) and G1's result on the image, which
+is labelled `degraded=` for each of them. On 45 a failure still holds or stops the lane
+as before. The job is report-only: it warns on a failure and never fails the run, and
 nothing it builds is promoted, pushed or published.
 
 The gates step writes the results to the job summary. It fails when there is no gates

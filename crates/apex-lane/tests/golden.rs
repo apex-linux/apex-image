@@ -22,7 +22,7 @@ use apex_lane::shell::bodhi::Bodhi;
 use apex_lane::shell::clock::FixedClock;
 use apex_lane::shell::cmd::StdRunner;
 use apex_lane::shell::report::Reporter;
-use apex_lane::vm::{Settings, Vm};
+use apex_lane::vm::{Outcome, Settings, Vm};
 
 fn golden(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -482,6 +482,63 @@ fn hold_cases() {
             "{case}: summary"
         );
     }
+}
+
+/// `record_failure` of gnome-shell on Fedora 46, on hold case CASE's store and failed.txt.
+fn next_fallback(case: &Path, failed: Option<&[u8]>) -> (Outcome, String, Option<Vec<u8>>) {
+    let store = tempfile::tempdir().expect("tempdir");
+    let work = tempfile::tempdir().expect("tempdir");
+    for f in ["rpms.lock.next", "rpms.lock"] {
+        if let Ok(b) = std::fs::read(case.join("in").join(f)) {
+            std::fs::write(store.path().join(f), b).expect("copy");
+        }
+    }
+    if let Some(failed) = failed {
+        std::fs::write(work.path().join("failed.txt"), failed).expect("failed.txt");
+    }
+    let now = UtcSecond::parse(b"2026-10-24T03:00:00Z").expect("now");
+    let (runner, clock, report) = (StdRunner::inherit(), FixedClock(now), Reporter::capturing());
+    let bodhi = FixtureBodhi(case.join("in/bodhi"));
+    let mut vm = test_vm(store.path(), &runner, &clock, &bodhi, &report);
+    vm.settings.fedora = "46".into();
+    let gs = pkg::load(&recipes(), "gnome-shell", Parse::Full).expect("the fixture");
+    let outcome = vm
+        .record_failure(&gs, work.path())
+        .expect("no next failure stops the lane");
+    let lock = std::fs::read(store.path().join("rpms.lock.next")).expect("rpms.lock.next");
+    let line = text::lossy(&lock::family_line(&lock, "gnome-shell"))
+        .replace(&store.path().display().to_string(), "STORE");
+    assert!(lock::rpm_lines(&lock, "gnome-shell").is_empty(), "{line}");
+    let kept = std::fs::read(store.path().join("pkgs/gnome-shell/last-failure.txt")).ok();
+    (outcome, line, kept)
+}
+
+/// 45's path is `hold_cases`: every case there exits and writes exactly as before.
+#[test]
+fn a_next_release_keeps_a_failed_family_stock_in_every_hold_case() {
+    let dir = golden("hold");
+    for entry in std::fs::read_dir(&dir).expect("hold/") {
+        let case = entry.expect("entry").path();
+        let failed = std::fs::read(case.join("in/failed.txt")).ok();
+        let (outcome, line, kept) = next_fallback(&case, failed.as_deref());
+        assert_eq!(outcome, Outcome::KeptStock, "{}", case.display());
+        let reason = text::lossy(&apex_lane::core::hold::reason_of(failed.as_deref()));
+        assert_eq!(
+            line,
+            format!(
+                "stock - since=2026-10-24T03:00:00Z reason=next lane fallback at ? (STORE/pkgs/gnome-shell/last-failure.txt): {reason}"
+            ),
+            "{}",
+            case.display()
+        );
+        assert_eq!(kept, failed, "{}", case.display());
+    }
+    let with_log = b"0002-loader.patch does not apply\npkg=gnome-shell stock=x key=?\n\nlast 60 lines of prep-apex.log:\nhunk\n";
+    let (_, line, _) = next_fallback(&dir.join("no-good-build"), Some(with_log));
+    assert!(
+        line.contains("reason=next lane fallback at prep-apex.log ("),
+        "{line}"
+    );
 }
 
 #[test]
