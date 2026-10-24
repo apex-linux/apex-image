@@ -26,6 +26,16 @@ write_lane_lock() {
     } >"$1"
 }
 
+# add_ptyxis LOCK STATE: the family the Apex terminal series adds to the lane.
+add_ptyxis() {
+    printf 'family ptyxis %s ptyxis-51.0-1.fc45-s0123456789ab\n' "$2" >>"$1"
+    case $2 in
+        built | held)
+            printf 'rpm ptyxis built ptyxis ptyxis-0:51.0-1.fc45.apex1.x86_64 %s pkgs/ptyxis/ptyxis-51.0-1.fc45-s0123456789ab/ptyxis-51.0-1.fc45.apex1.x86_64.rpm\n' "$SHA" >>"$1"
+            ;;
+    esac
+}
+
 # rpmdb FILE [NAME.FIELD=VALUE...]: each edit sets one field, as JSON when it starts
 # with [ or ".
 rpmdb() {
@@ -40,6 +50,7 @@ db = {
     "gnome-shell-common": {"evr": "51.0-1.fc45.apex1", "arch": "noarch", "signature": apex},
     "mutter": {"evr": "51.0-1.fc45", "signature": fedora},
     "mutter-common": {"evr": "51.0-1.fc45", "arch": "noarch", "signature": fedora},
+    "ptyxis": {"evr": "51.0-1.fc45", "signature": fedora},
 }
 for edit in sys.argv[2:]:
     key, value = edit.split("=", 1)
@@ -118,6 +129,7 @@ for p in gnome-shell gnome-shell-common; do
 done
 expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.0-1\.fc45, the installed mutter$'
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
+expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
     expect_out "the theme carries /*! $v */" "^PASS desktop: .*gnome-shell-theme\\.gresource carries /\\*! $v \\*/\$"
 done
@@ -374,5 +386,34 @@ r=$(mkroot stockapex stock)
 desktop stockapex
 expect_rc "an Apex shell under a stock family fails" 1
 expect_out "and says so" '^FAIL desktop: gnome-shell 51\.0-1\.fc45\.apex1 is an Apex build, but the lane.s gnome-shell family is stock$'
+
+apex='EdDSA/SHA512, Tue Sep 29 2026 07:00:00 AM UTC, Key ID 8da3252bd6ef25fa'
+r=$(mkroot ptyxisbuilt)
+add_ptyxis "$r/usr/share/apex/rpms.lock" built
+rpmdb "$T/ptyxisbuilt.db" ptyxis.evr=51.0-1.fc45.apex1 "ptyxis.signature=$apex"
+desktop ptyxisbuilt
+expect_rc "the Apex terminal as the lane built it passes" 0
+expect_out "with every locked RPM" '^PASS desktop: the 5 locked RPM\(s\) are installed at their locked NEVRAs$'
+expect_out "and is named" '^PASS desktop: ptyxis 51\.0-1\.fc45\.apex1 is an Apex build with the Apex RPM signature \(the family is built\)$'
+r=$(mkroot ptyxisfedora)
+add_ptyxis "$r/usr/share/apex/rpms.lock" held
+desktop ptyxisfedora
+expect_rc "Fedora's Ptyxis under a held family fails" 1
+expect_out "and says so" '^FAIL desktop: ptyxis 51\.0-1\.fc45 is not an \.apexN build, but the lane.s ptyxis family is held$'
+r=$(mkroot ptyxisstock)
+add_ptyxis "$r/usr/share/apex/rpms.lock" stock
+desktop ptyxisstock
+expect_rc "Fedora's Ptyxis under a stock family passes" 0
+expect_out "and is named" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is stock: degraded=terminal\)$'
+r=$(mkroot ptyxisstray)
+rpmdb "$T/ptyxisstray.db" ptyxis.evr=51.0-1.fc45.apex1 "ptyxis.signature=$apex"
+desktop ptyxisstray
+expect_rc "an Apex Ptyxis the lane did not lock fails" 1
+expect_out "and says so" '^FAIL desktop: ptyxis 51\.0-1\.fc45\.apex1 is an Apex build, but the lane has no ptyxis family$'
+r=$(mkroot noptyxis)
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); del d["ptyxis"]; json.dump(d, open(sys.argv[1], "w"))' "$T/noptyxis.db"
+desktop noptyxis
+expect_rc "an image without Ptyxis fails" 1
+expect_out "and says so" '^FAIL desktop: ptyxis is not installed'
 
 done_testing

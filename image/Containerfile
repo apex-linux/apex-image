@@ -240,6 +240,7 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     for f in $(awk '$1 == "family" && ($3 == "stock" || $3 == "degraded") { print $2 }' /run/apex-rpms/rpms.lock); do \
         case $f in \
             gnome-shell) echo "NOTE: the gnome-shell family is Fedora's build: degraded=shell"; echo shell >>"$degraded" ;; \
+            ptyxis) echo "NOTE: the ptyxis family is Fedora's build: degraded=terminal"; echo terminal >>"$degraded" ;; \
             *) echo "ERROR: the lane family $f is stock or degraded, but has no degraded name" >&2; exit 1 ;; \
         esac; \
     done; \
