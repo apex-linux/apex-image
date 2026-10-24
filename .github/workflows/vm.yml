@@ -166,3 +166,67 @@ jobs:
           path: ${{ steps.results.outputs.logs }}
           retention-days: 14
           if-no-files-found: ignore
+
+  # The next lane (ROADMAP S6), report-only: it never fails this workflow, so the 45 run's
+  # result stands alone. Off until the repository variable APEX_NEXT_COMPOSE is "on".
+  next-compose:
+    name: next lane compose (report-only)
+    needs: build
+    if: >-
+      github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
+      && !cancelled() && github.event_name == 'schedule' && vars.APEX_NEXT_COMPOSE == 'on'
+    runs-on: [self-hosted, apex-kvm]
+    timeout-minutes: 420
+    permissions: {}
+    steps:
+      - name: Does the builder VM's ci-build take next
+        id: modes
+        run: |
+          # An older ci-build refuses `ci-build modes`, as it would refuse next.
+          modes=$(ssh apex-builder ci-build modes 2>/dev/null) || modes=
+          if [[ " $modes " == *" next "* ]]; then
+            echo "next=1" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning title=next-compose skipped::the builder VM's ci-build predates next: run just vm-ci-install (tools/runner/README.md, Upgrades)"
+          fi
+
+      - name: Next release compose, lane, image, G1 (builder VM)
+        if: steps.modes.outputs.next == '1'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+          echo "::stop-commands::$token"
+          rc=0
+          # shellcheck disable=SC2029 # the sha is the remote command, checked by ci-build
+          ssh apex-builder ci-build "$SHA" next >"$RUNNER_TEMP/next.tar" || rc=$?
+          echo "::$token::"
+          ((rc == 0)) || echo "::warning title=next-compose::the next lane's build in the builder VM failed (exit $rc)"
+
+      - name: Next lane report
+        if: ${{ !cancelled() && steps.modes.outputs.next == '1' }}
+        run: |
+          out=$RUNNER_TEMP/next
+          mkdir -p "$out"
+          if [[ ! -s $RUNNER_TEMP/next.tar ]]; then
+            echo "::warning title=next-compose::the builder VM returned no results"
+            exit 0
+          fi
+          tar -xf "$RUNNER_TEMP/next.tar" -C "$out" --no-same-owner --no-same-permissions
+          field() { sed -n "s/^$1=//p" "$out/next/build.env" 2>/dev/null | head -n 1; }
+          {
+            echo "## Next lane (report-only)"
+            echo
+            echo "Fedora $(sed -n 's/^next //p' "$out/ci-build.txt"), base $(field BASE_SOURCE) $(field BASE_VERSION):" \
+              "build-image $(sed -n 's/^build-image //p' "$out/ci-build.txt")," \
+              "$(grep '^pair ' "$out/ci-build.txt" || echo 'pair: no lane lock')"
+            echo
+            printf '### ci-build\n\n```\n'
+            cat -- "$out/ci-build.txt"
+            printf '```\n'
+            if [[ -s $out/next/rpms.lock.next ]]; then
+              printf '\n### The next lane lock\n\n```\n'
+              cat -- "$out/next/rpms.lock.next"
+              printf '```\n'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"

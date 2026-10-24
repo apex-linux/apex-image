@@ -23,6 +23,8 @@ and exit 1 when any row fails.
   runner-key   the runner's ssh key, known_hosts and config (after runner.sh key)
   ci-build     the key's forced command in the builder VM (after just vm-ci-install,
                while the VM runs)
+  ci-build-modes  that forced command takes `ci-build modes`, daily and next: an older
+               copy, on the old grammar, refuses vm.yml's next-compose (just vm-ci-install)
   vm-host-key  the runner's known_hosts holds the builder VM's current host key (a new VM,
                after builder-vm.sh destroy and create, has a new one)
   vm-cosign    the builder VM's /usr/local/bin/cosign is the version and sha256 that
@@ -182,10 +184,11 @@ check_net() {
 }
 
 check_runner_key() {
-    local mode body line
+    local mode body line modes
     if [[ ! -e $ssh_dir/id_ed25519 ]]; then
         row SKIP runner-key "no $ssh_dir/id_ed25519 yet: just runner key makes it"
         row SKIP ci-build "no runner key to look for in the builder VM"
+        row SKIP ci-build-modes "no runner key, so no forced command to ask"
         return
     fi
     mode=$(stat -c %a -- "$ssh_dir/id_ed25519" 2>/dev/null)
@@ -196,6 +199,7 @@ check_runner_key() {
     fi
     if ! "$builder_vm" running 2>/dev/null; then
         row SKIP ci-build "the builder VM is not running (just vm-start), so its authorized_keys cannot be read"
+        row SKIP ci-build-modes "the builder VM is not running (just vm-start)"
         return
     fi
     body=$(cut -d' ' -f2 "$ssh_dir/id_ed25519.pub" 2>/dev/null)
@@ -204,6 +208,14 @@ check_runner_key() {
         row PASS ci-build "the builder VM binds the runner's key to $CI_BUILD"
     else
         row FAIL ci-build "the builder VM does not bind the runner's key to restrict,command=\"$CI_BUILD\": just vm-ci-install"
+        row SKIP ci-build-modes "no forced command to ask"
+        return
+    fi
+    modes=$("$builder_vm" ssh "SSH_ORIGINAL_COMMAND='ci-build modes' $CI_BUILD" 2>/dev/null)
+    if [[ " $modes " == *" next "* ]]; then
+        row PASS ci-build-modes "$CI_BUILD takes: $modes"
+    else
+        row FAIL ci-build-modes "$CI_BUILD is on the old grammar (no next): just vm-ci-install (tools/runner/README.md, Upgrades)"
     fi
 }
 

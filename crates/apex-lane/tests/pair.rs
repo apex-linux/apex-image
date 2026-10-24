@@ -705,6 +705,15 @@ impl PairTest {
             .collect()
     }
 
+    fn staged_kernel(&self) -> String {
+        std::fs::read_to_string(
+            self.root
+                .path()
+                .join("_build/lane/kernel/in/job/kernel.env"),
+        )
+        .unwrap()
+    }
+
     fn staged_nvidia(&self) -> String {
         std::fs::read_to_string(
             self.root
@@ -1891,14 +1900,14 @@ fn a_45_pair_job_is_as_before_and_a_next_one_names_its_fedora_and_base() {
     }
     drop(t);
 
-    let t = PairTest::new();
-    write(
-        &t.root.path().join("image/fedora/46.env"),
-        format!("FEDORA=46\nLANE=next\nREPOS_BASE={NEXT_BASE}\nGA_REACHED=1\n"),
-    );
-    *t.fedora.borrow_mut() = "46".into();
+    let t = next_test();
+    next_pins(&t, "7.3.0-5");
     t.fake.on_job(good_job);
     assert!(matches!(t.build(T0), Built::Built(_)));
+    assert!(
+        t.staged_kernel().contains("7.3.0-5"),
+        "the job takes fedora-46's pins"
+    );
     let jobs = pair_jobs(&t);
     assert!(!jobs.is_empty());
     for job in &jobs {
@@ -1934,4 +1943,79 @@ fn the_next_lane_never_promotes() {
         std::fs::read(t.store.path().join("rpms.lock")).unwrap(),
         locked
     );
+}
+
+/// A Fedora 46 (next lane) run, with its env file and no fedora-46 pins yet.
+fn next_test() -> PairTest {
+    let t = PairTest::new();
+    write(
+        &t.root.path().join("image/fedora/46.env"),
+        format!("FEDORA=46\nLANE=next\nREPOS_BASE={NEXT_BASE}\nGA_REACHED=1\n"),
+    );
+    *t.fedora.borrow_mut() = "46".into();
+    t
+}
+
+fn next_pins(t: &PairTest, kernel: &str) {
+    let dir = t.recipes.path().join("packaging/pkgs/kernel/fedora-46");
+    write(&dir.join("kernel.env"), kernel_env(kernel));
+    write(&dir.join("nvidia.env"), nvidia_env("615.78.08-1"));
+    commit_all(t.recipes.path());
+}
+
+fn assert_pair_unavailable(t: &PairTest, why: &str) {
+    let line = t.family_line();
+    assert!(
+        line.starts_with("family kernel-cachyos stock - since=")
+            && line.contains(&format!("reason=pair unavailable for Fedora 46: {why}")),
+        "{line}"
+    );
+    assert!(PairTest::rpm_lines(&t.next_lock()).is_empty());
+    image_sh_accepts(&t.store.path().join("rpms.lock.next"));
+}
+
+#[test]
+fn a_next_release_without_its_pins_builds_on_fedoras_kernel() {
+    let t = next_test();
+    t.fake.on_job(good_job);
+    assert_eq!(t.build(T0), Built::KeptStock);
+    assert!(
+        pair_jobs(&t).is_empty(),
+        "no pair job without fedora-46 pins"
+    );
+    assert_pair_unavailable(&t, "no fedora-46 pins in packaging/pkgs/kernel");
+}
+
+#[test]
+fn a_next_pair_job_that_exits_2_leaves_the_kernel_stock() {
+    let t = next_test();
+    next_pins(&t, "7.3.0-4");
+    t.fake.on_job(|_| {
+        (
+            2,
+            "no fedora-46 pins: packaging/pkgs/kernel/fedora-46\n".into(),
+        )
+    });
+    assert_eq!(t.build(T0), Built::KeptStock);
+    assert_pair_unavailable(&t, "no fedora-46 pins: packaging/pkgs/kernel/fedora-46");
+}
+
+#[test]
+fn a_45_pair_job_that_exits_2_still_stops_the_lane() {
+    let t = PairTest::new();
+    t.fake.on_job(|_| {
+        (
+            2,
+            "no fedora-46 pins: packaging/pkgs/kernel/fedora-46\n".into(),
+        )
+    });
+    let err = t.run(T0, |vm| vm.build("kernel").unwrap_err().to_string());
+    assert!(err.contains("pair.sh could not run (exit 2)"), "{err}");
+}
+
+#[test]
+fn the_next_lane_takes_no_kernel_bump() {
+    let t = next_test();
+    let err = t.run(T0, |vm| vm.kernel_bump().unwrap_err().to_string());
+    assert!(err.contains("APEX_FEDORA=46 is the next lane"), "{err}");
 }

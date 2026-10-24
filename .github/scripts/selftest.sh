@@ -682,6 +682,55 @@ echo 0 >"$CI_DIR/build-rc"
 rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh" \
     "$CI_DIR/home/apex-image/tools/builder-vm/metrics.sh"
 
+# ci-build <sha> next: the next release only, report-only, never a promotion.
+CIW=$CI_DIR/home/apex-image
+for request in "ci-build $CI_SHA next " "ci-build $CI_SHA NEXT" "ci-build $CI_SHA next daily" "ci-build next $CI_SHA" \
+    "ci-build $CI_SHA daily next" "ci-build modes " "ci-build modes $CI_SHA"; do
+    check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
+        "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
+done
+check "ci-build modes names daily and next, before any git or lock" "0|daily next|no git" \
+    "$(ci_request "ci-build modes")|$(cat "$CI_DIR/out.tar")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
+mv "$CIW/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-45.sh"
+cat >"$CIW/tools/builder-vm/build-image.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "build-image APEX_FEDORA=${APEX_FEDORA:-}" >>"$FAKE/next.log"
+mkdir -p _build/next/image "$APEX_STORE/next"
+printf 'BASE_SOURCE=rawhide\nBASE_VERSION=46.20261024.0\n' >_build/next/image/build.env
+printf 'family kernel-cachyos stock - since=2026-10-24T00:00:00Z reason=%s\n' \
+    'pair unavailable for Fedora 46: no fedora-46 pins in packaging/pkgs/kernel' >"$APEX_STORE/next/rpms.lock.next"
+exit "$(cat "$FAKE/build-rc")"
+EOF
+chmod +x "$CIW/tools/builder-vm/build-image.sh"
+cat >"$CIW/tools/builder-vm/metrics.sh" <<'EOF'
+#!/usr/bin/env bash
+echo metrics >>"$FAKE/next.log"
+EOF
+rm -f "$CI_DIR/next.log" "$CI_DIR/lane.log"
+check "a commit without a next release builds nothing, and says so" "0|next none|no build" \
+    "$(ci_request "ci-build $CI_SHA next")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^next ')|$(
+        [[ -e $CI_DIR/next.log ]] && echo build || echo 'no build')"
+mkdir -p "$CIW/image/fedora"
+cp "$APEX_ROOT/image/fedora/46.env" "$CIW/image/fedora/"
+check "ci-build <sha> next builds the next release" 0 "$(ci_request "ci-build $CI_SHA next")"
+check "as APEX_FEDORA=46, with no metrics" "build-image APEX_FEDORA=46" "$(cat "$CI_DIR/next.log")"
+check_false "and no promotion" test -e "$CI_DIR/lane.log"
+check "ci-build.txt names the release and the pair it could not take" \
+    "next 46|build-image 0|pair unavailable for Fedora 46: no fedora-46 pins in packaging/pkgs/kernel|exit 0" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -Ev '^(sha|started|finished) ' | paste -sd'|')"
+check "next/ holds the base's version and the next lane's lock, for the report" \
+    "./next/build.env ./next/rpms.lock.next" "$(tar -tf "$CI_DIR/out.tar" | grep '^\./next/.' | sort | paste -sd' ')"
+check "and never the 45 lane's lock" 0 "$(tar -tf "$CI_DIR/out.tar" | grep -c 'lock.diff')"
+echo 1 >"$CI_DIR/build-rc"
+check "a failed next build exits with its status and still returns its results" "1|build-image 1" \
+    "$(ci_request "ci-build $CI_SHA next")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^build-image ')"
+echo 0 >"$CI_DIR/build-rc"
+sed 's/^FEDORA=46$/FEDORA=47/' "$CIW/image/fedora/46.env" >"$CIW/image/fedora/47.env"
+check "two next releases are an error, before any build" "1|no build" \
+    "$(rm -f "$CI_DIR/next.log"; ci_request "ci-build $CI_SHA next")|$([[ -e $CI_DIR/next.log ]] && echo build || echo 'no build')"
+rm -rf "$CIW/image" "$CIW/tools/builder-vm/metrics.sh" "$CI_DIR/store/next"
+mv "$CI_DIR/build-image-45.sh" "$CIW/tools/builder-vm/build-image.sh"
+
 # --- tools/components.sh: pinned full clones of components.lock, and the dev override ------
 CO="$TMP/components"
 mkdir -p "$CO/work/tools" "$CO/src"
@@ -2728,6 +2777,11 @@ cat >"$PF/bin/builder-vm" <<'EOF'
 case $1 in
     running) [[ ${FAKE_VM:-up} == up ]] ;;
     ssh)
+        if [[ $2 == *"ci-build modes"* ]]; then
+            [[ ${FAKE_MODES:-new} == new ]] || { echo "ci-build: refused" >&2; exit 2; }
+            echo "daily next"
+            exit 0
+        fi
         if [[ $2 == *cosign* ]]; then
             [[ ${FAKE_COSIGN:-pinned} != missing ]] || exit 1
             sum=$(sed -n 's/^COSIGN_SHA256=//p' "$PIN")
@@ -2777,6 +2831,7 @@ pf_fails cpus : FAKE_NPROC=4
 pf_fails net:ghcr.io : FAKE_UNREACHABLE=ghcr.io
 pf_fails runner-key 'chmod 644 "$PF/home/.config/apex/runner/ssh/id_ed25519"'
 pf_fails ci-build : FAKE_BINDING=no-restriction
+pf_fails ci-build-modes : FAKE_MODES=old
 pf_fails time-sync : FAKE_NTP=no
 pf_fails vm-host-key 'printf "[127.0.0.1]:2222 ssh-ed25519 AAAAnew\n" >"$PF/home/vm/ssh/known_hosts"'
 pf_fails vm-cosign : FAKE_COSIGN=missing
@@ -2796,6 +2851,10 @@ check "before runner.sh key the key rows skip, and the host still passes" "rc=0 
     "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
 check "a stopped builder VM skips the binding and cosign" "rc=0 SKIP SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build) $(pf_row vm-cosign)"
+check "a forced command on the current grammar passes, naming its modes" "PASS|daily next" \
+    "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 1), $NF }' "$PF/out")"
+check_true "an old one's row says how to upgrade" grep -q 'old grammar (no next): just vm-ci-install' \
+    <<<"$(pf FAKE_MODES=old >/dev/null; cat "$PF/out")"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
 # --- install-cosign.sh: the pinned release only, checked before it is installed ----------
 IC="$TMP/install-cosign"
@@ -2997,6 +3056,52 @@ check "gates: the metrics table, in MiB and seconds" "| 2026-10-24T03:20:00Z | $
 check "gates: one warning per metric" "::warning title=metrics size::the image grew 20.0 %25 against x|::warning title=metrics userspace::12.5 s, more than 20 %25 above" \
     "$(grep '^::warning title=metrics' "$V/log" | paste -sd'|')"
 check_true "gates: metrics/ joins the artifact" test -s "$V/temp/logs/metrics/history.tsv"
+# next-compose: report-only, off until APEX_NEXT_COMPOSE, and never sent to an old ci-build.
+cat >"$V/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_VM/ssh.args"
+if [[ $* == "apex-builder ci-build modes" ]]; then
+    [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
+    echo "daily next"
+    exit 0
+fi
+echo "::error::a line of the VM's log" >&2
+[[ ! -s $FAKE_VM/results.tar ]] || cat "$FAKE_VM/results.tar"
+exit "$(cat "$FAKE_VM/ssh.rc")"
+EOF
+NEXT_MODES="Does the builder VM's ci-build take next"
+NEXT_BUILD='Next release compose, lane, image, G1 (builder VM)'
+NEXT_REPORT='Next lane report'
+next_job=$(awk '/^  next-compose:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
+check_true "next-compose runs only on the schedule, with APEX_NEXT_COMPOSE on" \
+    grep -q "github.event_name == 'schedule' && vars.APEX_NEXT_COMPOSE == 'on'" <<<"$next_job"
+check_true "after the 45 build, whatever its result" grep -qx '    needs: build' <<<"$next_job"
+check "and no step of it exits non-zero on its own" 0 "$(grep -cE '^\s+exit [1-9"$]' <<<"$next_job")"
+vm_reset
+: >"$V/old-host"
+check "modes: a ci-build on the old grammar is not sent next, and the step passes" "0||1" \
+    "$(vm_run "$NEXT_MODES")|$(cat "$V/output" 2>/dev/null)|$(grep -c 'predates next: run just vm-ci-install' "$V/log")"
+rm "$V/old-host"
+vm_reset
+check "modes: a current one is" "0|next=1" "$(vm_run "$NEXT_MODES")|$(cat "$V/output")"
+vm_reset
+echo 1 >"$V/ssh.rc"
+check "build: a failed next build warns, and never fails the job" "0|apex-builder ci-build $CI_SHA next|1" \
+    "$(vm_run "$NEXT_BUILD" SHA="$CI_SHA")|$(cat "$V/ssh.args")|$(grep -c "next lane's build in the builder VM failed (exit 1)" "$V/log")"
+check_true "build: the VM's log runs with workflow commands stopped" vm_stopped
+echo 0 >"$V/ssh.rc"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nnext 46\nbuild-image 0\npair unavailable for Fedora 46: no fedora-46 pins\nexit 0' "$CI_SHA")" \
+    "next/build.env=$(printf 'BASE_SOURCE=rawhide\nBASE_VERSION=46.20261024.0')" \
+    "next/rpms.lock.next=family kernel-cachyos stock - reason=pair unavailable for Fedora 46: no fedora-46 pins"
+cp "$V/results.tar" "$V/temp/next.tar"
+check "report: one line with the release, its rawhide base, the build and the pair" \
+    "0|Fedora 46, base rawhide 46.20261024.0: build-image 0, pair unavailable for Fedora 46: no fedora-46 pins" \
+    "$(vm_run "$NEXT_REPORT")|$(sed -n 3p "$V/summary")"
+check_true "report: and the next lane's lock" grep -q '^family kernel-cachyos stock - reason=pair unavailable' "$V/summary"
+vm_reset
+check "report: no results warn, and never fail the job" "0|1" \
+    "$(vm_run "$NEXT_REPORT")|$(grep -c 'returned no results' "$V/log")"
 
 # --- S4's budget: qualify.sh's boot phases and metrics.sh's rows, history and warnings -------
 bp() { bash -c '. "$1"; boot_phases' _ "$APEX_ROOT/.github/scripts/qualify.sh" | paste -sd' '; }

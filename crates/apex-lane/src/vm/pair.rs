@@ -10,6 +10,7 @@ use super::sign::Signer;
 use super::sources;
 use crate::core::bump_report;
 use crate::core::checksig::checksig_ok;
+use crate::core::fedora;
 use crate::core::hold;
 use crate::core::key::content_key;
 use crate::core::lock;
@@ -145,9 +146,20 @@ impl Vm<'_> {
         Ok(out)
     }
 
+    /// A next release's pins are apex-kernel's `fedora-N/`, never 45's.
+    fn pins_dir(&self, p: &PairPkg) -> PathBuf {
+        let release = &self.settings.fedora;
+        if fedora::is_next(release) {
+            p.dir.join(format!("fedora-{release}"))
+        } else {
+            p.dir.clone()
+        }
+    }
+
     fn plan(&self, p: &PairPkg, work: &Path) -> Result<Plan> {
-        let (kernel, kernel_bytes) = Self::read_kernel(&p.dir.join(&p.env.kernel_env))?;
-        let (nvidia, nvidia_bytes) = Self::read_nvidia(&p.dir.join(&p.env.nvidia_env))?;
+        let pins = self.pins_dir(p);
+        let (kernel, kernel_bytes) = Self::read_kernel(&pins.join(&p.env.kernel_env))?;
+        let (nvidia, nvidia_bytes) = Self::read_nvidia(&pins.join(&p.env.nvidia_env))?;
         let good = self.good_pair_key(&p.env.family)?;
         let good_pins = match &good {
             Some(key) => {
@@ -228,6 +240,14 @@ impl Vm<'_> {
         for (root, paths) in self.pair_paths(p) {
             self.check_clean(root, paths)?;
         }
+        let release = &self.settings.fedora;
+        let pins = self.pins_dir(p);
+        if fedora::is_next(release)
+            && !(pins.join(&p.env.kernel_env).is_file() && pins.join(&p.env.nvidia_env).is_file())
+        {
+            let reason = format!("no fedora-{release} pins in packaging/pkgs/{}", p.name);
+            return self.pair_unavailable(p, reason.as_bytes());
+        }
         let start = Instant::now();
         let work = self.lane_work(&p.name);
         self.fresh_work_dir(&work, &["in", "out", "mirror"])?;
@@ -270,6 +290,9 @@ impl Vm<'_> {
         match code {
             0 => {}
             1 => return self.record_pair_failure(p, &plan, &out, &stderr, signer),
+            2 if fedora::is_next(release) => {
+                return self.pair_unavailable(p, &pair::reason_of_stderr(&stderr));
+            }
             _ => {
                 return Err(infra(format!(
                     "pair.sh could not run (exit {code}): {}",
@@ -300,6 +323,27 @@ impl Vm<'_> {
         }
         self.report.summary(&summary);
         Ok(Outcome::Built(plan.key))
+    }
+
+    /// The next lane builds on Fedora's kernel until apex-kernel pins a pair for its release.
+    fn pair_unavailable(&self, p: &PairPkg, reason: &[u8]) -> Result<Outcome> {
+        let release = &self.settings.fedora;
+        let reason = text::lossy(&hold::reason_of(Some(reason)));
+        let line = format!(
+            "stock - since={} reason=pair unavailable for Fedora {release}: {reason}",
+            self.clock.now()
+        );
+        self.lock_put(&p.env.family, line.as_bytes(), b"")?;
+        self.report.summary(&[
+            format!("### {}: pair unavailable for Fedora {release}", p.name),
+            String::new(),
+            reason,
+            String::new(),
+            format!(
+                "The next image takes Fedora's kernel, without the NVIDIA set, until apex-kernel pins a fedora-{release} pair."
+            ),
+        ]);
+        Ok(Outcome::KeptStock)
     }
 
     fn run_pair_job(&self, work: &Path, plan: &Plan) -> Result<(i32, Vec<u8>)> {
@@ -954,6 +998,12 @@ impl Vm<'_> {
     /// bump.sh's verdict: a point bump becomes a commit on a branch of the recipe's
     /// checkout, for the bump PR; pushing it and opening the PR is the runner's.
     pub fn kernel_bump(&self) -> Result<Exit> {
+        if fedora::is_next(&self.settings.fedora) {
+            return Err(usage(format!(
+                "APEX_FEDORA={} is the next lane: kernel-bump moves only the 45 pins",
+                self.settings.fedora
+            )));
+        }
         let p = self.the_pair()?;
         let bump = self.runner.run(
             &Cmd::new(Program::Bash)
