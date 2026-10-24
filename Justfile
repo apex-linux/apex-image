@@ -136,6 +136,10 @@ vm-g2 image="localhost/apex:build":
 runner *args:
     tools/runner/runner.sh "$@"
 
+# The KVM host's read-only checks before the builder VM and the runner: one PASS/FAIL row each.
+runner-preflight:
+    tools/runner/preflight.sh
+
 # Install ci-build in the builder VM and bind the runner's key to it, after just runner key.
 vm-ci-install:
     tools/builder-vm/builder-vm.sh ci-install "${XDG_CONFIG_HOME:-$HOME/.config}/apex/runner/ssh/id_ed25519.pub"

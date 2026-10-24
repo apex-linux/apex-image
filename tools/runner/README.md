@@ -54,6 +54,17 @@ and a systemd user session:
 - Ubuntu 24.04 or later: `sudo apt install podman passt uidmap curl jq openssh-client`
 - Fedora: `sudo dnf install podman passt curl jq openssh-clients`
 
+Run the preflight first. It changes nothing, prints one PASS, FAIL or SKIP row per check
+and exits 1 on any FAIL: `/dev/kvm`, nested KVM, rootless podman with pasta, subuid and
+subgid ranges, cgroup v2, disk for the builder VM (45 GiB build, 25 GiB kernel scratch,
+15 GiB ccache), RAM and threads for `APEX_VM_MEM` and `APEX_VM_CPUS`, HTTPS to GitHub,
+ghcr.io, Fedora and the COPR, the runner's key and its forced command once they exist,
+and time sync. Fix every FAIL, then go on with step 1.
+
+```bash
+just runner-preflight
+```
+
 1. Make the token above and store it:
 
    ```bash
