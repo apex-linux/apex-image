@@ -27,12 +27,13 @@ write_lane_lock() {
     } >"$1"
 }
 
-# add_ptyxis LOCK STATE: the family the Apex terminal series adds to the lane.
-add_ptyxis() {
-    printf 'family ptyxis %s ptyxis-51.0-1.fc45-s0123456789ab\n' "$2" >>"$1"
-    case $2 in
+# add_family LOCK FAMILY STATE: a family an app series adds to the lane.
+add_family() {
+    printf 'family %s %s %s-51.0-1.fc45-s0123456789ab\n' "$2" "$3" "$2" >>"$1"
+    case $3 in
         built | held)
-            printf 'rpm ptyxis built ptyxis ptyxis-0:51.0-1.fc45.apex1.x86_64 %s pkgs/ptyxis/ptyxis-51.0-1.fc45-s0123456789ab/ptyxis-51.0-1.fc45.apex1.x86_64.rpm\n' "$SHA" >>"$1"
+            printf 'rpm %s built %s %s-0:51.0-1.fc45.apex1.x86_64 %s pkgs/%s/%s-51.0-1.fc45-s0123456789ab/%s-51.0-1.fc45.apex1.x86_64.rpm\n' \
+                "$2" "$2" "$2" "$SHA" "$2" "$2" "$2" >>"$1"
             ;;
     esac
 }
@@ -52,6 +53,7 @@ db = {
     "mutter": {"evr": "51.0-1.fc45", "signature": fedora},
     "mutter-common": {"evr": "51.0-1.fc45", "arch": "noarch", "signature": fedora},
     "ptyxis": {"evr": "51.0-1.fc45", "signature": fedora},
+    "nautilus": {"evr": "51.0-1.fc45", "signature": fedora},
     "apex-desktop": {"evr": "0.1.0-0.fc45", "arch": "noarch", "signature": apex,
                      "files": ["/etc/profile.d/apex-prompt.sh", "/etc/profile.d/zz-apex-shell-status.sh"]},
 }
@@ -136,6 +138,7 @@ done
 expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.0-1\.fc45, the installed mutter$'
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
 expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
+expect_out "Files before its family" '^PASS desktop: nautilus 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no nautilus family\)$'
 expect_out "the Apex prompt" '^PASS desktop: /etc/profile.d/apex-prompt.sh is apex-desktop.s and sorts before vte.sh'
 expect_out "the exit-status fix" '^PASS desktop: /etc/profile.d/zz-apex-shell-status.sh is apex-desktop.s and sorts after vte.sh'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
@@ -414,7 +417,7 @@ expect_out "and says so" "^FAIL desktop: /etc/profile.d/apex-prompt.sh belongs t
 
 apex='EdDSA/SHA512, Tue Sep 29 2026 07:00:00 AM UTC, Key ID 8da3252bd6ef25fa'
 r=$(mkroot ptyxisbuilt)
-add_ptyxis "$r/usr/share/apex/rpms.lock" built
+add_family "$r/usr/share/apex/rpms.lock" ptyxis built
 rpmdb "$T/ptyxisbuilt.db" ptyxis.evr=51.0-1.fc45.apex1 "ptyxis.signature=$apex"
 mkdir -p "$r/usr/bin"
 printf '\177ELF\002\001\001\000\000/*! apex-ptyxis */\000' >"$r/usr/bin/ptyxis"
@@ -424,25 +427,25 @@ expect_out "with every locked RPM" '^PASS desktop: the 5 locked RPM\(s\) are ins
 expect_out "and is named" '^PASS desktop: ptyxis 51\.0-1\.fc45\.apex1 is an Apex build with the Apex RPM signature \(the family is built\)$'
 expect_out "with the Apex resource" '^PASS desktop: /usr/bin/ptyxis carries /\*! apex-ptyxis \*/: the Apex resource is compiled in$'
 r=$(mkroot ptyxisnomarker)
-add_ptyxis "$r/usr/share/apex/rpms.lock" built
+add_family "$r/usr/share/apex/rpms.lock" ptyxis built
 rpmdb "$T/ptyxisnomarker.db" ptyxis.evr=51.0-1.fc45.apex1 "ptyxis.signature=$apex"
 desktop ptyxisnomarker
 expect_rc "an Apex Ptyxis without the Apex resource fails" 1
 expect_out "and says so" '^FAIL desktop: /usr/bin/ptyxis lacks /\*! apex-ptyxis \*/'
 r=$(mkroot ptyxisstockmarker)
-add_ptyxis "$r/usr/share/apex/rpms.lock" stock
+add_family "$r/usr/share/apex/rpms.lock" ptyxis stock
 mkdir -p "$r/usr/bin"
 printf '\177ELF/*! apex-ptyxis */\000' >"$r/usr/bin/ptyxis"
 desktop ptyxisstockmarker
 expect_rc "the Apex resource under a stock family fails" 1
 expect_out "and says so" '^FAIL desktop: /usr/bin/ptyxis carries /\*! apex-ptyxis \*/, but the family is stock$'
 r=$(mkroot ptyxisfedora)
-add_ptyxis "$r/usr/share/apex/rpms.lock" held
+add_family "$r/usr/share/apex/rpms.lock" ptyxis held
 desktop ptyxisfedora
 expect_rc "Fedora's Ptyxis under a held family fails" 1
 expect_out "and says so" '^FAIL desktop: ptyxis 51\.0-1\.fc45 is not an \.apexN build, but the lane.s ptyxis family is held$'
 r=$(mkroot ptyxisstock)
-add_ptyxis "$r/usr/share/apex/rpms.lock" stock
+add_family "$r/usr/share/apex/rpms.lock" ptyxis stock
 desktop ptyxisstock
 expect_rc "Fedora's Ptyxis under a stock family passes" 0
 expect_out "and is named" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is stock: degraded=terminal\)$'
@@ -456,5 +459,31 @@ python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); del d["ptyxis"];
 desktop noptyxis
 expect_rc "an image without Ptyxis fails" 1
 expect_out "and says so" '^FAIL desktop: ptyxis is not installed'
+
+r=$(mkroot nautilusbuilt)
+add_family "$r/usr/share/apex/rpms.lock" nautilus built
+rpmdb "$T/nautilusbuilt.db" nautilus.evr=51.0-1.fc45.apex1 "nautilus.signature=$apex"
+mkdir -p "$r/usr/bin"
+printf '\177ELF\002\001\001\000\000/*! apex-nautilus */\000' >"$r/usr/bin/nautilus"
+desktop nautilusbuilt
+expect_rc "the Apex Files as the lane built it passes" 0
+expect_out "and is named" '^PASS desktop: nautilus 51\.0-1\.fc45\.apex1 is an Apex build with the Apex RPM signature \(the family is built\)$'
+expect_out "with the Apex resource" '^PASS desktop: /usr/bin/nautilus carries /\*! apex-nautilus \*/: the Apex resource is compiled in$'
+r=$(mkroot nautilusnomarker)
+add_family "$r/usr/share/apex/rpms.lock" nautilus held
+rpmdb "$T/nautilusnomarker.db" nautilus.evr=51.0-1.fc45.apex1 "nautilus.signature=$apex"
+desktop nautilusnomarker
+expect_rc "an Apex Files without the Apex resource fails" 1
+expect_out "and says so" '^FAIL desktop: /usr/bin/nautilus lacks /\*! apex-nautilus \*/'
+r=$(mkroot nautilusdegraded)
+add_family "$r/usr/share/apex/rpms.lock" nautilus degraded
+desktop nautilusdegraded
+expect_rc "Fedora's Files under a degraded family passes" 0
+expect_out "and is named" '^PASS desktop: nautilus 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is degraded: degraded=files\)$'
+r=$(mkroot nautilusstray)
+rpmdb "$T/nautilusstray.db" nautilus.evr=51.0-1.fc45.apex1 "nautilus.signature=$apex"
+desktop nautilusstray
+expect_rc "an Apex Files the lane did not lock fails" 1
+expect_out "and says so" '^FAIL desktop: nautilus 51\.0-1\.fc45\.apex1 is an Apex build, but the lane has no nautilus family$'
 
 done_testing
