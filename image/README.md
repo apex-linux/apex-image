@@ -50,6 +50,12 @@ is the Fedora-kernel image it was.
   and the preset that disables `nvidia-persistenced`), removes the Fedora kernel's
   `apex-dgpu.conf` and `61-apex-dgpu-pm.rules`, and labels `pair-degraded` as
   `degraded=nvidia`. A held pair is `held=kernel-cachyos`, as for any family.
+- `kargs.d/10-apex.toml` keeps `modprobe.blacklist=` and `rd.driver.blacklist=` for
+  nouveau and nova-core. In a pair image `module_blacklist=` makes them redundant; they
+  go in S4, once the pair is the only kernel.
+- No package `exclude.txt` adds is hard-required by what ships: `nvidia-kmod-common`
+  requires the capability `nvidia-kmod`, which `akmod-nvidia` and `dkms-nvidia` provide,
+  and so does the pair's `kmod-nvidia-<kver>` (negativo17's fedora-45 repodata, 615.78.08).
 
 The final stage:
 
