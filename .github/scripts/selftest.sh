@@ -2573,13 +2573,22 @@ cat >"$PF/bin/builder-vm" <<'EOF'
 #!/usr/bin/env bash
 case $1 in
     running) [[ ${FAKE_VM:-up} == up ]] ;;
-    ssh) printf '%s ssh-ed25519 AAAAkey apex-runner\n' "${FAKE_BINDING:-restrict,command=\"/usr/local/libexec/apex/ci-build\"}" ;;
+    ssh)
+        if [[ $2 == *cosign* ]]; then
+            [[ ${FAKE_COSIGN:-pinned} != missing ]] || exit 1
+            sum=$(sed -n 's/^COSIGN_SHA256=//p' "$PIN")
+            [[ ${FAKE_COSIGN:-pinned} != other ]] || sum=$(printf '0%.0s' {1..64})
+            printf '%s  /usr/local/bin/cosign\nGitVersion:    %s\n' "$sum" "$(sed -n 's/^COSIGN_VERSION=//p' "$PIN")"
+            exit 0
+        fi
+        printf '%s ssh-ed25519 AAAAkey apex-runner\n' "${FAKE_BINDING:-restrict,command=\"/usr/local/libexec/apex/ci-build\"}" ;;
 esac
 EOF
 chmod +x "$PF/bin/"*
 pf() { # [VAR=VALUE...]: preflight.sh on the fake root; prints its rows, then rc=N
     local rc=0
     env PATH="$PF/bin:$PATH" HOME="$PF/home" XDG_CONFIG_HOME= XDG_DATA_HOME= APEX_PREFLIGHT_ROOT="$PF/root" \
+        PIN="$APEX_ROOT/tools/builder-vm/cosign.env" \
         APEX_PREFLIGHT_BUILDER_VM="$PF/bin/builder-vm" APEX_VM_DIR="$PF/home/vm" "$@" \
         "$APEX_ROOT/tools/runner/preflight.sh" >"$PF/out" 2>&1 || rc=$?
     printf 'rc=%s\n' "$rc"
@@ -2616,7 +2625,10 @@ pf_fails runner-key 'chmod 644 "$PF/home/.config/apex/runner/ssh/id_ed25519"'
 pf_fails ci-build : FAKE_BINDING=no-restriction
 pf_fails time-sync : FAKE_NTP=no
 pf_fails vm-host-key 'printf "[127.0.0.1]:2222 ssh-ed25519 AAAAnew\n" >"$PF/home/vm/ssh/known_hosts"'
+pf_fails vm-cosign : FAKE_COSIGN=missing
+pf_fails vm-cosign : FAKE_COSIGN=other
 }
+check "the pinned cosign in the builder VM passes" PASS "$(pf >/dev/null; pf_row vm-cosign)"
 pf_root
 mkdir -p "$PF/home/vm"
 truncate -s 0 "$PF/home/vm/disk.qcow2"
@@ -2629,8 +2641,47 @@ rm "$PF/home/.config/apex/runner/ssh/"*
 check "before runner.sh key the key rows skip, and the host still passes" "rc=0 SKIP SKIP SKIP" \
     "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
-check "a stopped builder VM skips the binding" "rc=0 SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build)"
+check "a stopped builder VM skips the binding and cosign" "rc=0 SKIP SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build) $(pf_row vm-cosign)"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
+# --- install-cosign.sh: the pinned release only, checked before it is installed ----------
+IC="$TMP/install-cosign"
+mkdir -p "$IC/bin"
+cat >"$IC/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+out=
+for ((i = 1; i <= $#; i++)); do [[ ${!i} != -o ]] || { j=$((i + 1)); out=${!j}; }; done
+printf '%s\n' "${*: -1}" >>"$FAKE_IC/urls"
+[[ ! -e $FAKE_IC/offline ]] || exit 6
+cp "$FAKE_IC/release" "$out"
+EOF
+printf '#!/usr/bin/env bash\n"$@"\n' >"$IC/bin/sudo"
+chmod +x "$IC/bin/"*
+ic() { # VERSION SHA256: install-cosign.sh into $IC/root/cosign; prints its exit
+    rc_of env PATH="$IC/bin:$PATH" FAKE_IC="$IC" APEX_COSIGN_BIN="$IC/root/cosign" \
+        "$APEX_ROOT/tools/builder-vm/install-cosign.sh" "$@"
+}
+ic_reset() { rm -rf "$IC/root" "$IC/urls" "$IC/offline"; echo 'the cosign release' >"$IC/release"; }
+ic_reset
+IC_SUM=$(sha256sum <"$IC/release" | cut -d' ' -f1)
+check "the pinned release installs" 0 "$(ic v3.0.2 "$IC_SUM")"
+check "from that version's release on GitHub, never latest" \
+    https://github.com/sigstore/cosign/releases/download/v3.0.2/cosign-linux-amd64 "$(cat "$IC/urls")"
+check_true "as an executable" test -x "$IC/root/cosign"
+check "a re-run with the binary in place downloads nothing" "0 1" "$(ic v3.0.2 "$IC_SUM") $(grep -c . "$IC/urls")"
+ic_reset
+echo 'another binary' >"$IC/release"
+check "a download without the pinned sha256 is refused" 1 "$(ic v3.0.2 "$IC_SUM")"
+check_false "and nothing is installed" test -e "$IC/root/cosign"
+ic_reset
+: >"$IC/offline"
+check "a failed download is refused" 1 "$(ic v3.0.2 "$IC_SUM")"
+check_false "and nothing is installed" test -e "$IC/root/cosign"
+ic_reset
+check "a version that is not vX.Y.Z is a usage error" 2 "$(ic latest "$IC_SUM")"
+check "a sha256 that is not 64 hex digits is a usage error" 2 "$(ic v3.0.2 abc)"
+check "the pin file pins a version and a sha256" 2 \
+    "$(grep -cE '^(COSIGN_VERSION=v[0-9]+\.[0-9]+\.[0-9]+|COSIGN_SHA256=[0-9a-f]{64})$' "$APEX_ROOT/tools/builder-vm/cosign.env")"
+
 # --- lane-absorb-report.sh: a series is applies, fuzz or fails, as git apply and patch say -------
 AB="$TMP/absorb"
 mkdir -p "$AB/pristine" "$AB/recipe/patches"
