@@ -67,8 +67,8 @@ if refused:
 EOF
 log "contracts: apexctl build manifest accepts every degraded name the image can write"
 
-# Copies of apex-desktop's files that components keep for their own tests, by explicit
-# path, so a moved copy fails too: COPY ORIGINAL pairs.
+# Copies of one component's files that another keeps, by explicit path, so a moved copy
+# fails too: COPY ORIGINAL pairs.
 readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
 copies=(
     "$APEX_GNOME_SRC/tests/layer/fixtures/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA"
@@ -78,16 +78,21 @@ copies=(
 if [[ -d $APEX_SYSTEM_SRC/crates/apex-session-agent ]]; then
     copies+=("$APEX_SYSTEM_SRC/crates/apex-session-agent/tests/data/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA")
 fi
+# Settings' Software Updates page generates its D-Bus code from a copy of Update1's XML.
+readonly UPDATE1=io.github.apex_linux.Apex.Update1.xml
+if [[ -e $APEX_GNOME_SRC/desktop/control-center/panels/apex/$UPDATE1 ]]; then
+    copies+=("$APEX_GNOME_SRC/desktop/control-center/panels/apex/$UPDATE1" "$APEX_SYSTEM_SRC/crates/apex-dbus/data/$UPDATE1")
+fi
 stale=0
 for ((i = 0; i < ${#copies[@]}; i += 2)); do
     if [[ ! -f ${copies[i + 1]} ]]; then
         printf 'error: %s is missing\n' "${copies[i + 1]}" >&2
         stale=1
     elif ! cmp -s -- "${copies[i]}" "${copies[i + 1]}"; then
-        printf 'error: %s is missing or differs from %s: copy it from the pinned apex-desktop\n' \
+        printf 'error: %s is missing or differs from %s: copy it from the pinned original\n' \
             "${copies[i]}" "${copies[i + 1]}" >&2
         stale=1
     fi
 done
 ((stale == 0)) || die "contracts: see above"
-log "contracts: every copy of apex-desktop's files equals the pinned apex-desktop's"
+log "contracts: every copy of a component's file equals the pinned original"
