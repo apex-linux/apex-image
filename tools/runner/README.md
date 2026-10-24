@@ -120,6 +120,20 @@ and a systemd user session:
 `just runner uninstall` stops and removes the service and keeps the token, the key and
 the image.
 
+### Confirm on the first G4
+
+The selftest proves G4's lock matrix (S3b) against a fake guest only. On the first
+dispatched run that runs G4, check in `_build/qualify/` that:
+
+- [ ] **The password conversations count as expected.** While the lock asks, there is one
+  `pam/gdm-password` worker more than with the session unlocked. There is none more while
+  the screen is off (`local-lock-blank-wake`). Esc ends the extra one (`local-lock-esc`).
+- [ ] **OVMF resumes from S3.** With `-global ICH9-LPC.disable_s3=0`, `systemctl suspend`
+  reaches QMP's `suspended`, and `system_wakeup` brings the guest back
+  (`local-lock-suspend`).
+- [ ] **`rpm-ostree kargs --append=apex.safe=1` works on the bootc image.** The next
+  boot has `apex.safe=1` in `/proc/cmdline` (`local-lock-safe`).
+
 ## Upkeep
 
 - **The runner release.** GitHub stops serving runners that are too old. When it
