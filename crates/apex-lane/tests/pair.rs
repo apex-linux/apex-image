@@ -990,9 +990,17 @@ fn a_rehearsal_injects_the_kmod_failure_through_pair_sh_and_reaches_degraded() {
     let good = t.with_good_pair();
     t.fake.on_job(pair_sh);
     t.pins("7.3.1-1", "615.78.08-1");
-    *t.pair_fault.borrow_mut() = Some("kmod".into());
     t.rehearsal.set(true);
-    assert_eq!(t.build(T0), Built::Held);
+    assert!(
+        matches!(t.build(T0), Built::Built(_)),
+        "the bump as a whole pair"
+    );
+    *t.pair_fault.borrow_mut() = Some("kmod".into());
+    assert_eq!(
+        t.build(T0),
+        Built::Held,
+        "the fault is an input of the key, so the stored whole pair is not taken"
+    );
     assert!(
         t.family_line().starts_with(&format!("family kernel-cachyos held {good} since={T0} limit=2026-12-04T00:00:00Z "))
             && t.family_line().ends_with(" side=kmod reason=kmod: nvidia-kmod-3:615.78.08-1.fc45.src does not build for this kernel"),
@@ -1016,13 +1024,13 @@ fn a_rehearsal_injects_the_kmod_failure_through_pair_sh_and_reaches_degraded() {
         .collect::<Vec<_>>();
     assert_eq!(
         faults,
-        [0, 1, 1],
+        [0, 0, 1, 1],
         "only the rehearsal's jobs carry the hook"
     );
     assert!(
         t.next_lock()
-            .contains(" kernel-cachyos-0:7.3.1-1.cachyos1.apex9001.fc45.x86_64 "),
-        "a rehearsal's N starts at 9001"
+            .contains(" kernel-cachyos-0:7.3.1-1.cachyos1.apex9002.fc45.x86_64 "),
+        "a rehearsal's N starts at 9001, and the faulted key takes the next"
     );
 }
 

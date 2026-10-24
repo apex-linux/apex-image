@@ -85,6 +85,11 @@ pub fn preimage(pkg: &str, tool: &str, repos: &str, files: &[(String, String)]) 
     out
 }
 
+/// A faulted rehearsal job is an input of its own: it never takes a stored good set.
+pub fn faulted_preimage(preimage: &str, fault: &str) -> String {
+    format!("{preimage}fault {fault}\n")
+}
+
 /// A kernel-only set may never take the key of the whole pair it stands in for.
 pub fn degraded_preimage(pair_preimage: &str) -> String {
     format!("{pair_preimage}{DEGRADED_NVIDIA}\n")
