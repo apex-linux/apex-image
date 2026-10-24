@@ -276,6 +276,8 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
     set -- /usr/lib/modules/*; \
     if [ "$#" -ne 1 ] || [ ! -d "$1" ]; then echo "ERROR: expected exactly one kernel in /usr/lib/modules, found: $*" >&2; exit 1; fi; \
     kver=${1##*/}; \
+    plymouth-set-default-theme apex; \
+    sed -i '/^Theme=apex$/a DeviceScale=1' /etc/plymouth/plymouthd.conf; \
     DRACUT_NO_XATTR=1 dracut --no-hostonly --reproducible --early-microcode \
         --add 'crypt systemd-cryptsetup' \
         --add-drivers amdgpu --omit-drivers 'nouveau nova_core nova_drm snd_hda_intel' \
