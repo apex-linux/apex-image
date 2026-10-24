@@ -27,7 +27,9 @@ budget, warning-only). With daily (vm.yml's scheduled run), metrics.sh also take
 image's size, and lane-absorb-report.sh runs after the build, whatever its result:
 absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv, one "family, SRPM,
 result, detail" line for each updates-testing row that is not "applies" or "same".
-Neither ever changes the exit status.
+Neither ever changes the exit status. When this installed copy differs from the
+commit's tools/builder-vm/ci-build.sh, ci-build.txt says "stale"; it never updates
+itself from the checkout, which would let any commit of main rewrite the forced command.
 Nothing is pushed or signed but the RPMs, and the RPM key and ~/apex-store never leave
 the VM.
 
@@ -39,6 +41,8 @@ EOF
 }
 
 readonly CHECKOUT=$HOME/apex-image
+SELF=$(readlink -f -- "${BASH_SOURCE[0]}")
+readonly SELF
 readonly STORE=${APEX_STORE:-$HOME/apex-store}
 readonly CI_ENV=$HOME/.config/apex/ci.env
 readonly BUILD_LOCK=$HOME/.apex-build.lock
@@ -104,6 +108,12 @@ stage_components() {
     else
         log "components: this commit has no tools/components.sh; the checkout builds them"
     fi
+}
+
+check_installed() {
+    [[ -f tools/builder-vm/ci-build.sh ]] || return 0
+    cmp -s -- "$SELF" tools/builder-vm/ci-build.sh ||
+        printf 'stale %s differs from this commit'"'"'s tools/builder-vm/ci-build.sh: run just vm-ci-install\n' "$SELF"
 }
 
 lock_diff() {
@@ -174,6 +184,7 @@ build() {
     fetch_main
     check_out "$sha"
     cd -- "$CHECKOUT"
+    check_installed >>"$out/ci-build.txt"
     stage_components 9>&- </dev/null >&2
     log "== build-image.sh: RPMs, libfprint, lane, image, G2 twice, G4 when due, gates record"
     bash tools/builder-vm/build-image.sh 9>&- </dev/null >&2 || rc=$?

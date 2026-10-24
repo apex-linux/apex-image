@@ -205,6 +205,15 @@ lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.m
   VM, or rerun `just vm-ci-install` with a new key from `just runner key` after you
   delete `~/.config/apex/runner/ssh/`.
 
+## Troubleshooting
+
+- **`ci-build stale` warning.** The builder VM runs the copy of `ci-build` that
+  `just vm-ci-install` installed in `/usr/local/libexec/apex/`, never the checkout's: a
+  forced command that updated itself from `main` would let any commit rewrite it. When
+  `main` changes `tools/builder-vm/ci-build.sh`, the next run warns, and a request the old
+  copy does not know (such as the daily run's `daily`) is refused with exit 2. Fix:
+  `just vm-ci-install` with the VM running, from a checkout of current `main`.
+
 ## What a run does
 
 `vm.yml` runs on a push to `main` that touches `components.lock`, `image/**`,

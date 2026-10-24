@@ -631,6 +631,16 @@ check "and names the file over 20 MiB it left out" "local.serial.log 21504 KiB" 
     "$(tar -xOf "$CI_DIR/out.tar" ./qualify-logs/SKIPPED)"
 rm "$CI_DIR/with-logs"
 rm -rf "$CI_DIR/home/apex-image/_build/qualify"
+echo 0 >"$CI_DIR/build-rc"
+cp "$APEX_ROOT/tools/builder-vm/ci-build.sh" "$CI_DIR/home/apex-image/tools/builder-vm/ci-build.sh"
+ci_request "ci-build $CI_SHA" >/dev/null
+check "an installed ci-build that is this commit's says nothing" 0 "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -c '^stale ')"
+echo '# a newer ci-build' >>"$CI_DIR/home/apex-image/tools/builder-vm/ci-build.sh"
+check "a stale installed ci-build still builds" 0 "$(ci_request "ci-build $CI_SHA")"
+check "and ci-build.txt says it is stale, with the fix" \
+    "stale $(readlink -f "$APEX_ROOT/tools/builder-vm/ci-build.sh") differs from this commit's tools/builder-vm/ci-build.sh: run just vm-ci-install" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^stale ')"
+rm "$CI_DIR/home/apex-image/tools/builder-vm/ci-build.sh"
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh" <<'EOF'
 #!/usr/bin/env bash
 echo run >>"$FAKE/absorb.log"
@@ -2499,6 +2509,10 @@ check "gates: a warning line cannot issue a command of its own" 0 "$(grep -c '^:
 check "gates: and its family cannot end the title property" \
     "::warning title=absorb %3A%3Aerror%3A%3Ainjected::x (updates-testing): fails y" "$(grep 'injected' "$V/log")"
 check_true "gates: the artifact is vm-logs-<sha>" grep -qF "name: vm-logs-\${{ steps.commit.outputs.sha }}" "$APEX_ROOT/.github/workflows/vm.yml"
+vm_reset
+vm_results "gates-passed.txt=x" "ci-build.txt=$(printf 'sha %s\nstale /usr/local/libexec/apex/ci-build differs from this commit'"'"'s tools/builder-vm/ci-build.sh: run just vm-ci-install' "$CI_SHA")"
+check "gates: a stale ci-build warns, and never fails the step" "0|::warning title=ci-build stale::the builder VM's installed ci-build differs from this commit's; run just vm-ci-install (tools/runner/README.md, Troubleshooting)" \
+    "$(vm_gates)|$(grep '^::warning title=ci-build' "$V/log")"
 vm_reset
 vm_results "gates-passed.txt=x" "metrics/history.tsv=$(printf 'finished\tsha\tversion\tgates\tsize\tlayers\tprevious_size\tsize_change_pct\tnew_bytes\tfamilies\tfirmware\tloader\tkernel\tinitrd\tuserspace\tgreeter\tdesktop\n2026-10-24T03:20:00Z\t%s\t45.1\tyes\t1258291200\t70\t1048576000\t20.0\t209715200\t-\t-\t-\t1.0\t2.0\t12.5\t16.0\t3.0' "$CI_SHA")" \
     "metrics/warnings.tsv=$(printf 'size\tthe image grew 20.0 %% against x\nuserspace\t12.5 s, more than 20 %% above')"

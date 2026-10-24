@@ -140,6 +140,9 @@ jobs:
               sed '1d' -- "$out/absorb/report.md"
             fi
           } >>"$GITHUB_STEP_SUMMARY"
+          if grep -q '^stale ' "$out/ci-build.txt" 2>/dev/null; then
+            echo "::warning title=ci-build stale::the builder VM's installed ci-build differs from this commit's; run just vm-ci-install (tools/runner/README.md, Troubleshooting)"
+          fi
           # Data from the VM: one escaped line each, never a command of its own. Never gating.
           esc() { local v=${1//'%'/%25}; v=${v//$'\r'/%0D}; printf '%s' "${v//$'\n'/%0A}"; }
           esc_prop() { local v; v=$(esc "$1"); v=${v//:/%3A}; printf '%s' "${v//,/%2C}"; }
