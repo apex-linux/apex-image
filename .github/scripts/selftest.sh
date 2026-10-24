@@ -1434,7 +1434,7 @@ pin_features "'spotlight', 'panel', 'lock'"
 
 # S3b board 13: pkexec through the shell's polkit agent, then its stock dialog in safe mode.
 logged_in
-check "polkit: wrong password, Esc, then the password" 0 "$(guest polkit_agent local)"
+check "polkit: wrong password, Esc, then the password" 0 "$(guest polkit_agent local 1000)"
 for r in local-polkit-wrong-password local-polkit-cancel local-polkit; do
     check "row $r passes" 1 "$(row "$r" PASS)"
 done
@@ -1444,14 +1444,14 @@ check "the keys: the wrong password, Esc, the password" \
     "$(keys_sent)"
 check_true "and a screendump of each dialog" grep -qF 'local-polkit-dialog.png' "$GUEST_DIR/state/qmp"
 logged_in
-check "polkit in safe mode: the stock dialog, the password only" 0 "$(guest polkit_agent local-safe stock)"
+check "polkit in safe mode: the stock dialog, the password only" 0 "$(guest polkit_agent local-safe 1000 stock)"
 check "its row passes" 1 "$(row local-safe-polkit PASS)"
 check_true "naming the stock dialog" grep -q '^| local-safe-polkit | PASS | pkexec /usr/bin/id -u as apexqa: the shell.s stock dialog' "$GUEST_DIR/out/results.md"
 check "and no wrong-password or cancel row" 0 "$(($(row local-safe-polkit-wrong-password PASS) + $(row local-safe-polkit-cancel PASS)))"
 polkit_fails() { # FLAG ROW: with FLAG set, the case stops with ROW failed
     logged_in
     : >"$GUEST_DIR/state/$1"
-    check "polkit $1: the case fails" 1 "$(guest polkit_agent local)"
+    check "polkit $1: the case fails" 1 "$(guest polkit_agent local 1000)"
     check "polkit $1: at $2" 1 "$(row "$2" FAIL)"
 }
 polkit_fails no-agent local-polkit-wrong-password
@@ -1465,6 +1465,24 @@ check_true "naming the exit" grep -q '^| local-polkit-cancel | FAIL | pkexec exi
 polkit_fails cancel-keeps-helper local-polkit-cancel
 polkit_fails pkexec-not-root local-polkit
 check_true "naming what pkexec printed" grep -q "^| local-polkit | FAIL | pkexec /usr/bin/id -u exited 0 and printed '1000', not 0 and 0" "$GUEST_DIR/out/results.md"
+# The Apex dialog is the polkit feature: the pin decides whether its rows assert it ran.
+logged_in
+check "polkit not in the pin: the rows pass" 0 "$(guest polkit_agent local 1000)"
+check_true "with a note naming the pin" grep -q "^| local-polkit | PASS | .*shell.s dialog .*; polkit not in pinned apex-gnome [0-9a-f]* |" "$GUEST_DIR/out/results.md"
+pin_features "'spotlight', 'panel', 'lock', 'polkit'"
+logged_in
+echo 'gnome-shell[1234]: Apex: feature polkit enabled' >>"$GUEST_DIR/state/journal"
+check "polkit in the pin and enabled: the rows pass" 0 "$(guest polkit_agent local 1000)"
+check_true "naming the Apex dialog" grep -q '^| local-polkit | PASS | pkexec /usr/bin/id -u as apexqa: the Apex dialog (feature polkit enabled) (logs/local-polkit-dialog.png) took the password; it printed 0 and exited 0 |' "$GUEST_DIR/out/results.md"
+logged_in
+check "polkit in the pin but never enabled: the case fails" 1 "$(guest polkit_agent local 1000)"
+check_true "at its first row, naming the causes" grep -q "^| local-polkit-wrong-password | FAIL | the pinned apex-gnome [0-9a-f]* lists 'polkit', but the session never logged 'Apex: feature polkit enabled' (the crash guard, disabled-features or a load error" "$GUEST_DIR/out/results.md"
+check_true "and starts no pkexec" test ! -e "$GUEST_DIR/state/pkexec-running"
+logged_in
+echo 'gnome-shell[1234]: Apex: feature polkit enabled' >>"$GUEST_DIR/state/journal"
+check "safe mode with the feature enabled: the case fails" 1 "$(guest polkit_agent local-safe 1000 stock)"
+check_true "the dialog is not upstream's" grep -q "^| local-safe-polkit | FAIL | the safe login logged 'Apex: feature polkit enabled'" "$GUEST_DIR/out/results.md"
+pin_features "'spotlight', 'panel', 'lock'"
 
 # polkitd's own reading of the actions G1 parsed: what the dialog's details show.
 policies() {
