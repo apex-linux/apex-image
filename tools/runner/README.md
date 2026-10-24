@@ -134,6 +134,19 @@ dispatched run that runs G4, check in `_build/qualify/` that:
 - [ ] **`rpm-ostree kargs --append=apex.safe=1` works on the bootc image.** The next
   boot has `apex.safe=1` in `/proc/cmdline` (`local-lock-safe`).
 
+The selftest proves the LUKS2 rehearsal (`just vm-qualify-luks`) against a fake serial
+console and QMP only. On its first run, check in `_build/qualify/` that:
+
+- [ ] **systemd's status lines reach ttyS0.** With `rd.systemd.show_status=true` after
+  `rhgb quiet`, the initrd prints `Starting … Cryptography Setup for` and `Finished …`
+  on the serial console (`local-luks`).
+- [ ] **QMP's keys reach Plymouth's prompt.** The screendumps show the prompt, and the
+  typed passphrase opens the disk.
+- [ ] **The retry after a wrong passphrase** comes back within 3 polls
+  (`local-luks-wrong`).
+- [ ] **`cp --reflink` works across subvolumes** on the builder VM's btrfs (§8's `/var`
+  move in `install_luks`).
+
 ## Upkeep
 
 - **The runner release.** GitHub stops serving runners that are too old. When it
