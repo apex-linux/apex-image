@@ -1,6 +1,5 @@
-//! The pair's pins, `kernel.env` and `nvidia.env` of apex-kernel: read, never sourced.
-//! pair.sh and bump.sh read each value with `sed -n 's/^KEY=//p'`, so a value is taken
-//! whole: a stray space would reach them too, and is refused here.
+//! The pair's pins, apex-kernel's `kernel.env` and `nvidia.env`: read, never sourced.
+//! pair.sh and bump.sh take each value whole with sed, so a stray space is refused here.
 
 use std::collections::BTreeMap;
 use std::fmt;
