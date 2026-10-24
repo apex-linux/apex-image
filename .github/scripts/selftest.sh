@@ -889,6 +889,8 @@ check "next: the image is localhost/apex:46 from the next store's lane lock" \
 check "next: G1 only, so no G2, G4 or gates record" "no gates" "$(cat "$BI/next-gates" 2>/dev/null || echo 'no gates')"
 check_true "and says so" grep -q 'the next lane gates on G1 only and records nothing' "$BI/next-out"
 check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
+check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
+    "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
 
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
@@ -1833,6 +1835,16 @@ if [[ -f $APEX_CONTAINERFILE ]]; then
             is_fedora_pin "$(containerfile_arg "$arg")"
     done
 fi
+# One Fedora key per release, the same in apex-lane, the image checks and the release's env.
+for release in 45 46; do
+    lane_fpr=$(grep -oE "\(\"$release\", \"[0-9A-Fa-f]{40}\"\)" "$APEX_ROOT/crates/apex-lane/src/core/fedora.rs" |
+        grep -oE '[0-9A-Fa-f]{40}')
+    checks_fpr=$(sed -n "s/^FEDORA_${release}_KEY_FPR=//p" "$APEX_ROOT/image/checks/lib/common.sh")
+    env_fpr=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/$release.env" 2>/dev/null || true)
+    check "Fedora $release's key: apex-lane's table and image/checks agree" "${lane_fpr^^}" "${checks_fpr^^}"
+    [[ $release == 45 ]] || check "and image/fedora/$release.env too" "${lane_fpr^^}" "${env_fpr^^}"
+    check_true "Fedora $release's key is a fingerprint" grep -qE '^[0-9A-F]{40}$' <<<"${lane_fpr^^}"
+done
 for env in "$APEX_ROOT"/image/fedora/*.env; do
     for arg in BASE REPOS_BASE; do
         pin=$(sed -n "s/^$arg=//p" "$env")
