@@ -36,6 +36,8 @@ Environment:
   APEX_SCRATCH      the OCI layout and the rechunk work tree (default APEX_WORK)
   APEX_PREVIOUS_BUILD  the image rechunk keeps chunks stable against (default
                     apex-testing:45; `none` for no previous build)
+  APEX_IMAGE        the local tag build writes and later steps read (default
+                    localhost/apex:build; the lane rehearsals use their own)
   APEX_RUN_NUMBER   the last version field (default GITHUB_RUN_NUMBER, else 0)
   APEX_RPMS_KEY, APEX_DESKTOP_KEY, APEX_LIBFPRINT_KEY   input keys for the content
                     key (the context step records them from the artifacts when unset)
@@ -53,7 +55,7 @@ EOF
 
 : "${APEX_WORK:=$APEX_ROOT/_build/image}"
 : "${APEX_SCRATCH:=$APEX_WORK}"
-readonly IMAGE=localhost/apex:build
+readonly IMAGE=${APEX_IMAGE:-localhost/apex:build}
 readonly CONTEXT=$APEX_ROOT
 readonly RPMS_DIR=$CONTEXT/rpms
 readonly OCI_REF=apex

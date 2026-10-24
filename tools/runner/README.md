@@ -162,6 +162,21 @@ against a throwaway one. On the owner's first real `just publish` (S1d), check t
   digest runs `apexctl update check`, which finds the new `apex:45` and verifies it
   against the image's own policy (S1d's exit).
 
+### Confirm on the first lane rehearsal
+
+Run `just lane-rehearsal` only after the owner's decision on negativo17's key: it
+builds and verifies against the pinned `negativo17_key`. The selftest proves it on a fake
+lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.md` and that:
+
+- [ ] **The previous COPR build is still there.** The COPR keeps 5 builds; the good pair
+  is built at the one before the pinned one, mirrored and checked against the COPR key.
+- [ ] **kernel-bump commits the point bump unattended.** Its tag verifies and its config
+  holds no change beyond new symbols (`logs/kernel-bump.log`).
+- [ ] **pair.sh's hook takes the real kmod-failure path.** `APEX_PAIR_FAULT=kmod` leaves
+  `kernel.lock` and the kernel RPMs, and the lane holds with `side=kmod` and a limit.
+- [ ] **The degraded=nvidia image passes G1**, and its labels say `degraded=nvidia`.
+- [ ] **The RPMs carry `.apex9001` and up**, and the lane's own store has no `N ≥ 9000`.
+
 ## Upkeep
 
 - **The runner release.** GitHub stops serving runners that are too old. When it

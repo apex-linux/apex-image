@@ -14,6 +14,7 @@ pub mod names;
 pub mod pair;
 pub mod pins;
 pub mod pkg_env;
+pub mod rehearsal;
 pub mod release;
 pub mod repos;
 pub mod rpmout;

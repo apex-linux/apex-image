@@ -2083,6 +2083,133 @@ check "an artifact labelled with another key is a miss" 5 "$(lookup_rc k1 k2 1)"
 check "an absent artifact is a miss" 3 "$(lookup_rc k1 k1 1 ghcr.io/x/missing)"
 check "a bad workflow name is refused" 1 \
     "$(PATH="$O/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" lookup ghcr.io/x/y k '../evil')"
+# --- lane-rehearsal.sh: S1c's rehearsals on a fake lane, image.sh, publish.sh and COPR ---
+LR="$TMP/lane-rehearsal"
+mkdir -p "$LR/co/.github/scripts" "$LR/co/tools/builder-vm/rehearsal" "$LR/co/_build/rpms/apex" \
+    "$LR/co/_build/rpms/desktop" "$LR/bin" "$LR/kernel/packaging/pkgs/kernel" "$LR/others"
+cp "$APEX_ROOT/.github/scripts/lib.sh" "$LR/co/.github/scripts/"
+cp "$APEX_ROOT/tools/builder-vm/lane-rehearsal.sh" "$LR/co/tools/builder-vm/"
+cp "$APEX_ROOT/tools/builder-vm/rehearsal/pkg.env" "$LR/co/tools/builder-vm/rehearsal/"
+printf '%s\n' copr=bieszczaders/kernel-cachyos chroot=fedora-45-x86_64 \
+    srpm=kernel-cachyos-0:7.3.0-4.cachyos1.fc45.src srpm_sha256=pinned tag=cachyos-7.3.0-4 \
+    >"$LR/kernel/packaging/pkgs/kernel/kernel.env"
+printf 'kmod_srpm=nvidia-kmod-3:615.78.08-1.fc45.src\n' >"$LR/kernel/packaging/pkgs/kernel/nvidia.env"
+cat >"$LR/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+url=${*: -1}
+case $url in
+    */build/list/*) printf '{"items":[%s]}' "$(cat "$FAKE_LR/builds")" ;;
+    */build-chroot*) [[ $url == *build_id=103* ]] && echo '{"state":"failed"}' || echo '{"state":"succeeded"}' ;;
+    */Packages/k/kernel-cachyos-7.3.0-2.cachyos1.fc45.src.rpm) printf 'the 7.3.0-2 SRPM' ;;
+    *) exit 22 ;;
+esac
+EOF
+cat >"$LR/bin/lane" <<'EOF'
+#!/usr/bin/env bash
+printf '%s rehearsal=%s store=%s fault=%s now=%s\n' "$*" "$APEX_LANE_REHEARSAL" "$APEX_STORE" \
+    "${APEX_PAIR_FAULT:-}" "${APEX_LANE_NOW:-}" >>"$FAKE_LR/lane.log"
+recipes=${APEX_LANE_RECIPES%%:*}
+next=$APEX_STORE/rpms.lock.next
+reason='reason=kmod: nvidia-kmod-3:615.78.08-1.fc45.src does not build for this kernel'
+mkdir -p "$APEX_STORE"
+case $1 in
+    build)
+        cp "$recipes/packaging/pkgs/kernel/kernel.env" "$FAKE_LR/kernel.env.$(wc -l <"$FAKE_LR/lane.log")"
+        if [[ ! -f $APEX_STORE/rpms.lock ]]; then
+            echo 'family kernel-cachyos built kG' >"$next"
+        elif [[ -z ${APEX_PAIR_FAULT:-} ]]; then
+            echo 'family kernel-cachyos built kB' >"$next"
+        elif [[ -z ${APEX_LANE_NOW:-} || $APEX_LANE_NOW < 2026-12-04T00:00:00Z ]]; then
+            echo "family kernel-cachyos held kG since=2026-12-01T00:00:00Z limit=2026-12-04T00:00:00Z newer=x security=1 side=${FAKE_SIDE:-kmod} $reason" >"$next"
+            exit 3
+        else
+            echo "family kernel-cachyos built kD since=2026-12-01T00:00:00Z limit=2026-12-04T00:00:00Z newer=x security=1 degraded=nvidia side=kmod $reason" >"$next"
+            exit 3
+        fi ;;
+    promote)
+        if grep -q degraded=nvidia "$next" && [[ ${2:-} != --allow-degraded ]]; then exit 1; fi
+        cp "$next" "$APEX_STORE/rpms.lock" ;;
+    kernel-bump)
+        git -C "$recipes" branch -q kernel-bump/kernel-cachyos-7.3.0-4.cachyos1.fc45 ;;
+esac
+EOF
+cat >"$LR/bin/image.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s image=%s work=%s previous=%s\n' "$*" "$APEX_IMAGE" "$APEX_WORK" "${APEX_PREVIOUS_BUILD:-}" >>"$FAKE_LR/image.log"
+mkdir -p "$APEX_WORK"
+case $1 in
+    context) lane=${*: -1}; cp "$lane" "$APEX_WORK/lane" ;;
+    build) [[ $APEX_WORK != *"${FAKE_G1_FAILS:-none}" ]] || exit 1 ;;
+    inspect)
+        held='' degraded=''
+        grep -q ' held ' "$APEX_WORK/lane" && held=kernel-cachyos
+        grep -q degraded=nvidia "$APEX_WORK/lane" && degraded=nvidia
+        printf 'HELD=%s\nDEGRADED=%s\n' "$held" "$degraded" >"$APEX_WORK/image.env" ;;
+    rechunk) mkdir -p "$APEX_WORK/oci" ;;
+esac
+EOF
+cat >"$LR/bin/publish.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_LR/publish.log"
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' >"$LR/bin/podman"
+printf '#!/usr/bin/env bash\nexec "$@"\n' >"$LR/bin/sudo"
+chmod +x "$LR/bin/"*
+lr_builds() { # ID:VERSION...: the COPR's build list items
+    local b
+    for b in "$@"; do printf '{"id":%s,"source_package":{"version":"%s"}}\n' "${b%%:*}" "${b#*:}"; done | paste -sd, -
+}
+LR_ALL_BUILDS=$(lr_builds 105:7.3.1-1.cachyos1 104:7.3.0-4.cachyos1 103:7.3.0-3.cachyos1 102:7.3.0-2.cachyos1 101:7.2.9-1.cachyos1)
+rehearse() { # SCENARIO [VAR=VALUE...]: lane-rehearsal.sh on the fakes; prints its exit status
+    local scenario=$1
+    shift
+    rm -rf "$LR/dir" "$LR/"*.log "$LR/kernel.env."*
+    printf '%s' "${LR_BUILDS:-$LR_ALL_BUILDS}" >"$LR/builds"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    env PATH="$LR/bin:$PATH" FAKE_LR="$LR" APEX_REHEARSAL_DIR="$LR/dir" APEX_KERNEL_SRC="$LR/kernel" \
+        APEX_LANE_RECIPES="$LR/others" APEX_REHEARSAL_LANE="$LR/bin/lane" APEX_REHEARSAL_IMAGE_SH="$LR/bin/image.sh" \
+        APEX_REHEARSAL_PUBLISH_SH="$LR/bin/publish.sh" GITHUB_ACTIONS='' "$@" \
+        bash -c '"$1" "$2" >"$3" 2>&1; printf "%s" "$?"' _ "$LR/co/tools/builder-vm/lane-rehearsal.sh" "$scenario" "$LR/stderr"
+}
+lr_rows() { sed -n 's/^| \([a-z-]*\) | \([A-Z]*\) |.*/\1 \2/p' "$LR/dir/report.md" | paste -sd, -; }
+check "the rehearsals pass end to end" 0 "$(rehearse all)"
+check "every step has its row" "prepare PASS,good-pair PASS,kernel-bump PASS,point PASS,publish PASS,kmod-hold PASS,kmod-limit PASS" "$(lr_rows)"
+check_true "the good pair is pinned at the COPR build before the pinned one whose chroot succeeded" \
+    grep -qx 'srpm=kernel-cachyos-0:7.3.0-2.cachyos1.fc45.src' "$LR/kernel.env.1"
+check_true "with the sha256 of the downloaded SRPM" \
+    grep -qx "srpm_sha256=$(printf 'the 7.3.0-2 SRPM' | sha256sum | cut -d' ' -f1)" "$LR/kernel.env.1"
+check_true "and its CachyOS tag" grep -qx 'tag=cachyos-7.3.0-2' "$LR/kernel.env.1"
+check "every lane call is a rehearsal on the scratch store" 0 "$(grep -cv "rehearsal=1 store=$LR/dir/store " "$LR/lane.log")"
+check "only the kmod builds carry the fault" "build all fault=kmod now=|build all fault=kmod now=2026-12-04T00:00:01Z" \
+    "$(grep 'fault=kmod' "$LR/lane.log" | sed 's/ rehearsal=1 store=[^ ]*//' | paste -sd'|')"
+check "promote refused the degraded set, then took it with the override" "promote|promote|promote --allow-degraded" \
+    "$(sed -n 's/^\(promote[^ ]*\( --allow-degraded\)\?\) rehearsal.*/\1/p' "$LR/lane.log" | paste -sd'|')"
+check "every image is the rehearsal's own tag" 0 "$(grep -cv ' image=localhost/apex:rehearsal ' "$LR/image.log")"
+check_true "the point image is rechunked against no previous build" grep -q '^rechunk .* previous=none$' "$LR/image.log"
+check "publish.sh rehearses the point image" "rehearse oci:$LR/dir/image/point/oci/apex:latest" "$(cat "$LR/publish.log")"
+check_false "the scratch store is deleted" test -e "$LR/dir/store"
+check_false "and the recipes and image state" test -e "$LR/dir/recipes" -o -e "$LR/dir/image"
+check_true "the logs and the report stay" test -f "$LR/dir/logs/good-pair.log" -a -s "$LR/dir/report.md"
+check "point alone builds no kmod step" "prepare PASS,good-pair PASS,kernel-bump PASS,point PASS,publish PASS" \
+    "$(rehearse point >/dev/null; lr_rows)"
+check "kmod alone publishes nothing" "prepare PASS,good-pair PASS,kernel-bump PASS,kmod-hold PASS,kmod-limit PASS" \
+    "$(rehearse kmod >/dev/null; lr_rows)"
+check_false "kmod alone calls no publish.sh" test -e "$LR/publish.log"
+check "a fault that holds on the kernel side fails the rehearsal" 1 "$(rehearse kmod FAKE_SIDE=kernel)"
+check_true "at the kmod-hold row" grep -q '^| kmod-hold | FAIL | rpms.lock.next has .* not a kmod hold of kG' "$LR/dir/report.md"
+check_false "and the scratch store is still deleted" test -e "$LR/dir/store"
+check "a degraded image that fails G1 fails the rehearsal" 1 "$(rehearse kmod FAKE_G1_FAILS=kmod-limit)"
+check_true "at the kmod-limit row" grep -q '^| kmod-limit | FAIL | the image did not build or failed G1' "$LR/dir/report.md"
+mkdir -p "$LR/others/packaging/pkgs/kernel"
+printf 'family=kernel-cachyos\n' >"$LR/others/packaging/pkgs/kernel/pkg.env"
+check "a pair recipe of the product's own stops the rehearsal" 1 "$(rehearse all)"
+check_true "which says so" grep -q '^| prepare | FAIL | .*would be a second kernel-cachyos family' "$LR/dir/report.md"
+rm -rf "$LR/others/packaging"
+check "no earlier build of the pinned major stops the rehearsal" 1 \
+    "$(LR_BUILDS=$(lr_builds 104:7.3.0-4.cachyos1 101:7.2.9-1.cachyos1) rehearse all)"
+check_true "which says so" grep -q '^| prepare | FAIL | the COPR has no build of 7.3 before the pinned 7.3.0-4.cachyos1' "$LR/dir/report.md"
+check "an unknown scenario is a usage error" 2 "$(rehearse everything)"
+
 # --- .gitignore: biometric file names are never tracked ------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG \
     var/lib/fprint/u/1 image/system_files/var/lib/fprint/u/1; do
