@@ -199,6 +199,7 @@ fn test_vm<'a>(
     Vm {
         root: root(),
         recipes: vec![recipes()],
+        kernel_org: &NoKernelOrg,
         settings: Settings {
             store: store.to_path_buf(),
             ga_override: None,
@@ -213,6 +214,14 @@ fn test_vm<'a>(
         clock,
         bodhi,
         report,
+    }
+}
+
+struct NoKernelOrg;
+
+impl apex_lane::shell::kernel_org::KernelOrg for NoKernelOrg {
+    fn released(&self, _: &str) -> Option<UtcSecond> {
+        None
     }
 }
 

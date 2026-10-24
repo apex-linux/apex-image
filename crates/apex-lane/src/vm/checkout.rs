@@ -60,7 +60,7 @@ impl Vm<'_> {
         Ok(())
     }
 
-    fn check_clean(&self, root: &Path, paths: Vec<String>) -> Result<()> {
+    pub(super) fn check_clean(&self, root: &Path, paths: Vec<String>) -> Result<()> {
         let head = self.runner.run(
             &Self::git_in(root)
                 .args(["rev-parse", "-q", "--verify", "HEAD"])

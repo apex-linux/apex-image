@@ -52,6 +52,7 @@ the checkout. The binary embeds the tree id of `crates/apex-lane` it was built f
 | `just pkg-export PKG [NEW.patch…]` | `apex-lane export PKG` | the work tree's commits back to `packaging/pkgs/PKG/patches/` and `series` of the recipe's checkout on the host (`APEX_RECIPES`, default `../apex-gnome`) |
 | `just pkg-promote` | `apex-lane promote` | `rpms.lock.next` becomes `rpms.lock`, after an image built from it passed its gates |
 | `just pkg-stock PKG` | `apex-lane stock PKG` | the owner's choice at a hold limit: the next image takes Fedora's build of the family |
+| `just kernel-bump` | `apex-lane kernel-bump` | the kernel pair's bump check: a point bump becomes a commit on a branch of the apex-kernel checkout; a new major waits for the owner |
 
 The recipes sync the checkout into the VM first, and `lane.sh` takes the recipes from the
 pinned components (`tools/components.sh`). The lane builds committed inputs only,
@@ -172,8 +173,66 @@ the pair job reads them with `sed`.
 | `negativo17_key` | yes | negativo17's key fingerprint |
 | `negativo17_key_expires` | no | `YYYY-MM-DD` |
 
-apex-kernel has no such `pkg.env` yet, so the lane sees no kernel family, and
-`build` refuses a pair until the pair's build lands in the lane.
+apex-kernel has no such `pkg.env` yet, so the lane sees no kernel family and builds
+exactly what it built before.
+
+**`apex-lane build kernel`** (and `build all`) runs the pair:
+
+1. **One side per image, the kernel first.** The pins are compared with the last good
+   pair of `rpms.lock` (its stored `kernel.env` and `nvidia.env`). When both sides
+   moved, the job takes the new kernel with the old driver; the new driver follows once
+   that image is promoted.
+2. **Mirror at first sight** into `~/apex-store/mirror/`: each key file
+   (`keys/FPR.gpg`, exactly the pinned key) and every pinned SRPM and binary, the
+   waiting driver's too, each checked against its pinned sha256 and, with `rpmkeys -Kv`
+   against a keyring holding only its key, its signature. The COPR keeps 5 builds and
+   negativo17 the last 2 of each package, so a hold or a rebuild works from the store.
+   Any failure here is exit 1.
+3. **The key**: `KERNEL-NVR-s<12 hex>` over the lane's tool id, the dnf options and
+   every file of the recipe directory (`README.md` aside) as the job sees it. A stored
+   key is taken unchanged, with no container.
+4. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
+   container of `REPOS_BASE`, at low CPU weight, the recipe directory read-only at
+   `/job`, the module key's tmpfs at `/run/apex-modkey`, ccache in the volume
+   `apex-lane-ccache`. Exit 0: the RPMs of `pair.lock`, each sha256 checked and
+   queried with `rpm -qp`, are signed with the Apex RPM key and stored under
+   `pkgs/kernel/KEY/` with `pair.lock`, the pins, the module certificate and the logs.
+   Exit 1: a hold (below), the reason the last line of its stderr. Anything else is
+   exit 1 of the lane.
+5. **The lock**: `family kernel-cachyos built KEY`, and one `rpm` line, kind `built`,
+   for each `install=` package and the kmod built for that kernel. `kernel-cachyos-devel`
+   is stored, not locked; the NVIDIA userspace is mirrored, not locked (S1c's image
+   integration).
+
+**Holds** (ARCHITECTURE 4.3) keep the last good pair's `rpm` lines:
+
+| `pair.sh` exit 1 with | Hold | Limit, then |
+|---|---|---|
+| `kmod:` on a new point release | `held GOOD … side=kmod` | 72 h from the first failure; then `degraded=nvidia` |
+| `kmod:` on a new major | the same | 14 days; then `degraded=nvidia` |
+| anything else (`kernel:`, `check:`, an input) on a new kernel | `held GOOD … side=kernel` | 72 h from the kernel.org release (`releases.json`; from the first failure when it no longer lists it); then the owner chooses |
+| either, when only the driver moved | `held GOOD …`, no limit | none: the running pair keeps working |
+
+`newer=` names the SRPMs the good pair was not built from, `security=` is `1` for the
+72 h clocks, and `since` survives reruns that fail the same way. At a kmod limit the
+lane takes the new kernel without NVIDIA: `family kernel-cachyos built KEY' … degraded=nvidia
+side=kmod reason=…`, the kernel-side RPMs only, under a key of its own. It needs the
+job to keep that kernel in `/out/kernel.lock` (pair.lock without `kmod=`), which
+`pair.sh` does not write yet; until it does, the family stays held and status says so.
+Publishing a grown degraded set takes the owner's override (S1d). A run that builds a
+whole pair clears any hold. A failure with no last good pair in `rpms.lock` stops the
+image build (exit 1), as for the other families; the pair has no `stock`.
+
+**`apex-lane kernel-bump`** (`just kernel-bump`) runs the recipe's `bump.sh check`:
+
+- `point NEVRA`: mirrors that SRPM after checking it against the COPR key, and commits
+  `kernel.env` with the new `srpm`, its sha256 and `tag` on the branch
+  `kernel-bump/NVR` of the recipe's checkout, through a private index: HEAD and the
+  work tree stay. The runner pushes it and opens the bump PR; the bump report (the tag's
+  `git verify-tag`, the Source0, config and BORE diffs) is still to come.
+- `major NEVRA waiting-for-owner EOL-in-Nd`: prints "waiting for owner" with the EOL
+  countdown.
+- each newer NVIDIA build: a new driver waits for the owner.
 
 ### `series`
 

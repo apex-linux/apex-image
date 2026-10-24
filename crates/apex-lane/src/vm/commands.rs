@@ -29,6 +29,9 @@ fn is_build_of(nvr: &str, srpm: &str) -> bool {
 
 impl Vm<'_> {
     pub fn key(&self, name: &str) -> Result<Exit> {
+        if let Some(pair) = self.load_pair(name)? {
+            return self.pair_key(&pair);
+        }
         let pkg = self.load(name)?;
         self.check_committed(&pkg)?;
         let n = self.release_n(&pkg)?;

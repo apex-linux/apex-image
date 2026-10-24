@@ -7,6 +7,7 @@ use apex_lane::error::{Exit, LaneError, Result, infra, usage};
 use apex_lane::shell::bodhi::CurlBodhi;
 use apex_lane::shell::clock::SystemClock;
 use apex_lane::shell::cmd::StdRunner;
+use apex_lane::shell::kernel_org::CurlKernelOrg;
 use apex_lane::shell::report::Reporter;
 use apex_lane::vm::{self, Settings, Vm, build::exit_of};
 use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
@@ -51,6 +52,9 @@ enum Command {
     /// The owner's choice at a hold limit: the next image takes Fedora's build of the
     /// package's family.
     Stock { pkg: String },
+    /// The kernel pair's bump check (bump.sh check): a point bump becomes a commit on a
+    /// branch of the recipe's checkout; a new major waits for the owner.
+    KernelBump,
     /// Sign RPMs in place with the Apex RPM key: the builder VM's apex, apex-desktop and
     /// libfprint builds. A manifest.txt beside them records it.
     Sign {
@@ -238,6 +242,7 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
         runner: &runner,
         clock: &SystemClock,
         bodhi: &CurlBodhi { runner: &runner },
+        kernel_org: &CurlKernelOrg { runner: &runner },
         report,
     };
     if matches!(
@@ -262,6 +267,7 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
             }
         }
         Command::Promote => vm.promote().map(|()| Exit::Ok),
+        Command::KernelBump => vm.kernel_bump(),
         Command::Stock { pkg } => vm.stock(&pkg).map(|()| Exit::Ok),
         Command::Sign { rpms } => vm.sign_files(&rpms).map(|()| Exit::Ok),
         Command::InContainer(_) => unreachable!("handled above"),

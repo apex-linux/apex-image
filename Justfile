@@ -161,6 +161,10 @@ pkg-promote:
 pkg-stock pkg:
     tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh stock {{ pkg }}
 
+# The kernel pair's bump check in the builder VM: a point bump commits the new pins on a branch of the apex-kernel checkout, a new major waits for the owner.
+kernel-bump:
+    tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh kernel-bump
+
 # ---- Desktop VM: the built image in a window on this host (tools/builder-vm/README.md) ---
 
 # Install the last vm-image build onto the desktop VM disk (desktop-install --replace redoes it).
