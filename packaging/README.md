@@ -182,16 +182,21 @@ exactly what it built before.
    pair of `rpms.lock` (its stored `kernel.env` and `nvidia.env`). When both sides
    moved, the job takes the new kernel with the old driver; the new driver follows once
    that image is promoted.
-2. **Mirror at first sight** into `~/apex-store/mirror/`: each key file
+2. **Pinned keys (K7).** A key whose `*_key_expires` is less than 60 days away is
+   warned about at every run and in `kernel-bump`. Inside 14 days the warning says to
+   pin its successor now, in the build summary too. An expired one holds the pair before anything is downloaded, with
+   the key, its fingerprint and the date as the reason: from then on no input could
+   verify against it.
+3. **Mirror at first sight** into `~/apex-store/mirror/`: each key file
    (`keys/FPR.gpg`, exactly the pinned key) and every pinned SRPM and binary, the
    waiting driver's too, each checked against its pinned sha256 and, with `rpmkeys -Kv`
    against a keyring holding only its key, its signature. The COPR keeps 5 builds and
    negativo17 the last 2 of each package, so a hold or a rebuild works from the store.
    Any failure here is exit 1.
-3. **The key**: `KERNEL-NVR-s<12 hex>` over the lane's tool id, the dnf options and
+4. **The key**: `KERNEL-NVR-s<12 hex>` over the lane's tool id, the dnf options and
    every file of the recipe directory (`README.md` aside) as the job sees it. A stored
    key is taken unchanged, with no container.
-4. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
+5. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
    container of `REPOS_BASE`, at low CPU weight, the recipe directory read-only at
    `/job`, the module key's tmpfs at `/run/apex-modkey`, ccache in the volume
    `apex-lane-ccache`. Exit 0: the RPMs of `pair.lock`, each sha256 checked and
@@ -204,7 +209,7 @@ exactly what it built before.
    that check.sh cannot, since it never sees the last good pair: the modules in the
    pair's RPMs (`rpm -qlp`) within 5 % of the last good pair's, or a `check:` hold.
    BTF is check.sh's, through `config-required.txt` (`CONFIG_DEBUG_INFO_BTF=y`).
-5. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
+6. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
    each `install=` package and the kmod built for that kernel, and one of kind `mirror`
    for each `userspace=` RPM of the driver the pair was built with, copied from the
    mirror into the set and checked against its pin. `kernel-cachyos-devel` is stored,
