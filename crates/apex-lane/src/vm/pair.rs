@@ -200,9 +200,13 @@ impl Vm<'_> {
         let preimage = pair::preimage(&p.name, &self.tool_id()?, &dnf.join(" "), &files);
         let key = content_key(&kernel.srpm.nvr(), &preimage);
         let ledger = fs::read_opt(&self.store_pkg(&p.name).join(RELEASE_LEDGER))?;
-        let apex_release =
-            pair::release_number(&ledger.unwrap_or_default(), &kernel.srpm.nvr(), &key)
-                .map_err(|e| infra(format!("store: {RELEASE_LEDGER}: {e}")))?;
+        let apex_release = pair::release_number(
+            &ledger.unwrap_or_default(),
+            &kernel.srpm.nvr(),
+            &key,
+            self.settings.rehearsal,
+        )
+        .map_err(|e| infra(format!("store: {RELEASE_LEDGER}: {e}")))?;
         Ok(Plan {
             kernel,
             nvidia,

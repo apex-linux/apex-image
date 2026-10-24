@@ -531,6 +531,7 @@ struct PairTest {
     fake: Fake,
     released: Cell<Option<UtcSecond>>,
     pair_fault: RefCell<Option<String>>,
+    rehearsal: Cell<bool>,
 }
 
 impl PairTest {
@@ -577,6 +578,7 @@ impl PairTest {
             fake: Fake::new(),
             released: Cell::new(None),
             pair_fault: RefCell::default(),
+            rehearsal: Cell::new(false),
         };
         write(
             &t.store.path().join("rpm-signing.env"),
@@ -611,6 +613,7 @@ impl PairTest {
                 gid: 1000,
                 is_root: false,
                 pair_fault: self.pair_fault.borrow().clone(),
+                rehearsal: self.rehearsal.get(),
             },
             runner: &self.fake,
             clock: &clock,
@@ -988,6 +991,7 @@ fn a_rehearsal_injects_the_kmod_failure_through_pair_sh_and_reaches_degraded() {
     t.fake.on_job(pair_sh);
     t.pins("7.3.1-1", "615.78.08-1");
     *t.pair_fault.borrow_mut() = Some("kmod".into());
+    t.rehearsal.set(true);
     assert_eq!(t.build(T0), Built::Held);
     assert!(
         t.family_line().starts_with(&format!("family kernel-cachyos held {good} since={T0} limit=2026-12-04T00:00:00Z "))
@@ -1015,6 +1019,40 @@ fn a_rehearsal_injects_the_kmod_failure_through_pair_sh_and_reaches_degraded() {
         [0, 1, 1],
         "only the rehearsal's jobs carry the hook"
     );
+    assert!(
+        t.next_lock()
+            .contains(" kernel-cachyos-0:7.3.1-1.cachyos1.apex9001.fc45.x86_64 "),
+        "a rehearsal's N starts at 9001"
+    );
+}
+
+#[test]
+fn the_lanes_store_refuses_a_rehearsal_n_and_a_rehearsal_refuses_a_real_one() {
+    let t = PairTest::new();
+    let good = t.with_good_pair();
+    let ledger = t.store.path().join("pkgs/kernel/apex-release.txt");
+    t.pins("7.3.1-1", "615.78.08-1");
+    std::fs::write(
+        &ledger,
+        format!(
+            "{}kernel-cachyos-7.3.1-1.cachyos1.fc45 a-rehearsals-key 9001\n",
+            std::fs::read_to_string(&ledger).unwrap()
+        ),
+    )
+    .unwrap();
+    let err = t.run(T0, |vm| vm.build("kernel").unwrap_err().to_string());
+    assert!(
+        err.contains("N=9002 is a rehearsal's (from 9000) in the lane's own store"),
+        "{err}"
+    );
+    t.rehearsal.set(true);
+    t.pins("7.3.0-4", "615.78.08-1");
+    let err = t.run(T0, |vm| vm.build("kernel").unwrap_err().to_string());
+    assert!(
+        err.contains("N=1 is below 9000 in a rehearsal, where it could meet a real build"),
+        "{err}"
+    );
+    assert!(t.family_line().contains(&good));
 }
 
 #[test]

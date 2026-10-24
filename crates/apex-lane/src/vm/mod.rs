@@ -35,6 +35,8 @@ pub struct Settings {
     pub is_root: bool,
     /// `APEX_PAIR_FAULT`, forwarded to pair.sh; only a rehearsal sets it.
     pub pair_fault: Option<String>,
+    /// `APEX_LANE_REHEARSAL=1` on a scratch store: the pair's N starts above 9000.
+    pub rehearsal: bool,
 }
 
 pub struct Vm<'a> {

@@ -239,6 +239,7 @@ fn settings(store: &Path, signing: &Path) -> Settings {
         gid: 1000,
         is_root: false,
         pair_fault: None,
+        rehearsal: false,
     }
 }
 

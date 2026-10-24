@@ -210,6 +210,7 @@ fn test_vm<'a>(
             gid: 0,
             is_root: false,
             pair_fault: None,
+            rehearsal: false,
         },
         runner,
         clock,

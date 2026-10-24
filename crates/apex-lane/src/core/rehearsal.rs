@@ -7,6 +7,7 @@ use crate::core::utc::UtcSecond;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Rehearsal {
+    pub active: bool,
     pub pair_fault: Option<String>,
     pub now: Option<UtcSecond>,
 }
@@ -52,7 +53,11 @@ pub fn parse(
             format!("APEX_LANE_NOW is a UTC time like 2026-12-01T00:00:00Z, not '{now}'")
         })?),
     };
-    Ok(Rehearsal { pair_fault, now })
+    Ok(Rehearsal {
+        active: true,
+        pair_fault,
+        now,
+    })
 }
 
 #[cfg(test)]
@@ -81,11 +86,18 @@ mod tests {
         assert_eq!(
             of("1", Some(SCRATCH), "kmod", "2026-12-04T00:00:01Z"),
             Ok(Rehearsal {
+                active: true,
                 pair_fault: Some("kmod".into()),
                 now: UtcSecond::parse(b"2026-12-04T00:00:01Z"),
             })
         );
-        assert_eq!(of("1", Some(SCRATCH), "", ""), Ok(Rehearsal::default()));
+        assert_eq!(
+            of("1", Some(SCRATCH), "", ""),
+            Ok(Rehearsal {
+                active: true,
+                ..Rehearsal::default()
+            })
+        );
         assert!(of("1", Some(SCRATCH), "kernel", "").is_err());
         assert!(of("1", Some(SCRATCH), "", "tomorrow").is_err());
     }

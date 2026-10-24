@@ -371,9 +371,17 @@ pub fn apex_release(srpm_release: &str, n: u32) -> String {
     }
 }
 
+/// A rehearsal's RPMs are signed with the production key: their N never meets a real one.
+pub const REHEARSAL_RELEASE_FLOOR: u32 = 9000;
+
 /// The N of a pair key in the store's ledger of `NVR KEY N` lines: the key's own, or
 /// one past the NVR's highest. The ledger outlives pruned sets, so no N is used twice.
-pub fn release_number(ledger: &[u8], nvr: &str, key: &str) -> Result<(u32, bool), String> {
+pub fn release_number(
+    ledger: &[u8],
+    nvr: &str,
+    key: &str,
+    rehearsal: bool,
+) -> Result<(u32, bool), String> {
     let mut highest = 0;
     for line in text::lines(ledger) {
         let line = text::lossy(line);
@@ -387,13 +395,31 @@ pub fn release_number(ledger: &[u8], nvr: &str, key: &str) -> Result<(u32, bool)
             .filter(|&n| n > 0)
             .ok_or_else(|| format!("'{line}': N is not a positive integer"))?;
         if line_key == key {
-            return Ok((n, false));
+            return release_in_range(n, rehearsal).map(|()| (n, false));
         }
         if line_nvr == nvr {
             highest = highest.max(n);
         }
     }
-    Ok((highest + 1, true))
+    let first = if rehearsal {
+        REHEARSAL_RELEASE_FLOOR + 1
+    } else {
+        1
+    };
+    let n = (highest + 1).max(first);
+    release_in_range(n, rehearsal).map(|()| (n, true))
+}
+
+fn release_in_range(n: u32, rehearsal: bool) -> Result<(), String> {
+    match (rehearsal, n >= REHEARSAL_RELEASE_FLOOR) {
+        (false, true) => Err(format!(
+            "N={n} is a rehearsal's (from {REHEARSAL_RELEASE_FLOOR}) in the lane's own store"
+        )),
+        (true, false) => Err(format!(
+            "N={n} is below {REHEARSAL_RELEASE_FLOOR} in a rehearsal, where it could meet a real build"
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// bump.sh's report: a point line, a major line, or both, the point first; or `none`.
@@ -774,16 +800,40 @@ mod tests {
         assert_eq!(apex_release("4.cachyos1.fc45", 1), "4.cachyos1.apex1.fc45");
         assert_eq!(apex_release("4.cachyos1", 3), "4.cachyos1.apex3");
         let nvr = "kernel-cachyos-7.3.0-4.cachyos1.fc45";
-        assert_eq!(release_number(b"", nvr, "k1"), Ok((1, true)));
+        assert_eq!(release_number(b"", nvr, "k1", false), Ok((1, true)));
         let ledger = format!("{nvr} k1 1\nkernel-cachyos-7.3.1-1.cachyos1.fc45 k9 5\n{nvr} k2 2\n");
-        assert_eq!(release_number(ledger.as_bytes(), nvr, "k1"), Ok((1, false)));
-        assert_eq!(release_number(ledger.as_bytes(), nvr, "k2"), Ok((2, false)));
         assert_eq!(
-            release_number(ledger.as_bytes(), nvr, "k3"),
+            release_number(ledger.as_bytes(), nvr, "k1", false),
+            Ok((1, false))
+        );
+        assert_eq!(
+            release_number(ledger.as_bytes(), nvr, "k2", false),
+            Ok((2, false))
+        );
+        assert_eq!(
+            release_number(ledger.as_bytes(), nvr, "k3", false),
             Ok((3, true)),
             "another NVR's N does not count"
         );
-        assert!(release_number(b"a k1\n", nvr, "k1").is_err());
-        assert!(release_number(b"a k1 0\n", nvr, "k1").is_err());
+        assert!(release_number(b"a k1\n", nvr, "k1", false).is_err());
+        assert!(release_number(b"a k1 0\n", nvr, "k1", false).is_err());
+        assert_eq!(release_number(b"", nvr, "r1", true), Ok((9001, true)));
+        let rehearsed = format!("{nvr} r1 9001\n");
+        assert_eq!(
+            release_number(rehearsed.as_bytes(), nvr, "r2", true),
+            Ok((9002, true))
+        );
+        assert!(
+            release_number(rehearsed.as_bytes(), nvr, "k2", false).is_err(),
+            "the lane's store refuses N >= 9000"
+        );
+        assert!(
+            release_number(ledger.as_bytes(), nvr, "k1", true).is_err(),
+            "a rehearsal refuses N < 9000"
+        );
+        assert!(
+            release_number(ledger.as_bytes(), nvr, "k7", true).is_ok(),
+            "a new key in a rehearsal starts above the floor"
+        );
     }
 }

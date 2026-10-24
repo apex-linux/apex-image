@@ -235,6 +235,7 @@ fn settings() -> Result<(Settings, Option<UtcSecond>)> {
         gid: nix::unistd::getgid().as_raw(),
         is_root: nix::unistd::geteuid().is_root(),
         pair_fault: rehearsal.pair_fault,
+        rehearsal: rehearsal.active,
     };
     Ok((settings, rehearsal.now))
 }
