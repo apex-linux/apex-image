@@ -199,10 +199,11 @@ exactly what it built before.
    `pkgs/kernel/KEY/` with `pair.lock`, the pins, the module certificate and the logs.
    Exit 1: a hold (below), the reason the last line of its stderr. Anything else is
    exit 1 of the lane.
-5. **The lock**: `family kernel-cachyos built KEY`, and one `rpm` line, kind `built`,
-   for each `install=` package and the kmod built for that kernel. `kernel-cachyos-devel`
-   is stored, not locked; the NVIDIA userspace is mirrored, not locked (S1c's image
-   integration).
+5. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
+   each `install=` package and the kmod built for that kernel, and one of kind `mirror`
+   for each `userspace=` RPM of the driver the pair was built with, copied from the
+   mirror into the set and checked against its pin. `kernel-cachyos-devel` is stored,
+   not locked. A kernel-only set (`degraded=nvidia`) locks no userspace.
 
 **Holds** (ARCHITECTURE 4.3) keep the last good pair's `rpm` lines:
 
@@ -340,7 +341,8 @@ rpm FAMILY KIND NAME NEVRA SHA256 PATH
 
 - `STATE`: `built`; `held` (`KEY` is the last good build, whose `rpm` lines stay);
   `stock` (the owner's choice, no `rpm` lines); `degraded` (`on_fail=degrade`, none).
-- `KIND`: `built` (Apex-built) or `mirror` (Fedora-signed, unmodified). `PATH` is
+- `KIND`: `built` (Apex-built) or `mirror` (signed by its upstream, unmodified: Fedora,
+  or negativo17 for the pair's NVIDIA userspace; the header line predates the pair). `PATH` is
   relative to `APEX_STORE`. `mirror_dev` RPMs are stored, never locked.
 - A hold records `since` (the first failed run for this set of `newer` builds, kept
   across runs), `newer` (the Fedora builds the last good build was not made from),
