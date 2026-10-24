@@ -1818,6 +1818,130 @@ check "a first publication of a whole image moves" 0 "$(degraded_rc 45 '')"
 printf 'broken' >"$P/reg/broken.fail"
 check "a published tag that cannot be read is refused" 1 "$(degraded_rc broken '')"
 
+# --- publish.sh publish: push apex:<version>, sign it, move :45 only past the policy -----
+R="$TMP/publish-registry"
+mkdir -p "$R/bin"
+cat >"$R/bin/skopeo" <<'EOF'
+#!/usr/bin/env bash
+policy=
+if [[ $1 == --policy ]]; then policy=$2; shift 4; fi
+cmd=$1
+shift
+last=${*: -1}
+ref_file() {
+    local r=${1#docker://}
+    if [[ $r == *@* ]]; then grep -l "\"${r#*@}\"" "$FAKE_REG2"/tags/*/*.json 2>/dev/null | head -n 1; return; fi
+    local repo=${r%:*}
+    printf '%s\n' "$FAKE_REG2/tags/${repo//\//_}/${r##*:}.json"
+}
+case $cmd in
+    inspect)
+        if [[ $last == oci:* ]]; then cat "$FAKE_REG2/layout.json"; exit 0; fi
+        f=$(ref_file "$last")
+        [[ -n $f && -f $f ]] || { echo "Error: reading manifest x in y: manifest unknown" >&2; exit 1; }
+        if [[ " $* " == *" --raw "* ]]; then echo '{}'; else cat "$f"; fi ;;
+    list-tags)
+        repo=${last#docker://}
+        d=$FAKE_REG2/tags/${repo//\//_}
+        [[ -d $d ]] || { echo 'Error: name unknown' >&2; exit 1; }
+        find "$d" -name '*.json' -printf '%f\n' | sed 's/\.json$//' | jq -R . | jq -sc '{Tags: .}' ;;
+    copy)
+        src=${*: -2:1} digestfile=
+        for ((i = 1; i <= $#; i++)); do [[ ${!i} != --digestfile ]] || { j=$((i + 1)); digestfile=${!j}; }; done
+        if [[ $src == oci:* ]]; then json=$FAKE_REG2/layout.json; else json=$(ref_file "$src"); fi
+        [[ -n $json && -f $json ]] || { echo "Error: reading manifest: manifest unknown" >&2; exit 1; }
+        digest=$(jq -r .Digest "$json")
+        if [[ -n $policy ]]; then
+            key=$(jq -r '[.. | .keyPath? // empty][0]' "$policy")
+            signer=$(cat "$FAKE_REG2/sig.${digest#sha256:}" 2>/dev/null || true)
+            [[ -n $signer && $(cat "$key") == "$(cat "$signer")" ]] ||
+                { echo 'Error: Source image rejected: no valid signature' >&2; exit 1; }
+        fi
+        if [[ $last == docker://* ]]; then
+            out=$(ref_file "$last")
+            mkdir -p "${out%/*}"
+            cp "$json" "$out"
+        fi
+        [[ -z $digestfile ]] || printf '%s' "$digest" >"$digestfile"
+        printf 'copy %s %s%s\n' "$src" "$last" "${policy:+ verified}" >>"$FAKE_REG2/log" ;;
+esac
+EOF
+cat >"$R/bin/cosign" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+    sign)
+        key=
+        for ((i = 1; i <= $#; i++)); do [[ ${!i} != --key ]] || { j=$((i + 1)); key=${!j}; }; done
+        ref=${*: -1}
+        printf '%s\n' "$key" >"$FAKE_REG2/sig.${ref##*sha256:}"
+        printf 'sign %s\n' "$ref" >>"$FAKE_REG2/log" ;;
+    generate-key-pair) tok=$RANDOM$RANDOM$$; echo "$tok" >cosign.key; echo "$tok" >cosign.pub ;;
+esac
+EOF
+cat >"$R/bin/podman" <<'EOF'
+#!/usr/bin/env bash
+printf 'podman %s\n' "$*" >>"$FAKE_REG2/log"
+EOF
+chmod +x "$R/bin/"*
+layout() { # VERSION REVISION DEGRADED DIGEST_CHAR
+    jq -n --arg v "$1" --arg r "$2" --arg g "$3" --arg d "sha256:$(printf "$4%.0s" {1..64})" --arg l "$APEX_LABEL_PREFIX" \
+        '{Digest: $d, Labels: {"org.opencontainers.image.version": $v, "org.opencontainers.image.revision": $r,
+          ($l + ".fedora"): "45", ($l + ".degraded"): $g}}' >"$R/state/layout.json"
+}
+reset_registry() {
+    rm -rf "$R/state" "$R/keys"
+    mkdir -p "$R/state/tags" "$R/keys/other"
+    (cd "$R/keys" && PATH="$R/bin:$PATH" cosign generate-key-pair)
+    (cd "$R/keys/other" && PATH="$R/bin:$PATH" cosign generate-key-pair)
+    mkdir -p "$R/keys/registries.d"
+}
+trust() { # PUB: a policy for ghcr.io/x/apex that trusts only PUB
+    jq -n --arg k "$1" '{default: [{type: "reject"}], transports: {docker: {"ghcr.io/x/apex":
+        [{type: "sigstoreSigned", keyPath: $k, signedIdentity: {type: "matchRepository"}}]}}}' >"$R/keys/policy.json"
+}
+publish_rc() { # ALLOW
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$R/bin:$PATH" FAKE_REG2="$R/state" APEX_GIT_ROOT="$G" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
+        rc_of bash -c '. "$1"; VERIFY_POLICY=$2; VERIFY_REGISTRIES_D=$3; publish_layout ghcr.io/x/apex /layout "$4" "$5"' \
+        _ "$APEX_ROOT/.github/scripts/publish.sh" "$R/keys/policy.json" "$R/keys/registries.d" "${1:-0}" "$R/keys/cosign.key"
+}
+published() { jq -r .Digest "$R/state/tags/ghcr.io_x_apex/$1.json" 2>/dev/null || echo none; }
+reset_registry
+trust "$R/keys/cosign.pub"
+layout 45.20260925.151 "$C_A" '' 1
+check "a first publication" 0 "$(publish_rc)"
+check "pushes apex:<version>" "$D1" "$(published 45.20260925.151)"
+check "and moves :45 to it" "$D1" "$(published 45)"
+check "in order: push, sign, the verified move" \
+    "copy oci:/layout docker://ghcr.io/x/apex:45.20260925.151|sign ghcr.io/x/apex@$D1|copy docker://ghcr.io/x/apex@$D1 docker://ghcr.io/x/apex:45 verified" \
+    "$(paste -sd'|' "$R/state/log")"
+check "the same layout again is a no-op that passes" 0 "$(publish_rc)"
+layout 45.20260925.151 "$C_B" '' 2
+check "another image under a version that exists is refused" 1 "$(publish_rc)"
+check "and the tag keeps its image" "$D1" "$(published 45.20260925.151)"
+layout 45.20260926.152 "$C_B" nvidia 2
+check "a newer image that adds degraded=nvidia is refused" 1 "$(publish_rc)"
+check_false "before anything is pushed" grep -q '45.20260926.152' "$R/state/log"
+check "unless the owner allows it" 0 "$(publish_rc 1)"
+check ":45 moves" "$D2" "$(published 45)"
+layout 45.20260924.150 "$C_B" nvidia 3
+check "an older version is refused" 1 "$(publish_rc)"
+reset_registry
+trust "$R/keys/other/cosign.pub"
+layout 45.20260925.151 "$C_A" '' 1
+check "a policy that trusts another key refuses the move" 1 "$(publish_rc)"
+check ":45 does not exist" none "$(published 45)"
+check "though apex:<version> was pushed and signed" "$D1" "$(published 45.20260925.151)"
+check "publish.sh publish refuses while release.pub is the placeholder" 1 \
+    "$(PATH="$R/bin:$PATH" GITHUB_ACTIONS='' COSIGN_KEY_FILE="$R/keys/cosign.key" rc_of "$APEX_ROOT/.github/scripts/publish.sh" publish oci:/layout)"
+reset_registry
+layout 45.20260925.151 "$C_A" '' 1
+check "the rehearsal: a throwaway registry, key and policy" 0 \
+    "$(cd "$R" && PATH="$R/bin:$PATH" FAKE_REG2="$R/state" APEX_GIT_ROOT="$G" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' \
+        rc_of "$APEX_ROOT/.github/scripts/publish.sh" rehearse oci:/layout)"
+check "pushes to localhost and moves its :45" "$D1" "$(jq -r .Digest "$R/state/tags/localhost:5000_apex/45.json")"
+check_true "starts and removes the registry" grep -q '^podman run -d --rm --name apex-publish-rehearsal -p 127.0.0.1:5000:5000 ' "$R/state/log"
+
 # --- oci-artifact.sh lookup: a cache hit must be attested by the workflow on main ------
 O="$TMP/oci"
 mkdir -p "$O/bin"
