@@ -122,7 +122,7 @@ outside `[A-Za-z0-9._/:+ -]`, exits 2.
 
 | Key | Required | Value |
 |---|---|---|
-| `source` | yes | `fedora-srpm`. `copr-srpm` (S1c) and `git` (S2c) are reserved. |
+| `source` | yes | `fedora-srpm`, or `copr-srpm` for the kernel pair ([below](#the-kernel-pair-sourcecopr-srpm)). `git` (S2c) is reserved. |
 | `srpm` | yes | the source package; its binary package of the same name is resolved |
 | `on_fail` | yes | `hold` (a design package) or `degrade` |
 | `family` | yes | the hold unit in the lock, `^[a-z0-9][a-z0-9._+-]*$`; one package per family |
@@ -134,6 +134,46 @@ outside `[A-Za-z0-9._/:+ -]`, exits 2.
 | `source1_paths` | with `source1` | the paths Source1 may add to the tree; a trailing `/` means a directory |
 | `prep_moved` | no | `FROM:TO` pairs that `spec-edit`'s `%prep` lines move (TO must equal Fedora's FROM); `prep` makes the same moves in the work tree |
 | `prep_deleted` | no | Fedora files that `spec-edit`'s `%prep` lines delete |
+
+### The kernel pair (`source=copr-srpm`)
+
+The kernel and NVIDIA pair of apex-kernel's `packaging/pkgs/kernel/` is a recipe kind of
+its own ([ARCHITECTURE 4.2](https://github.com/apex-linux/apex/blob/main/docs/ARCHITECTURE.md#42-kernel-and-nvidia-lane-s1c)):
+no Fedora SRPM, series or `spec-edit`, but the COPR's signed SRPM and negativo17's
+`nvidia-kmod`, pinned by two files of the recipe directory and built by its own job.
+
+```
+source=copr-srpm
+family=kernel-cachyos
+install=kernel-cachyos kernel-cachyos-core kernel-cachyos-modules
+kernel_env=kernel.env
+nvidia_env=nvidia.env
+```
+
+Those five keys, each required, and no other. `family` is `kernel-cachyos`, the name
+of the image's `held=` label and apexctl's held list. `install` names the kernel side's
+packages; the kmod built for that kernel joins them. `kernel_env` and `nvidia_env` name
+files of the recipe directory, read with the same strictness: `KEY=VALUE`, `#` comments,
+each key once (`userspace=` once per package), no space at either end of a value, since
+the pair job reads them with `sed`.
+
+| `kernel.env` | Required | Value |
+|---|---|---|
+| `copr`, `chroot` | yes | the COPR project (`OWNER/PROJECT`) and its chroot |
+| `srpm`, `srpm_sha256` | yes | the `kernel-cachyos` SRPM's NEVRA (`MAJOR.MINOR.POINT`) and sha256 |
+| `copr_key` | yes | the COPR key's fingerprint, 40 uppercase hex digits |
+| `tag`, `tag_key` | no | the CachyOS tag and its key's fingerprint |
+| `copr_key_expires`, `tag_key_expires` | no | `YYYY-MM-DD` |
+
+| `nvidia.env` | Required | Value |
+|---|---|---|
+| `kmod_srpm`, `kmod_srpm_sha256` | yes | the `nvidia-kmod` SRPM's NEVRA and sha256 |
+| `userspace` | no, repeated | `NEVRA SHA256` of one x86_64 or noarch binary RPM |
+| `negativo17_key` | yes | negativo17's key fingerprint |
+| `negativo17_key_expires` | no | `YYYY-MM-DD` |
+
+apex-kernel has no such `pkg.env` yet, so the lane sees no kernel family, and
+`build` refuses a pair until the pair's build lands in the lane.
 
 ### `series`
 
