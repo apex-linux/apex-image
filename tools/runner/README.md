@@ -48,8 +48,11 @@ and the runner container never sees this token.
 ## Setup, one command per step
 
 On the host that runs the builder VM, as your normal user, from a checkout of
-`apex-image`. You need podman (rootless, with pasta), curl, jq, ssh-keygen and a
-systemd user session.
+`apex-image`. You need podman 4.4 or later (rootless, with pasta), curl, jq, ssh-keygen
+and a systemd user session:
+
+- Ubuntu 24.04 or later: `sudo apt install podman passt uidmap curl jq openssh-client`
+- Fedora: `sudo dnf install podman passt curl jq openssh-clients`
 
 1. Make the token above and store it:
 

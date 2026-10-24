@@ -200,6 +200,11 @@ container_args() {
 }
 
 require_ready() {
+    require_tools pasta
+    local version
+    version=$(podman version --format '{{.Client.Version}}')
+    [[ $(printf '%s\n' 4.4 "$version" | sort -V | head -1) == 4.4 ]] ||
+        die "podman $version is too old: pasta and keep-id:uid need 4.4 or later (Ubuntu 24.04, Fedora 38)"
     [[ -s $SSH_DIR/config && -s $SSH_DIR/known_hosts ]] || die "no runner ssh config in $SSH_DIR (runner.sh key)"
     podman image exists "$IMAGE" || die "no image $IMAGE (runner.sh image)"
 }
