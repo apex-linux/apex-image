@@ -135,6 +135,44 @@ for p in mutter mutter-common; do
     fi
 done
 
+# The Apex terminal series puts Ptyxis in the lane (ADR 0014); before it lands there is no family.
+tstate=''
+if [ -f "$LOCK" ]; then
+    tstate=$(awk '$1 == "family" && $2 == "ptyxis" { print $3; exit }' "$LOCK")
+fi
+tvr=$(query ptyxis '%{VERSION}-%{RELEASE}\n' | head -n 1)
+tapex=0
+if printf '%s\n' "$tvr" | grep -Eq '\.apex[0-9]+'; then tapex=1; fi
+if [ -z "$tvr" ]; then
+    fail "ptyxis is not installed (image/packages/gnome.txt)"
+else
+    case $tstate in
+        built | held)
+            if [ "$tapex" -eq 0 ]; then
+                fail "ptyxis $tvr is not an .apexN build, but the lane's ptyxis family is $tstate"
+            elif signed_by "$APEX_RPM_KEYID" ptyxis; then
+                pass "ptyxis $tvr is an Apex build with the Apex RPM signature (the family is $tstate)"
+            else
+                fail "ptyxis $tvr is not signed by the Apex RPM key ($APEX_RPM_KEYID)"
+            fi
+            ;;
+        '' | stock | degraded)
+            how="the family is $tstate: degraded=terminal"
+            [ -n "$tstate" ] || how="the lane has no ptyxis family"
+            if [ "$tapex" -eq 1 ]; then
+                fail "ptyxis $tvr is an Apex build, but ${how%%:*}"
+            elif signed_by "$FEDORA_KEYID" ptyxis; then
+                pass "ptyxis $tvr is Fedora's build, signed by Fedora's key ($how)"
+            else
+                fail "ptyxis $tvr is not signed by Fedora's key ($FEDORA_KEYID)"
+            fi
+            ;;
+        *)
+            fail "the lane's ptyxis family is in the unknown state '$tstate' (built, held, stock or degraded)"
+            ;;
+    esac
+fi
+
 # The ostree checkout of the compose sets every mtime to 0.
 rc=0
 root_rpm -V --nomtime gnome-shell gnome-shell-common >"$TMPD/verify" 2>&1 || rc=$?
