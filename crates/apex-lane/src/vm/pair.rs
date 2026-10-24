@@ -35,6 +35,7 @@ const COPR_KEYRING: &str = "copr.gpg";
 const NEGATIVO17_KEYRING: &str = "negativo17.gpg";
 const PAIR_LOCK: &str = "pair.lock";
 const KERNEL_LOCK: &str = "kernel.lock";
+const CONFIG_REQUIRED: &str = "config-required.txt";
 const LOW_CPU_SHARES: &str = "256";
 const STDERR_TAIL_LINES: usize = 30;
 
@@ -555,9 +556,41 @@ impl Vm<'_> {
                 file,
             ));
         }
+        if lock_name == PAIR_LOCK {
+            for (nevra, sha256) in &plan.nvidia.userspace {
+                let file = nevra.file_name();
+                let from = self.settings.store.join("mirror").join(&file);
+                if fs::sha256_file(&from)? != *sha256 {
+                    return Err(infra(format!(
+                        "the mirror's {} does not have its pinned sha256",
+                        from.display()
+                    )));
+                }
+                link_or_copy(&from, &set.join(&file))?;
+                manifest_text.push_str(&manifest::entry_line(
+                    "mirror",
+                    &nevra.to_string(),
+                    sha256,
+                    &file,
+                ));
+            }
+        }
         fs::write(&set.join("manifest.txt"), manifest_text.as_bytes())?;
         fs::write(&set.join("key.txt"), format!("{key}\n").as_bytes())?;
         fs::write(&set.join("key-input.txt"), preimage.as_bytes())?;
+        // The image takes what it checks a pair against from the set alone.
+        if lock_name == PAIR_LOCK {
+            let key = self
+                .settings
+                .store
+                .join("mirror/keys")
+                .join(format!("{}.gpg", plan.nvidia.negativo17_key));
+            fs::copy_with_mode(&key, &set.join(NEGATIVO17_KEYRING))?;
+        }
+        let config = plan.job.join(CONFIG_REQUIRED);
+        if config.is_file() {
+            fs::copy_with_mode(&config, &set.join(CONFIG_REQUIRED))?;
+        }
         fs::copy_with_mode(&plan.job.join(JOB_KERNEL_ENV), &set.join(JOB_KERNEL_ENV))?;
         fs::copy_with_mode(&plan.job.join(JOB_NVIDIA_ENV), &set.join(JOB_NVIDIA_ENV))?;
         for entry in fs::sorted_entries(&out)? {
