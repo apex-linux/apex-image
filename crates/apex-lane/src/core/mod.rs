@@ -10,6 +10,7 @@ pub mod key;
 pub mod lock;
 pub mod manifest;
 pub mod names;
+pub mod pins;
 pub mod pkg_env;
 pub mod release;
 pub mod repos;
