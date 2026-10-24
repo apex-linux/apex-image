@@ -210,6 +210,15 @@ impl Vm<'_> {
         let work = self.lane_work(&p.name);
         self.fresh_work_dir(&work, &["in", "out", "mirror"])?;
         let plan = self.plan(p, &work)?;
+        if let Some(reason) = self.check_keys(&plan.kernel, &plan.nvidia) {
+            return self.record_pair_failure(
+                p,
+                &plan,
+                &work.join("out"),
+                reason.as_bytes(),
+                signer,
+            );
+        }
         self.mirror_pair(&plan, &work.join("mirror"))?;
         let stored = self.store_pkg(&p.name).join(&plan.key);
         if stored.symlink_metadata().is_ok() {
@@ -349,6 +358,22 @@ impl Vm<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Warns of a pinned key that expires soon; an expired one is the reason to hold.
+    fn check_keys(&self, kernel: &KernelPins, nvidia: &NvidiaPins) -> Option<String> {
+        let mut expired = None;
+        for key in pair::pinned_keys(kernel, nvidia) {
+            match pair::key_expiry(&key, self.clock.now()) {
+                pair::KeyExpiry::Fine => {}
+                pair::KeyExpiry::Warn(message) => self.report.warn(&message),
+                pair::KeyExpiry::Expired(message) => {
+                    self.report.warn(&message);
+                    expired.get_or_insert(message);
+                }
+            }
+        }
+        expired
     }
 
     fn download(&self, url: &str, to: &Path) -> Result<()> {
@@ -807,6 +832,8 @@ impl Vm<'_> {
         let report = pair::parse_bump(&bump.stdout).map_err(infra)?;
         let kernel_path = p.dir.join(&p.env.kernel_env);
         let (kernel, kernel_bytes) = Self::read_kernel(&kernel_path)?;
+        let (nvidia, _) = Self::read_nvidia(&p.dir.join(&p.env.nvidia_env))?;
+        self.check_keys(&kernel, &nvidia);
         if let Some(srpm) = &report.point {
             self.point_bump(&p, &kernel, &kernel_bytes, srpm)?;
         }
