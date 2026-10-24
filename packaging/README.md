@@ -202,8 +202,9 @@ exactly what it built before.
    every file of the recipe directory (`README.md` aside) as the job sees it. A stored
    key is taken unchanged, with no container.
    **The release**: `APEX_RELEASE=N` makes the kernel release `<COPR release>.apexN.fcNN`
-   (`7.3.0-4.cachyos1.apex1.fc45`). N is 1 for the first key of a COPR NVR and one more
-   for each further key of it; `pkgs/kernel/apex-release.txt` keeps `NVR KEY N` lines,
+   (`7.3.0-4.cachyos1.apex1.fc45`). The rule: the same inputs (the same key) give the
+   same N; changed inputs on the same COPR NEVR give N+1, so its first build is 1.
+   `pkgs/kernel/apex-release.txt` keeps `NVR KEY N` lines,
    written before the job runs and never pruned, so one key keeps its N and no N is
    given twice. The lane checks that `pair.lock`'s kernel has that release.
 5. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
