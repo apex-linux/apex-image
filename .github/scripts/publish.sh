@@ -41,7 +41,7 @@ EOF
 readonly SYSTEM_FILES="$APEX_ROOT/image/system_files"
 readonly COMMITTED_POLICY="$SYSTEM_FILES/usr/share/apex/containers/policy.json"
 readonly TAG_ALREADY_THERE=10
-readonly REHEARSAL_REGISTRY_IMAGE=docker.io/library/registry:2
+readonly REHEARSAL_REGISTRY_IMAGE=docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373 # 2
 readonly REHEARSAL_CONTAINER=apex-publish-rehearsal
 
 # Set only by cmd_rehearse: its throwaway trust, never the environment's.

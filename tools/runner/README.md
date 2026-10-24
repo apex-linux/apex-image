@@ -134,6 +134,18 @@ dispatched run that runs G4, check in `_build/qualify/` that:
 - [ ] **`rpm-ostree kargs --append=apex.safe=1` works on the bootc image.** The next
   boot has `apex.safe=1` in `/proc/cmdline` (`local-lock-safe`).
 
+### Confirm on the first publish
+
+The selftest proves `just publish` against a fake registry, and `just publish-rehearsal`
+against a throwaway one. On the owner's first real `just publish` (S1d), check that:
+
+- [ ] **cosign authenticates to ghcr.io in the builder VM.** `cosign sign` pushes the
+  `.sig` tag with the credentials skopeo uses (`REGISTRY_AUTH_FILE`), or with a login of
+  its own that the run then names.
+- [ ] **An older image finds the new `:45`.** A VM booted from the previous published
+  digest runs `apexctl update check`, which finds the new `apex:45` and verifies it
+  against the image's own policy (S1d's exit).
+
 ## Upkeep
 
 - **The runner release.** GitHub stops serving runners that are too old. When it
