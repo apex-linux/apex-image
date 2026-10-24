@@ -24,6 +24,8 @@ SHELL_STATUS=/etc/profile.d/zz-apex-shell-status.sh
 PTYXIS_MARKER='/*! apex-ptyxis */'
 NAUTILUS=/usr/bin/nautilus
 NAUTILUS_MARKER='/*! apex-nautilus */'
+CONTROL_CENTER=/usr/bin/gnome-control-center
+CONTROL_CENTER_MARKER='/*! apex-control-center */'
 DEV_ONLY_SETTINGS='G_RESOURCE_OVERLAYS
 --unsafe-mode
 APEX_SHELL_TEST_FAULT'
@@ -192,6 +194,7 @@ app_family() {
 
 app_family ptyxis "$PTYXIS" "$PTYXIS_MARKER" terminal
 app_family nautilus "$NAUTILUS" "$NAUTILUS_MARKER" files
+app_family gnome-control-center "$CONTROL_CENTER" "$CONTROL_CENTER_MARKER" settings
 
 # The ostree checkout of the compose sets every mtime to 0.
 rc=0
