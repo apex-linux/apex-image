@@ -54,6 +54,7 @@ db = {
     "mutter-common": {"evr": "51.0-1.fc45", "arch": "noarch", "signature": fedora},
     "ptyxis": {"evr": "51.0-1.fc45", "signature": fedora},
     "nautilus": {"evr": "51.0-1.fc45", "signature": fedora},
+    "gnome-control-center": {"evr": "51.0-2.fc45", "signature": fedora},
     "apex-desktop": {"evr": "0.1.0-0.fc45", "arch": "noarch", "signature": apex,
                      "files": ["/etc/profile.d/apex-prompt.sh", "/etc/profile.d/zz-apex-shell-status.sh"]},
 }
@@ -139,6 +140,7 @@ expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
 expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
 expect_out "Files before its family" '^PASS desktop: nautilus 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no nautilus family\)$'
+expect_out "Settings before its family" '^PASS desktop: gnome-control-center 51\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no gnome-control-center family\)$'
 expect_out "the Apex prompt" '^PASS desktop: /etc/profile.d/apex-prompt.sh is apex-desktop.s and sorts before vte.sh'
 expect_out "the exit-status fix" '^PASS desktop: /etc/profile.d/zz-apex-shell-status.sh is apex-desktop.s and sorts after vte.sh'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
@@ -485,5 +487,26 @@ rpmdb "$T/nautilusstray.db" nautilus.evr=51.0-1.fc45.apex1 "nautilus.signature=$
 desktop nautilusstray
 expect_rc "an Apex Files the lane did not lock fails" 1
 expect_out "and says so" '^FAIL desktop: nautilus 51\.0-1\.fc45\.apex1 is an Apex build, but the lane has no nautilus family$'
+
+r=$(mkroot settingsbuilt)
+add_family "$r/usr/share/apex/rpms.lock" gnome-control-center built
+rpmdb "$T/settingsbuilt.db" gnome-control-center.evr=51.0-1.fc45.apex1 "gnome-control-center.signature=$apex"
+mkdir -p "$r/usr/bin"
+printf '\177ELF\002\001\001\000\000/*! apex-control-center */\000' >"$r/usr/bin/gnome-control-center"
+desktop settingsbuilt
+expect_rc "the Apex Settings as the lane built it passes" 0
+expect_out "with the Apex resource" '^PASS desktop: /usr/bin/gnome-control-center carries /\*! apex-control-center \*/: the Apex resource is compiled in$'
+r=$(mkroot settingsstockmarker)
+add_family "$r/usr/share/apex/rpms.lock" gnome-control-center stock
+mkdir -p "$r/usr/bin"
+printf '\177ELF/*! apex-control-center */\000' >"$r/usr/bin/gnome-control-center"
+desktop settingsstockmarker
+expect_rc "the Apex resource under a stock Settings family fails" 1
+expect_out "and says so" '^FAIL desktop: /usr/bin/gnome-control-center carries /\*! apex-control-center \*/, but the family is stock$'
+r=$(mkroot settingsdegraded)
+add_family "$r/usr/share/apex/rpms.lock" gnome-control-center degraded
+desktop settingsdegraded
+expect_rc "Fedora's Settings under a degraded family passes" 0
+expect_out "and is named" '^PASS desktop: gnome-control-center 51\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is degraded: degraded=settings\)$'
 
 done_testing
