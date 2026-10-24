@@ -176,6 +176,22 @@ pub fn degraded_line(
     line
 }
 
+/// The families `next` locks with `degraded=nvidia` that `locked` does not.
+pub fn newly_degraded(locked: &[u8], next: &[u8]) -> Vec<String> {
+    text::lines(next)
+        .into_iter()
+        .filter_map(|line| {
+            let f = text::fields(line);
+            (f.first() == Some(&&b"family"[..]))
+                .then(|| text::lossy(f.get(1).copied().unwrap_or_default()))
+        })
+        .filter(|family| {
+            is_degraded(&lock::family_line(next, family))
+                && !is_degraded(&lock::family_line(locked, family))
+        })
+        .collect()
+}
+
 /// The last line of pair.sh's stderr that says something, as `hold::reason_of` cleans it.
 pub fn reason_of_stderr(stderr: &[u8]) -> Vec<u8> {
     let last = text::lines(stderr)
@@ -249,57 +265,58 @@ fn is_rpm_file(file: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"._+~^-".contains(&c))
 }
 
-/// bump.sh's first line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KernelBump {
-    Point(Nevra),
-    Major { srpm: Nevra, eol: String },
-    None,
-}
-
+/// bump.sh's report: a point line, a major line, or both, the point first; or `none`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BumpReport {
-    pub kernel: KernelBump,
+    pub point: Option<Nevra>,
+    /// The new major's SRPM and the pinned major's EOL countdown (`12d`, `unknown`).
+    pub major: Option<(Nevra, String)>,
     /// `nvidia NEVRA SHA256 newer`: builds newer than the pins, which wait for the owner.
     pub nvidia_newer: Vec<String>,
     pub nvidia_missing: Vec<String>,
 }
 
 pub fn parse_bump(out: &[u8]) -> Result<BumpReport, String> {
-    let lines = text::lines(out);
-    let first = text::lossy(lines.first().copied().unwrap_or_default());
-    let f: Vec<&str> = first.split(' ').collect();
     let srpm = |s: &str| {
         Nevra::parse(s)
             .filter(|n| n.arch == "src")
             .ok_or_else(|| format!("bump.sh named '{s}', not an SRPM NEVRA"))
     };
-    let kernel = match f[..] {
-        ["point", nevra] => KernelBump::Point(srpm(nevra)?),
-        ["major", nevra, "waiting-for-owner", eol] if eol.starts_with("EOL-in-") => {
-            KernelBump::Major {
-                srpm: srpm(nevra)?,
-                eol: eol["EOL-in-".len()..].to_owned(),
-            }
-        }
-        ["none"] => KernelBump::None,
-        _ => return Err(format!("bump.sh's first line is '{first}'")),
+    let mut report = BumpReport {
+        point: None,
+        major: None,
+        nvidia_newer: Vec::new(),
+        nvidia_missing: Vec::new(),
     };
-    let (mut nvidia_newer, mut nvidia_missing) = (Vec::new(), Vec::new());
-    for line in &lines[1..] {
+    let mut kernel_lines = 0;
+    let mut none = false;
+    for (i, line) in text::lines(out).into_iter().enumerate() {
         let line = text::lossy(line);
+        let kernel_section = i == kernel_lines;
         match line.split(' ').collect::<Vec<_>>()[..] {
-            ["nvidia", nevra, _, "newer"] => nvidia_newer.push(nevra.to_owned()),
-            ["nvidia", _, _, "pinned" | "older"] => {}
-            ["nvidia", name, "missing"] => nvidia_missing.push(name.to_owned()),
-            _ => return Err(format!("bump.sh printed '{line}'")),
+            ["point", nevra] if i == 0 => report.point = Some(srpm(nevra)?),
+            ["major", nevra, "waiting-for-owner", eol]
+                if kernel_section && report.major.is_none() && !none =>
+            {
+                let eol = eol
+                    .strip_prefix("EOL-in-")
+                    .ok_or_else(|| format!("bump.sh printed '{line}'"))?;
+                report.major = Some((srpm(nevra)?, eol.to_owned()));
+            }
+            ["none"] if i == 0 => none = true,
+            ["nvidia", nevra, _, "newer"] if i > 0 => report.nvidia_newer.push(nevra.to_owned()),
+            ["nvidia", _, _, "pinned" | "older"] if i > 0 => {}
+            ["nvidia", name, "missing"] if i > 0 => report.nvidia_missing.push(name.to_owned()),
+            _ => return Err(format!("bump.sh printed '{line}' as line {}", i + 1)),
+        }
+        if kernel_section && !line.starts_with("nvidia ") {
+            kernel_lines += 1;
         }
     }
-    Ok(BumpReport {
-        kernel,
-        nvidia_newer,
-        nvidia_missing,
-    })
+    if kernel_lines == 0 {
+        return Err("bump.sh printed no kernel line".into());
+    }
+    Ok(report)
 }
 
 /// A point bump keeps the major, so only the pins of the SRPM and its tag move.
@@ -499,6 +516,16 @@ mod tests {
     }
 
     #[test]
+    fn a_degraded_set_is_new_only_once() {
+        let degraded = b"family kernel-cachyos built D since=S degraded=nvidia side=kmod reason=r\nfamily demo built K\n";
+        let whole = b"family kernel-cachyos built K\nfamily demo built K\n";
+        assert_eq!(newly_degraded(whole, degraded), ["kernel-cachyos"]);
+        assert_eq!(newly_degraded(b"", degraded), ["kernel-cachyos"]);
+        assert!(newly_degraded(degraded, degraded).is_empty());
+        assert!(newly_degraded(degraded, whole).is_empty());
+    }
+
+    #[test]
     fn pair_locks() {
         let sha = "a".repeat(64);
         let text = format!(
@@ -518,17 +545,33 @@ mod tests {
     #[test]
     fn bump_reports() {
         let r = parse_bump(b"point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nnvidia nvidia-kmod-3:615.78.08-1.fc45.src abc pinned\nnvidia nvidia-driver-3:615.80.01-1.fc45.x86_64 abc newer\nnvidia nvidia-modprobe missing\n").unwrap();
-        assert!(matches!(&r.kernel, KernelBump::Point(n) if n.version == "7.3.1"));
+        assert!(r.point.is_some_and(|n| n.version == "7.3.1") && r.major.is_none());
         assert_eq!(r.nvidia_newer, ["nvidia-driver-3:615.80.01-1.fc45.x86_64"]);
         assert_eq!(r.nvidia_missing, ["nvidia-modprobe"]);
         let r = parse_bump(
             b"major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-12d\n",
         )
         .unwrap();
-        assert!(matches!(&r.kernel, KernelBump::Major { eol, .. } if eol == "12d"));
-        assert_eq!(parse_bump(b"none\n").unwrap().kernel, KernelBump::None);
-        assert!(parse_bump(b"maybe\n").is_err());
-        assert!(parse_bump(b"none\nnvidia what\n").is_err());
+        assert!(
+            r.point.is_none()
+                && r.major
+                    .is_some_and(|(n, eol)| n.version == "7.4.0" && eol == "12d")
+        );
+        let both = parse_bump(b"point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nmajor kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-unknown\nnvidia nvidia-modprobe missing\n").unwrap();
+        assert!(both.point.is_some() && both.major.is_some_and(|(_, eol)| eol == "unknown"));
+        let none = parse_bump(b"none\n").unwrap();
+        assert!(none.point.is_none() && none.major.is_none());
+        for bad in [
+            &b"maybe\n"[..],
+            b"none\nnvidia what\n",
+            b"",
+            b"nvidia nvidia-modprobe missing\n",
+            b"major kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-1d\npoint kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\n",
+            b"none\nmajor kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-1d\n",
+            b"point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nnvidia nvidia-modprobe missing\nmajor kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-1d\n",
+        ] {
+            assert!(parse_bump(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+        }
     }
 
     #[test]

@@ -50,7 +50,7 @@ the checkout. The binary embeds the tree id of `crates/apex-lane` it was built f
 | `just pkg-prep PKG` | `apex-lane prep PKG` | a git work tree in the VM's `_build/pkg/PKG/tree`: Fedora's `%prep`, the series as commits, Source1 |
 | `just pkg-rebase PKG NVR` | `apex-lane prep PKG NVR` | the same from another Fedora build, with `git am -3` |
 | `just pkg-export PKG [NEW.patch…]` | `apex-lane export PKG` | the work tree's commits back to `packaging/pkgs/PKG/patches/` and `series` of the recipe's checkout on the host (`APEX_RECIPES`, default `../apex-gnome`) |
-| `just pkg-promote` | `apex-lane promote` | `rpms.lock.next` becomes `rpms.lock`, after an image built from it passed its gates |
+| `just pkg-promote [--allow-degraded]` | `apex-lane promote` | `rpms.lock.next` becomes `rpms.lock`, after an image built from it passed its gates; `--allow-degraded` is the owner's override for a new `degraded=nvidia` |
 | `just pkg-stock PKG` | `apex-lane stock PKG` | the owner's choice at a hold limit: the next image takes Fedora's build of the family |
 | `just kernel-bump` | `apex-lane kernel-bump` | the kernel pair's bump check: a point bump becomes a commit on a branch of the apex-kernel checkout; a new major waits for the owner |
 
@@ -216,14 +216,18 @@ exactly what it built before.
 `newer=` names the SRPMs the good pair was not built from, `security=` is `1` for the
 72 h clocks, and `since` survives reruns that fail the same way. At a kmod limit the
 lane takes the new kernel without NVIDIA: `family kernel-cachyos built KEY' … degraded=nvidia
-side=kmod reason=…`, the kernel-side RPMs only, under a key of its own. It needs the
-job to keep that kernel in `/out/kernel.lock` (pair.lock without `kmod=`), which
-`pair.sh` does not write yet; until it does, the family stays held and status says so.
-Publishing a grown degraded set takes the owner's override (S1d). A run that builds a
+side=kmod reason=…`, the kernel-side RPMs only, under a key of its own. It takes that
+kernel from the job's `/out/kernel.lock` (pair.lock without `kmod=`, which `pair.sh`
+writes on a `kmod:` failure from apex-kernel a2907d3 on); without one, the family stays
+held and the summary says LIMIT REACHED. Such a lock is the owner's to ship: `promote`
+refuses a `rpms.lock.next` that takes a `degraded=nvidia` set `rpms.lock` does not
+have, unless the owner gives the override, `just pkg-promote --allow-degraded`. A run that builds a
 whole pair clears any hold. A failure with no last good pair in `rpms.lock` stops the
 image build (exit 1), as for the other families; the pair has no `stock`.
 
 **`apex-lane kernel-bump`** (`just kernel-bump`) runs the recipe's `bump.sh check`:
+
+One run may print both kernel lines, the point line first.
 
 - `point NEVRA`: mirrors that SRPM after checking it against the COPR key, and commits
   `kernel.env` with the new `srpm`, its sha256 and `tag` on the branch

@@ -48,7 +48,12 @@ enum Command {
     /// The families of rpms.lock.next and rpms.lock.
     Status,
     /// rpms.lock.next becomes rpms.lock (after the image gates).
-    Promote,
+    Promote {
+        /// The owner's publish override: promote a lock that newly takes the kernel
+        /// without its NVIDIA set (degraded=nvidia).
+        #[arg(long)]
+        allow_degraded: bool,
+    },
     /// The owner's choice at a hold limit: the next image takes Fedora's build of the
     /// package's family.
     Stock { pkg: String },
@@ -266,7 +271,7 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
                 _ => Ok(Exit::Ok),
             }
         }
-        Command::Promote => vm.promote().map(|()| Exit::Ok),
+        Command::Promote { allow_degraded } => vm.promote(allow_degraded).map(|()| Exit::Ok),
         Command::KernelBump => vm.kernel_bump(),
         Command::Stock { pkg } => vm.stock(&pkg).map(|()| Exit::Ok),
         Command::Sign { rpms } => vm.sign_files(&rpms).map(|()| Exit::Ok),

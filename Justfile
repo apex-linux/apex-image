@@ -154,8 +154,9 @@ pkg-export pkg *new:
     tools/builder-vm/builder-vm.sh ssh 'cd ~/apex-image && tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh export {{ pkg }} {{ new }} >&2 && tar -C "$(tools/builder-vm/lane.sh --recipe-dir {{ pkg }})" -cf - series patches' | tar -C {{ recipes }}/packaging/pkgs/{{ pkg }} -xf -
 
 # After an image built from rpms.lock.next passed its gates, make it rpms.lock.
-pkg-promote:
-    tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh promote
+# --allow-degraded is the owner's publish override for a kernel without its NVIDIA set (degraded=nvidia).
+pkg-promote *flags:
+    tools/builder-vm/builder-vm.sh run tools/builder-vm/snapshot.sh tools/builder-vm/lane.sh promote {{ flags }}
 
 # At a hold limit, ship Fedora's build of PKG's family instead (an owner decision).
 pkg-stock pkg:

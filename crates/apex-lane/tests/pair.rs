@@ -468,7 +468,7 @@ impl PairTest {
     }
 
     fn promote(&self) {
-        self.run(T0, |vm| vm.promote().expect("promote"));
+        self.run(T0, |vm| vm.promote(true).expect("promote"));
     }
 
     fn next_lock(&self) -> String {
@@ -930,7 +930,19 @@ fn a_promoted_degraded_kernel_stays_degraded_until_a_whole_pair_builds() {
     assert_eq!(t.build(T0), Built::Held);
     assert_eq!(t.build("2026-12-04T00:00:00Z"), Built::Degraded);
     let degraded = t.family_line().split(' ').nth(3).unwrap().to_owned();
+    let refused = t.run(T0, |vm| vm.promote(false)).unwrap_err();
+    assert!(
+        refused.to_string().contains("the owner's publish override"),
+        "{refused}"
+    );
+    assert!(
+        !std::fs::read_to_string(t.store.path().join("rpms.lock"))
+            .unwrap()
+            .contains(&degraded)
+    );
     t.promote();
+    t.run(T0, |vm| vm.promote(false))
+        .expect("a degraded set already promoted is no new one");
     assert_eq!(t.build("2026-12-05T00:00:00Z"), Built::Degraded);
     assert!(
         t.family_line().starts_with(&format!(
@@ -957,4 +969,21 @@ fn a_promoted_degraded_kernel_stays_degraded_until_a_whole_pair_builds() {
         format!("family kernel-cachyos built {key}")
     );
     assert!(t.next_lock().contains("kmod-nvidia-7.3.2-1"));
+}
+
+#[test]
+fn a_point_and_a_major_bump_together() {
+    let t = PairTest::new();
+    *t.fake.bump.borrow_mut() = "point kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src\nmajor kernel-cachyos-0:7.4.0-1.cachyos1.fc45.src waiting-for-owner EOL-in-9d\n".into();
+    t.run(T0, |vm| vm.kernel_bump().unwrap());
+    let env = git(
+        t.recipes.path(),
+        &[
+            "show",
+            "kernel-bump/kernel-cachyos-7.3.1-1.cachyos1.fc45:packaging/pkgs/kernel/kernel.env",
+        ],
+    );
+    assert_eq!(env, kernel_env("7.3.1-1"), "the point bump goes ahead");
+    let shown = String::from_utf8_lossy(&t.report.captured()).into_owned();
+    assert!(shown.contains("7.4.0-1.cachyos1.fc45.src is a new major: waiting for owner; the pinned 7.3 reaches its EOL in 9d"), "{shown}");
 }

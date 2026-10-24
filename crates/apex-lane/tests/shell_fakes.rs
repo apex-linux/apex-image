@@ -943,7 +943,7 @@ fn promote_makes_the_next_lock_the_lock() {
     let (_, next) = promotable(&t);
     let fake = vm_fake(|_, _| 0);
     let c = clock();
-    t.vm(&fake, &c).promote().unwrap();
+    t.vm(&fake, &c).promote(false).unwrap();
     assert_eq!(
         std::fs::read(t.store.path().join("rpms.lock")).unwrap(),
         next
@@ -958,7 +958,7 @@ fn promote_refuses_a_changed_file() {
     std::fs::write(t.store.path().join("rpms.lock"), "old").unwrap();
     let fake = vm_fake(|_, _| 0);
     let c = clock();
-    let err = t.vm(&fake, &c).promote().unwrap_err();
+    let err = t.vm(&fake, &c).promote(false).unwrap_err();
     assert!(
         err.to_string().contains("does not match rpms.lock.next"),
         "{err}"
@@ -983,7 +983,7 @@ fn promote_refuses_a_path_outside_the_store() {
     .unwrap();
     let fake = vm_fake(|_, _| 0);
     let c = clock();
-    let err = t.vm(&fake, &c).promote().unwrap_err();
+    let err = t.vm(&fake, &c).promote(false).unwrap_err();
     assert!(
         err.to_string()
             .contains("not a relative path inside the store"),

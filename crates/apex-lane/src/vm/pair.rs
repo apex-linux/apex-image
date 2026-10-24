@@ -12,7 +12,7 @@ use crate::core::hold;
 use crate::core::key::content_key;
 use crate::core::lock;
 use crate::core::manifest::{self, header_field};
-use crate::core::pair::{self, KernelBump, Moves, PairLock, Side};
+use crate::core::pair::{self, Moves, PairLock, Side};
 use crate::core::pins::{self, KernelPins, Nevra, NvidiaPins};
 use crate::core::repos::{self, Repos};
 use crate::core::text;
@@ -774,13 +774,18 @@ impl Vm<'_> {
         let report = pair::parse_bump(&bump.stdout).map_err(infra)?;
         let kernel_path = p.dir.join(&p.env.kernel_env);
         let (kernel, kernel_bytes) = Self::read_kernel(&kernel_path)?;
-        match &report.kernel {
-            KernelBump::None => self.report.log("kernel: no newer build of the pinned major"),
-            KernelBump::Major { srpm, eol } => self.report.log(&format!(
+        if let Some(srpm) = &report.point {
+            self.point_bump(&p, &kernel, &kernel_bytes, srpm)?;
+        }
+        if let Some((srpm, eol)) = &report.major {
+            self.report.log(&format!(
                 "kernel: {srpm} is a new major: waiting for owner; the pinned {} reaches its EOL in {eol}",
                 kernel.major()
-            )),
-            KernelBump::Point(srpm) => self.point_bump(&p, &kernel, &kernel_bytes, srpm)?,
+            ));
+        }
+        if report.point.is_none() && report.major.is_none() {
+            self.report
+                .log("kernel: no newer build of the pinned major");
         }
         for nevra in &report.nvidia_newer {
             self.report.log(&format!(
