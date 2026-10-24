@@ -154,6 +154,7 @@ exits 1 on a FAIL. The final stage runs them with `sh`.
 | `nvidia.sh` | without the pair, no NVIDIA package or pair file; with it, the locked kmod for this kernel, Apex-signed, its userspace at the kmod's version, the modules' vermagic, the GSP firmware and licence, RTD3 and negativo17's s2idle options in effect as modprobe reads them, no akmods or Xorg driver, `nvidia-persistenced` off; with either, no `/etc/kernel/cmdline` or `/etc/default/grub` and an empty `/boot`; with `degraded=nvidia`, no NVIDIA set and the label |
 | `legacy.sh` | no banned package, and no GTK2, GTK3 or Xorg user outside `audit/legacy-allowlist.txt` |
 | `overlay.sh` | the rootfs overlay's files parse without a warning |
+| `polkit.sh` | every `io.github.apex-linux.*.policy` parses strictly (polkitd reads a truncated file), each action has a description, a message and defaults, and its vendor, the action's own or the file's, is Apex; G4 asks polkitd itself (`local-polkit-actions`) |
 | `power.sh` | tuned-ppd and its ppd.conf |
 | `secrets.sh` | no private key in the image outside reviewed fixtures and packaged files |
 | `signing.sh` | nothing disables RPM or dnf signature checks; the Apex RPM key |

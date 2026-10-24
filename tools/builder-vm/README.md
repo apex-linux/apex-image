@@ -175,6 +175,9 @@ just vm-qualify
   open (a `polkit-agent-helper-1` conversation, screendumped), refuse a wrong password
   (polkitd logs it) and ask again while pkexec waits, end pkexec with 126 on Esc, and
   take the password, after which pkexec prints 0 and exits 0;
+- the polkit actions G1 parsed: `pkaction --action-id ID --verbose` on the booted guest
+  must know every action in `io.github.apex-linux.*.policy` and name the vendor Apex,
+  which the dialog's details show (`local-polkit-actions`);
 - the crash guard: a login with `APEX_SHELL_TEST_FAULT=abort-after-enable` in
   `apexqa`'s `~/.config/environment.d/` aborts the shell, `apex-shell-safe.service`
   turns the layer off, and the next login runs in safe mode, where the stock polkit
