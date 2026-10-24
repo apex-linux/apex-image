@@ -363,6 +363,39 @@ fn is_rpm_file(file: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"._+~^-".contains(&c))
 }
 
+/// kernel-spec.patch's release: `.apexN` goes before the `.fcNN` dist part.
+pub fn apex_release(srpm_release: &str, n: u32) -> String {
+    match srpm_release.rsplit_once('.') {
+        Some((head, dist)) if dist.starts_with("fc") => format!("{head}.apex{n}.{dist}"),
+        _ => format!("{srpm_release}.apex{n}"),
+    }
+}
+
+/// The N of a pair key in the store's ledger of `NVR KEY N` lines: the key's own, or
+/// one past the NVR's highest. The ledger outlives pruned sets, so no N is used twice.
+pub fn release_number(ledger: &[u8], nvr: &str, key: &str) -> Result<(u32, bool), String> {
+    let mut highest = 0;
+    for line in text::lines(ledger) {
+        let line = text::lossy(line);
+        let fields: Vec<&str> = line.split(' ').collect();
+        let [line_nvr, line_key, n] = fields[..] else {
+            return Err(format!("'{line}' is not 'NVR KEY N'"));
+        };
+        let n: u32 = n
+            .parse()
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| format!("'{line}': N is not a positive integer"))?;
+        if line_key == key {
+            return Ok((n, false));
+        }
+        if line_nvr == nvr {
+            highest = highest.max(n);
+        }
+    }
+    Ok((highest + 1, true))
+}
+
 /// bump.sh's report: a point line, a major line, or both, the point first; or `none`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BumpReport {
@@ -734,5 +767,23 @@ mod tests {
         assert!(out.starts_with(b"# c\ncopr="));
         assert!(is_point_of(&kernel("7.3.0-4"), &new));
         assert!(!is_point_of(&kernel("7.2.9-1"), &new));
+    }
+
+    #[test]
+    fn apex_releases() {
+        assert_eq!(apex_release("4.cachyos1.fc45", 1), "4.cachyos1.apex1.fc45");
+        assert_eq!(apex_release("4.cachyos1", 3), "4.cachyos1.apex3");
+        let nvr = "kernel-cachyos-7.3.0-4.cachyos1.fc45";
+        assert_eq!(release_number(b"", nvr, "k1"), Ok((1, true)));
+        let ledger = format!("{nvr} k1 1\nkernel-cachyos-7.3.1-1.cachyos1.fc45 k9 5\n{nvr} k2 2\n");
+        assert_eq!(release_number(ledger.as_bytes(), nvr, "k1"), Ok((1, false)));
+        assert_eq!(release_number(ledger.as_bytes(), nvr, "k2"), Ok((2, false)));
+        assert_eq!(
+            release_number(ledger.as_bytes(), nvr, "k3"),
+            Ok((3, true)),
+            "another NVR's N does not count"
+        );
+        assert!(release_number(b"a k1\n", nvr, "k1").is_err());
+        assert!(release_number(b"a k1 0\n", nvr, "k1").is_err());
     }
 }
