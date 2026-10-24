@@ -1062,6 +1062,53 @@ type_password_after_enter() {
         fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
 }
 
+# systemd-analyze's "Startup finished in 3.1s (firmware) + ... + 1min 2.5s (userspace) = ..."
+# as one "PHASE SECONDS" line per phase.
+boot_phases() {
+    sed -n 's/^Startup finished in \(.*\) = .*/\1/p' | head -n 1 | sed 's/ + /\n/g' |
+        awk '{
+            phase = $NF; gsub(/[()]/, "", phase); total = 0
+            for (i = 1; i < NF; i++) {
+                v = $i
+                if (v ~ /ms$/) total += substr(v, 1, length(v) - 2) / 1000
+                else if (v ~ /us$/) total += substr(v, 1, length(v) - 2) / 1000000
+                else if (v ~ /min$/) total += substr(v, 1, length(v) - 3) * 60
+                else if (v ~ /h$/) total += substr(v, 1, length(v) - 1) * 3600
+                else if (v ~ /s$/) total += substr(v, 1, length(v) - 1)
+            }
+            printf "%s %.3f\n", phase, total
+        }'
+}
+
+# The monotonic seconds of the first journal line of this boot that matches.
+journal_mono() {
+    vm_ssh "journalctl -b -q --no-pager -o short-monotonic $1" 2>/dev/null |
+        sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p' | head -n 1
+}
+
+# S4's daily-driver budget, warning-only (tools/runner/README.md): the default layout's login
+# boot, to the greeter's shell and from the greeter's login to the user's shell.
+boot_metrics() {
+    local test=$1-boot-metrics out=$QUALIFY_OUT/boot.tsv analyze n uid greeter login desktop
+    for ((n = 0; n < 10; n++)); do
+        analyze=$(vm_ssh 'systemd-analyze' 2>/dev/null) && [[ $analyze == *"Startup finished"* ]] && break
+        sleep "$QUALIFY_POLL"
+    done
+    boot_phases <<<"$analyze" >"$out"
+    vm_ssh 'systemd-analyze blame --no-pager | head -n 10' >"$QUALIFY_OUT/logs/boot-blame.txt" 2>/dev/null || true
+    uid=$(vm_ssh "id -u $TEST_USER" 2>/dev/null)
+    greeter=$(journal_mono "-g 'GNOME Shell started at' _COMM=gnome-shell")
+    login=$(journal_mono "-g 'session opened for user $TEST_USER'")
+    desktop=$(journal_mono "-g 'GNOME Shell started at' _COMM=gnome-shell _UID=${uid:-none}")
+    [[ -z $greeter ]] || printf 'greeter %.3f\n' "$greeter" >>"$out"
+    [[ -z $login || -z $desktop ]] || awk -v a="$login" -v b="$desktop" 'BEGIN { printf "desktop %.3f\n", b - a }' >>"$out"
+    if grep -q '^userspace ' "$out"; then
+        result "$test" PASS "$(paste -sd' ' "$out" | sed 's/ \([0-9.]*\)/ \1s/g') (boot.tsv, logs/boot-blame.txt)"
+    else
+        result "$test" SKIP "systemd-analyze gave no startup time: $(head -n 1 <<<"$analyze")"
+    fi
+}
+
 # Enter picks the user GDM's greeter lists, which starts its password conversation.
 greeter_login() {
     local test=$1-greeter-login
@@ -1669,6 +1716,7 @@ cmd_local() {
     assert_bootloader_updated local-login-boot
     since=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
     greeter_login local
+    [[ $QUALIFY_LAYOUT != separate-boot ]] || boot_metrics local
     login_lock_unlock local
     lock_matrix local "$since"
     crash_guard_logins local

@@ -19,7 +19,7 @@ GitHub ── JIT config ──▶ runner.sh once (systemd user service)
 |---|---|
 | A fresh runner for every job | `runner.sh once` asks GitHub for a just-in-time (JIT) runner config, which is valid for one job, and runs the runner in a new rootless podman container (`--rm`, all capabilities dropped, `no-new-privileges`). The container is removed when the job ends. `apex-runner.service` then starts the next one, so one runner is always waiting. |
 | Only `vm.yml` on `main` gets the runner | The runner group `apex-kvm` serves only `apex-image` and only the workflow `apex-linux/apex-image/.github/workflows/vm.yml@refs/heads/main`. `vm.yml` has no `pull_request` trigger, and each of its jobs checks the repository and `refs/heads/main`. |
-| The runner can only build `main` | The container mounts a key whose `authorized_keys` line is `restrict,command="/usr/local/libexec/apex/ci-build"`: no shell, no pty, no forwarding. `ci-build` accepts only `SSH_ORIGINAL_COMMAND` = `ci-build` plus 40 lowercase hex digits, and optionally the word `absorb` (the daily run's absorption report). It matches that against a regular expression and never evaluates it. After a fetch it refuses a commit that `origin/main` does not contain. |
+| The runner can only build `main` | The container mounts a key whose `authorized_keys` line is `restrict,command="/usr/local/libexec/apex/ci-build"`: no shell, no pty, no forwarding. `ci-build` accepts only `SSH_ORIGINAL_COMMAND` = `ci-build` plus 40 lowercase hex digits, and optionally the word `daily` (the scheduled run's absorption report and size metrics). It matches that against a regular expression and never evaluates it. After a fetch it refuses a commit that `origin/main` does not contain. |
 | The RPM key and the store stay in the VM | `ci-build` returns only a tar of the result files: `ci-build.txt`, `gates-passed.txt`, `g2-result.txt`, `g4-results.md`, `g4-passed.txt`, `lock.diff`, G4's logs and, on the daily run, `absorb/`. `~/.local/share/apex/rpm-gnupg` and `~/apex-store` never leave the VM. |
 | Nothing is published | No registry push, no image signing: that waits for the cosign keys (S1d). The workflow token has no permissions (`permissions: {}`), and the job uses no actions. |
 | The container reaches only the VM's sshd on the host | Its network is pasta with only `127.0.0.1:2222` forwarded to the host's loopback, and `--no-map-gw`. `runner.sh check` tests this. |
@@ -157,6 +157,9 @@ console and QMP only. On its first run, check in `_build/qualify/` that:
   (`local-luks-wrong`).
 - [ ] **`cp --reflink` works across subvolumes** on the builder VM's btrfs (§8's `/var`
   move in `install_luks`).
+- [ ] **G4's boot metrics have their markers.** `boot.tsv` has all five `systemd-analyze`
+  phases, and `greeter` and `desktop`: gnome-shell still logs "GNOME Shell started at",
+  and the test user's first "session opened for user" line is the greeter's login.
 - [ ] **The counted rollback runs through LUKS2.** Each armed boot and GRUB's fallback
   to the previous deployment ask for the passphrase and open the root with it
   (`logs/local-attempt1-luks-prompt.png` … `logs/local-fallback-luks-prompt.png`).
@@ -220,7 +223,7 @@ for the VM's log. In the VM, `ci-build` then:
    G4 when `qualify.sh g4-due` says it is due, and `_build/gates-passed.txt`;
 5. runs `lane.sh promote` when the gates passed and `rpms.lock.next` differs from
    `rpms.lock`;
-6. on the daily run only (`ci-build <sha> absorb`), runs `lane-absorb-report.sh`
+6. on the daily run only (`ci-build <sha> daily`), runs `lane-absorb-report.sh`
    whatever the build's result: does each lane series apply at fuzz 0 to the newest
    F45 stable and updates-testing SRPM? It never changes the exit status.
 
@@ -231,6 +234,21 @@ file. The artifact `vm-logs-<sha>` holds the logs the run returned, and is kept 
 |---|---|---|
 | `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all; `SKIPPED` names what was left out |
 | `absorb/` | the daily run | the absorption report: `report.md`, `rows.tsv`, `warnings.tsv` and each SRPM's `logs/`, under the same caps |
+| `metrics/` | every run | `metrics.tsv` (this build), `history.tsv` (the last 30) and `warnings.tsv` |
+
+**Metrics** (S4's daily-driver budget, `tools/builder-vm/metrics.sh`) are warning-only. The
+thresholds are a starting point, to tune after the first real runs:
+
+| Metric | Source | Warns when |
+|---|---|---|
+| Size, layers, new bytes | the daily run only, the build that publishes: `image.sh rechunk` when the gates passed, against the published `apex:45`: the compressed config and layers, and the bytes of layers `apex:45` lacks (what an update downloads) | the size grows more than 15 % and `lock.diff` changes no family |
+| firmware, loader, kernel, initrd, userspace | G4's login boot on the default layout: `systemd-analyze` (`logs/boot-blame.txt` has `blame`'s top 10) | userspace is more than 20 % above the last green build's |
+| greeter | the same boot: the journal's first "GNOME Shell started at", seconds from the kernel | more than 20 % above the last green build's |
+| desktop | the first "session opened for user" of the test user to its own shell's "GNOME Shell started at" | (shown only) |
+
+The builder VM keeps the rows in `~/apex-store/metrics.tsv`, so the trend survives each
+run; the job summary shows the last 10. The rechunk adds a few minutes to the daily run
+only, so push builds stay fast.
 
 The absorption report also joins the summary, with a warning for each family whose
 updates-testing build does not take its series with `git apply`. The selftest runs
