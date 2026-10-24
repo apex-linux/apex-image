@@ -20,7 +20,10 @@ MARKERS='/*! apex-shell-theme light */
 /*! apex-shell-structure */'
 PTYXIS=/usr/bin/ptyxis
 PROMPT=/etc/profile.d/apex-prompt.sh
+SHELL_STATUS=/etc/profile.d/zz-apex-shell-status.sh
 PTYXIS_MARKER='/*! apex-ptyxis */'
+NAUTILUS=/usr/bin/nautilus
+NAUTILUS_MARKER='/*! apex-nautilus */'
 DEV_ONLY_SETTINGS='G_RESOURCE_OVERLAYS
 --unsafe-mode
 APEX_SHELL_TEST_FAULT'
@@ -138,50 +141,57 @@ for p in mutter mutter-common; do
     fi
 done
 
-# The Apex terminal series puts Ptyxis in the lane (ADR 0014); before it lands there is no family.
-tstate=''
-if [ -f "$LOCK" ]; then
-    tstate=$(awk '$1 == "family" && $2 == "ptyxis" { print $3; exit }' "$LOCK")
-fi
-tvr=$(query ptyxis '%{VERSION}-%{RELEASE}\n' | head -n 1)
-tapex=0
-if printf '%s\n' "$tvr" | grep -Eq '\.apex[0-9]+'; then tapex=1; fi
-if [ -z "$tvr" ]; then
-    fail "ptyxis is not installed (image/packages/gnome.txt)"
-else
-    case $tstate in
+# app_family FAMILY BINARY MARKER DEGRADED: an app series in the lane (ADR 0014). Before its
+# recipe lands there is no family, and the image must carry Fedora's build.
+app_family() {
+    fam=$1 bin=$2 marker=$3 degraded=$4
+    fstate=''
+    if [ -f "$LOCK" ]; then
+        fstate=$(awk -v f="$fam" '$1 == "family" && $2 == f { print $3; exit }' "$LOCK")
+    fi
+    fvr=$(query "$fam" '%{VERSION}-%{RELEASE}\n' | head -n 1)
+    fapex=0
+    if printf '%s\n' "$fvr" | grep -Eq '\.apex[0-9]+'; then fapex=1; fi
+    if [ -z "$fvr" ]; then
+        fail "$fam is not installed (image/packages/gnome.txt)"
+        return
+    fi
+    case $fstate in
         built | held)
-            if [ "$tapex" -eq 0 ]; then
-                fail "ptyxis $tvr is not an .apexN build, but the lane's ptyxis family is $tstate"
-            elif signed_by "$APEX_RPM_KEYID" ptyxis; then
-                pass "ptyxis $tvr is an Apex build with the Apex RPM signature (the family is $tstate)"
+            if [ "$fapex" -eq 0 ]; then
+                fail "$fam $fvr is not an .apexN build, but the lane's $fam family is $fstate"
+            elif signed_by "$APEX_RPM_KEYID" "$fam"; then
+                pass "$fam $fvr is an Apex build with the Apex RPM signature (the family is $fstate)"
             else
-                fail "ptyxis $tvr is not signed by the Apex RPM key ($APEX_RPM_KEYID)"
+                fail "$fam $fvr is not signed by the Apex RPM key ($APEX_RPM_KEYID)"
             fi
-            if grep -aFq -- "$PTYXIS_MARKER" "$(rootpath "$PTYXIS")" 2>/dev/null; then
-                pass "$PTYXIS carries $PTYXIS_MARKER: the Apex resource is compiled in"
+            if grep -aFq -- "$marker" "$(rootpath "$bin")" 2>/dev/null; then
+                pass "$bin carries $marker: the Apex resource is compiled in"
             else
-                fail "$PTYXIS lacks $PTYXIS_MARKER: the Apex resource did not reach the binary"
+                fail "$bin lacks $marker: the Apex resource did not reach the binary"
             fi
             ;;
         '' | stock | degraded)
-            how="the family is $tstate: degraded=terminal"
-            [ -n "$tstate" ] || how="the lane has no ptyxis family"
-            if [ "$tapex" -eq 1 ]; then
-                fail "ptyxis $tvr is an Apex build, but ${how%%:*}"
-            elif grep -aFq -- "$PTYXIS_MARKER" "$(rootpath "$PTYXIS")" 2>/dev/null; then
-                fail "$PTYXIS carries $PTYXIS_MARKER, but ${how%%:*}"
-            elif signed_by "$FEDORA_KEYID" ptyxis; then
-                pass "ptyxis $tvr is Fedora's build, signed by Fedora's key ($how)"
+            how="the family is $fstate: degraded=$degraded"
+            [ -n "$fstate" ] || how="the lane has no $fam family"
+            if [ "$fapex" -eq 1 ]; then
+                fail "$fam $fvr is an Apex build, but ${how%%:*}"
+            elif grep -aFq -- "$marker" "$(rootpath "$bin")" 2>/dev/null; then
+                fail "$bin carries $marker, but ${how%%:*}"
+            elif signed_by "$FEDORA_KEYID" "$fam"; then
+                pass "$fam $fvr is Fedora's build, signed by Fedora's key ($how)"
             else
-                fail "ptyxis $tvr is not signed by Fedora's key ($FEDORA_KEYID)"
+                fail "$fam $fvr is not signed by Fedora's key ($FEDORA_KEYID)"
             fi
             ;;
         *)
-            fail "the lane's ptyxis family is in the unknown state '$tstate' (built, held, stock or degraded)"
+            fail "the lane's $fam family is in the unknown state '$fstate' (built, held, stock or degraded)"
             ;;
     esac
-fi
+}
+
+app_family ptyxis "$PTYXIS" "$PTYXIS_MARKER" terminal
+app_family nautilus "$NAUTILUS" "$NAUTILUS_MARKER" files
 
 # The ostree checkout of the compose sets every mtime to 0.
 rc=0
@@ -386,6 +396,18 @@ elif [ -f "$(rootpath /etc/profile.d/vte.sh)" ] &&
     fail "$PROMPT sorts after vte.sh, so VTE's shell integration would lose the Apex prompt"
 else
     pass "$PROMPT is apex-desktop's and sorts before vte.sh, which wraps it with the shell-integration markers"
+fi
+# It replaces vte.sh's precmd, which reports a status already reset to 0, so it must load after it.
+owner=''
+if root_rpm -qf --qf '%{NAME}\n' "$SHELL_STATUS" >"$TMPD/owner" 2>/dev/null; then owner=$(head -n 1 "$TMPD/owner"); fi
+if [ ! -f "$(rootpath "$SHELL_STATUS")" ]; then
+    fail "no $SHELL_STATUS: the terminal reads every command's exit status as 0 (apex-desktop)"
+elif [ "$owner" != apex-desktop ]; then
+    fail "$SHELL_STATUS belongs to '${owner:-no package}', not apex-desktop"
+elif [ "$(printf '%s\n' vte.sh zz-apex-shell-status.sh | LC_ALL=C sort | head -n 1)" != vte.sh ]; then
+    fail "$SHELL_STATUS sorts before vte.sh, which would put its own precmd back"
+else
+    pass "$SHELL_STATUS is apex-desktop's and sorts after vte.sh, so the terminal gets each command's real exit status"
 fi
 
 finish

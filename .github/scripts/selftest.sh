@@ -1230,7 +1230,7 @@ mkdir -p "$CT/system/hardware/m7400qc" "$CT/desktop/desktop/schemas" "$CT/deskto
 ct_degraded() {
     printf 'pub const DEGRADED_COMPONENTS: &[&str] = &[%s];\n' "$1" >"$CT/system/crates/apexctl/src/manifest.rs"
 }
-ct_degraded '"audio", "fingerprint", "nvidia", "shell", "terminal"'
+ct_degraded '"audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 printf '<schemalist/>\n' >"$CT/desktop/desktop/schemas/$CT_SCHEMA"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
@@ -1266,9 +1266,9 @@ mkdir -p "$CT/system/crates/apex-session-agent/tests/data"
 check "contracts: the session agent without its schema copy" 1 "$(ct_run)"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/system/crates/apex-session-agent/tests/data/"
 check "contracts: the session agent with its schema copy" 0 "$(ct_run)"
-ct_degraded '"audio", "fingerprint", "nvidia", "shell"'
+ct_degraded '"audio", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
-ct_degraded '"audio", "fingerprint", "nvidia", "shell", "terminal"'
+ct_degraded '"audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 check "contracts: an apexctl that accepts every degraded name" 0 "$(ct_run)"
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
