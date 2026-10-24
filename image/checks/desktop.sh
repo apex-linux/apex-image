@@ -26,6 +26,9 @@ NAUTILUS=/usr/bin/nautilus
 NAUTILUS_MARKER='/*! apex-nautilus */'
 CONTROL_CENTER=/usr/bin/gnome-control-center
 CONTROL_CENTER_MARKER='/*! apex-control-center */'
+LIBADWAITA=/usr/lib64/libadwaita-1.so.0
+# The patch's only literal: the file it watches.
+LIBADWAITA_MARKER=gtk-4.0/apex.css
 DEV_ONLY_SETTINGS='G_RESOURCE_OVERLAYS
 --unsafe-mode
 APEX_SHELL_TEST_FAULT'
@@ -195,6 +198,7 @@ app_family() {
 app_family ptyxis "$PTYXIS" "$PTYXIS_MARKER" terminal
 app_family nautilus "$NAUTILUS" "$NAUTILUS_MARKER" files
 app_family gnome-control-center "$CONTROL_CENTER" "$CONTROL_CENTER_MARKER" settings
+app_family libadwaita "$LIBADWAITA" "$LIBADWAITA_MARKER" adwaita
 
 # The ostree checkout of the compose sets every mtime to 0.
 rc=0
