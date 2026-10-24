@@ -92,8 +92,6 @@ host's 127.0.0.1, at 10.0.2.2.
 EOF
 }
 
-readonly OVMF_CODE=/usr/share/OVMF/OVMF_CODE_4M.fd
-readonly OVMF_VARS_TEMPLATE=/usr/share/OVMF/OVMF_VARS_4M.fd
 readonly DEFAULT_IMAGE=localhost/apex:build
 readonly QEMU_PROCESS_NAME=apex-desktop
 readonly OWNER_VM_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/apex/desktop
@@ -115,6 +113,8 @@ UNGATED=${APEX_DESKTOP_UNGATED:-0}
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly HERE
+# shellcheck source=SCRIPTDIR/firmware.sh
+. "$HERE/firmware.sh"
 BUILDER=$HERE/builder-vm.sh
 
 DISK=$VM_DIR/disk.qcow2
@@ -291,7 +291,7 @@ install() {
     if [[ -e $DISK ]] && ((!replace)); then
         die "$DISK exists; '$0 install --replace' discards it and everything done in the VM"
     fi
-    [[ -r $OVMF_VARS_TEMPLATE ]] || die "OVMF firmware not found under /usr/share/OVMF"
+    find_ovmf
     mkdir -p "$VM_DIR/ssh"
     chmod 0700 "$VM_DIR" "$VM_DIR/ssh"
     [[ -s $KEY ]] || ssh-keygen -q -t ed25519 -N '' -C apex-desktop -f "$KEY"
@@ -334,7 +334,9 @@ start() {
     [[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || die "/dev/kvm is not usable by $(id -un)"
     [[ -n ${WAYLAND_DISPLAY:-} || -n ${DISPLAY:-} ]] ||
         die "no graphical session (WAYLAND_DISPLAY and DISPLAY are unset); run it from your desktop"
-    [[ -r $OVMF_CODE && -f $VARS ]] || die "firmware files missing; run $0 install --replace"
+    find_ovmf
+    [[ -f $VARS ]] || die "firmware variables missing; run $0 install --replace"
+    check_vars "$VARS"
 
     local gpu display audio=()
     case $GL in
@@ -385,8 +387,8 @@ start() {
     # shellcheck disable=SC2054 # QEMU option values are comma-separated key=value lists
     local args=(-name "$name,process=$QEMU_PROCESS_NAME"
         -machine q35,accel=kvm,vmport=off -cpu host -smp "$CPUS" -m "$MEM"
-        -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
-        -drive "if=pflash,format=raw,file=$VARS"
+        -drive "if=pflash,format=$OVMF_FORMAT,readonly=on,file=$OVMF_CODE"
+        -drive "if=pflash,format=$OVMF_FORMAT,file=$VARS"
         -drive "file=$DISK,if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,cache=writeback"
         -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22"
         -device virtio-net-pci,netdev=n0

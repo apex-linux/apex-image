@@ -477,6 +477,39 @@ check "a G2 failure records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 rm -f "$BUILD_DIR/g2-rc"
 
+# --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
+# fw_fn SCRIPT [ARG]: SCRIPT runs in a shell that sourced firmware.sh; ARG is its $2.
+fw_fn() { bash -c 'die() { printf "%s\n" "$*" >&2; exit 1; }; . "$1"; shift; eval "$1"' _ "$APEX_ROOT/tools/builder-vm/firmware.sh" "$@"; }
+# shellcheck disable=SC2016 # expanded by the shell that sourced firmware.sh
+fw_found() { fw_fn 'find_ovmf; printf "%s %s %s\n" "$OVMF_CODE" "$OVMF_VARS_TEMPLATE" "$OVMF_FORMAT"' 2>/dev/null; }
+FW=$TMP/firmware
+mkdir -p "$FW/fedora/usr/share/edk2/ovmf" "$FW/ubuntu/usr/share/OVMF" "$FW/none"
+printf 'code' >"$FW/fedora/usr/share/edk2/ovmf/OVMF_CODE.fd"
+printf 'vars' >"$FW/fedora/usr/share/edk2/ovmf/OVMF_VARS.fd"
+printf 'code' >"$FW/ubuntu/usr/share/OVMF/OVMF_CODE_4M.fd"
+printf 'vars' >"$FW/ubuntu/usr/share/OVMF/OVMF_VARS_4M.fd"
+check "Fedora's edk2-ovmf is found" \
+    "$FW/fedora/usr/share/edk2/ovmf/OVMF_CODE.fd $FW/fedora/usr/share/edk2/ovmf/OVMF_VARS.fd raw" \
+    "$(FIRMWARE_ROOT=$FW/fedora fw_found)"
+check "Ubuntu's 4M ovmf is found" \
+    "$FW/ubuntu/usr/share/OVMF/OVMF_CODE_4M.fd $FW/ubuntu/usr/share/OVMF/OVMF_VARS_4M.fd raw" \
+    "$(FIRMWARE_ROOT=$FW/ubuntu fw_found)"
+check "no firmware on the host fails" 1 "$(FIRMWARE_ROOT=$FW/none rc_of fw_found)"
+check "APEX_OVMF_CODE and APEX_OVMF_VARS win over the host's files" \
+    "$FW/ubuntu/usr/share/OVMF/OVMF_CODE_4M.fd $FW/fedora/usr/share/edk2/ovmf/OVMF_VARS.fd raw" \
+    "$(FIRMWARE_ROOT=$FW/fedora APEX_OVMF_CODE=$FW/ubuntu/usr/share/OVMF/OVMF_CODE_4M.fd \
+        APEX_OVMF_VARS=$FW/fedora/usr/share/edk2/ovmf/OVMF_VARS.fd fw_found)"
+check "only one of the two overrides fails" 1 \
+    "$(APEX_OVMF_CODE=$FW/ubuntu/usr/share/OVMF/OVMF_CODE_4M.fd rc_of fw_found)"
+printf 'vars' >"$FW/same.fd"
+printf 'vars from another firmware build' >"$FW/other.fd"
+# shellcheck disable=SC2016 # expanded by the shell that sourced firmware.sh
+check "a variable store of this firmware's size starts" 0 \
+    "$(FIRMWARE_ROOT=$FW/fedora rc_of fw_fn 'find_ovmf; check_vars "$2"' "$FW/same.fd")"
+# shellcheck disable=SC2016 # expanded by the shell that sourced firmware.sh
+check "a variable store from another host's firmware is refused" 1 \
+    "$(FIRMWARE_ROOT=$FW/fedora rc_of fw_fn 'find_ovmf; check_vars "$2"' "$FW/other.fd")"
+
 # --- ci-build.sh: the runner's forced command builds only 'ci-build <sha>' of main (fake git) ---
 CI_DIR="$TMP/ci-build"
 CI_SHA=$(printf 'a%.0s' {1..40})
