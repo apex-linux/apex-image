@@ -27,9 +27,13 @@ const NVIDIA_ENV: &str = concat!(
 );
 
 fn check_pins(kernel: &str) -> (Output, String) {
+    check_pins_with(kernel, NVIDIA_ENV)
+}
+
+fn check_pins_with(kernel: &str, nvidia: &str) -> (Output, String) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("kernel.env"), kernel).unwrap();
-    std::fs::write(dir.path().join("nvidia.env"), NVIDIA_ENV).unwrap();
+    std::fs::write(dir.path().join("nvidia.env"), nvidia).unwrap();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_apex-lane"))
         .arg("check-pins")
         .arg(dir.path())
@@ -72,6 +76,30 @@ fn a_url_that_is_not_https_is_a_usage_error() {
     assert_eq!(out.status.code(), Some(2), "{shown}");
     assert!(
         shown.contains("tag_repo must be an https:// URL"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn without_soak_days_the_soak_is_bump_shs_seven_days() {
+    let (out, shown) = check_pins(KERNEL_ENV);
+    assert_eq!(out.status.code(), Some(0), "{shown}");
+    assert!(shown.contains("NVIDIA soak 7 days"), "{shown}");
+}
+
+#[test]
+fn soak_days_sets_the_soak() {
+    let (out, shown) = check_pins_with(KERNEL_ENV, &format!("{NVIDIA_ENV}soak_days=10\n"));
+    assert_eq!(out.status.code(), Some(0), "{shown}");
+    assert!(shown.contains("NVIDIA soak 10 days"), "{shown}");
+}
+
+#[test]
+fn a_soak_days_that_is_not_whole_days_is_a_usage_error() {
+    let (out, shown) = check_pins_with(KERNEL_ENV, &format!("{NVIDIA_ENV}soak_days=0\n"));
+    assert_eq!(out.status.code(), Some(2), "{shown}");
+    assert!(
+        shown.contains("nvidia.env: soak_days must be a whole number of days, 1 or more, not '0'"),
         "{shown}"
     );
 }

@@ -27,14 +27,17 @@ const KERNEL_KEYS: [&str; 11] = [
     "tag_key_expires",
 ];
 const KERNEL_REQUIRED: [&str; 5] = ["copr", "chroot", "srpm", "srpm_sha256", "copr_key"];
-const NVIDIA_KEYS: [&str; 5] = [
+const NVIDIA_KEYS: [&str; 6] = [
     "kmod_srpm",
     "kmod_srpm_sha256",
     "userspace",
     "negativo17_key",
     "negativo17_key_expires",
+    "soak_days",
 ];
 const NVIDIA_REQUIRED: [&str; 3] = ["kmod_srpm", "kmod_srpm_sha256", "negativo17_key"];
+/// bump.sh's soak when nvidia.env has no `soak_days`.
+pub const DEFAULT_SOAK_DAYS: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Nevra {
@@ -127,6 +130,8 @@ pub struct NvidiaPins {
     pub userspace: Vec<(Nevra, String)>,
     pub negativo17_key: String,
     pub negativo17_key_expires: Option<String>,
+    /// Days a newer driver build must age before bump.sh calls it soaked.
+    pub soak_days: u32,
 }
 
 fn is_sha256(s: &str) -> bool {
@@ -139,6 +144,11 @@ fn is_fingerprint(s: &str) -> bool {
     s.len() == 40
         && s.bytes()
             .all(|c| c.is_ascii_digit() || (b'A'..=b'F').contains(&c))
+}
+
+/// bump.sh's `^[1-9][0-9]*$`, within u32.
+fn is_days(s: &str) -> bool {
+    !s.starts_with('0') && s.bytes().all(|c| c.is_ascii_digit()) && s.parse::<u32>().is_ok()
 }
 
 fn is_date(s: &str) -> bool {
@@ -324,6 +334,7 @@ pub fn parse_nvidia(file: &str, bytes: &[u8]) -> Result<NvidiaPins, ConfigError>
         "a 40-digit uppercase fingerprint",
     )?;
     v.check("negativo17_key_expires", is_date, "a date, YYYY-MM-DD")?;
+    v.check("soak_days", is_days, "a whole number of days, 1 or more")?;
     let mut userspace: Vec<(Nevra, String)> = Vec::new();
     for line in v.map.get("userspace").into_iter().flatten() {
         let parsed = line.split_once(' ').and_then(|(nevra, sha)| {
@@ -350,6 +361,10 @@ pub fn parse_nvidia(file: &str, bytes: &[u8]) -> Result<NvidiaPins, ConfigError>
         userspace,
         negativo17_key: v.get("negativo17_key"),
         negativo17_key_expires: v.opt("negativo17_key_expires"),
+        soak_days: v
+            .opt("soak_days")
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(DEFAULT_SOAK_DAYS),
     })
 }
 
@@ -566,5 +581,22 @@ mod tests {
         );
         assert_eq!(Nevra::parse("x-0:1-1.fc45.src x"), None);
         assert_eq!(Nevra::parse("x-1-1.fc45.src"), None);
+    }
+
+    #[test]
+    fn soak_days_is_optional_whole_days() {
+        let soak =
+            |extra: &str| parse_nvidia("nvidia.env", format!("{NVIDIA_ENV}{extra}").as_bytes());
+        assert_eq!(soak("").unwrap().soak_days, DEFAULT_SOAK_DAYS);
+        assert_eq!(soak("soak_days=10\n").unwrap().soak_days, 10);
+        for bad in ["0", "07", "-1", "7d", "1.5", "99999999999"] {
+            let err = soak(&format!("soak_days={bad}\n")).unwrap_err().0;
+            assert!(
+                err.contains("soak_days must be a whole number of days"),
+                "{bad}: {err}"
+            );
+        }
+        let err = soak("soak_days=7\nsoak_days=8\n").unwrap_err().0;
+        assert!(err.contains("'soak_days' is set twice"), "{err}");
     }
 }
