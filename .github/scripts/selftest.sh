@@ -480,6 +480,9 @@ echo 1 >"$BUILD_DIR/g2-rc"
 check "a G2 failure records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 rm -f "$BUILD_DIR/g2-rc"
+check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
+    "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
 
 # --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
 # fw_fn SCRIPT [ARG]: SCRIPT runs in a shell that sourced firmware.sh; ARG is its $2.
@@ -1355,6 +1358,23 @@ check_true "and says the lane's lock is required" grep -q "the rebuild lane's lo
 image_context --rpms-dir "$IL/rpms" --lane-lock "$IL/rpms.lock"
 check "image.sh context without apex-desktop's RPMs fails" 1 "$ctx_rc"
 check_true "and says apex-desktop is required" grep -q "apex-desktop is required" <<<"$ctx_log"
+image_context --rpms-dir "$IL/rpms" --desktop-dir "$IL/desktop" --lane-lock "$IL/rpms.lock" --kernel cachyos
+check "image.sh context --kernel takes fedora only" 1 "$ctx_rc"
+{
+    cat "$IL/rpms.lock"
+    printf 'family kernel-cachyos built kk
+'
+    printf 'rpm kernel-cachyos built kernel-cachyos-core kernel-cachyos-core-0:7.3.0-4.cachyos1.fc45.x86_64 %s pkgs/kernel/kk/kernel-cachyos-core-7.3.0-4.cachyos1.fc45.x86_64.rpm\n' "$ilsha"
+} >"$IL/pair.lock"
+image_sh "break_glass_lock '$IL/pair.lock'" >"$IL/break-glass.lock"
+check "break-glass: the image's lock keeps the other families" 2 "$(grep -c '^family gnome-shell \|^family libfprint ' "$IL/break-glass.lock")"
+check "break-glass: and none of the pair's rpm lines" 0 "$(grep -c '^rpm kernel-cachyos ' "$IL/break-glass.lock" || true)"
+check "break-glass: the pair is the owner's stock choice" \
+    "family kernel-cachyos stock - reason=break-glass: just image KERNEL=fedora, Fedora's kernel without the NVIDIA set" \
+    "$(grep '^family kernel-cachyos ' "$IL/break-glass.lock")"
+check "break-glass: a lock image.sh accepts, with the kernel family" 0 \
+    "$(rc_of image_sh "lane_lock_check '$IL/break-glass.lock' gnome-shell libfprint kernel-cachyos")"
+check "break-glass: and the store's lock is untouched" 1 "$(grep -c '^family kernel-cachyos built kk$' "$IL/pair.lock")"
 
 # --- Fedora images: digest pins on registry.fedoraproject.org only ------------------------
 DQ="sha256:$(printf 'd%.0s' {1..64})"

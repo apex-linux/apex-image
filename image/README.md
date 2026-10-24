@@ -50,6 +50,15 @@ is the Fedora-kernel image it was.
   and the preset that disables `nvidia-persistenced`), removes the Fedora kernel's
   `apex-dgpu.conf` and `61-apex-dgpu-pm.rules`, and labels `pair-degraded` as
   `degraded=nvidia`. A held pair is `held=kernel-cachyos`, as for any family.
+- The break-glass image, `just image KERNEL=fedora` (`build-image.sh --kernel fedora`,
+  `image.sh context --kernel fedora`), builds on Fedora's kernel whatever the lock says:
+  the image's copy of the lock records the pair as the owner's `stock` choice with a
+  `break-glass` reason and no `rpm` lines, so the repos stage sees no pair, and the
+  final stage labels it `degraded=nvidia` (apexctl's "no NVIDIA driver"). The store's
+  `rpms.lock.next` is untouched. Its gates run, but `build-image.sh` writes no
+  `_build/gates-passed.txt` for it, so `just pkg-promote` refuses it and nothing
+  publishes it. ADR 0015's NVIDIA half built for Fedora's kernel is not built yet: the
+  dGPU stays unbound, as in the Fedora-kernel image.
 - `kargs.d/10-apex.toml` keeps `modprobe.blacklist=` and `rd.driver.blacklist=` for
   nouveau and nova-core. In a pair image `module_blacklist=` makes them redundant; they
   go in S4, once the pair is the only kernel.

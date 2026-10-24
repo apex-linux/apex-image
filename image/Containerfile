@@ -279,6 +279,7 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
             nautilus) echo "NOTE: the nautilus family is Fedora's build: degraded=files"; echo files >>"$degraded" ;; \
             gnome-control-center) echo "NOTE: the gnome-control-center family is Fedora's build: degraded=settings"; echo settings >>"$degraded" ;; \
             libadwaita) echo "NOTE: the libadwaita family is Fedora's build: degraded=adwaita"; echo adwaita >>"$degraded" ;; \
+            kernel-cachyos) echo "NOTE: break-glass: Fedora's kernel, without the kernel pair's NVIDIA set: degraded=nvidia"; echo nvidia >>"$degraded" ;; \
             *) echo "ERROR: the lane family $f is stock or degraded, but has no degraded name" >&2; exit 1 ;; \
         esac; \
     done; \

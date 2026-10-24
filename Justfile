@@ -33,8 +33,12 @@ image-test:
 devloop-test:
     tests/devloop/run.sh
 
+# How to build the image; `just image KERNEL=fedora` builds the break-glass image in the VM: Fedora's kernel, degraded=nvidia, never promoted.
+image *args:
+    @if [ -z '{{ args }}' ]; then {{ just_executable() }} --justfile '{{ justfile() }}' _image-help; elif [ '{{ args }}' = KERNEL=fedora ]; then tools/builder-vm/builder-vm.sh image --kernel fedora; else echo 'usage: just image [KERNEL=fedora]' >&2; exit 2; fi
+
 # How to build the image (it runs in the Fedora 45 builder VM, not on this host).
-image:
+_image-help:
     @echo 'The image builds with rootful podman in the Fedora 45 KVM builder VM (ADR 0013): just vm-create, then just vm-image.'
     @echo 'just vm-image runs tools/builder-vm/build-image.sh in the VM, which:'
     @echo ''

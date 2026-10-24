@@ -20,9 +20,10 @@ VM never mounts host directories.
                               copy the file REMOTE (relative to the builder user's home
                               in the VM) to LOCAL on the host; resumes a partial copy
   builder-vm.sh run CMD...    sync, then run CMD in ~/apex-image in the VM
-  builder-vm.sh image [--image-only]
+  builder-vm.sh image [--image-only] [--kernel fedora]
                               sync, then build the RPM inputs and the image in the VM
-                              (--image-only reuses the RPMs of the previous run)
+                              (--image-only reuses the RPMs of the previous run;
+                              --kernel fedora is the break-glass image, never promoted)
   builder-vm.sh provision     re-run the guest provisioning (idempotent)
   builder-vm.sh ci-install PUBKEY
                               install ci-build, the self-hosted runner's entry point,
@@ -311,10 +312,9 @@ run_in_repo() {
 }
 
 image() {
-    local image_only_flag=${1:-}
     sync_repo
     # Run by path, not fed through `bash -s`: G4's ssh (qualify.sh, no -n) would read the rest of the script.
-    vm_ssh "flock -n $GUEST_BUILD_LOCK bash ~/apex-image/tools/builder-vm/build-image.sh $image_only_flag" </dev/null
+    vm_ssh "flock -n $GUEST_BUILD_LOCK bash ~/apex-image/tools/builder-vm/build-image.sh $*" </dev/null
 }
 
 ci_install() {
@@ -367,8 +367,11 @@ main() {
         run) (($#)) || die "usage: $0 run CMD..."; run_in_repo "$@" ;;
         image)
             running || die "the VM is not running ($0 start)"
-            [[ ${1:-} == "" || ${1:-} == --image-only ]] || die "usage: $0 image [--image-only]"
-            image "${1:-}" ;;
+            case "$*" in
+                "" | --image-only | "--kernel fedora" | "--image-only --kernel fedora") ;;
+                *) die "usage: $0 image [--image-only] [--kernel fedora]" ;;
+            esac
+            image "$@" ;;
         provision) running || die "the VM is not running ($0 start)"; provision ;;
         ci-install)
             running || die "the VM is not running ($0 start)"
