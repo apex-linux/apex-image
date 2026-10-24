@@ -4,6 +4,7 @@ pub mod checkout;
 pub mod commands;
 pub mod pair;
 pub mod sign;
+pub mod sources;
 
 use std::path::{Path, PathBuf};
 

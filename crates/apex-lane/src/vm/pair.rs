@@ -7,6 +7,7 @@ use std::time::Instant;
 use super::Vm;
 use super::build::{Outcome, remove_tree};
 use super::sign::Signer;
+use super::sources;
 use crate::core::bump_report;
 use crate::core::checksig::checksig_ok;
 use crate::core::hold;
@@ -657,7 +658,20 @@ impl Vm<'_> {
         fs::write(&set.join("manifest.txt"), manifest_text.as_bytes())?;
         fs::write(&set.join("key.txt"), format!("{key}\n").as_bytes())?;
         fs::write(&set.join("key-input.txt"), preimage.as_bytes())?;
-        // The image takes what it checks a pair against from the set alone.
+        self.keep_inputs(plan, &set, lock_name)?;
+        keep_job_files(&out, &set, lock_name)?;
+        self.sign_built(&set, signer)?;
+        fs::create_dir_all(&self.store_pkg(&p.name))?;
+        let partial = self.store_pkg(&p.name).join(format!(".partial-{key}"));
+        remove_tree(&partial)?;
+        self.move_tree(&set, &partial)?;
+        let stored = self.store_pkg(&p.name).join(key);
+        self.move_tree(&partial, &stored)?;
+        Self::verify_stored(&stored)
+    }
+
+    /// What the image checks a pair against, and the source artifact's pins and recipe.
+    fn keep_inputs(&self, plan: &Plan, set: &Path, lock_name: &str) -> Result<()> {
         if lock_name == PAIR_LOCK {
             let key = self
                 .settings
@@ -671,16 +685,18 @@ impl Vm<'_> {
             fs::copy_with_mode(&config, &set.join(CONFIG_REQUIRED))?;
         }
         fs::copy_with_mode(&plan.job.join(JOB_KERNEL_ENV), &set.join(JOB_KERNEL_ENV))?;
+        let recipe = set.join(sources::SOURCE_RECIPE);
+        fs::create_dir_all(&recipe)?;
+        let mut job = plan.job.clone().into_os_string();
+        job.push("/.");
+        self.run_ok(
+            &Cmd::new(Program::Cp)
+                .args(["-a", "--"])
+                .arg(job)
+                .arg(&recipe),
+        )?;
         fs::copy_with_mode(&plan.job.join(JOB_NVIDIA_ENV), &set.join(JOB_NVIDIA_ENV))?;
-        keep_job_files(&out, &set, lock_name)?;
-        self.sign_built(&set, signer)?;
-        fs::create_dir_all(&self.store_pkg(&p.name))?;
-        let partial = self.store_pkg(&p.name).join(format!(".partial-{key}"));
-        remove_tree(&partial)?;
-        self.move_tree(&set, &partial)?;
-        let stored = self.store_pkg(&p.name).join(key);
-        self.move_tree(&partial, &stored)?;
-        Self::verify_stored(&stored)
+        Ok(())
     }
 
     fn record_pair(&self, p: &PairPkg, key: &str, line: &[u8]) -> Result<()> {
@@ -888,7 +904,7 @@ impl Vm<'_> {
         Ok(Exit::Ok)
     }
 
-    fn the_pair(&self) -> Result<PairPkg> {
+    pub(super) fn the_pair(&self) -> Result<PairPkg> {
         for name in self.all_pkgs()? {
             if let Some(p) = self.load_pair(&name)? {
                 return Ok(p);

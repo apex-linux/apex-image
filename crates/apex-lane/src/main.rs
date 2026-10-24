@@ -60,6 +60,14 @@ enum Command {
     /// The kernel pair's bump check (bump.sh check): a point bump becomes a commit on a
     /// branch of the recipe's checkout; a new major waits for the owner.
     KernelBump,
+    /// The kernel pair's source artifact for LOCK's pair: both SRPMs, the pins and the
+    /// recipe, as an OCI layout in OUT (nothing when LOCK has no pair).
+    Sources {
+        #[arg(long)]
+        lock: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Sign RPMs in place with the Apex RPM key: the builder VM's apex, apex-desktop and
     /// libfprint builds. A manifest.txt beside them records it.
     Sign {
@@ -273,6 +281,7 @@ fn run(command: Command, report: &Reporter) -> Result<Exit> {
         }
         Command::Promote { allow_degraded } => vm.promote(allow_degraded).map(|()| Exit::Ok),
         Command::KernelBump => vm.kernel_bump(),
+        Command::Sources { lock, out } => vm.sources(&lock, &out),
         Command::Stock { pkg } => vm.stock(&pkg).map(|()| Exit::Ok),
         Command::Sign { rpms } => vm.sign_files(&rpms).map(|()| Exit::Ok),
         Command::InContainer(_) => unreachable!("handled above"),
