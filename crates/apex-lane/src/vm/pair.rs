@@ -197,12 +197,19 @@ impl Vm<'_> {
                 .to_string();
             files.push((rel, fs::sha256_file(&path)?));
         }
-        let preimage = pair::preimage(&p.name, &self.tool_id()?, &dnf.join(" "), &files);
+        let mut preimage = pair::preimage(&p.name, &self.tool_id()?, &dnf.join(" "), &files);
+        if let Some(fault) = &self.settings.pair_fault {
+            preimage = pair::faulted_preimage(&preimage, fault);
+        }
         let key = content_key(&kernel.srpm.nvr(), &preimage);
         let ledger = fs::read_opt(&self.store_pkg(&p.name).join(RELEASE_LEDGER))?;
-        let apex_release =
-            pair::release_number(&ledger.unwrap_or_default(), &kernel.srpm.nvr(), &key)
-                .map_err(|e| infra(format!("store: {RELEASE_LEDGER}: {e}")))?;
+        let apex_release = pair::release_number(
+            &ledger.unwrap_or_default(),
+            &kernel.srpm.nvr(),
+            &key,
+            self.settings.rehearsal,
+        )
+        .map_err(|e| infra(format!("store: {RELEASE_LEDGER}: {e}")))?;
         Ok(Plan {
             kernel,
             nvidia,
@@ -329,6 +336,12 @@ impl Vm<'_> {
             .arg(format!("PAIR_ID={}", plan.key))
             .arg("-e")
             .arg(format!("APEX_RELEASE={}", plan.apex_release.0))
+            .args(
+                self.settings
+                    .pair_fault
+                    .iter()
+                    .flat_map(|f| ["-e".to_owned(), format!("APEX_PAIR_FAULT={f}")]),
+            )
             .arg(self.repos_base()?)
             .args(["/usr/bin/bash", "/job/pair.sh", "/mirror", "/out"])
             .args(&plan.dnf)

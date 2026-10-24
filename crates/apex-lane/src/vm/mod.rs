@@ -33,6 +33,10 @@ pub struct Settings {
     pub uid: u32,
     pub gid: u32,
     pub is_root: bool,
+    /// `APEX_PAIR_FAULT`, forwarded to pair.sh; only a rehearsal sets it.
+    pub pair_fault: Option<String>,
+    /// `APEX_LANE_REHEARSAL=1` on a scratch store: the pair's N starts above 9000.
+    pub rehearsal: bool,
 }
 
 pub struct Vm<'a> {

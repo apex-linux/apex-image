@@ -79,7 +79,17 @@ The other recipes:
 | `just vm-g2 [IMAGE]` | G2 on the last build: its headless shell, run twice and asserted (apex-gnome's `tests/shots`). |
 | `just publish [--allow-degraded]` | Publish the last `just vm-image` build whose gates passed (S1d): rechunk against `apex:45`, push `apex:<version>`, sign it with the owner's cosign key (`~/.config/apex/cosign.key`, `COSIGN_PASSWORD`), and move `apex:45` once the committed policy verifies it. It refuses while `release.pub` is the placeholder. |
 | `just publish-rehearsal` | The same steps against a throwaway `registry:2` on the VM's localhost, a throwaway key and a policy that trusts only it. Then a policy with another key must refuse the image. Nothing is published. |
+| `just lane-rehearsal [point\|kmod\|all]` | ROADMAP S1c's lane rehearsals in a scratch store (`~/apex-rehearsal`); see below. Nothing is promoted or published for real. |
 | `just vm-ci-install` | Install `ci-build`, the self-hosted runner's only entry point, and bind the runner's key to it ([tools/runner](../runner/README.md)). |
+
+`just lane-rehearsal` starts from a good pair at the COPR build before the pinned one,
+built with the rehearsal's own `pkg.env` (`rehearsal/`), and lets kernel-bump commit the
+point bump. `point`: the bump builds as a whole pair, its image passes G1 and goes to a
+throwaway registry. `kmod`: with `APEX_PAIR_FAULT=kmod` the pair holds on the kmod side
+and the image is labelled `held`; past the limit it becomes `degraded=nvidia`, its image
+passes G1, and promote takes it only with `--allow-degraded`. The RPMs are signed with
+the VM's RPM key at N from 9001, so they never share a NEVRA with a real build. The
+scratch store is deleted at the end; `logs/` and `report.md` stay.
 
 Run `tools/builder-vm/builder-vm.sh help` for every command, including `console` (the
 serial log) and `destroy --yes`. `destroy` deletes the Apex RPM key with the disk; a new

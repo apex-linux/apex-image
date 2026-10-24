@@ -207,6 +207,13 @@ exactly what it built before.
    `pkgs/kernel/apex-release.txt` keeps `NVR KEY N` lines,
    written before the job runs and never pruned, so one key keeps its N and no N is
    given twice. The lane checks that `pair.lock`'s kernel has that release.
+   **Rehearsals** (`just lane-rehearsal`, ROADMAP S1c) set `APEX_LANE_REHEARSAL=1` with a
+   scratch `APEX_STORE`. Only then does the lane forward `APEX_PAIR_FAULT=kmod` to pair.sh
+   (an input of the key, so a stored good pair is never taken for it) and take its clock
+   from `APEX_LANE_NOW`; either one otherwise is a usage error, as is the flag on
+   `~/apex-store`. A rehearsal's N starts at 9001 and may not fall below 9000, and the
+   lane's own store refuses any N from 9000 on, so rehearsal RPMs, signed with the same
+   key, never share a NEVRA with a real build.
 5. **The job**: apex-kernel's `pair.sh /mirror /out DNF-OPTION...` as root in one fresh
    container of `REPOS_BASE`, at low CPU weight, the recipe directory read-only at
    `/job`, the module key's tmpfs at `/run/apex-modkey`, ccache in the volume
