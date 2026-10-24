@@ -592,7 +592,9 @@ echo 0 >"$CI_DIR/build-rc"
 for request in '' ci-build "ci-build $CI_SHA " " ci-build $CI_SHA" "ci-build  $CI_SHA" "ci-build ${CI_SHA^^}" \
     "ci-build ${CI_SHA}a" "ci-build ${CI_SHA:1}" "ci-build $CI_SHA; touch $CI_DIR/pwned" \
     "ci-build \$(touch $CI_DIR/pwned)" "ci-build \`touch $CI_DIR/pwned\`" $'ci-build '"$CI_SHA"$'\ntouch '"$CI_DIR/pwned" \
-    "ci-build $CI_SHA $CI_SHA" "ci-promote $CI_SHA" "ci-build HEAD" "ci-build main" "ci-build -h"; do
+    "ci-build $CI_SHA $CI_SHA" "ci-promote $CI_SHA" "ci-build HEAD" "ci-build main" "ci-build -h" \
+    "ci-build $CI_SHA absorb " "ci-build $CI_SHA  absorb" "ci-build $CI_SHA absorbx" "ci-build $CI_SHA ABSORB" \
+    "ci-build absorb $CI_SHA" "ci-build $CI_SHA absorb absorb"; do
     check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
         "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 done
@@ -629,6 +631,38 @@ check "and names the file over 20 MiB it left out" "local.serial.log 21504 KiB" 
     "$(tar -xOf "$CI_DIR/out.tar" ./qualify-logs/SKIPPED)"
 rm "$CI_DIR/with-logs"
 rm -rf "$CI_DIR/home/apex-image/_build/qualify"
+cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh" <<'EOF'
+#!/usr/bin/env bash
+echo run >>"$FAKE/absorb.log"
+mkdir -p _build/absorb/logs
+printf '%s\t%s\t%s\t%s\t%s\n' \
+    gnome-shell stable gnome-shell-51.0-1.fc45 applies '8 patch(es)' \
+    gnome-shell testing gnome-shell-51.1-1.fc45 fails '0015-lock.patch: error: patch failed: js/ui/unlockDialog.js:894' \
+    nautilus testing nautilus-51.1-1.fc45 applies '5 patch(es)' \
+    ptyxis testing ptyxis-50.1-6.fc45 same 'updates-testing has nothing newer' >_build/absorb/rows.tsv
+echo '# Lane absorption report' >_build/absorb/report.md
+echo log >_build/absorb/logs/gnome-shell-testing.log
+exit 3
+EOF
+chmod +x "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh"
+echo 0 >"$CI_DIR/build-rc"
+rm -f "$CI_DIR/absorb.log"
+check "the daily run's absorption report never gates: a failing family, exit 0" 0 "$(ci_request "ci-build $CI_SHA absorb")"
+check "its warning names the updates-testing family that fails, with the hunk" \
+    "$(printf 'gnome-shell\tgnome-shell-51.1-1.fc45\tfails\t0015-lock.patch: error: patch failed: js/ui/unlockDialog.js:894')" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./absorb/warnings.tsv)"
+check "the report, rows and logs go back for the summary and the artifact" \
+    "./absorb/logs/gnome-shell-testing.log ./absorb/report.md ./absorb/rows.tsv ./absorb/warnings.tsv" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep '^\./absorb/.' | grep -v '/logs/$' | sort | paste -sd' ')"
+check "ci-build.txt records the report's own status" "absorb 3" "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^absorb ')"
+rm -f "$CI_DIR/absorb.log"
+check "without absorb no report runs" "0:no report" \
+    "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
+echo 1 >"$CI_DIR/build-rc"
+check "after a failed build the report still runs, and the build's status stands" "1:report" \
+    "$(ci_request "ci-build $CI_SHA absorb"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
+echo 0 >"$CI_DIR/build-rc"
+rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh"
 
 # --- tools/components.sh: pinned full clones of components.lock, and the dev override ------
 CO="$TMP/components"

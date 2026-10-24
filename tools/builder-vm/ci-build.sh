@@ -11,7 +11,7 @@ The builder VM's one entry point for the self-hosted runner (tools/runner/README
 /usr/local/libexec/apex/ci-build, and binds the runner's key to it in authorized_keys
 with restrict,command=. It takes nothing but SSH_ORIGINAL_COMMAND, which must be exactly
 
-  ci-build <40 lowercase hex digits>
+  ci-build <40 lowercase hex digits> [absorb]
 
 It fetches main from APEX_CI_REMOTE, refuses a commit that main does not contain, checks
 the commit out in a clean ~/apex-image (keeping _build/, where the G4 record lives), and
@@ -22,8 +22,11 @@ stderr; stdout is a tar of the results: ci-build.txt, gates-passed.txt, g2-resul
 g4-results.md and g4-passed.txt when this run wrote them, lock.diff (rpms.lock to
 rpms.lock.next before the promotion), and qualify-logs/: the screendumps, journals and
 serial logs this run's G4 wrote, each at most 20 MiB and 200 MiB in all (SKIPPED lists
-the rest). Nothing is pushed or signed but the RPMs, and the
-RPM key and ~/apex-store never leave the VM.
+the rest). With absorb (vm.yml's daily run), lane-absorb-report.sh runs after the build,
+whatever its result, and absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv:
+one "family, SRPM, result, detail" line for each updates-testing row that is not
+"applies" or "same". The report never changes the exit status. Nothing is pushed or
+signed but the RPMs, and the RPM key and ~/apex-store never leave the VM.
 
 ~/.config/apex/ci.env may set APEX_CI_REMOTE (default
 https://github.com/apex-linux/apex-image.git); it is read as data, never sourced.
@@ -53,8 +56,8 @@ git_() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directo
 
 requested_sha() {
     local request=${SSH_ORIGINAL_COMMAND-}
-    [[ $request =~ ^ci-build\ ([0-9a-f]{40})$ ]] || return 1
-    printf '%s\n' "${BASH_REMATCH[1]}"
+    [[ $request =~ ^ci-build\ ([0-9a-f]{40})(\ absorb)?$ ]] || return 1
+    printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]:+absorb}"
 }
 
 ci_remote() {
@@ -146,8 +149,23 @@ copy_qualify_logs() {
     done < <(find "$source" -maxdepth 1 -type f -newer "$stamp" -printf '%s %f\n' | sort -k2)
 }
 
+# The early warning of S1b's absorption; it never gates.
+stage_absorb() {
+    local out=$1 stamp=$2 rc=0
+    log "== lane-absorb-report.sh"
+    bash tools/builder-vm/lane-absorb-report.sh 9>&- </dev/null >&2 || rc=$?
+    printf 'absorb %s\n' "$rc" >>"$out/ci-build.txt"
+    mkdir -p -- "$out/absorb"
+    copy_if_newer _build/absorb/report.md "$out/absorb/report.md" "$stamp"
+    copy_if_newer _build/absorb/rows.tsv "$out/absorb/rows.tsv" "$stamp"
+    copy_qualify_logs _build/absorb/logs "$out/absorb/logs" "$stamp"
+    [[ -s $out/absorb/rows.tsv ]] || return 0
+    awk -F'\t' '$2 == "testing" && $4 != "applies" && $4 != "same" { print $1 "\t" $3 "\t" $4 "\t" $5 }' \
+        "$out/absorb/rows.tsv" >"$out/absorb/warnings.tsv"
+}
+
 build() {
-    local sha=$1 out=$2 rc=0 promote
+    local sha=$1 out=$2 absorb=$3 rc=0 promote
     local stamp=$out/.started
     : >"$stamp"
     fetch_main
@@ -163,6 +181,7 @@ build() {
     copy_if_newer _build/qualify/results.md "$out/g4-results.md" "$stamp"
     copy_if_newer _build/g4-passed.txt "$out/g4-passed.txt" "$stamp"
     copy_qualify_logs _build/qualify/logs "$out/qualify-logs" "$stamp"
+    [[ -z $absorb ]] || stage_absorb "$out" "$stamp" || true
     ((rc == 0)) || return "$rc"
     log "== promote the lane lock"
     promote=$(stage_promote) || rc=$?
@@ -176,8 +195,9 @@ main() {
         '') ;;
         *) usage >&2; exit "$EXIT_REFUSED" ;;
     esac
-    local sha out rc
-    sha=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha>'"
+    local sha absorb out rc request
+    request=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha> [absorb]'"
+    read -r sha absorb <<<"$request"
 
     # stdout carries only the results tar.
     exec 3>&1 1>&2
@@ -190,7 +210,7 @@ main() {
     printf 'sha %s\nstarted %s\n' "$sha" "$(utc_now)" >"$out/ci-build.txt"
     # Not under ||, which would switch errexit off inside the build.
     set +e
-    (set -e; build "$sha" "$out")
+    (set -e; build "$sha" "$out" "$absorb")
     rc=$?
     set -e
     printf 'finished %s\nexit %s\n' "$(utc_now)" "$rc" >>"$out/ci-build.txt"
