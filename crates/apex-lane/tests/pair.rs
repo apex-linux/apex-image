@@ -410,6 +410,7 @@ impl PairTest {
         write(&k.join("kernel.env"), kernel_env("7.3.0-4"));
         write(&k.join("nvidia.env"), nvidia_env("615.78.08-1"));
         write(&k.join("pair.sh"), "#!/bin/bash\n");
+        write(&k.join("config-required.txt"), "CONFIG_MODULE_SIG=y\n");
         write(&k.join("bump.sh"), "#!/bin/bash\n");
         init_repo(recipes.path());
         let t = Self {
@@ -553,11 +554,21 @@ fn a_good_pair_is_signed_stored_and_locked() {
             "kernel-cachyos",
             "kernel-cachyos-core",
             "kernel-cachyos-modules",
-            "kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64"
+            "kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64",
+            "nvidia-kmod-common"
         ],
-        "the install= names and the kmod; -devel is stored, not locked"
+        "the install= names, the kmod and the userspace; -devel is stored, not locked"
     );
-    let kmod = rpms.last().unwrap();
+    let userspace = "nvidia-kmod-common-615.78.08-1.fc45.noarch.rpm";
+    assert_eq!(
+        rpms[4],
+        format!(
+            "rpm kernel-cachyos mirror nvidia-kmod-common nvidia-kmod-common-3:615.78.08-1.fc45.noarch {} pkgs/kernel/{key}/{userspace}",
+            sha_of_name(userspace)
+        ),
+        "negativo17's RPM, unmodified, from the mirror"
+    );
+    let kmod = &rpms[3];
     let file = "kmod-nvidia-7.3.0-4.cachyos1.fc45.x86_64-615.78.08-1.fc45.x86_64.rpm";
     let signed = sha256_hex(format!("{file} +signature").as_bytes());
     assert_eq!(
@@ -574,6 +585,8 @@ fn a_good_pair_is_signed_stored_and_locked() {
         "nvidia.env",
         "signing_key.x509",
         "key-input.txt",
+        "config-required.txt",
+        "negativo17.gpg",
         "logs/kernel.log",
     ] {
         assert!(set.join(kept).is_file(), "the stored pair has no {kept}");
@@ -652,6 +665,11 @@ fn the_kernel_moves_before_the_driver() {
             .contains("kmod-nvidia-7.3.1-1.cachyos1.fc45.x86_64-3:615.78.08-1")
     );
     assert!(
+        t.next_lock()
+            .contains(" nvidia-kmod-common-3:615.78.08-1.fc45.noarch "),
+        "the userspace waits with its driver"
+    );
+    assert!(
         String::from_utf8_lossy(&t.report.captured())
             .contains("nvidia-kmod-3:615.80.01-1.fc45.src waits for the image after this one")
     );
@@ -671,6 +689,10 @@ fn the_kernel_moves_before_the_driver() {
     assert!(
         t.next_lock()
             .contains("kmod-nvidia-7.3.1-1.cachyos1.fc45.x86_64-3:615.80.01-1")
+    );
+    assert!(
+        t.next_lock()
+            .contains(" nvidia-kmod-common-3:615.80.01-1.fc45.noarch ")
     );
 }
 

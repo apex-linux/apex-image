@@ -1274,6 +1274,16 @@ ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 check "contracts: an apexctl that accepts every degraded name" 0 "$(ct_run)"
+CT_UPDATE1=io.github.apex_linux.Apex.Update1.xml
+mkdir -p "$CT/gnome/desktop/control-center/panels/apex" "$CT/system/crates/apex-dbus/data"
+printf '<node/>\n' >"$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
+check "contracts: no Update1 copy in apex-gnome yet" 0 "$(ct_run)"
+printf '<node></node>\n' >"$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1"
+check "contracts: Settings' Update1 copy differs from apex-system's" 1 "$(ct_run)"
+cp "$CT/system/crates/apex-dbus/data/$CT_UPDATE1" "$CT/gnome/desktop/control-center/panels/apex/"
+check "contracts: Settings' Update1 copy equals apex-system's" 0 "$(ct_run)"
+rm "$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
+check "contracts: a Settings Update1 copy with no XML in apex-system" 1 "$(ct_run)"
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }
