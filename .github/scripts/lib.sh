@@ -15,6 +15,22 @@ readonly APEX_ROOT
 : "${APEX_SYSTEM_SRC:=$APEX_ROOT/_build/components/apex-system}"
 : "${APEX_DESKTOP_SRC:=$APEX_ROOT/_build/components/apex-desktop}"
 : "${APEX_GNOME_SRC:=$APEX_ROOT/_build/components/apex-gnome}"
+readonly APEX_LAYER_JS=desktop/shell/js/ui/apex/layer.js
+
+# apex-gnome's layer features, one per line, from its layer.js FILE; fails without a list.
+layer_features() {
+    sed -n "s/^const FEATURES_IN_ENABLE_ORDER = \[\(.*\)\];\$/\1/p" "$1" | tr -d "' " | tr ',' '\n' | grep .
+}
+
+# NAME@SHORT-SHA of a component checkout DIR, or NAME and the path when it is no clone.
+component_at() {
+    local sha
+    if sha=$(git -C "$2" rev-parse --short=8 HEAD 2>/dev/null); then
+        printf '%s@%s' "$1" "$sha"
+    else
+        printf '%s (%s)' "$1" "$2"
+    fi
+}
 
 in_github_actions() { [[ ${GITHUB_ACTIONS:-} == true ]]; }
 
