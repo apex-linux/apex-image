@@ -19,8 +19,10 @@ runs, in order: the components hook (tools/components.sh fetch, once the reposit
 it), build-image.sh (the RPMs, libfprint, the rebuild lane, the image, G2 twice, G4 when
 due, _build/gates-passed.txt), and lane.sh promote when the gates passed. The log goes to
 stderr; stdout is a tar of the results: ci-build.txt, gates-passed.txt, g2-result.txt,
-g4-results.md and g4-passed.txt when this run wrote them, and lock.diff (rpms.lock to
-rpms.lock.next before the promotion). Nothing is pushed or signed but the RPMs, and the
+g4-results.md and g4-passed.txt when this run wrote them, lock.diff (rpms.lock to
+rpms.lock.next before the promotion), and qualify-logs/: the screendumps, journals and
+serial logs this run's G4 wrote, each at most 20 MiB and 200 MiB in all (SKIPPED lists
+the rest). Nothing is pushed or signed but the RPMs, and the
 RPM key and ~/apex-store never leave the VM.
 
 ~/.config/apex/ci.env may set APEX_CI_REMOTE (default
@@ -39,6 +41,8 @@ readonly MAIN_REF=refs/remotes/origin/main
 readonly LOCK_WAIT_SECONDS=1800
 readonly EXIT_REFUSED=2
 readonly EXIT_BUSY=75
+readonly LOG_MAX_FILE_KIB=20480
+readonly LOG_MAX_TOTAL_KIB=204800
 
 log() { printf 'ci-build: %s\n' "$*" >&2; }
 refuse() { log "refused: $*"; exit "$EXIT_REFUSED"; }
@@ -126,6 +130,22 @@ copy_if_newer() {
     if [[ -s $source && $source -nt $stamp ]]; then cp -- "$source" "$destination"; fi
 }
 
+# The evidence behind G4's rows, for vm.yml's artifact; this run's files only.
+copy_qualify_logs() {
+    local source=$1 destination=$2 stamp=$3 total=0 size path
+    [[ -d $source ]] || return 0
+    mkdir -p -- "$destination"
+    while IFS=' ' read -r size path; do
+        size=$(((size + 1023) / 1024))
+        if ((size > LOG_MAX_FILE_KIB || total + size > LOG_MAX_TOTAL_KIB)); then
+            printf '%s %s KiB\n' "$path" "$size" >>"$destination/SKIPPED"
+            continue
+        fi
+        total=$((total + size))
+        cp -- "$source/$path" "$destination/$path"
+    done < <(find "$source" -maxdepth 1 -type f -newer "$stamp" -printf '%s %f\n' | sort -k2)
+}
+
 build() {
     local sha=$1 out=$2 rc=0 promote
     local stamp=$out/.started
@@ -142,6 +162,7 @@ build() {
     copy_if_newer _build/g2/latest/result.txt "$out/g2-result.txt" "$stamp"
     copy_if_newer _build/qualify/results.md "$out/g4-results.md" "$stamp"
     copy_if_newer _build/g4-passed.txt "$out/g4-passed.txt" "$stamp"
+    copy_qualify_logs _build/qualify/logs "$out/qualify-logs" "$stamp"
     ((rc == 0)) || return "$rc"
     log "== promote the lane lock"
     promote=$(stage_promote) || rc=$?
