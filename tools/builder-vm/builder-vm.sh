@@ -240,6 +240,12 @@ free_port() {
 provision() {
     log "provisioning the guest (tools for image, RPM and qualification builds)"
     vm_ssh 'bash -s' <"$HERE/provision.sh"
+    local version sum
+    version=$(sed -n 's/^COSIGN_VERSION=//p' "$HERE/cosign.env")
+    sum=$(sed -n 's/^COSIGN_SHA256=//p' "$HERE/cosign.env")
+    [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && $sum =~ ^[0-9a-f]{64}$ ]] ||
+        die "$HERE/cosign.env needs COSIGN_VERSION=vX.Y.Z and COSIGN_SHA256=<64 hex>"
+    vm_ssh "bash -s -- $version $sum" <"$HERE/install-cosign.sh"
 }
 
 create() {

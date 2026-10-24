@@ -25,6 +25,8 @@ and exit 1 when any row fails.
                while the VM runs)
   vm-host-key  the runner's known_hosts holds the builder VM's current host key (a new VM,
                after builder-vm.sh destroy and create, has a new one)
+  vm-cosign    the builder VM's /usr/local/bin/cosign is the version and sha256 that
+               tools/builder-vm/cosign.env pins (while the VM runs)
   time-sync    the clock is synchronised (signatures and tokens check times)
 EOF
     exit 2
@@ -34,6 +36,7 @@ readonly GIB=$((1024 * 1024 * 1024))
 readonly BUILD_GIB=45 KERNEL_SCRATCH_GIB=25 CCACHE_GIB=15 HOST_RAM_GIB=2
 readonly MIN_SUBIDS=65536
 readonly CI_BUILD=/usr/local/libexec/apex/ci-build
+readonly VM_COSIGN=/usr/local/bin/cosign
 readonly URLS=(
     https://github.com/ https://api.github.com/ https://ghcr.io/v2/
     https://registry.fedoraproject.org/v2/ https://download.fedoraproject.org/pub/fedora/linux/
@@ -47,6 +50,7 @@ vm_dir=${APEX_VM_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/apex/builder}
 ssh_dir=${XDG_CONFIG_HOME:-$HOME/.config}/apex/runner/ssh
 ssh_port=${APEX_VM_SSH_PORT:-2222}
 builder_vm=${APEX_PREFLIGHT_BUILDER_VM:-$here/../builder-vm/builder-vm.sh}
+cosign_env=$here/../builder-vm/cosign.env
 fails=0
 
 row() {
@@ -220,6 +224,30 @@ check_host_key() {
     fi
 }
 
+check_cosign() {
+    local want_version want_sum out sum version
+    want_version=$(sed -n 's/^COSIGN_VERSION=//p' "$cosign_env" 2>/dev/null)
+    want_sum=$(sed -n 's/^COSIGN_SHA256=//p' "$cosign_env" 2>/dev/null)
+    if [[ -z $want_version || -z $want_sum ]]; then
+        row FAIL vm-cosign "$cosign_env pins no COSIGN_VERSION and COSIGN_SHA256"
+        return
+    fi
+    if ! "$builder_vm" running 2>/dev/null; then
+        row SKIP vm-cosign "the builder VM is not running (just vm-start), so its cosign cannot be read"
+        return
+    fi
+    out=$("$builder_vm" ssh "sha256sum $VM_COSIGN && $VM_COSIGN version 2>&1" 2>/dev/null)
+    sum=$(awk 'NR == 1 { print $1 }' <<<"$out")
+    version=$(sed -n 's/^GitVersion:[[:space:]]*//p' <<<"$out")
+    if [[ -z $sum ]]; then
+        row FAIL vm-cosign "the builder VM has no $VM_COSIGN: builder-vm.sh provision installs cosign $want_version"
+    elif [[ $sum != "$want_sum" || $version != "$want_version" ]]; then
+        row FAIL vm-cosign "the builder VM's $VM_COSIGN is ${version:-an unknown version} ($sum), not the pinned $want_version ($want_sum): builder-vm.sh provision"
+    else
+        row PASS vm-cosign "the builder VM's $VM_COSIGN is the pinned $want_version"
+    fi
+}
+
 check_time() {
     local synced
     synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
@@ -242,6 +270,7 @@ main() {
     check_net
     check_runner_key
     check_host_key
+    check_cosign
     check_time
     if ((fails > 0)); then
         printf '\npreflight: %d row(s) failed; fix them before the setup in tools/runner/README.md\n' "$fails"

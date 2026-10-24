@@ -23,7 +23,7 @@ packages=(
     dosfstools btrfs-progs         # qualify.sh: ESP and root of the test disk
     openssh-clients openssl        # qualify.sh: ssh into the guest, key checks
     cryptsetup                     # qualify.sh QUALIFY_LAYOUT=luks (just vm-qualify-luks)
-    cosign                         # publish.sh: just publish and just publish-rehearsal
+    curl                           # install-cosign.sh: Fedora packages no cosign
     zram-generator-defaults        # swap on zram for compose peaks
 )
 sudo dnf5 -y install "${packages[@]}"

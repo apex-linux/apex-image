@@ -132,6 +132,42 @@ exits ([packaging/README.md](../../packaging/README.md#signing)). Its GnuPG home
 `~/.local/share/apex/rpm-gnupg`, and `~/.config/apex/rpm-signing.env`, which names it,
 live outside the synced checkout. `provision.sh` installs `rpm-sign` and `gnupg2`.
 
+## cosign
+
+Fedora 45 packages no cosign, so `builder-vm.sh provision` installs a pinned upstream
+release after `provision.sh`: `install-cosign.sh` downloads
+`cosign-linux-amd64` of `COSIGN_VERSION` from github.com/sigstore/cosign's releases
+(never "latest") and installs it as `/usr/local/bin/cosign` only when its sha256 is
+`COSIGN_SHA256`; a mismatch or failed download installs nothing and fails provisioning.
+Both values live in `cosign.env`, which `just runner-preflight` reads too: its `vm-cosign`
+row checks the VM's binary against the same pin. `publish.sh`'s signing flags
+(`--new-bundle-format=false`, `--use-signing-config=false`) need cosign 3.
+
+**The trust root is the reviewed sha256 in `cosign.env`.** The release also publishes
+`cosign_checksums.txt.sigstore.json`, but checking that bundle needs a cosign (or another
+sigstore verifier) the VM would already have to trust, and the binary being installed
+cannot vouch for itself. So the VM verifies nothing but the pin.
+
+**A bump** is one PR that changes both lines of `cosign.env`. Before it, on a machine with a
+cosign you already trust (the VM's current one will do), check the new release's bundle and
+take the sha256 from the verified checksums file:
+
+```sh
+V=v3.x.y
+curl -fsSLO https://github.com/sigstore/cosign/releases/download/$V/cosign_checksums.txt
+curl -fsSLO https://github.com/sigstore/cosign/releases/download/$V/cosign_checksums.txt.sigstore.json
+cosign verify-blob cosign_checksums.txt --bundle cosign_checksums.txt.sigstore.json \
+    --certificate-identity keyless@projectsigstore.iam.gserviceaccount.com \
+    --certificate-oidc-issuer https://accounts.google.com
+grep ' cosign-linux-amd64$' cosign_checksums.txt
+```
+
+Then `builder-vm.sh provision` and `just runner-preflight`. The pinned v3.0.2 value was
+taken from its release's `cosign_checksums.txt` and matched the downloaded binary
+(2026-10-24). That checksums file's bundle verified with the command above, but only by
+the v3.0.2 binary itself, which proves nothing; check it once with a cosign you trust
+before the first provisioning.
+
 ## Resources
 
 | Setting | Default | Variable |
