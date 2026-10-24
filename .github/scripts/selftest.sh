@@ -2209,6 +2209,108 @@ check "no earlier build of the pinned major stops the rehearsal" 1 \
     "$(LR_BUILDS=$(lr_builds 104:7.3.0-4.cachyos1 101:7.2.9-1.cachyos1) rehearse all)"
 check_true "which says so" grep -q '^| prepare | FAIL | the COPR has no build of 7.3 before the pinned 7.3.0-4.cachyos1' "$LR/dir/report.md"
 check "an unknown scenario is a usage error" 2 "$(rehearse everything)"
+# --- tools/runner/preflight.sh: the KVM host's checks on a fake root and fake tools --------
+PF="$TMP/preflight"
+mkdir -p "$PF/bin" "$PF/home/.config/apex/runner/ssh"
+pf_root() {
+    rm -rf "$PF/root"
+    mkdir -p "$PF/root/dev" "$PF/root/sys/module/kvm_intel/parameters" "$PF/root/etc" \
+        "$PF/root/sys/fs/cgroup" "$PF/root/proc"
+    : >"$PF/root/dev/kvm"
+    echo Y >"$PF/root/sys/module/kvm_intel/parameters/nested"
+    printf '%s:100000:65536\n' "$(id -un)" | tee "$PF/root/etc/subuid" >"$PF/root/etc/subgid"
+    : >"$PF/root/sys/fs/cgroup/cgroup.controllers"
+    printf 'MemTotal:       32768000 kB\n' >"$PF/root/proc/meminfo"
+    printf 'ssh-ed25519 AAAAkey apex-runner\n' >"$PF/home/.config/apex/runner/ssh/id_ed25519.pub"
+    for f in id_ed25519 known_hosts config; do echo x >"$PF/home/.config/apex/runner/ssh/$f"; done
+    chmod 600 "$PF/home/.config/apex/runner/ssh/id_ed25519"
+}
+cat >"$PF/bin/podman" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+    version) echo "${FAKE_PODMAN_VERSION:-5.4.2}" ;;
+    info) echo "${FAKE_ROOTLESS:-true}" ;;
+esac
+EOF
+cat >"$PF/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+[[ ${*: -1} == *"${FAKE_UNREACHABLE:-none}"* ]] && { printf 000; exit 6; }
+printf 200
+EOF
+cat >"$PF/bin/df" <<'EOF'
+#!/usr/bin/env bash
+echo Avail
+echo "${FAKE_AVAIL:-200000000000}"
+EOF
+cat >"$PF/bin/nproc" <<'EOF'
+#!/usr/bin/env bash
+echo "${FAKE_NPROC:-12}"
+EOF
+cat >"$PF/bin/timedatectl" <<'EOF'
+#!/usr/bin/env bash
+echo "${FAKE_NTP:-yes}"
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' >"$PF/bin/pasta"
+cat >"$PF/bin/builder-vm" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+    running) [[ ${FAKE_VM:-up} == up ]] ;;
+    ssh) printf '%s ssh-ed25519 AAAAkey apex-runner\n' "${FAKE_BINDING:-restrict,command=\"/usr/local/libexec/apex/ci-build\"}" ;;
+esac
+EOF
+chmod +x "$PF/bin/"*
+pf() { # [VAR=VALUE...]: preflight.sh on the fake root; prints its rows, then rc=N
+    local rc=0
+    env PATH="$PF/bin:$PATH" HOME="$PF/home" XDG_CONFIG_HOME= XDG_DATA_HOME= APEX_PREFLIGHT_ROOT="$PF/root" \
+        APEX_PREFLIGHT_BUILDER_VM="$PF/bin/builder-vm" APEX_VM_DIR="$PF/home/vm" "$@" \
+        "$APEX_ROOT/tools/runner/preflight.sh" >"$PF/out" 2>&1 || rc=$?
+    printf 'rc=%s\n' "$rc"
+}
+pf_row() { awk -v n="$1" '$2 == n { print $1 }' "$PF/out"; }
+pf_root
+check "a ready host passes" "rc=0" "$(pf)"
+check "with a row for each check" "kvm nested-kvm podman subids cgroup-v2 disk ram cpus net:github.com" \
+    "$(awk 'NF > 2 { print $2 }' "$PF/out" | head -n 9 | paste -sd' ')"
+check "and no row that fails or skips" 0 "$(grep -cE '^(FAIL|SKIP) ' "$PF/out")"
+check "the forced command is found in the builder VM" PASS "$(pf >/dev/null; pf_row ci-build)"
+pf_fails() { # ROW SETUP [VAR=VALUE...]: the row fails and the exit is 1
+    local name=$1 setup=$2
+    shift 2
+    pf_root
+    eval "$setup"
+    check "preflight fails $name ${*:-($setup)}" "rc=1 FAIL" "$(pf "$@") $(pf_row "$name")"
+}
+# shellcheck disable=SC2016 # each setup is eval'd by pf_fails
+{
+pf_fails kvm 'rm "$PF/root/dev/kvm"'
+pf_fails nested-kvm 'echo N >"$PF/root/sys/module/kvm_intel/parameters/nested"'
+pf_fails nested-kvm 'rm -r "$PF/root/sys/module"'
+pf_fails podman : FAKE_PODMAN_VERSION=4.3.1
+pf_fails podman : FAKE_ROOTLESS=false
+pf_fails subids 'printf "%s:100000:1000\n" "$(id -un)" >"$PF/root/etc/subgid"'
+pf_fails cgroup-v2 'rm "$PF/root/sys/fs/cgroup/cgroup.controllers"'
+pf_fails disk : FAKE_AVAIL=50000000000
+pf_fails ram 'printf "MemTotal: 6000000 kB\n" >"$PF/root/proc/meminfo"'
+pf_fails cpus : FAKE_NPROC=4
+pf_fails net:ghcr.io : FAKE_UNREACHABLE=ghcr.io
+pf_fails runner-key 'chmod 644 "$PF/home/.config/apex/runner/ssh/id_ed25519"'
+pf_fails ci-build : FAKE_BINDING=no-restriction
+pf_fails time-sync : FAKE_NTP=no
+}
+pf_root
+mkdir -p "$PF/home/vm"
+truncate -s 0 "$PF/home/vm/disk.qcow2"
+head -c 1048576 /dev/zero >"$PF/home/vm/disk.qcow2"
+check "a smaller VM asks for less RAM and fewer threads" "rc=0" "$(pf APEX_VM_MEM=2G APEX_VM_CPUS=4 FAKE_NPROC=4 \
+    FAKE_AVAIL=200000000000)"
+check "the VM's own disk counts toward its space" PASS "$(pf FAKE_AVAIL=91268055040 >/dev/null; pf_row disk)"
+pf_root
+rm "$PF/home/.config/apex/runner/ssh/"*
+check "before runner.sh key the key rows skip, and the host still passes" "rc=0 SKIP SKIP" \
+    "$(pf) $(pf_row runner-key) $(pf_row ci-build)"
+pf_root
+check "a stopped builder VM skips the binding" "rc=0 SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build)"
+check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
 
 # --- .gitignore: biometric file names are never tracked ------------------------------------
 for f in a.pgm B.PGM x/print.Variant rec.ioctl x/y/rec.UMOCKDEV cap.pcap cap.PcapNG \
