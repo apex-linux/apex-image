@@ -55,6 +55,7 @@ db = {
     "ptyxis": {"evr": "51.0-1.fc45", "signature": fedora},
     "nautilus": {"evr": "51.0-1.fc45", "signature": fedora},
     "gnome-control-center": {"evr": "51.0-2.fc45", "signature": fedora},
+    "libadwaita": {"evr": "1.10.0-2.fc45", "signature": fedora},
     "apex-desktop": {"evr": "0.1.0-0.fc45", "arch": "noarch", "signature": apex,
                      "files": ["/etc/profile.d/apex-prompt.sh", "/etc/profile.d/zz-apex-shell-status.sh"]},
 }
@@ -141,6 +142,7 @@ expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carr
 expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
 expect_out "Files before its family" '^PASS desktop: nautilus 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no nautilus family\)$'
 expect_out "Settings before its family" '^PASS desktop: gnome-control-center 51\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no gnome-control-center family\)$'
+expect_out "libadwaita before its family" '^PASS desktop: libadwaita 1\.10\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no libadwaita family\)$'
 expect_out "the Apex prompt" '^PASS desktop: /etc/profile.d/apex-prompt.sh is apex-desktop.s and sorts before vte.sh'
 expect_out "the exit-status fix" '^PASS desktop: /etc/profile.d/zz-apex-shell-status.sh is apex-desktop.s and sorts after vte.sh'
 for v in 'apex-shell-theme light' 'apex-shell-theme dark' 'apex-shell-structure'; do
@@ -508,5 +510,25 @@ add_family "$r/usr/share/apex/rpms.lock" gnome-control-center degraded
 desktop settingsdegraded
 expect_rc "Fedora's Settings under a degraded family passes" 0
 expect_out "and is named" '^PASS desktop: gnome-control-center 51\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is degraded: degraded=settings\)$'
+
+r=$(mkroot adwaitabuilt)
+add_family "$r/usr/share/apex/rpms.lock" libadwaita built
+rpmdb "$T/adwaitabuilt.db" libadwaita.evr=51.0-1.fc45.apex1 "libadwaita.signature=$apex"
+mkdir -p "$r/usr/lib64"
+printf '\177ELF\002\001\001\000\000gtk-4.0/apex.css\000' >"$r/usr/lib64/libadwaita-1.so.0.1000.0"
+ln -s libadwaita-1.so.0.1000.0 "$r/usr/lib64/libadwaita-1.so.0"
+desktop adwaitabuilt
+expect_rc "the Apex libadwaita as the lane built it passes" 0
+expect_out "with the patch, through the soname link" '^PASS desktop: /usr/lib64/libadwaita-1\.so\.0 carries gtk-4\.0/apex\.css: the Apex resource is compiled in$'
+r=$(mkroot adwaitanopatch)
+add_family "$r/usr/share/apex/rpms.lock" libadwaita built
+rpmdb "$T/adwaitanopatch.db" libadwaita.evr=51.0-1.fc45.apex1 "libadwaita.signature=$apex"
+desktop adwaitanopatch
+expect_rc "an Apex libadwaita without the patch fails" 1
+r=$(mkroot adwaitadegraded)
+add_family "$r/usr/share/apex/rpms.lock" libadwaita degraded
+desktop adwaitadegraded
+expect_rc "Fedora's libadwaita under a degraded family passes" 0
+expect_out "and is named" '^PASS desktop: libadwaita 1\.10\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is degraded: degraded=adwaita\)$'
 
 done_testing
