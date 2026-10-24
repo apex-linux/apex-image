@@ -190,6 +190,18 @@ EOF_REQUIRED
     fi
 fi
 
+# Modules on CachyOS that Fedora builds in: composefs and the LUKS2 unlock need them early.
+for mod in erofs overlay aesni-intel; do
+    pattern=$(printf '%s' "$mod" | sed 's/-/[-_]/g')
+    if initramfs_has "/${pattern}\.ko(\.(xz|zst|gz))?\$"; then
+        pass "$mod module in the initramfs"
+    elif grep -Eq "(^|/)${pattern}\.ko\$" "$MODDIR/$kver/modules.builtin" 2>/dev/null; then
+        pass "$mod built into the kernel (modules.builtin)"
+    else
+        fail "$mod missing: not in the initramfs and not built into the kernel"
+    fi
+done
+
 kargs=$(rootpath /usr/lib/bootc/kargs.d/20-apex-pair.toml)
 for k in module.sig_enforce=1 zswap.enabled=0 module_blacklist=nouveau,nova_core; do
     if [ -f "$kargs" ] && grep -Fq "\"$k\"" "$kargs"; then

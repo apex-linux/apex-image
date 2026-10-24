@@ -16,6 +16,9 @@ const KMOD_MAJOR_HOLD_DAYS: i64 = 14;
 /// K7: a pinned key's expiry is announced well before it stops every verification.
 const KEY_WARN_DAYS: i64 = 60;
 const KEY_URGENT_DAYS: i64 = 14;
+/// ARCHITECTURE 4.2: a pair whose module count moves more than this from the last good
+/// pair's is held, as a check failure.
+const MODULE_DRIFT_PERCENT: usize = 5;
 pub const DEGRADED_NVIDIA: &str = "degraded=nvidia";
 
 /// pair.sh's reason prefixes. Anything but `kmod:` stops the kernel itself: an input
@@ -259,6 +262,32 @@ pub fn key_expiry(key: &PinnedKey, now: UtcSecond) -> KeyExpiry {
     } else {
         KeyExpiry::Fine
     }
+}
+
+/// Kernel modules in an `rpm -qlp` listing of the pair's RPMs.
+pub fn count_modules(listing: &[u8]) -> usize {
+    text::lines(listing)
+        .into_iter()
+        .filter(|path| {
+            let path = text::lossy(path);
+            let in_modules =
+                path.starts_with("/lib/modules/") || path.starts_with("/usr/lib/modules/");
+            let name = path.rsplit('/').next().unwrap_or_default();
+            in_modules
+                && [".ko", ".ko.xz", ".ko.zst", ".ko.gz"]
+                    .iter()
+                    .any(|ext| name.len() > ext.len() && name.ends_with(ext))
+        })
+        .count()
+}
+
+/// `check:`, pair.sh's own prefix for a failed gate, when the count moved too far.
+pub fn module_drift(previous: usize, now: usize, good_key: &str) -> Option<String> {
+    (previous.abs_diff(now) * 100 > previous * MODULE_DRIFT_PERCENT).then(|| {
+        format!(
+            "check: the pair has {now} modules, the last good pair {good_key} {previous}: more than {MODULE_DRIFT_PERCENT} % apart"
+        )
+    })
 }
 
 /// The last line of pair.sh's stderr that says something, as `hold::reason_of` cleans it.
@@ -617,6 +646,23 @@ mod tests {
             matches!(key_expiry(&key("2026-12-01"), now), KeyExpiry::Expired(r) if r.starts_with("the COPR key F expired on 2026-12-01"))
         );
         assert_eq!(key_expiry(&key("not a date"), now), KeyExpiry::Fine);
+    }
+
+    #[test]
+    fn module_counts() {
+        let listing = b"/lib/modules/k/kernel/fs/erofs/erofs.ko.xz\n/usr/lib/modules/k/extra/nvidia/nvidia.ko.zst\n/lib/modules/k/vmlinuz\n/lib/modules/k/modules.dep\n/usr/share/doc/x.ko.txt\n/lib/modules/k/kernel/.ko\n";
+        assert_eq!(count_modules(listing), 2);
+        assert_eq!(module_drift(1000, 950, "K"), None, "5 % is within");
+        assert_eq!(module_drift(1000, 1050, "K"), None);
+        assert_eq!(
+            module_drift(1000, 949, "K").as_deref(),
+            Some("check: the pair has 949 modules, the last good pair K 1000: more than 5 % apart")
+        );
+        assert!(module_drift(1000, 1051, "K").is_some());
+        assert_eq!(
+            Side::of_reason(module_drift(10, 1, "K").unwrap().as_bytes()),
+            Side::Kernel
+        );
     }
 
     #[test]

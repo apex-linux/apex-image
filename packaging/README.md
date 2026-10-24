@@ -205,7 +205,10 @@ exactly what it built before.
    and, for the image's checks, the recipe's `config-required.txt` and (a whole pair)
    negativo17's key file as mirrored, `negativo17.gpg`.
    Exit 1: a hold (below), the reason the last line of its stderr. Anything else is
-   exit 1 of the lane.
+   exit 1 of the lane. After an exit 0 the lane runs the one gate of ARCHITECTURE 4.2
+   that check.sh cannot, since it never sees the last good pair: the modules in the
+   pair's RPMs (`rpm -qlp`) within 5 % of the last good pair's, or a `check:` hold.
+   BTF is check.sh's, through `config-required.txt` (`CONFIG_DEBUG_INFO_BTF=y`).
 6. **The lock**: `family kernel-cachyos built KEY`, one `rpm` line of kind `built` for
    each `install=` package and the kmod built for that kernel, and one of kind `mirror`
    for each `userspace=` RPM of the driver the pair was built with, copied from the

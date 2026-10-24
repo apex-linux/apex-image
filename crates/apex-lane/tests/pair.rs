@@ -129,6 +129,8 @@ struct Fake {
     keyrings: RefCell<BTreeMap<String, String>>,
     job: RefCell<Box<Job>>,
     bump: RefCell<String>,
+    /// Modules in kernel-cachyos-modules, by kernel version-release; 1000 otherwise.
+    modules: RefCell<BTreeMap<String, usize>>,
     real: StdRunner,
 }
 
@@ -169,6 +171,7 @@ impl Fake {
                 panic!("no job expected")
             })),
             bump: RefCell::default(),
+            modules: RefCell::default(),
             real: StdRunner::inherit(),
         }
     }
@@ -228,6 +231,23 @@ impl Fake {
                 bytes.extend_from_slice(b" +signature");
                 std::fs::write(rpm, bytes).unwrap();
                 ok("")
+            }
+            Program::Rpm if has("-qlp") => {
+                let files = &args[args.iter().position(|a| a == "--").unwrap() + 1..];
+                let mut listing = String::new();
+                for f in files {
+                    let name = f.rsplit('/').next().unwrap();
+                    let Some(rest) = name.strip_prefix("kernel-cachyos-modules-") else {
+                        let _ = writeln!(listing, "/usr/share/doc/{name}/README");
+                        continue;
+                    };
+                    let vr = rest.split(".cachyos").next().unwrap();
+                    let n = self.modules.borrow().get(vr).copied().unwrap_or(1000);
+                    for i in 0..n {
+                        let _ = writeln!(listing, "/lib/modules/{vr}/kernel/m{i}.ko.xz");
+                    }
+                }
+                ok(&listing)
             }
             Program::Rpm => {
                 let files = &args[args.iter().position(|a| a == "--").unwrap() + 1..];
@@ -1065,5 +1085,41 @@ fn a_pinned_key_that_expires_soon_warns_and_an_expired_one_holds() {
         (t.fake.calls(Program::Curl), t.fake.calls(Program::Podman)),
         (curls, podmans),
         "nothing is downloaded or built with an expired key"
+    );
+}
+
+#[test]
+fn a_pair_whose_module_count_moves_more_than_5_percent_is_held() {
+    let t = PairTest::new();
+    let good = t.with_good_pair();
+    t.pins("7.3.1-1", "615.78.08-1");
+    t.fake.modules.borrow_mut().insert("7.3.1-1".into(), 949);
+    t.fake.on_job(good_job);
+    assert_eq!(t.build(T0), Built::Held);
+    assert_eq!(
+        t.family_line(),
+        format!(
+            "family kernel-cachyos held {good} since={T0} limit=2026-12-04T00:00:00Z newer=kernel-cachyos-0:7.3.1-1.cachyos1.fc45.src security=1 side=kernel reason=check: the pair has 949 modules, the last good pair {good} 1000: more than 5 % apart"
+        )
+    );
+    let stored = std::fs::read_dir(t.store.path().join("pkgs/kernel"))
+        .unwrap()
+        .count();
+    assert_eq!(
+        stored, 2,
+        "the good pair and last-failure.txt; nothing new is stored"
+    );
+    t.fake.modules.borrow_mut().insert("7.3.1-1".into(), 960);
+    let Built::Built(key) = t.build("2026-12-01T01:00:00Z") else {
+        panic!("not built")
+    };
+    assert_eq!(
+        t.family_line(),
+        format!("family kernel-cachyos built {key}")
+    );
+    assert!(
+        String::from_utf8_lossy(&t.report.captured()).contains(&format!(
+            "modules: 960 in the pair, 1000 in the last good pair {good}"
+        ))
     );
 }

@@ -50,6 +50,10 @@ is the Fedora-kernel image it was.
   and the preset that disables `nvidia-persistenced`), removes the Fedora kernel's
   `apex-dgpu.conf` and `61-apex-dgpu-pm.rules`, and labels `pair-degraded` as
   `degraded=nvidia`. A held pair is `held=kernel-cachyos`, as for any family.
+- With a pair, the final stage also installs apex-system's
+  `hardware/m7400qc/generated/61-apex-mutter-ignore-dgpu.rules`, rendered from the
+  profile's `drives_displays = false`, so mutter never opens the NVIDIA card; the
+  build stops without it.
 - The break-glass image, `just image KERNEL=fedora` (`build-image.sh --kernel fedora`,
   `image.sh context --kernel fedora`), builds on Fedora's kernel whatever the lock says:
   the image's copy of the lock records the pair as the owner's `stock` choice with a
@@ -144,10 +148,10 @@ exits 1 on a FAIL. The final stage runs them with `sh`.
 | `desktop.sh` | the shell as the lane locked it, its theme, the Apex schema, vendor defaults and crash guard |
 | `firmware.sh` | every glob of `firmware-files.txt` matches a firmware file |
 | `icons.sh` | every `.desktop` file's `Icon=` resolves in the default icon theme, what it inherits, hicolor or the unthemed dirs, as GTK resolves it |
-| `kernel.sh` | the one kernel and its initramfs: early KMS, microcode, the LUKS2 unlock, no NVIDIA module; with the pair, the locked kernel and no Fedora kernel package, `config-required.txt` line by line, the pair's kargs, and one signer, the build's own key, for every module |
+| `kernel.sh` | the one kernel and its initramfs: early KMS, microcode, the LUKS2 unlock, no NVIDIA module; with the pair, the locked kernel and no Fedora kernel package, `config-required.txt` line by line, the pair's kargs, erofs, overlay and aesni-intel early, and one signer, the build's own key, for every module |
 | `keybindings.sh` | no two default keybindings share a combination |
 | `keys.sh` | the signature policy's trust mapping and the keys it names |
-| `nvidia.sh` | without the pair, no NVIDIA package or pair file; with it, the locked kmod for this kernel, Apex-signed, its userspace at the kmod's version, the modules' vermagic, RTD3, no akmods or Xorg driver, `nvidia-persistenced` off; with `degraded=nvidia`, no NVIDIA set and the label |
+| `nvidia.sh` | without the pair, no NVIDIA package or pair file; with it, the locked kmod for this kernel, Apex-signed, its userspace at the kmod's version, the modules' vermagic, the GSP firmware and licence, RTD3 and negativo17's s2idle options in effect as modprobe reads them, no akmods or Xorg driver, `nvidia-persistenced` off; with either, no `/etc/kernel/cmdline` or `/etc/default/grub` and an empty `/boot`; with `degraded=nvidia`, no NVIDIA set and the label |
 | `legacy.sh` | no banned package, and no GTK2, GTK3 or Xorg user outside `audit/legacy-allowlist.txt` |
 | `overlay.sh` | the rootfs overlay's files parse without a warning |
 | `power.sh` | tuned-ppd and its ppd.conf |

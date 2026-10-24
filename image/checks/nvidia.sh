@@ -7,7 +7,7 @@ APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$APEX_CHECKS_DIR/lib/common.sh"
 
 MODDIR=$(rootpath /usr/lib/modules)
-PAIR_FILES="/usr/lib/bootc/kargs.d/20-apex-pair.toml /usr/lib/modprobe.d/apex-nvidia.conf /usr/lib/udev/rules.d/61-apex-dgpu.rules /usr/lib/systemd/system-preset/79-apex-pair.preset"
+PAIR_FILES="/usr/lib/bootc/kargs.d/20-apex-pair.toml /usr/lib/modprobe.d/apex-nvidia.conf /usr/lib/udev/rules.d/61-apex-dgpu.rules /usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules /usr/lib/systemd/system-preset/79-apex-pair.preset"
 # The kmod is built for the image, never on it, and only the Wayland userspace ships.
 NEVER="akmods akmod-nvidia dkms dkms-nvidia kmodtool xorg-x11-nvidia nvidia-settings nvidia-xconfig"
 
@@ -60,6 +60,12 @@ done
 for f in /usr/lib/modprobe.d/apex-dgpu.conf /usr/lib/udev/rules.d/61-apex-dgpu-pm.rules; do
     if [ -e "$(rootpath "$f")" ]; then fail "$f is the Fedora kernel's, and the pair replaces it"; fi
 done
+ignore=$(rootpath /usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules)
+if [ -f "$ignore" ] && grep -Eq 'ATTRS\{vendor\}=="0x10de".*TAG\+="mutter-device-ignore"' "$ignore"; then
+    pass "mutter never opens the NVIDIA card (61-apex-mutter-ignore-dgpu.rules)"
+else
+    fail "no rule tags the NVIDIA card mutter-device-ignore (/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules)"
+fi
 if grep -Eq '^[[:space:]]*options[[:space:]]+nvidia[[:space:]].*NVreg_DynamicPowerManagement=0x02' \
     "$(rootpath /usr/lib/modprobe.d/apex-nvidia.conf)" 2>/dev/null; then
     pass "fine-grained RTD3 (NVreg_DynamicPowerManagement=0x02)"
@@ -72,6 +78,18 @@ if [ -z "$wants" ]; then
     pass "nvidia-persistenced is not enabled"
 else
     fail "nvidia-persistenced is enabled ($(unroot "$wants" | paste -sd ' ' -)); it keeps the dGPU awake"
+fi
+
+# The kernel's %posttrans and nvidia-kmod-common's %post skip their bootloader work under
+# rpm-ostree (K1); a compose that ran them would leave these behind.
+for f in /etc/kernel/cmdline /etc/default/grub; do
+    if [ -e "$(rootpath "$f")" ]; then fail "$f exists: a scriptlet edited the bootloader configuration"; fi
+done
+boot=$(find "$(rootpath /boot)" -mindepth 1 -maxdepth 1 2>/dev/null | sed 's|.*/||' | paste -sd ' ' -)
+if [ -n "$boot" ]; then
+    fail "/boot is not empty: $boot"
+else
+    pass "no bootloader configuration and an empty /boot"
 fi
 
 if [ "$mode" = pair-degraded ]; then
@@ -109,6 +127,36 @@ for n in nvidia-kmod-common nvidia-driver; do
         pass "$n $v, the kmod's version"
     else
         fail "$n is ${v:-not installed}, not the kmod's version ${version:-?}"
+    fi
+done
+
+gsp=$(find "$(rootpath /usr/lib/firmware/nvidia)" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null |
+    sed 's|.*/||' | sort -u | paste -sd ' ' -)
+if [ -n "$version" ] && [ "$gsp" = "$version" ]; then
+    pass "GSP firmware $gsp, the kmod's version"
+else
+    fail "the GSP firmware under /usr/lib/firmware/nvidia is ${gsp:-missing}, not the kmod's ${version:-?} alone"
+fi
+if ls "$(rootpath /usr/share/licenses)"/nvidia-*/* >/dev/null 2>&1; then
+    pass "the NVIDIA licence ships"
+else
+    fail "no NVIDIA licence under /usr/share/licenses"
+fi
+
+# As modprobe reads them: by file name, /etc over /usr/lib, and the kernel keeps the last value.
+effective() {
+    for d in "$(rootpath /usr/lib/modprobe.d)" "$(rootpath /etc/modprobe.d)"; do
+        for f in "$d"/*.conf; do [ -f "$f" ] && printf '%s %s\n' "${f##*/}" "$f"; done
+    done | awk '{ path[$1] = $2 } END { for (n in path) print n, path[n] }' | sort |
+        while read -r _ f; do cat "$f"; done |
+        awk -v p="$1" '$1 == "options" && $2 == "nvidia" { for (i = 3; i <= NF; i++) if (index($i, p "=") == 1) v = substr($i, length(p) + 2) } END { print v }'
+}
+for want in NVreg_DynamicPowerManagement=0x02 NVreg_EnableS0ixPowerManagement=1 NVreg_PreserveVideoMemoryAllocations=1; do
+    got=$(effective "${want%%=*}")
+    if [ "$got" = "${want#*=}" ]; then
+        pass "options nvidia: $want in effect"
+    else
+        fail "options nvidia: ${want%%=*} is '${got:-unset}' in effect, not ${want#*=}"
     fi
 done
 

@@ -1360,6 +1360,11 @@ check "image.sh context without apex-desktop's RPMs fails" 1 "$ctx_rc"
 check_true "and says apex-desktop is required" grep -q "apex-desktop is required" <<<"$ctx_log"
 image_context --rpms-dir "$IL/rpms" --desktop-dir "$IL/desktop" --lane-lock "$IL/rpms.lock" --kernel cachyos
 check "image.sh context --kernel takes fedora only" 1 "$ctx_rc"
+image_context --rpms-dir "$IL/rpms" --desktop-dir "$IL/desktop" --lane-lock "$IL/rpms.lock" --kernel fedora
+check "break-glass of a lock without a kernel pair fails" 1 "$ctx_rc"
+check_true "and says the image already uses Fedora's kernel" \
+    grep -q "no kernel pair in the lane lock .*: the image already uses Fedora's kernel" <<<"$ctx_log"
+check_false "and writes no break-glass lock" test -e "$IL/work/break-glass.lock"
 {
     cat "$IL/rpms.lock"
     printf 'family kernel-cachyos built kk
