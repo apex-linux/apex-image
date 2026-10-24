@@ -113,6 +113,7 @@ readonly MANIFEST=/usr/share/apex/manifest.json
 readonly ASSESS_UNIT=apex-boot-assess.service
 readonly BOOTLOADER_UNIT=bootloader-update.service
 readonly BOOTLOADER_GATE=/usr/lib/systemd/system/bootloader-update.service.d/10-apex-after-green-boot.conf
+readonly APEX_MENU_SNIPPET=/usr/lib/bootupd/grub2-static/configs.d/07_apex-menu.cfg
 readonly TEST_USER=apexqa
 readonly LOCAL_CANDIDATE=localhost/apex-qualify:candidate
 # $kernel is the key script's: Fedora's kernel, or the kernel pair's with its kmod (ADR 0015).
@@ -485,10 +486,16 @@ assert_grubenv() {
         fail "$test" "grubenv: $problem (all: $(tr '\n' ' ' <<<"$env"))"
 }
 
+# An image that ships the menu snippet confirms every green boot, armed or not.
+green_grubstate() {
+    if vm_ssh "test -e $APEX_MENU_SNIPPET"; then echo confirmed; else echo disarmed; fi
+}
+
 assert_green() {
-    local test=$1 expected=$2 grubstate=${3:-disarmed} status booted
+    local test=$1 expected=$2 grubstate=${3:-} status booted
     assert_running "$test"
     wait_assessment "$test"
+    [[ -n $grubstate ]] || grubstate=$(green_grubstate)
     assert_grubenv "$test" "$grubstate"
 
     status=$(status_json)
