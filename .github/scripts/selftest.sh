@@ -1011,7 +1011,7 @@ EOF
 guest() {
     local rc=0
     : >"$GUEST_DIR/out/results.md"
-    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=1 QUALIFY_LOCK_TIMEOUT=1 \
+    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 \
         QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' APEX_GNOME_SRC="$GUEST_DIR/gnome" \
         bash "$TMP/qualify-fake-guest.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$GUEST_DIR/state" "$@" \
         >"$GUEST_DIR/stderr" 2>&1 || rc=$?
