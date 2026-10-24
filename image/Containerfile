@@ -241,6 +241,8 @@ RUN --mount=type=bind,source=hardware/m7400qc/generated,target=/run/apex-hw \
         case $f in \
             gnome-shell) echo "NOTE: the gnome-shell family is Fedora's build: degraded=shell"; echo shell >>"$degraded" ;; \
             ptyxis) echo "NOTE: the ptyxis family is Fedora's build: degraded=terminal"; echo terminal >>"$degraded" ;; \
+            nautilus) echo "NOTE: the nautilus family is Fedora's build: degraded=files"; echo files >>"$degraded" ;; \
+            gnome-control-center) echo "NOTE: the gnome-control-center family is Fedora's build: degraded=settings"; echo settings >>"$degraded" ;; \
             *) echo "ERROR: the lane family $f is stock or degraded, but has no degraded name" >&2; exit 1 ;; \
         esac; \
     done; \
