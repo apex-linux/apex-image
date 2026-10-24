@@ -291,6 +291,26 @@ pub fn parse_kernel(file: &str, bytes: &[u8]) -> Result<KernelPins, ConfigError>
     })
 }
 
+/// apex-kernel's pins as the lane reads them: both files parse, and the tag pins that
+/// `kernel-bump` needs are set.
+pub fn check_pins(kernel: &[u8], nvidia: &[u8]) -> Result<(KernelPins, NvidiaPins), ConfigError> {
+    let k = parse_kernel("kernel.env", kernel)?;
+    let n = parse_nvidia("nvidia.env", nvidia)?;
+    for (key, value) in [
+        ("tag", &k.tag),
+        ("tag_repo", &k.tag_repo),
+        ("tag_key", &k.tag_key),
+        ("tag_key_url", &k.tag_key_url),
+    ] {
+        if value.is_none() {
+            return Err(ConfigError(format!(
+                "kernel.env: '{key}' is required: kernel-bump verifies the CachyOS tag with it"
+            )));
+        }
+    }
+    Ok((k, n))
+}
+
 pub fn parse_nvidia(file: &str, bytes: &[u8]) -> Result<NvidiaPins, ConfigError> {
     let v = Values {
         file,
@@ -409,6 +429,33 @@ mod tests {
             (k.major().as_str(), k.kernel_org_version().as_str()),
             ("7.3", "7.3.2")
         );
+    }
+
+    #[test]
+    fn check_pins_wants_the_tag_pins() {
+        let (k, n) = check_pins(KERNEL_ENV.as_bytes(), NVIDIA_ENV.as_bytes()).unwrap();
+        assert_eq!(k.srpm.nvr(), "kernel-cachyos-7.3.0-4.cachyos1.fc45");
+        assert_eq!(
+            n.kmod_srpm.to_string(),
+            "nvidia-kmod-3:615.78.08-1.fc45.src"
+        );
+        let check = |kernel: String| {
+            check_pins(kernel.as_bytes(), NVIDIA_ENV.as_bytes())
+                .unwrap_err()
+                .0
+        };
+        assert_eq!(
+            check(KERNEL_ENV.replace("tag_repo=https://github.com/CachyOS/linux.git\n", "")),
+            "kernel.env: 'tag_repo' is required: kernel-bump verifies the CachyOS tag with it"
+        );
+        assert!(
+            check(KERNEL_ENV.replace("tag_key_url=https://", "tag_key_url=http://"))
+                .contains("tag_key_url must be an https:// URL")
+        );
+        let bad_nvidia = check_pins(KERNEL_ENV.as_bytes(), b"kmod_srpm=x\n")
+            .unwrap_err()
+            .0;
+        assert!(bad_nvidia.starts_with("nvidia.env: "), "{bad_nvidia}");
     }
 
     fn kernel_error(text: &str) -> String {

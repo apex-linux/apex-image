@@ -174,6 +174,10 @@ the pair job reads them with `sed`.
 | `negativo17_key` | yes | negativo17's key fingerprint |
 | `negativo17_key_expires` | no | `YYYY-MM-DD` |
 
+`apex-lane check-pins DIR` parses DIR's `kernel.env` and `nvidia.env` exactly as the lane does
+and requires the tag pins; the contracts job runs it on the pinned apex-kernel, so a pin
+the lane cannot read fails apex-image's CI before any build.
+
 apex-kernel has no such `pkg.env` yet, so the lane sees no kernel family and builds
 exactly what it built before.
 

@@ -178,6 +178,13 @@ jobs:
           . "$RUNNER_TEMP/components.env"
           .github/scripts/contracts.sh
 
+      - uses: apex-linux/apex-ci/actions/fedora-rust@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
+
+      - name: apex-lane reads the pinned apex-kernel's kernel.env and nvidia.env
+        run: |
+          . "$RUNNER_TEMP/components.env"
+          cargo run --locked --quiet -p apex-lane -- check-pins "$APEX_KERNEL_SRC/packaging/pkgs/kernel"
+
       - name: apex-gnome's layer tests against the pinned apex-desktop
         # The layer tests carry copies of apex-desktop's schema and crash guard unit.
         run: |
