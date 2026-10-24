@@ -29,6 +29,7 @@ expect_out "signed by the Apex RPM key" "^PASS nvidia: $KMOD is signed by the Ap
 expect_out "one NVIDIA version" '^PASS nvidia: nvidia-driver 615\.78\.08, the kmod.s version$'
 expect_out "the modules' vermagic" "^PASS nvidia: the NVIDIA modules' vermagic is $KVER\$"
 expect_out "fine-grained RTD3" '^PASS nvidia: fine-grained RTD3'
+expect_out "mutter never opens the NVIDIA card" '^PASS nvidia: mutter never opens the NVIDIA card'
 
 pair_root pair-unsigned pair
 sed -i "s/\"$KMOD\": {\"evr\": \"3:615.78.08-1.fc45\", \"signature\": \"[^\"]*\"}/\"$KMOD\": {\"evr\": \"3:615.78.08-1.fc45\"}/" "$R/rpmdb.json"
@@ -53,6 +54,22 @@ sed -i "s/^rpm kernel-cachyos built $KMOD $KMOD-3:615.78.08-1/rpm kernel-cachyos
 check nvidia "$R"
 expect_rc "a kmod other than the locked one: fails" 1
 expect_out "and names both" "^FAIL nvidia: $KMOD is $KMOD-3:615\\.78\\.08-1\\.fc45\\.x86_64, but rpms\\.lock locks $KMOD-3:615\\.78\\.08-2"
+
+pair_root pair-no-ignore pair
+rm "$R/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules"
+check nvidia "$R"
+expect_rc "a pair without the mutter-device-ignore rule: fails" 1
+expect_out "and says so" '^FAIL nvidia: no rule tags the NVIDIA card mutter-device-ignore'
+
+pair_root degraded-no-ignore degraded
+rm "$R/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules"
+check nvidia "$R"
+expect_rc "degraded=nvidia without it: fails too" 1
+
+pair_root fedora-ignore fedora
+cp "$T/pair/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules" "$R/usr/lib/udev/rules.d/"
+check nvidia "$R"
+expect_rc "Fedora's kernel with the pair's mutter rule: fails" 1
 
 pair_root pair-akmods pair
 rpmdb_add "$R" akmods '{}'

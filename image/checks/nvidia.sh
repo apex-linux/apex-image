@@ -7,7 +7,7 @@ APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$APEX_CHECKS_DIR/lib/common.sh"
 
 MODDIR=$(rootpath /usr/lib/modules)
-PAIR_FILES="/usr/lib/bootc/kargs.d/20-apex-pair.toml /usr/lib/modprobe.d/apex-nvidia.conf /usr/lib/udev/rules.d/61-apex-dgpu.rules /usr/lib/systemd/system-preset/79-apex-pair.preset"
+PAIR_FILES="/usr/lib/bootc/kargs.d/20-apex-pair.toml /usr/lib/modprobe.d/apex-nvidia.conf /usr/lib/udev/rules.d/61-apex-dgpu.rules /usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules /usr/lib/systemd/system-preset/79-apex-pair.preset"
 # The kmod is built for the image, never on it, and only the Wayland userspace ships.
 NEVER="akmods akmod-nvidia dkms dkms-nvidia kmodtool xorg-x11-nvidia nvidia-settings nvidia-xconfig"
 
@@ -60,6 +60,12 @@ done
 for f in /usr/lib/modprobe.d/apex-dgpu.conf /usr/lib/udev/rules.d/61-apex-dgpu-pm.rules; do
     if [ -e "$(rootpath "$f")" ]; then fail "$f is the Fedora kernel's, and the pair replaces it"; fi
 done
+ignore=$(rootpath /usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules)
+if [ -f "$ignore" ] && grep -Eq 'ATTRS\{vendor\}=="0x10de".*TAG\+="mutter-device-ignore"' "$ignore"; then
+    pass "mutter never opens the NVIDIA card (61-apex-mutter-ignore-dgpu.rules)"
+else
+    fail "no rule tags the NVIDIA card mutter-device-ignore (/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules)"
+fi
 if grep -Eq '^[[:space:]]*options[[:space:]]+nvidia[[:space:]].*NVreg_DynamicPowerManagement=0x02' \
     "$(rootpath /usr/lib/modprobe.d/apex-nvidia.conf)" 2>/dev/null; then
     pass "fine-grained RTD3 (NVreg_DynamicPowerManagement=0x02)"

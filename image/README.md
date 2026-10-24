@@ -50,6 +50,10 @@ is the Fedora-kernel image it was.
   and the preset that disables `nvidia-persistenced`), removes the Fedora kernel's
   `apex-dgpu.conf` and `61-apex-dgpu-pm.rules`, and labels `pair-degraded` as
   `degraded=nvidia`. A held pair is `held=kernel-cachyos`, as for any family.
+- With a pair, the final stage also installs apex-system's
+  `hardware/m7400qc/generated/61-apex-mutter-ignore-dgpu.rules`, rendered from the
+  profile's `drives_displays = false`, so mutter never opens the NVIDIA card; the
+  build stops without it.
 - `kargs.d/10-apex.toml` keeps `modprobe.blacklist=` and `rd.driver.blacklist=` for
   nouveau and nova-core. In a pair image `module_blacklist=` makes them redundant; they
   go in S4, once the pair is the only kernel.

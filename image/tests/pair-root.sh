@@ -79,6 +79,8 @@ pair_root() {
         return 0
     fi
     cp -R "$IMAGE_DIR/variants/pair/." "$R/"
+    printf '%s\n' 'SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{DEVTYPE}=="drm_minor", SUBSYSTEMS=="pci", ATTRS{vendor}=="0x10de", ATTRS{device}=="0x25a2", TAG+="mutter-device-ignore"' \
+        >"$R/usr/lib/udev/rules.d/61-apex-mutter-ignore-dgpu.rules"
     {
         printf '{"kernel-cachyos-core": {"evr": "7.3.0-4.cachyos1.fc45", "signature": "%s"},\n' "$APEX_SIG"
         printf ' "kernel-headers": {"evr": "7.3.0-1.fc45", "signature": "%s", "sourcerpm": "kernel-headers-7.3.0-1.fc45.src.rpm"}' "$FEDORA_SIG"
