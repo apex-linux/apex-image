@@ -29,6 +29,8 @@ expect_out "signed by the Apex RPM key" "^PASS nvidia: $KMOD is signed by the Ap
 expect_out "one NVIDIA version" '^PASS nvidia: nvidia-driver 615\.78\.08, the kmod.s version$'
 expect_out "the modules' vermagic" "^PASS nvidia: the NVIDIA modules' vermagic is $KVER\$"
 expect_out "fine-grained RTD3" '^PASS nvidia: fine-grained RTD3'
+expect_out "GSP firmware of the kmod's version" '^PASS nvidia: GSP firmware 615\.78\.08, the kmod.s version$'
+expect_out "the effective options" '^PASS nvidia: options nvidia: NVreg_EnableS0ixPowerManagement=1 in effect$'
 
 pair_root pair-unsigned pair
 sed -i "s/\"$KMOD\": {\"evr\": \"3:615.78.08-1.fc45\", \"signature\": \"[^\"]*\"}/\"$KMOD\": {\"evr\": \"3:615.78.08-1.fc45\"}/" "$R/rpmdb.json"
@@ -89,5 +91,50 @@ pair_root degraded-kmod degraded
 rpmdb_add "$R" nvidia-kmod-common '{"evr": "3:615.78.08-1.fc45"}'
 check nvidia "$R"
 expect_rc "degraded=nvidia with NVIDIA userspace: fails" 1
+
+
+pair_root pair-cmdline pair
+mkdir -p "$R/etc/kernel"
+printf 'root=x\n' >"$R/etc/kernel/cmdline"
+check nvidia "$R"
+expect_rc "/etc/kernel/cmdline written by a scriptlet: fails" 1
+expect_out "and names it" '^FAIL nvidia: /etc/kernel/cmdline exists'
+
+pair_root degraded-grub degraded
+mkdir -p "$R/etc/default"
+: >"$R/etc/default/grub"
+check nvidia "$R"
+expect_rc "/etc/default/grub in a degraded=nvidia image: fails" 1
+
+pair_root pair-boot pair
+mkdir -p "$R/boot/loader"
+check nvidia "$R"
+expect_rc "a non-empty /boot: fails" 1
+expect_out "and lists it" '^FAIL nvidia: /boot is not empty: loader$'
+
+pair_root pair-gsp pair
+mkdir -p "$R/usr/lib/firmware/nvidia/615.71.09"
+check nvidia "$R"
+expect_rc "GSP firmware of two versions: fails" 1
+expect_out "and names them" '^FAIL nvidia: the GSP firmware under /usr/lib/firmware/nvidia is 615\.71\.09 615\.78\.08, not'
+
+pair_root pair-licence pair
+rm -r "$R/usr/share/licenses"
+check nvidia "$R"
+expect_rc "no NVIDIA licence: fails" 1
+
+pair_root pair-etc-options pair
+mkdir -p "$R/etc/modprobe.d"
+printf 'options nvidia NVreg_DynamicPowerManagement=0x00\n' >"$R/etc/modprobe.d/zz-local.conf"
+check nvidia "$R"
+expect_rc "a later file turning RTD3 off: fails" 1
+expect_out "and shows the value in effect" "^FAIL nvidia: options nvidia: NVreg_DynamicPowerManagement is '0x00' in effect, not 0x02\$"
+
+pair_root pair-etc-override pair
+mkdir -p "$R/etc/modprobe.d"
+printf 'options nvidia NVreg_EnableS0ixPowerManagement=0\n' >"$R/etc/modprobe.d/nvidia.conf"
+check nvidia "$R"
+expect_rc "/etc/modprobe.d/nvidia.conf replacing negativo17's: fails" 1
+expect_out "and its options are the ones in effect" "^FAIL nvidia: options nvidia: NVreg_PreserveVideoMemoryAllocations is 'unset' in effect"
 
 done_testing

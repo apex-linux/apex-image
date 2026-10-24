@@ -79,6 +79,9 @@ pair_root() {
         return 0
     fi
     cp -R "$IMAGE_DIR/variants/pair/." "$R/"
+    for mod in fs/erofs/erofs fs/overlayfs/overlay arch/x86/crypto/aesni-intel; do
+        printf -- '-rw-r--r--   1 root root 0 Jan  1 00:00 usr/lib/modules/%s/kernel/%s.ko.xz\n' "$KVER" "$mod"
+    done >>"$m/initramfs.img"
     {
         printf '{"kernel-cachyos-core": {"evr": "7.3.0-4.cachyos1.fc45", "signature": "%s"},\n' "$APEX_SIG"
         printf ' "kernel-headers": {"evr": "7.3.0-1.fc45", "signature": "%s", "sourcerpm": "kernel-headers-7.3.0-1.fc45.src.rpm"}' "$FEDORA_SIG"
@@ -90,6 +93,11 @@ pair_root() {
         printf '}\n'
     } >"$R/rpmdb.json"
     if [ "$mode" = pair ]; then
+        mkdir -p "$R/usr/lib/firmware/nvidia/615.78.08" "$R/usr/share/licenses/nvidia-driver"
+        printf 'gsp\n' >"$R/usr/lib/firmware/nvidia/615.78.08/gsp_ga10x.bin"
+        printf 'NVIDIA licence\n' >"$R/usr/share/licenses/nvidia-driver/LICENSE"
+        printf 'options nvidia NVreg_EnableS0ixPowerManagement=1 NVreg_PreserveVideoMemoryAllocations=1 NVreg_TemporaryFilePath=/var/tmp\n' \
+            >"$R/usr/lib/modprobe.d/nvidia.conf"
         for n in nvidia nvidia-drm nvidia-modeset nvidia-uvm nvidia-peermem; do
             module "$m/extra/nvidia/$n.ko.xz" "$KVER" "$SIGNER"
         done
