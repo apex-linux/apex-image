@@ -22,6 +22,23 @@ for p in chrony tar iputils systemd-oomd-defaults; do
     if grep -Fxq "$p" "$T/install"; then ok "installed: $p"; else not_ok "installed: $p"; fi
 done
 if grep -Fxq gtk2 "$T/exclude"; then ok "excluded: gtk2"; else not_ok "excluded: gtk2"; fi
+# legacy.sh's BANNED is ARCHITECTURE's never-shipped row: the compose excludes each one too.
+sed -n "s/^BANNED='\(.*\)'$/\1/p" "$IMAGE_DIR/checks/legacy.sh" | tr ' ' '\n' | sed '/^$/d' | sort >"$T/banned"
+if [ -s "$T/banned" ] && [ -z "$(comm -23 "$T/banned" "$T/exclude")" ]; then
+    ok "exclude.txt excludes every package legacy.sh bans"
+else
+    not_ok "banned by legacy.sh but not in exclude.txt: $(comm -23 "$T/banned" "$T/exclude" | paste -sd ' ' -)"
+fi
+for p in gnome-tour cheese; do
+    if grep -Fxq "$p" "$T/banned"; then ok "legacy.sh bans $p"; else not_ok "legacy.sh bans $p"; fi
+done
+PRE=$IMAGE_DIR/system_files/usr/share/flatpak/preinstall.d/apex.preinstall
+if grep -q '^\[Flatpak Preinstall org\.mozilla\.firefox\]' "$PRE"; then
+    not_ok "Firefox is installed on request, not preinstalled"
+else
+    ok "Firefox is installed on request, not preinstalled"
+fi
+if grep -Fxq epiphany "$T/install"; then ok "Epiphany is the image's browser"; else not_ok "Epiphany is the image's browser"; fi
 if list "$P/apex.txt" | grep -Fxq apex-desktop; then ok "apex.txt: apex-desktop"; else not_ok "apex.txt: apex-desktop"; fi
 if list "$P/apex.txt" | grep -Eq '^(gnome-shell|gnome-shell-common|mutter|mutter-common)$'; then
     not_ok "apex.txt names no lane package"

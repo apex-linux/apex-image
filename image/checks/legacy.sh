@@ -12,7 +12,7 @@ GTK2_CAPS='libgtk-x11-2.0.so.0()(64bit) libgdk-x11-2.0.so.0()(64bit) gtk2 gtk2(x
 XORG_CAPS='Xorg xorg-x11-server-Xorg xorg-x11-server-Xorg(x86-64) xorg-x11-server-common /usr/bin/Xorg /usr/libexec/Xorg'
 # gdm hard-requires xorg-x11-xinit, which requires the rest: flagged so each keeps its allowlist reason.
 X11_USERLAND='xorg-x11-xinit xorg-x11-xauth xhost xmodmap xrdb setxkbmap'
-BANNED='gnome-terminal gedit eog evince totem cheese rhythmbox seahorse gnome-keyring gnome-classic-session xorg-x11-server-Xorg PackageKit gnome-software greenboot'
+BANNED='gnome-terminal gedit eog evince totem cheese rhythmbox seahorse gnome-keyring gnome-classic-session gnome-tour xorg-x11-server-Xorg PackageKit gnome-software greenboot'
 
 make_tmpdir
 flagged=$TMPD/flagged

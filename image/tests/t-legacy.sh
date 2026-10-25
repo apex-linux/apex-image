@@ -61,6 +61,12 @@ legacy "$T/db.json" "$T/allow-no-gtk3"
 expect_rc "an allowlist without gtk3 fails" 1
 expect_out "and names gtk3 as the provider" '^FAIL legacy: not allowlisted: gtk3 \(provides '
 
+write_db "$T/db-tour.json" ',
+  "gnome-tour": {}'
+legacy "$T/db-tour.json"
+expect_rc "an installed gnome-tour fails the gate (dropped from the app set)" 1
+expect_out "named as banned" '^FAIL legacy: not allowlisted: gnome-tour \(banned by name\)$'
+
 write_db "$T/db-gtk2.json" ',
   "gtk2": {"provides": ["gtk2(x86-64)", "libgtk-x11-2.0.so.0()(64bit)", "libgdk-x11-2.0.so.0()(64bit)"],
            "requires": ["libgtk-x11-2.0.so.0()(64bit)"]},
