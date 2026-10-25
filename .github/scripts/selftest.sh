@@ -1714,7 +1714,7 @@ done
 EOF
 chmod +x "$CT/bin/dnf5"
 printf '/usr/share/applications/%s\n' 'org.gnome.Nautilus.desktop nautilus' 'org.gnome.Ptyxis.desktop ptyxis' \
-    'org.gnome.Music.desktop gnome-music' 'org.gnome.Terminal.desktop gnome-terminal' >"$CT/provides"
+    'org.example.Unlisted.desktop unlisted' 'org.gnome.Terminal.desktop gnome-terminal' >"$CT/provides"
 ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST]
     printf "[org.gnome.desktop.interface]\nicon-theme='Apex'\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1" \
         >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
@@ -1802,9 +1802,10 @@ check "contracts: a dock of listed packages and a preinstalled Flatpak" 0 \
     "$(ct_dock "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'")"
 check_true "and logs the dock contract" grep -q "^contracts: every dock favourite of apex-desktop (.*) is in the image or preinstalled$" "$CT/out"
 check "contracts: a favourite whose package the image does not list" 1 \
-    "$(ct_dock "'org.gnome.Nautilus.desktop', 'org.gnome.Music.desktop'")"
+    "$(ct_dock "'org.gnome.Nautilus.desktop', 'org.example.Unlisted.desktop'")"
 check_true "names it and its package" grep -q \
-    "^error: apex-desktop (.*) favourite org.gnome.Music.desktop (shipped by gnome-music, which image/packages does not list)$" "$CT/out"
+    "^error: apex-desktop (.*) favourite org.example.Unlisted.desktop (shipped by unlisted, which image/packages does not list)$" "$CT/out"
+check "contracts: Music resolves through apex.preinstall, never an RPM" 0 "$(ct_dock "'org.gnome.Music.desktop'")"
 check "contracts: a favourite that nothing ships" 1 "$(ct_dock "'org.example.Gone.desktop'")"
 check_true "names the favourite nothing ships" grep -q "favourite org.example.Gone.desktop (no package of the compose's repositories ships it" "$CT/out"
 check "contracts: a favourite whose package exclude.txt removes" 1 "$(ct_dock "'org.gnome.Terminal.desktop'")"

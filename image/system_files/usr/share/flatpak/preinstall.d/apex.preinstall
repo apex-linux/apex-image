@@ -7,3 +7,7 @@ Branch=stable
 
 [Flatpak Preinstall org.mozilla.firefox]
 Branch=stable
+
+# Not an RPM: Fedora's gnome-music needs grilo, whose main package links GTK3 (ADR 0007).
+[Flatpak Preinstall org.gnome.Music]
+Branch=stable
