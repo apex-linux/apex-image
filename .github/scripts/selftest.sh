@@ -1703,12 +1703,29 @@ ct_features() { # LIST: apex-gnome's layer.js with FEATURES_IN_ENABLE_ORDER = [L
 }
 ct_choices motion spotlight
 ct_features "'motion', 'spotlight'"
+# The compose's repositories, as dnf5 repoquery --whatprovides answers: FILE PACKAGE lines.
+mkdir -p "$CT/bin"
+cat >"$CT/bin/dnf5" <<'EOF'
+#!/usr/bin/env bash
+while (($#)); do
+    if [[ $1 == --whatprovides ]]; then awk -v f="$2" '$1 == f { print $2 }' "$CT_PROVIDES"; fi
+    shift
+done
+EOF
+chmod +x "$CT/bin/dnf5"
+printf '/usr/share/applications/%s\n' 'org.gnome.Nautilus.desktop nautilus' 'org.gnome.Ptyxis.desktop ptyxis' \
+    'org.gnome.Music.desktop gnome-music' 'org.gnome.Terminal.desktop gnome-terminal' >"$CT/provides"
+ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST]
+    printf "[org.gnome.desktop.interface]\nicon-theme='Apex'\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1" \
+        >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
+}
+ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
     "$CT/gnome/tests/layer/fixtures/"
 ct_run() {
-    APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" APEX_GNOME_SRC="$CT/gnome" \
-        rc_of "$APEX_ROOT/.github/scripts/contracts.sh"
+    PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
+        APEX_GNOME_SRC="$CT/gnome" rc_of "$APEX_ROOT/.github/scripts/contracts.sh"
 }
 contracts_with() {
     local packages=$1 files=$2
@@ -1760,8 +1777,8 @@ ct_kill() { # CHOICES FEATURES: contracts.sh's exit, its output in $CT/out
         cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$f/"
     done
     ct_features "$2"
-    APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' \
-        "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || rc=$?
+    PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
+        APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
 check "contracts: every layer feature is a kill-switch choice" 0 "$(ct_kill 'motion spotlight panel' "'motion', 'spotlight', 'panel'")"
@@ -1777,6 +1794,25 @@ check "contracts: a choice with no layer feature only warns" 0 "$(ct_kill 'motio
 check_true "naming it" grep -q "^warning: contracts: apex-desktop (.*)'s disabled-features offers choices that apex-gnome (.*)'s layer has no feature for: shadows$" "$CT/out"
 check "contracts: an empty feature list" 1 "$(ct_kill 'motion spotlight' '')"
 check_true "says so" grep -q "^error: contracts: apex-gnome (.*)'s desktop/shell/js/ui/apex/layer.js has no FEATURES_IN_ENABLE_ORDER, or it is empty" "$CT/out"
+ct_dock() { # LIST: contracts.sh's exit with that dock, its output in $CT/out
+    ct_favorites "$1"
+    ct_kill 'motion spotlight' "'motion', 'spotlight'"
+}
+check "contracts: a dock of listed packages and a preinstalled Flatpak" 0 \
+    "$(ct_dock "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'")"
+check_true "and logs the dock contract" grep -q "^contracts: every dock favourite of apex-desktop (.*) is in the image or preinstalled$" "$CT/out"
+check "contracts: a favourite whose package the image does not list" 1 \
+    "$(ct_dock "'org.gnome.Nautilus.desktop', 'org.gnome.Music.desktop'")"
+check_true "names it and its package" grep -q \
+    "^error: apex-desktop (.*) favourite org.gnome.Music.desktop (shipped by gnome-music, which image/packages does not list)$" "$CT/out"
+check "contracts: a favourite that nothing ships" 1 "$(ct_dock "'org.example.Gone.desktop'")"
+check_true "names the favourite nothing ships" grep -q "favourite org.example.Gone.desktop (no package of the compose's repositories ships it" "$CT/out"
+check "contracts: a favourite whose package exclude.txt removes" 1 "$(ct_dock "'org.gnome.Terminal.desktop'")"
+check_true "names the package exclude.txt removes" grep -q "favourite org.gnome.Terminal.desktop (shipped by gnome-terminal, which exclude.txt removes)" "$CT/out"
+ct_dock "'org.gnome.Nautilus.desktop'" >/dev/null
+printf '[org.gnome.shell]\nenabled-extensions=[]\n' >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
+check "contracts: an override without favorite-apps" 1 "$(ct_kill 'motion spotlight' "'motion', 'spotlight'")"
+ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 check "contracts: a free-form kill switch, no <choices>" 1 "$(ct_kill '' "'motion'")"
 check_true "says it cannot be checked" grep -q '^error: disabled-features has no <choices>: it takes any name' "$CT/out"
 check_true "naming apex-desktop" grep -q '^error: contracts: apex-desktop (.*): see above' "$CT/out"

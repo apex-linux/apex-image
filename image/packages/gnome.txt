@@ -35,6 +35,7 @@ papers-previewer
 papers-nautilus
 showtime
 decibels
+gnome-maps
 snapshot
 gnome-system-monitor
 baobab

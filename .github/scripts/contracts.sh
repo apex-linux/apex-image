@@ -96,6 +96,59 @@ unused=$(comm -13 <(sort -u <<<"$features") <(sort -u <<<"$choices") | paste -sd
 [[ -z $unused ]] || warn "contracts: $desktop's disabled-features offers choices that $gnome's layer has no feature for: $unused"
 log "contracts: every feature of $gnome's layer can be turned off by $desktop's disabled-features"
 
+# Every dock favourite ships: a .desktop of a package the image lists, or a preinstalled Flatpak.
+readonly FAVORITES=desktop/schemas/90_apex.gschema.override
+favorites=$(python3 - "$APEX_DESKTOP_SRC/$FAVORITES" <<'EOF'
+import ast
+import sys
+
+group = None
+try:
+    lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+except OSError as e:
+    sys.exit(f"error: cannot read {sys.argv[1]}: {e}")
+for line in lines:
+    line = line.strip()
+    if line.startswith("["):
+        group = line
+    elif group == "[org.gnome.shell]" and line.split("=", 1)[0].strip() == "favorite-apps":
+        apps = ast.literal_eval(line.split("=", 1)[1].strip())
+        if not apps:
+            sys.exit(f"error: {sys.argv[1]}: favorite-apps is empty")
+        print("\n".join(apps))
+        sys.exit(0)
+sys.exit(f"error: {sys.argv[1]} sets no [org.gnome.shell] favorite-apps")
+EOF
+) || die "contracts: $desktop: see above"
+command -v "${APEX_DNF:-dnf5}" >/dev/null ||
+    die "contracts: the dock favourites resolve with dnf5 repoquery (run in fedora:45, as the CI job does)"
+listed=$(cat "$APEX_ROOT"/image/packages/{base,gnome,apex}.txt | sed 's/#.*//; s/[[:space:]]//g; /^$/d' | sort -u)
+excluded=$(sed 's/#.*//; s/[[:space:]]//g; /^$/d' "$APEX_ROOT/image/packages/exclude.txt" | sort -u)
+preinstalled=$(sed -n 's/^\[Flatpak Preinstall \([^]]*\)\]$/\1/p' \
+    "$APEX_ROOT"/image/system_files/usr/share/flatpak/preinstall.d/*.preinstall | sort -u)
+mapfile -t repos < <(dnf_repo_args)
+dead=()
+while IFS= read -r app; do
+    if grep -qxF -- "${app%.desktop}" <<<"$preinstalled"; then
+        continue
+    fi
+    providers=$("${APEX_DNF:-dnf5}" -q repoquery --setopt=optional_metadata_types=filelists "${repos[@]}" \
+        --whatprovides "/usr/share/applications/$app" --qf '%{name}\n' | sed '/^$/d' | sort -u) ||
+        die "contracts: dnf5 repoquery for $app failed"
+    if [[ -z $providers ]]; then
+        dead+=("$app (no package of the compose's repositories ships it, and no preinstall names it)")
+    elif comm -12 <(printf '%s\n' "$providers") <(printf '%s\n' "$excluded") | grep -q .; then
+        dead+=("$app (shipped by $(paste -sd' ' <<<"$providers"), which exclude.txt removes)")
+    elif ! comm -12 <(printf '%s\n' "$providers") <(printf '%s\n' "$listed") | grep -q .; then
+        dead+=("$app (shipped by $(paste -sd' ' <<<"$providers"), which image/packages does not list)")
+    fi
+done <<<"$favorites"
+if ((${#dead[@]})); then
+    printf 'error: %s favourite %s\n' "$desktop" "${dead[@]}" >&2
+    die "contracts: $desktop's dock has favourites the image does not ship"
+fi
+log "contracts: every dock favourite of $desktop is in the image or preinstalled"
+
 # Copies of one component's files that another keeps, by explicit path, so a moved copy
 # fails too: COPY ORIGINAL pairs.
 readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
