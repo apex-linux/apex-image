@@ -12,6 +12,7 @@ xorg-x11-drv-qxl
 xorg-x11-drv-vmware
 
 gnome-classic-session
+gnome-tour
 
 PackageKit
 PackageKit-gtk3-module
@@ -31,6 +32,7 @@ gedit
 eog
 evince
 totem
+cheese
 rhythmbox
 seahorse
 gnome-photos

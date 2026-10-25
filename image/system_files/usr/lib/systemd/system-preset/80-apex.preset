@@ -28,5 +28,5 @@ disable sshd.service
 disable sshd.socket
 
 # flatpak preinstall takes an app from the first remote that has it, and "fedora" sorts
-# before flathub and also carries org.mozilla.firefox.
+# before flathub: an app both carry would come from Fedora's build.
 disable flatpak-add-fedora-repos.service

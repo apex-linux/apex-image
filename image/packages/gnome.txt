@@ -4,7 +4,6 @@ gnome-session-wayland-session
 gnome-settings-daemon
 gnome-control-center
 gnome-initial-setup
-gnome-tour
 gnome-extensions-app
 dconf
 polkit
