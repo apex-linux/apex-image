@@ -52,6 +52,8 @@ fi
 readonly LANE_LOCK=$STORE/rpms.lock.next IMAGE BUILD
 readonly GATES_PASSED=_build/gates-passed.txt
 readonly G2_RESULT=_build/g2/latest/result.txt
+readonly G2_FIRST_RUN=_build/g2/latest/run-1
+readonly G2_EXCERPT_LINES=80 G2_EXCERPT_WIDTH=400
 readonly G4_KEY=_build/image/g4-key.txt
 readonly G2_RUNS_PER_BUILD=2
 readonly G4_NOT_DUE=3
@@ -146,9 +148,24 @@ source_artifact() {
     tools/builder-vm/lane.sh sources --lock "$LANE_LOCK" --out "$BUILD/image/sources"
 }
 
+# The case logs stay in the builder VM, so vm.yml's log gets each failing case's crash lines and tail.
+g2_failure_excerpts() {
+    local case
+    [[ -s $G2_FIRST_RUN/assert.txt ]] || return 0
+    while read -r case; do
+        [[ -f $G2_FIRST_RUN/$case.log ]] || continue
+        echo "== G2 $case: $(grep -h "^$case exit=" "$G2_FIRST_RUN"/results-*.txt 2>/dev/null | tail -n 1)"
+        grep -nE 'JS ERROR|CRITICAL|crashed with signal|Segmentation fault|== Stack trace|^#[0-9]+ ' \
+            "$G2_FIRST_RUN/$case.log" | head -n 40 | cut -c1-"$G2_EXCERPT_WIDTH"
+        echo "-- $case.log, its last $G2_EXCERPT_LINES lines"
+        tail -n "$G2_EXCERPT_LINES" "$G2_FIRST_RUN/$case.log" | cut -c1-"$G2_EXCERPT_WIDTH"
+    done < <(awk '$1 == "FAIL" { sub(/:$/, "", $2); print $2 }' "$G2_FIRST_RUN/assert.txt" | sort -u)
+}
+
 gate_g2() {
     echo "== G2, the headless shell, $G2_RUNS_PER_BUILD runs"
     if ! run_g2; then
+        g2_failure_excerpts >&2
         echo "G2 failed (_build/g2/latest): $IMAGE is built, but its lock must not be promoted" >&2
         return 1
     fi
