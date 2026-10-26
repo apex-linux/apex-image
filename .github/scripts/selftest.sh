@@ -500,7 +500,22 @@ g2_result cafe "$LANE_LOCK_SHA"
 echo 1 >"$BUILD_DIR/g2-rc"
 check "a G2 failure records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
-rm -f "$BUILD_DIR/g2-rc"
+G2_RUN1=$BUILD_DIR/work/_build/g2/latest/run-1
+mkdir -p "$G2_RUN1"
+printf '%s\n' 'PASS motion: the user mode' 'FAIL motion: the shell exits 0 (got: exit=139)' \
+    'FAIL dock-pin: a pinned favourite shows' 'FAIL default-scale1 dock: its menu (got null)' >"$G2_RUN1/assert.txt"
+printf 'motion exit=139 secs=47 marker-after-exit=no\n' >"$G2_RUN1/results-direct.txt"
+{ seq 1 100 | sed 's/^/line /'; echo 'GNOME Shell crashed with signal 11'; } >"$G2_RUN1/motion.log"
+printf 'case %s\n' 'default-scale1' >"$G2_RUN1/default-scale1.log"
+build_gates >/dev/null
+check_true "a G2 failure prints a failing case's exit" grep -qx '== G2 motion: motion exit=139 secs=47 marker-after-exit=no' "$BUILD_DIR/out"
+check_true "its crash lines, wherever they are" grep -qx '101:GNOME Shell crashed with signal 11' "$BUILD_DIR/out"
+check_true "and its last lines" grep -qx 'line 22' "$BUILD_DIR/out"
+check_false "but no more of them" grep -qx 'line 21' "$BUILD_DIR/out"
+check_true "a case named before its subject is found too" grep -qx 'case default-scale1' "$BUILD_DIR/out"
+check_false "a failing case without a log prints nothing" grep -q '== G2 dock-pin' "$BUILD_DIR/out"
+check_false "nor does a passing line" grep -q '^== G2 PASS' "$BUILD_DIR/out"
+rm -rf "$G2_RUN1" "$BUILD_DIR/g2-rc"
 check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
     "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
