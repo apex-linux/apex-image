@@ -164,9 +164,13 @@ grep ' cosign-linux-amd64$' cosign_checksums.txt
 
 Then `builder-vm.sh provision` and `just runner-preflight`. The pinned v3.0.2 value was
 taken from its release's `cosign_checksums.txt` and matched the downloaded binary
-(2026-10-24). That checksums file's bundle verified with the command above, but only by
-the v3.0.2 binary itself, which proves nothing; check it once with a cosign you trust
-before the first provisioning.
+(2026-10-24). That checksums file's bundle first verified only by the v3.0.2 binary itself,
+which proves nothing. On 2026-10-26 it verified with sigstore-python 4.5.1, a separate verifier
+written in Python, not Go: `python -m sigstore verify identity --bundle
+cosign_checksums.txt.sigstore.json --cert-identity
+keyless@projectsigstore.iam.gserviceaccount.com --cert-oidc-issuer
+https://accounts.google.com cosign_checksums.txt` printed `OK`, and the verified file's
+`cosign-linux-amd64` line equals `COSIGN_SHA256` and the downloaded binary's sha256.
 
 ## Resources
 
