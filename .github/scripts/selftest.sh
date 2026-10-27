@@ -1144,6 +1144,15 @@ qmp() {
     done
 }
 login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-login" 1000; }
+# journalctl -b -o short-monotonic -g 'PATTERN' [_UID=N] over $STATE/mono's "SECONDS UID MESSAGE"
+# lines; like journalctl, no match exits 1.
+mono_journal() {
+    local pat=${1#*-g \'} uid=
+    pat=${pat%%\'*}
+    [[ $1 != *_UID=* ]] || { uid=${1##*_UID=}; uid=${uid%% *}; }
+    awk -v p="$pat" -v u="$uid" '$0 ~ p && (u == "" || $2 == u) {
+        m = $0; sub(/^[^ ]+ [^ ]+ /, "", m); printf "[%12s] guest %s\n", $1, m }' "$STATE/mono" 2>/dev/null | grep .
+}
 user_cmd() { printf 'runuser -u %s -- env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus %s' "$TEST_USER" "$1"; }
 vm_ssh() {
     local cmd="$*"
@@ -1233,6 +1242,9 @@ vm_ssh() {
             printf '%s:\n  description:       x\n  vendor:            %s\n  vendor_url:        https://github.com/apex-linux\n' \
                 "$id" "$(cat "$STATE/vendor-$id" 2>/dev/null || echo Apex)" ;;
         "sh -s") cat >/dev/null; from key ;;
+        "systemd-analyze") from analyze | grep . ;;
+        "systemd-analyze blame --no-pager | head -n 10") from blame ;;
+        "journalctl -b -q --no-pager -o short-monotonic "*) mono_journal "$cmd" ;;
         *) printf 'unexpected vm_ssh: %s\n' "$cmd" >&2; return 99 ;;
     esac
 }
@@ -1683,6 +1695,75 @@ check "nor one with a WARN row" "1:no record" \
     "$(record_g4_pass_after_rows '| local-login | WARN | 2 JS ERROR |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
 check "nor a to-disk run, which skipped the counted rollback" "1:no record" \
     "$(LAYOUT=to-disk record_g4_pass_after_rows '| local-install | PASS | x |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+
+# boot_metrics is warning-only: whatever the journal lacks, G4 goes on to the login steps.
+boot_then_login() { # MONO_LINES...: boot_metrics, then login_lock_unlock, as the local flow runs them
+    logged_in
+    printf 'Startup finished in 932ms (kernel) + 2.627s (initrd) + 28.699s (userspace) = 32.258s\n' \
+        >"$GUEST_DIR/state/analyze"
+    printf '%s\n' "$@" >"$GUEST_DIR/state/mono"
+    guest eval 'boot_metrics local; login_lock_unlock local'
+}
+boot_row() { grep '^| local-boot-metrics |' "$GUEST_DIR/out/results.md"; }
+check "boot metrics: a journal without any shell marker still runs the login steps" 0 "$(boot_then_login)"
+check "and the boot row passes with what it has" 1 "$(row local-boot-metrics PASS)"
+check_true "naming the greeter and desktop it could not time" grep -q \
+    "no value for greeter: none of 'Started org.gnome.Shell@gdm.service Registering display with GDM GNOME Shell started at' in the journal, desktop: no 'gdm-password:session.: session opened for user apexqa'" \
+    <<<"$(boot_row)"
+check "the login steps after it ran and passed" 1 "$(row local-unlock PASS)"
+check "boot.tsv holds the systemd-analyze phases only" "kernel 0.932 initrd 2.627 userspace 28.699" \
+    "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
+# VM run 6's journal (GNOME 51): the user's shell unit is @user, and systemd-user opens a
+# session for the user before gdm-password does.
+check "boot metrics: VM run 6's journal, the shells' units started" 0 "$(boot_then_login \
+    '7.512 60578 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
+    '8.731 60578 Registering display with GDM' \
+    '8.988595 0 Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.' \
+    '46.764169 0 pam_unix(systemd-user:session): session opened for user apexqa(uid=1000) by apexqa(uid=0)' \
+    '46.935880 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000) by apexqa(uid=0)' \
+    '47.294161 1000 Started gnome-session-manager@gnome.service - GNOME Session Manager (session: gnome).' \
+    '47.922820 1000 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
+    '55.150626 1000 Registering session with GDM' \
+    '55.590919 1000 Started org.gnome.Shell@user.service - GNOME Shell.' \
+    '55.594178 1000 Reached target gnome-session-initialized.target - GNOME Session is initialized.')"
+check "greeter at its unit's start, desktop from gdm-password's login to the user's unit" \
+    "kernel 0.932 initrd 2.627 userspace 28.699 greeter 8.989 desktop 8.655" "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
+check_true "the row names the markers it timed" grep -q \
+    "greeter at 'Started org.gnome.Shell@gdm.service'; desktop at 'Started org.gnome.Shell@user.service' (boot.tsv" \
+    <<<"$(boot_row)"
+check "boot metrics: without the unit lines, the shells' registrations with GDM" 0 "$(boot_then_login \
+    '8.731 60578 Registering display with GDM' \
+    '46.935880 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000)' \
+    '47.922820 1000 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
+    '55.150626 1000 Registering session with GDM')"
+check "greeter at the display's, desktop at the session's, never the shell's process start" \
+    "greeter 8.731 desktop 8.215" "$(sed -n 's/^\(greeter\|desktop\) /&/p' "$GUEST_DIR/out/boot.tsv" | paste -sd' ')"
+check "boot metrics: the greeter's lines never time the user's desktop" 0 "$(boot_then_login \
+    '8.731 60578 Registering session with GDM' \
+    '8.988595 0 Started org.gnome.Shell@user.service - GNOME Shell.' \
+    '46.935880 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000)')"
+check_true "the desktop stays untimed" grep -q "desktop: none of 'Started org.gnome.Shell@user.service" <<<"$(boot_row)"
+check "boot metrics: systemd-user's session line alone is no login time" 0 "$(boot_then_login \
+    '46.764169 0 pam_unix(systemd-user:session): session opened for user apexqa(uid=1000)' \
+    '55.590919 1000 Started org.gnome.Shell@user.service - GNOME Shell.')"
+check_true "the desktop stays untimed, naming gdm-password's line" grep -q \
+    "desktop: no 'gdm-password:session.: session opened for user apexqa'" <<<"$(boot_row)"
+logged_in
+rm -f "$GUEST_DIR/state/analyze"
+printf '' >"$GUEST_DIR/state/mono"
+check "boot metrics: no systemd-analyze time is a SKIP, and the login steps still run" "0|1|1" \
+    "$(guest eval 'boot_metrics local; login_lock_unlock local')|$(row local-boot-metrics SKIP)|$(row local-unlock PASS)"
+
+# An errexit names its line, its command and its status before G4's summary.
+errexit_of() { # SCRIPT: qualify.sh's ERR trap around SCRIPT; prints its stderr
+    { bash -c '. "$1"; set -euo pipefail; trap_errexit; eval "$2"' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1" >/dev/null; } 2>&1 || true
+}
+# shellcheck disable=SC2016 # each script runs in the inner bash
+check "errexit: a failed assignment names itself" "qualify.sh: line 1: v=\$(printf a | grep -q b) exited 1" \
+    "$(errexit_of 'f() { local v; v=$(printf a | grep -q b); echo reached; }; f')"
+# shellcheck disable=SC2016 # each script runs in the inner bash
+check "errexit: failures the script tolerates print nothing" "done" \
+    "$(errexit_of 'x=$(false; echo y) || true; if ! false; then :; fi; false || true; set +e; false; set -e; v=$(grep -q z /dev/null || true); echo done >&2')"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
