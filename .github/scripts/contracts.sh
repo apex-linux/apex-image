@@ -179,42 +179,56 @@ done
 ((stale == 0)) || die "contracts: see above"
 log "contracts: every copy of a component's file equals the pinned original"
 
-# G2's patched shell sets 90_apex's input-source keys from its own copy, so Super+Space stays Spotlight's there too.
-readonly G2_PARTS=tests/shots/parts.sh
-python3 - "$APEX_DESKTOP_SRC/$FAVORITES" "$APEX_GNOME_SRC/$G2_PARTS" <<'EOF' || die "contracts: $gnome's G2 keys: see above"
+# G2 sets 90_apex's weekday and input-source keys from its own copies, so its shells match the
+# image's, and Super+Space stays Spotlight's there too.
+readonly G2_PARTS=tests/shots/parts.sh G2_SCRIPTS=(tests/shots/patched.sh tests/shots/smoke.sh)
+python3 - "$APEX_DESKTOP_SRC/$FAVORITES" "$APEX_GNOME_SRC" "$G2_PARTS" "${G2_SCRIPTS[@]}" <<'EOF' ||
+import re
 import shlex
 import sys
 
-override, parts = sys.argv[1:]
-copied = {"INPUT_SOURCE_KEYS": "switch-input-source", "INPUT_SOURCE_BACKWARD_KEYS": "switch-input-source-backward"}
+override, gnome, parts, *scripts = sys.argv[1:]
+KEYBINDINGS, INTERFACE = "org.gnome.desktop.wm.keybindings", "org.gnome.desktop.interface"
+COPIED = {"INPUT_SOURCE_KEYS": "switch-input-source", "INPUT_SOURCE_BACKWARD_KEYS": "switch-input-source-backward"}
 try:
-    override_lines, parts_lines = (open(p, encoding="utf-8").read().splitlines() for p in (override, parts))
+    override_lines = open(override, encoding="utf-8").read().splitlines()
+    parts_lines = open(f"{gnome}/{parts}", encoding="utf-8").read().splitlines()
+    texts = {s: open(f"{gnome}/{s}", encoding="utf-8").read() for s in scripts}
 except OSError as e:
     sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
 group, keys = None, {}
 for line in override_lines:
     line = line.strip()
     if line.startswith("["):
-        group = line
-    elif group == "[org.gnome.desktop.wm.keybindings]" and "=" in line and not line.startswith("#"):
+        group = line.strip("[]")
+    elif "=" in line and not line.startswith("#"):
         key, value = (s.strip() for s in line.split("=", 1))
-        keys[key] = value
-copies = {}
+        keys[group, key] = value
+copies = []
 for line in parts_lines:
     try:
         words = shlex.split(line, comments=True)
     except ValueError:
         continue
-    if len(words) == 2 and words[0] == "readonly" and "=" in words[1]:
+    if len(words) == 2 and words[0] == "readonly" and words[1].split("=", 1)[0] in COPIED:
         name, value = words[1].split("=", 1)
-        copies[name] = value
-problems = [
-    f"{parts} has {name}={copies.get(name)!r}, but {override} sets {key}={keys.get(key)!r}"
-    for name, key in copied.items()
-    if key not in keys or copies.get(name) != keys[key]
+        copies.append((f"{parts} {name}", KEYBINDINGS, COPIED[name], value))
+problems = []
+if sorted(c[2] for c in copies) != sorted(COPIED.values()):
+    problems.append(f"{gnome}/{parts} does not copy each input-source key once")
+for script, text in texts.items():
+    weekdays = re.findall(r"clock-show-weekday=(\w+)", text)
+    if not weekdays:
+        problems.append(f"{gnome}/{script} sets no clock-show-weekday")
+    copies += [(script, INTERFACE, "clock-show-weekday", value) for value in weekdays]
+problems += [
+    f"{gnome}/{where} has {value!r}, but {override} sets [{group}] {key}={keys.get((group, key))!r}"
+    for where, group, key, value in copies
+    if keys.get((group, key)) != value
 ]
 for p in problems:
     print(f"error: {p}", file=sys.stderr)
 sys.exit(1 if problems else 0)
 EOF
-log "contracts: G2's patched shell sets $desktop's input-source keys as the image does"
+    die "contracts: $gnome's G2 settings: see above"
+log "contracts: G2's shells set $desktop's weekday and input-source keys as the image does"
