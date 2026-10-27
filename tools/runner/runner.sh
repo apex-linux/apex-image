@@ -16,7 +16,8 @@ apex-runner.service keeps one runner waiting. No sudo, and no root on the host.
   runner.sh check      a throwaway container: the builder VM's ci-build answers, and no
                        other port of this host's loopback is reachable
   runner.sh install    install and start apex-runner.service
-  runner.sh once       one JIT runner for one job (what the service runs)
+  runner.sh once       one JIT runner for one job (what the service runs), once the
+                       builder VM's sshd answers
   runner.sh status     the service, the waiting container and the group's runners
   runner.sh uninstall  stop and remove the service (keeps the key, the token and the image)
 
@@ -41,6 +42,7 @@ readonly API_VERSION=2022-11-28
 readonly GROUP=apex-kvm
 readonly LABEL=apex-kvm
 readonly UNIT=apex-runner.service
+BUILDER_POLL=30 BUILDER_LOG_EVERY=600
 
 ORG=${APEX_RUNNER_ORG:-apex-linux}
 REPO=${APEX_RUNNER_REPO:-apex-image}
@@ -229,9 +231,29 @@ cmd_check() {
     log "check passed"
 }
 
+# QEMU's forwarded port accepts a connection while the guest is down and then resets it,
+# so only sshd's banner shows the builder VM can take a build.
+builder_answers() {
+    local banner
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    banner=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1" && head -c 4 <&3' _ "$SSH_PORT" 2>/dev/null) || true
+    [[ $banner == SSH- ]]
+}
+
+wait_for_builder() {
+    local waited=0
+    until builder_answers; do
+        ((waited % BUILDER_LOG_EVERY)) ||
+            log "the builder VM's sshd (127.0.0.1:$SSH_PORT) does not answer; no job is taken until it does (just vm-start)"
+        sleep "$BUILDER_POLL"
+        waited=$((waited + BUILDER_POLL))
+    done
+}
+
 cmd_once() {
     require_tools podman curl jq
     require_ready
+    wait_for_builder
     local id name response runner_id env_file args
     id=$(group_id)
     [[ -n $id ]] || die "no runner group $GROUP in $ORG (runner.sh group)"
@@ -319,4 +341,4 @@ main() {
     esac
 }
 
-main "$@"
+[[ ${BASH_SOURCE[0]} != "$0" ]] || main "$@"

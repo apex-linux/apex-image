@@ -3022,6 +3022,50 @@ check_false "the patches after a failure are not applied" grep -qx 'line 28!' "$
 check "an argument that looks like an option is a usage error" 2 \
     "$(rc_of "$APEX_ROOT/tools/builder-vm/lane-absorb-report.sh" --help)"
 
+# --- runner.sh once: no job is taken until the builder VM's sshd sends its banner ----------
+RB="$TMP/runner-builder"
+mkdir -p "$RB"
+rb_serve() { # REPLY: a loopback server that sends REPLY to each connection and closes it, at RB_PORT
+    python3 - "$1" "$RB/port" >/dev/null 2>&1 <<'EOF' &
+import socket, sys
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen()
+open(sys.argv[2] + ".tmp", "w").write(str(s.getsockname()[1]))
+__import__("os").rename(sys.argv[2] + ".tmp", sys.argv[2])
+while True:
+    c, _ = s.accept()
+    c.sendall(sys.argv[1].encode())
+    c.close()
+EOF
+    RB_PID=$!
+    until [[ -s $RB/port ]]; do sleep 0.05; done
+    RB_PORT=$(cat "$RB/port")
+    rm -f "$RB/port"
+}
+rb() { # PORT SCRIPT: SCRIPT with runner.sh's functions, its builder VM at 127.0.0.1:PORT, cut at 4 s
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    APEX_VM_SSH_PORT=$1 timeout 4 bash -c '. "$1"; BUILDER_POLL=1 BUILDER_LOG_EVERY=1; eval "$2"' _ \
+        "$APEX_ROOT/tools/runner/runner.sh" "$2"
+}
+rb_stop() { kill "$RB_PID"; wait "$RB_PID" 2>/dev/null || true; }
+rb_serve $'SSH-2.0-OpenSSH_9.9\r\n'
+rb_port=$RB_PORT
+check "runner: sshd's banner means the builder VM answers" 0 "$(rc_of rb "$rb_port" builder_answers)"
+check "runner: and wait_for_builder returns at once" 0 "$(rc_of rb "$rb_port" wait_for_builder)"
+rb_stop
+rb_serve ''
+rb_port=$RB_PORT
+check "runner: a port that accepts and resets (QEMU's forward, guest down) does not answer" 1 \
+    "$(rc_of rb "$rb_port" builder_answers)"
+rb_rc=0
+rb "$rb_port" wait_for_builder 2>"$RB/wait.log" || rb_rc=$?
+check "runner: wait_for_builder keeps waiting, taking no job" 124 "$rb_rc"
+check_true "and says why, naming just vm-start" grep -qF \
+    "the builder VM's sshd (127.0.0.1:$rb_port) does not answer; no job is taken until it does (just vm-start)" "$RB/wait.log"
+rb_stop
+check "runner: nothing listening does not answer" 1 "$(rc_of rb "$rb_port" builder_answers)"
+
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
 mkdir -p "$V/bin"
@@ -3082,7 +3126,8 @@ check "Commit: a short sha is an error" "1|::error::not a full commit sha: abc12
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA=abc123)|$(cat "$V/log")"
 
 for case in "0:" "1:::error::the build in the builder VM failed (exit 1)" "2:::error::ci-build refused $CI_SHA" \
-    "75:::error::another build holds the builder VM"; do
+    "75:::error::another build holds the builder VM" \
+    "255:::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)"; do
     vm_reset
     echo "${case%%:*}" >"$V/ssh.rc"
     check "build: ssh exit ${case%%:*} is the step's exit, with its message" "${case%%:*}|${case#*:}" \
