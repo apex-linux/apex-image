@@ -230,6 +230,12 @@ Owner steps that a change on `main` needs on the host, newest first.
 
 ## Troubleshooting
 
+- **Every job fails in seconds with `Connection reset by 127.0.0.1 port 2222`** (exit 255).
+  The builder VM is not running, as after a host restart: the service starts on its own,
+  the VM does not. Start it with `just vm-start`, then re-run the failed run. `runner.sh
+  once` waits until the VM's sshd answers before it asks GitHub for a runner, and logs
+  every 10 minutes while it waits, so a queued run stays queued instead of failing. The
+  service runs the copy `just runner install` made, so reinstall after updating it.
 - **`ci-build stale` warning.** The builder VM runs the copy of `ci-build` that
   `just vm-ci-install` installed in `/usr/local/libexec/apex/`, never the checkout's: a
   forced command that updated itself from `main` would let any commit rewrite it. When
