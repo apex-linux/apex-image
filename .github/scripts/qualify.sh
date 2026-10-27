@@ -1085,32 +1085,63 @@ boot_phases() {
         }'
 }
 
-# The monotonic seconds of the first journal line of this boot that matches.
+# The monotonic seconds of the first journal line of this boot that matches, or nothing:
+# journalctl -g exits 1 on no match, which must not end G4 under errexit.
 journal_mono() {
-    vm_ssh "journalctl -b -q --no-pager -o short-monotonic $1" 2>/dev/null |
-        sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p' | head -n 1
+    { vm_ssh "journalctl -b -q --no-pager -o short-monotonic $1" 2>/dev/null || true; } |
+        sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p' | head -n 1 || true
 }
+
+# The first of PATTERNS this boot's journal has, with FILTER: "SECONDS<TAB>PATTERN", or nothing.
+first_mark() {
+    local filter=$1 pattern t
+    shift
+    for pattern in "$@"; do
+        t=$(journal_mono "-g '$pattern' $filter")
+        [[ -z $t ]] || { printf '%s\t%s\n' "$t" "$pattern"; return 0; }
+    done
+}
+
+# GNOME 51 logs no "GNOME Shell started at": a shell is up when systemd starts its Type=notify
+# unit; the shell's own lines, then the old message, are the fallbacks.
+readonly GREETER_MARKS=('Started org.gnome.Shell@gdm.service' 'Registering display with GDM' 'GNOME Shell started at')
+readonly DESKTOP_MARKS=('Started org.gnome.Shell@wayland.service' 'Running GNOME Shell' 'GNOME Shell started at')
 
 # S4's daily-driver budget, warning-only (tools/runner/README.md): the default layout's login
 # boot, to the greeter's shell and from the greeter's login to the user's shell.
 boot_metrics() {
-    local test=$1-boot-metrics out=$QUALIFY_OUT/boot.tsv analyze n uid greeter login desktop
+    local test=$1-boot-metrics out=$QUALIFY_OUT/boot.tsv analyze='' n uid greeter login desktop detail
+    local -a missing=()
     for ((n = 0; n < 10; n++)); do
         analyze=$(vm_ssh 'systemd-analyze' 2>/dev/null) && [[ $analyze == *"Startup finished"* ]] && break
         sleep "$QUALIFY_POLL"
     done
-    boot_phases <<<"$analyze" >"$out"
+    boot_phases <<<"$analyze" >"$out" || true
     vm_ssh 'systemd-analyze blame --no-pager | head -n 10' >"$QUALIFY_OUT/logs/boot-blame.txt" 2>/dev/null || true
-    uid=$(vm_ssh "id -u $TEST_USER" 2>/dev/null)
-    greeter=$(journal_mono "-g 'GNOME Shell started at' _COMM=gnome-shell")
+    uid=$(vm_ssh "id -u $TEST_USER" 2>/dev/null) || uid=
+    greeter=$(first_mark '' "${GREETER_MARKS[@]}")
     login=$(journal_mono "-g 'session opened for user $TEST_USER'")
-    desktop=$(journal_mono "-g 'GNOME Shell started at' _COMM=gnome-shell _UID=${uid:-none}")
-    [[ -z $greeter ]] || printf 'greeter %.3f\n' "$greeter" >>"$out"
-    [[ -z $login || -z $desktop ]] || awk -v a="$login" -v b="$desktop" 'BEGIN { printf "desktop %.3f\n", b - a }' >>"$out"
-    if grep -q '^userspace ' "$out"; then
-        result "$test" PASS "$(paste -sd' ' "$out" | sed 's/ \([0-9.]*\)/ \1s/g') (boot.tsv, logs/boot-blame.txt)"
+    desktop=$(first_mark "_UID=${uid:-none}" "${DESKTOP_MARKS[@]}")
+    if [[ -n $greeter ]]; then
+        printf 'greeter %.3f\n' "${greeter%%$'\t'*}" >>"$out"
     else
-        result "$test" SKIP "systemd-analyze gave no startup time: $(head -n 1 <<<"$analyze")"
+        missing+=("greeter: none of '${GREETER_MARKS[*]}' in the journal")
+    fi
+    if [[ -n $login && -n $desktop ]]; then
+        awk -v a="$login" -v b="${desktop%%$'\t'*}" 'BEGIN { printf "desktop %.3f\n", b - a }' >>"$out"
+    elif [[ -z $login ]]; then
+        missing+=("desktop: no 'session opened for user $TEST_USER' in the journal")
+    else
+        missing+=("desktop: none of '${DESKTOP_MARKS[*]}' from uid ${uid:-?} in the journal")
+    fi
+    detail=$(paste -sd' ' "$out" | sed 's/ \([0-9.]*\)/ \1s/g')
+    [[ -z $greeter ]] || detail+="; greeter at '${greeter#*$'\t'}'"
+    [[ -z $desktop ]] || detail+="; desktop at '${desktop#*$'\t'}'"
+    ((${#missing[@]} == 0)) || detail+="; no value for $(printf '%s, ' "${missing[@]}" | sed 's/, $//')"
+    if grep -q '^userspace ' "$out"; then
+        result "$test" PASS "$detail (boot.tsv, logs/boot-blame.txt)"
+    else
+        result "$test" SKIP "systemd-analyze gave no startup time: $(head -n 1 <<<"$analyze")${detail:+; $detail}"
     fi
 }
 
@@ -1235,7 +1266,7 @@ login_lock_unlock() {
     since=$(vm_ssh 'date +%s') || fail "$name-login" "cannot read the guest's clock"
     wait_session "$name-login" user "$TEST_USER"
     assert_apex_login "$name-login" "$since"
-    pid=$(shell_pid "$SESSION_UID")
+    pid=$(shell_pid "$SESSION_UID") || fail "$name-login" "no gnome-shell runs as $TEST_USER"
 
     since=$(vm_ssh 'date +%s') || fail "$name-lock" "cannot read the guest's clock"
     # Apex's lock asks at once, so only a count taken unlocked tells a lock's conversation apart.
@@ -1916,6 +1947,18 @@ cmd_host_setup() {
     "$APEX_ROOT/.github/scripts/ci-host.sh" podman-conf
 }
 
+# errexit ends G4 with no line of its own: name the command first. Inside $(...) errexit is
+# off (no inherit_errexit), so a failure a caller tolerates there prints nothing.
+trap_errexit() {
+    set -E
+    trap 'qualify_errexit $? "$LINENO" "$BASH_COMMAND"' ERR
+}
+
+qualify_errexit() {
+    [[ $- == *e* ]] || return 0
+    printf 'qualify.sh: line %s: %s exited %s\n' "$2" "$3" "$1" >&2
+}
+
 cleanup() {
     local rc=$?
     if ((rc != 0)) && vm_alive; then save_journal failure; fi
@@ -1948,6 +1991,7 @@ main() {
     mkdir -p "$QUALIFY_OUT/logs" "$QUALIFY_OUT/fixtures"
     : >"$QUALIFY_OUT/results.md"
     trap cleanup EXIT
+    trap_errexit
     "cmd_$cmd" "$@"
 }
 
