@@ -178,3 +178,43 @@ for ((i = 0; i < ${#copies[@]}; i += 2)); do
 done
 ((stale == 0)) || die "contracts: see above"
 log "contracts: every copy of a component's file equals the pinned original"
+
+# G2's patched shell sets 90_apex's input-source keys from its own copy, so Super+Space stays Spotlight's there too.
+readonly G2_PARTS=tests/shots/parts.sh
+python3 - "$APEX_DESKTOP_SRC/$FAVORITES" "$APEX_GNOME_SRC/$G2_PARTS" <<'EOF' || die "contracts: $gnome's G2 keys: see above"
+import shlex
+import sys
+
+override, parts = sys.argv[1:]
+copied = {"INPUT_SOURCE_KEYS": "switch-input-source", "INPUT_SOURCE_BACKWARD_KEYS": "switch-input-source-backward"}
+try:
+    override_lines, parts_lines = (open(p, encoding="utf-8").read().splitlines() for p in (override, parts))
+except OSError as e:
+    sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
+group, keys = None, {}
+for line in override_lines:
+    line = line.strip()
+    if line.startswith("["):
+        group = line
+    elif group == "[org.gnome.desktop.wm.keybindings]" and "=" in line and not line.startswith("#"):
+        key, value = (s.strip() for s in line.split("=", 1))
+        keys[key] = value
+copies = {}
+for line in parts_lines:
+    try:
+        words = shlex.split(line, comments=True)
+    except ValueError:
+        continue
+    if len(words) == 2 and words[0] == "readonly" and "=" in words[1]:
+        name, value = words[1].split("=", 1)
+        copies[name] = value
+problems = [
+    f"{parts} has {name}={copies.get(name)!r}, but {override} sets {key}={keys.get(key)!r}"
+    for name, key in copied.items()
+    if key not in keys or copies.get(name) != keys[key]
+]
+for p in problems:
+    print(f"error: {p}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+EOF
+log "contracts: G2's patched shell sets $desktop's input-source keys as the image does"

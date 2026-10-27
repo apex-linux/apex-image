@@ -1730,10 +1730,21 @@ EOF
 chmod +x "$CT/bin/dnf5"
 printf '/usr/share/applications/%s\n' 'org.gnome.Nautilus.desktop nautilus' 'org.gnome.Ptyxis.desktop ptyxis' \
     'org.example.Unlisted.desktop unlisted' 'org.gnome.Terminal.desktop gnome-terminal' >"$CT/provides"
-ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST]
+CT_KEYS="['<Super><Alt>space', 'XF86Keyboard']"
+CT_BACK_KEYS="['<Shift><Super><Alt>space', '<Shift>XF86Keyboard']"
+ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST], and its input-source keys
     printf "[org.gnome.desktop.interface]\nicon-theme='Apex'\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1" \
         >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
+    printf '\n[org.gnome.desktop.wm.keybindings]\n# Super+Space opens Spotlight.\n%s\n%s\n' \
+        "switch-input-source=$CT_KEYS" "switch-input-source-backward=$CT_BACK_KEYS" \
+        >>"$CT/desktop/desktop/schemas/90_apex.gschema.override"
 }
+ct_g2_keys() { # KEYS BACKWARD: apex-gnome's G2 copy of the input-source keys
+    mkdir -p "$CT/gnome/tests/shots"
+    printf '%s\n' "readonly PR_CASES=(default keys" '    fault-abort)' "# apex-desktop's 90_apex override." \
+        "readonly INPUT_SOURCE_KEYS=\"$1\"" "readonly INPUT_SOURCE_BACKWARD_KEYS=\"$2\"" >"$CT/gnome/tests/shots/parts.sh"
+}
+ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
@@ -1784,6 +1795,18 @@ check "contracts: Settings' Update1 copy equals apex-system's" 0 "$(ct_run)"
 rm "$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
 check "contracts: a Settings Update1 copy with no XML in apex-system" 1 "$(ct_run)"
 cp "$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1" "$CT/system/crates/apex-dbus/data/"
+check "contracts: G2's input-source keys equal apex-desktop's" 0 "$(ct_run)"
+ct_g2_keys "['<Super>space', 'XF86Keyboard']" "$CT_BACK_KEYS"
+check "contracts: G2's switch-input-source differs from apex-desktop's" 1 "$(ct_run)"
+ct_g2_keys "$CT_KEYS" "['<Shift><Super>space']"
+check "contracts: G2's switch-input-source-backward differs from apex-desktop's" 1 "$(ct_run)"
+rm "$CT/gnome/tests/shots/parts.sh"
+check "contracts: no G2 parts.sh in apex-gnome" 1 "$(ct_run)"
+ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
+sed -i '/^switch-input-source-backward=/d' "$CT/desktop/desktop/schemas/90_apex.gschema.override"
+check "contracts: an override without switch-input-source-backward" 1 "$(ct_run)"
+ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
+check "contracts: the G2 keys hold again" 0 "$(ct_run)"
 ct_kill() { # CHOICES FEATURES: contracts.sh's exit, its output in $CT/out
     local rc=0
     read -ra ct_c <<<"$1"
