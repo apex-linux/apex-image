@@ -605,6 +605,9 @@ impl Container<'_> {
         // Fedora's %check runs.
         let out = self.runner.run(
             &Cmd::new(Program::Rpmbuild)
+                // ninja's parallel g-ir-scanner runs race on one ~/.cache store, which only
+                // saves parse time: the GIRs and typelibs are the same without it.
+                .env("GI_SCANNER_DISABLE_CACHE", "1")
                 .args(b.work.spec_define())
                 .arg("-ba")
                 .arg(&b.spec)
