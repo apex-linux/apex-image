@@ -1105,7 +1105,10 @@ first_mark() {
 # GNOME 51 logs no "GNOME Shell started at": a shell is up when systemd starts its Type=notify
 # unit; the shell's own lines, then the old message, are the fallbacks.
 readonly GREETER_MARKS=('Started org.gnome.Shell@gdm.service' 'Registering display with GDM' 'GNOME Shell started at')
-readonly DESKTOP_MARKS=('Started org.gnome.Shell@wayland.service' 'Running GNOME Shell' 'GNOME Shell started at')
+readonly DESKTOP_MARKS=('Started org.gnome.Shell@user.service' 'Started org.gnome.Shell@wayland.service'
+    'Registering session with GDM' 'GNOME Shell started at')
+# gdm-password's line: systemd-user also logs a "session opened" for the user, earlier.
+readonly LOGIN_MARK="gdm-password:session.: session opened for user $TEST_USER"
 
 # S4's daily-driver budget, warning-only (tools/runner/README.md): the default layout's login
 # boot, to the greeter's shell and from the greeter's login to the user's shell.
@@ -1120,7 +1123,7 @@ boot_metrics() {
     vm_ssh 'systemd-analyze blame --no-pager | head -n 10' >"$QUALIFY_OUT/logs/boot-blame.txt" 2>/dev/null || true
     uid=$(vm_ssh "id -u $TEST_USER" 2>/dev/null) || uid=
     greeter=$(first_mark '' "${GREETER_MARKS[@]}")
-    login=$(journal_mono "-g 'session opened for user $TEST_USER'")
+    login=$(journal_mono "-g '$LOGIN_MARK'")
     desktop=$(first_mark "_UID=${uid:-none}" "${DESKTOP_MARKS[@]}")
     if [[ -n $greeter ]]; then
         printf 'greeter %.3f\n' "${greeter%%$'\t'*}" >>"$out"
@@ -1130,7 +1133,7 @@ boot_metrics() {
     if [[ -n $login && -n $desktop ]]; then
         awk -v a="$login" -v b="${desktop%%$'\t'*}" 'BEGIN { printf "desktop %.3f\n", b - a }' >>"$out"
     elif [[ -z $login ]]; then
-        missing+=("desktop: no 'session opened for user $TEST_USER' in the journal")
+        missing+=("desktop: no '$LOGIN_MARK' in the journal")
     else
         missing+=("desktop: none of '${DESKTOP_MARKS[*]}' from uid ${uid:-?} in the journal")
     fi

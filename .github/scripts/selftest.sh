@@ -1708,33 +1708,46 @@ boot_row() { grep '^| local-boot-metrics |' "$GUEST_DIR/out/results.md"; }
 check "boot metrics: a journal without any shell marker still runs the login steps" 0 "$(boot_then_login)"
 check "and the boot row passes with what it has" 1 "$(row local-boot-metrics PASS)"
 check_true "naming the greeter and desktop it could not time" grep -q \
-    "no value for greeter: none of 'Started org.gnome.Shell@gdm.service Registering display with GDM GNOME Shell started at' in the journal, desktop: no 'session opened for user apexqa'" \
+    "no value for greeter: none of 'Started org.gnome.Shell@gdm.service Registering display with GDM GNOME Shell started at' in the journal, desktop: no 'gdm-password:session.: session opened for user apexqa'" \
     <<<"$(boot_row)"
 check "the login steps after it ran and passed" 1 "$(row local-unlock PASS)"
 check "boot.tsv holds the systemd-analyze phases only" "kernel 0.932 initrd 2.627 userspace 28.699" \
     "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
-check "boot metrics: GNOME 51's journal, the shells' units started" 0 "$(boot_then_login \
+# VM run 6's journal (GNOME 51): the user's shell unit is @user, and systemd-user opens a
+# session for the user before gdm-password does.
+check "boot metrics: VM run 6's journal, the shells' units started" 0 "$(boot_then_login \
     '7.512 60578 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
     '8.731 60578 Registering display with GDM' \
-    '8.988 0 Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.' \
-    '46.940 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000) by apexqa(uid=0)' \
-    '48.100 1000 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
-    '49.210 1000 Started org.gnome.Shell@wayland.service - GNOME Shell on Wayland.')"
-check "greeter at its unit's start, desktop from the login to the user's" \
-    "kernel 0.932 initrd 2.627 userspace 28.699 greeter 8.988 desktop 2.270" "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
+    '8.988595 0 Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.' \
+    '46.764169 0 pam_unix(systemd-user:session): session opened for user apexqa(uid=1000) by apexqa(uid=0)' \
+    '46.935880 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000) by apexqa(uid=0)' \
+    '47.294161 1000 Started gnome-session-manager@gnome.service - GNOME Session Manager (session: gnome).' \
+    '47.922820 1000 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
+    '55.150626 1000 Registering session with GDM' \
+    '55.590919 1000 Started org.gnome.Shell@user.service - GNOME Shell.' \
+    '55.594178 1000 Reached target gnome-session-initialized.target - GNOME Session is initialized.')"
+check "greeter at its unit's start, desktop from gdm-password's login to the user's unit" \
+    "kernel 0.932 initrd 2.627 userspace 28.699 greeter 8.989 desktop 8.655" "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
 check_true "the row names the markers it timed" grep -q \
-    "greeter at 'Started org.gnome.Shell@gdm.service'; desktop at 'Started org.gnome.Shell@wayland.service' (boot.tsv" \
+    "greeter at 'Started org.gnome.Shell@gdm.service'; desktop at 'Started org.gnome.Shell@user.service' (boot.tsv" \
     <<<"$(boot_row)"
-check "boot metrics: without the unit lines, the shells' own lines" 0 "$(boot_then_login \
+check "boot metrics: without the unit lines, the shells' registrations with GDM" 0 "$(boot_then_login \
     '8.731 60578 Registering display with GDM' \
-    '46.940 0 session opened for user apexqa(uid=1000)' \
-    '48.100 1000 Running GNOME Shell (using mutter 51.0) as a Wayland display server')"
-check "greeter at the display's registration, desktop at the user shell's start" \
-    "greeter 8.731 desktop 1.160" "$(sed -n 's/^\(greeter\|desktop\) /&/p' "$GUEST_DIR/out/boot.tsv" | paste -sd' ')"
-check "boot metrics: the greeter's shell lines never time the user's desktop" 0 "$(boot_then_login \
-    '46.940 0 session opened for user apexqa(uid=1000)' \
-    '8.000 60578 Running GNOME Shell (using mutter 51.0) as a Wayland display server')"
-check_true "the desktop stays untimed" grep -q "desktop: none of 'Started org.gnome.Shell@wayland.service" <<<"$(boot_row)"
+    '46.935880 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000)' \
+    '47.922820 1000 Running GNOME Shell (using mutter 51.0) as a Wayland display server' \
+    '55.150626 1000 Registering session with GDM')"
+check "greeter at the display's, desktop at the session's, never the shell's process start" \
+    "greeter 8.731 desktop 8.215" "$(sed -n 's/^\(greeter\|desktop\) /&/p' "$GUEST_DIR/out/boot.tsv" | paste -sd' ')"
+check "boot metrics: the greeter's lines never time the user's desktop" 0 "$(boot_then_login \
+    '8.731 60578 Registering session with GDM' \
+    '8.988595 0 Started org.gnome.Shell@user.service - GNOME Shell.' \
+    '46.935880 0 pam_unix(gdm-password:session): session opened for user apexqa(uid=1000)')"
+check_true "the desktop stays untimed" grep -q "desktop: none of 'Started org.gnome.Shell@user.service" <<<"$(boot_row)"
+check "boot metrics: systemd-user's session line alone is no login time" 0 "$(boot_then_login \
+    '46.764169 0 pam_unix(systemd-user:session): session opened for user apexqa(uid=1000)' \
+    '55.590919 1000 Started org.gnome.Shell@user.service - GNOME Shell.')"
+check_true "the desktop stays untimed, naming gdm-password's line" grep -q \
+    "desktop: no 'gdm-password:session.: session opened for user apexqa'" <<<"$(boot_row)"
 logged_in
 rm -f "$GUEST_DIR/state/analyze"
 printf '' >"$GUEST_DIR/state/mono"
