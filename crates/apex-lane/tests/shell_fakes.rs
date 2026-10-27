@@ -1629,6 +1629,27 @@ fn check_sh_gets_its_four_variables() {
 }
 
 #[test]
+fn rpmbuild_runs_without_the_g_ir_scanner_cache() {
+    let t = ContainerTest::new(DEMO_ENV, DEMO_EDIT);
+    let fake = container_fake(Tools::default());
+    t.run(&Tools::default(), &fake).expect("built");
+    let log = fake.log.borrow();
+    let builds: Vec<&Cmd> = log
+        .iter()
+        .filter(|c| c.program == Program::Rpmbuild && argv(c).iter().any(|a| a == "-ba"))
+        .collect();
+    assert_eq!(builds.len(), 1);
+    assert!(
+        builds[0]
+            .env
+            .iter()
+            .any(|(k, v)| k == "GI_SCANNER_DISABLE_CACHE" && v == "1"),
+        "{:?}",
+        builds[0].env
+    );
+}
+
+#[test]
 fn source1_must_be_staged() {
     let t = ContainerTest::new(DEMO_ENV, DEMO_EDIT);
     std::fs::remove_file(t.work.path().join("in").join(&t.archive)).unwrap();
