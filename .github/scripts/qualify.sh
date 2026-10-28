@@ -167,6 +167,8 @@ LOCAL_CANDIDATE_DIGEST=
 LUKS_PASSPHRASE=
 FEATURE_NOTE=
 SAFE_LOGIN_SINCE=
+LOCK_ROW=
+LOCK_ROW_SINCE=
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -178,8 +180,10 @@ result() {
 }
 
 fail() {
-    result "$1" "FAIL" "$2"
-    die "$1: $2"
+    local detail=$2
+    [[ $1 != "$LOCK_ROW" ]] || detail=$(lock_failure_detail "$1" "$2")
+    result "$1" "FAIL" "$detail"
+    die "$1: $detail"
 }
 
 publish_results() {
@@ -1074,8 +1078,9 @@ screendump() {
 password_conversations() { vm_ssh "pgrep -c -f 'pam/gdm-passwor[d]'" || true; }
 fingerprint_conversations() { vm_ssh "pgrep -c -f 'pam/gdm-fingerprin[t]'" || true; }
 
-type_password_after_enter() {
-    local test=$1 where=$2 before=$3 password=${4:-$TEST_PASSWORD} deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT))
+# A Return pressed while the curtain still rises is lost, so it is pressed until one is taken.
+press_enter_until_asked() {
+    local test=$1 where=$2 before=$3 deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT))
     nudge_pointer || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET (a pointer move)"
     until (($(password_conversations) > before)); do
         if ((SECONDS >= deadline)); then
@@ -1086,6 +1091,11 @@ type_password_after_enter() {
         qmp "$(key_press ret)" || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
         sleep "$QUALIFY_POLL"
     done
+}
+
+type_password_after_enter() {
+    local test=$1 where=$2 before=$3 password=${4:-$TEST_PASSWORD}
+    press_enter_until_asked "$test" "$where" "$before"
     # The prompt takes keys only once the conversation has reached PAM.
     sleep "$QUALIFY_POLL"
     screendump "$test"
@@ -1288,6 +1298,30 @@ assert_apex_login() {
     result "$test" "$status" "$TEST_USER's session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell pid $pid answers; the Apex layer armed its crash guard and logged no failure; color-scheme 'default'; $APEX_AGENT runs, never restarted, $APEX_FOLDER_ICONS ran and exited 0, no other Apex user unit active and none failed; $errors JS ERROR line(s) since login (logs/${log##*/})"
 }
 
+# From here until another row begins, a failure of TEST names the shell's first JS ERROR since
+# SINCE and a screendump taken after a pointer move, as the screen may have idled to blank.
+lock_row() { LOCK_ROW=$1 LOCK_ROW_SINCE=$2; }
+
+lock_failure_detail() {
+    local test=$1 detail=$2 first
+    LOCK_ROW=
+    if nudge_pointer >/dev/null 2>&1; then
+        sleep "$QUALIFY_POLL"
+        screendump "$test-failed"
+        detail+=" (the screen at the failure: logs/$test-failed.png)"
+    fi
+    if [[ $detail != *'JS ERROR'* ]]; then
+        first=$(vm_ssh "journalctl -b _UID=$SESSION_UID --since @$((LOCK_ROW_SINCE - 1)) -o cat --no-pager" 2>/dev/null |
+            grep -m 1 'JS ERROR' | cut -c1-200) || true
+        if [[ -n $first ]]; then
+            detail+="; first JS ERROR since the row began: $first"
+        else
+            detail+="; no JS ERROR since the row began"
+        fi
+    fi
+    printf '%s' "$detail"
+}
+
 lock_session() {
     local test=$1
     vm_ssh "loginctl lock-session $SESSION_ID" || fail "$test" "loginctl lock-session $SESSION_ID failed"
@@ -1325,12 +1359,15 @@ login_lock_unlock() {
     since=$(vm_ssh 'date +%s') || fail "$name-lock" "cannot read the guest's clock"
     # Apex's lock asks at once, so only a count taken unlocked tells a lock's conversation apart.
     base=$(password_conversations)
+    lock_row "$name-lock" "$since"
     lock_session "$name-lock"
     result "$name-lock" PASS "loginctl lock-session: LockedHint=yes, org.gnome.ScreenSaver active (logs/$name-lock.png)"
+    lock_row "$name-unlock" "$since"
     type_password_after_enter "$name-unlock" "the lock screen" "$base"
     assert_unlocked "$name-unlock" "$pid" "$since" "the password typed into the unlock dialog"
 
     since=$(vm_ssh 'date +%s') || fail "$name-unlock-signal" "cannot read the guest's clock"
+    lock_row "$name-unlock-signal" "$since"
     lock_session "$name-unlock-signal"
     vm_ssh "loginctl unlock-session $SESSION_ID" ||
         fail "$name-unlock-signal" "loginctl unlock-session $SESSION_ID failed"
@@ -1397,6 +1434,7 @@ feature_gate() {
 matrix_wrong_password() {
     local test=$1-lock-wrong-password pid=$2 base=$3 since failures
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+    lock_row "$test" "$since"
     lock_session "$test"
     type_password_after_enter "$test" "the lock screen" "$base" "$WRONG_PASSWORD"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no new password conversation after the wrong password" \
@@ -1411,11 +1449,9 @@ matrix_wrong_password() {
 matrix_esc() {
     local test=$1-lock-esc pid=$2 base=$3 since
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+    lock_row "$test" "$since"
     lock_session "$test"
-    nudge_pointer || fail "$test" "QEMU took no pointer move"
-    sleep "$QUALIFY_POLL"
-    conversations_above "$base" || qmp "$(key_press ret)" || fail "$test" "QEMU took no key"
-    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the lock screen started no password conversation" conversations_above "$base"
+    press_enter_until_asked "$test" "the lock screen" "$base"
     qmp "$(key_press esc)" || fail "$test" "QEMU took no key"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "Esc did not end the password conversation" conversations_at "$base"
     still_locked || fail "$test" "Esc unlocked the session"
@@ -1427,6 +1463,7 @@ matrix_esc() {
 matrix_blank_wake() {
     local test=$1-lock-blank-wake pid=$2 base=$3 since
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+    lock_row "$test" "$since"
     lock_session "$test"
     nudge_pointer || fail "$test" "QEMU took no pointer move"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the Apex lock started no password conversation with the screen on" \
@@ -1453,6 +1490,7 @@ vm_suspended() { [[ $(vm_run_state) == suspended ]]; }
 matrix_suspend() {
     local test=$1-lock-suspend pid=$2 base=$3 since
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+    lock_row "$test" "$since"
     lock_session "$test"
     vm_ssh 'systemd-run --quiet --on-active=2 systemctl suspend' || fail "$test" "cannot schedule systemctl suspend"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the VM did not suspend (QMP query-status)" vm_suspended
@@ -1469,6 +1507,7 @@ matrix_reduce_motion() {
     user_run "$SESSION_UID" gsettings set org.gnome.desktop.a11y.interface reduced-motion "\"'reduce'\"" ||
         fail "$test" "cannot set reduced-motion to 'reduce'"
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+    lock_row "$test" "$since"
     lock_session "$test"
     type_password_after_enter "$test" "the lock screen with Reduce Motion" "$base"
     assert_unlocked "$test" "$pid" "$since" "Reduce Motion (reduced-motion 'reduce'): lock, then the password$note"
@@ -1510,6 +1549,7 @@ safe_karg_lock() {
     ! user_journal_has "$since" "$APEX_LOCK_FEATURE" || fail "$test" "the Apex lock ran with $APEX_SAFE_KARG"
     pid=$(shell_pid "$SESSION_UID") || fail "$test" "no gnome-shell runs as $TEST_USER"
     base=$(password_conversations)
+    lock_row "$test" "$since"
     lock_session "$test"
     nudge_pointer || fail "$test" "QEMU took no pointer move"
     sleep "$QUALIFY_POLL"

@@ -1121,7 +1121,9 @@ qmp() {
         case $keys in
             "") ;;
             ret)
-                if [[ -e $STATE/pkexec-running ]]; then
+                if [[ -e $STATE/ret-lost ]]; then
+                    rm "$STATE/ret-lost"
+                elif [[ -e $STATE/pkexec-running ]]; then
                     pkexec_typed
                     : >"$STATE/typed"
                 elif [[ -s $STATE/typed ]]; then
@@ -1587,6 +1589,28 @@ logged_in
 check "a pin without lock: the matrix runs" 0 "$(guest lock_matrix local 1000)"
 check_true "and blank and wake passes with the note" grep -q "^| local-lock-blank-wake | PASS | lock not in pinned apex-gnome $GNOME_PIN: no Apex prompt" "$GUEST_DIR/out/results.md"
 check_true "as does Reduce Motion, which the pin has no feature for" grep -q "^| local-lock-reduce-motion | PASS | .*; motion not in pinned apex-gnome $GNOME_PIN" "$GUEST_DIR/out/results.md"
+logged_in
+rm "$GUEST_DIR/state/takes-keys"
+echo "gnome-shell[1234]: JS ERROR: TypeError: can't convert undefined to object" >>"$GUEST_DIR/state/journal"
+check "a lock screen that starts no conversation fails" 1 "$(guest lock_matrix local 1000)"
+lock_failure="| local-lock-wrong-password | FAIL | GDM started no password conversation 2s into pressing Enter"
+lock_failure+=" on the lock screen (logs/local-lock-wrong-password.png)"
+lock_failure+=" (the screen at the failure: logs/local-lock-wrong-password-failed.png);"
+lock_failure+=" first JS ERROR since the row began: gnome-shell[1234]: JS ERROR: TypeError: can't convert undefined to object |"
+check_true "naming the first JS ERROR since the row began" grep -qF "$lock_failure" "$GUEST_DIR/out/results.md"
+check_true "with a screendump after a pointer move" grep -qF "local-lock-wrong-password-failed.png" "$GUEST_DIR/state/qmp"
+logged_in
+rm "$GUEST_DIR/state/takes-keys"
+check "without a JS ERROR it fails as well" 1 "$(guest lock_matrix local 1000)"
+check_true "and says there was none" grep -q '^| local-lock-wrong-password | FAIL | .*; no JS ERROR since the row began |' "$GUEST_DIR/out/results.md"
+logged_in
+echo yes >"$GUEST_DIR/state/locked"
+: >"$GUEST_DIR/state/ret-lost"
+check "a Return lost while the curtain rises is pressed again" 0 "$(guest press_enter_until_asked local-lock-esc 'the lock screen' 1)"
+check "twice in all" 2 "$(grep -cF '"data":"ret"' "$GUEST_DIR/state/qmp")"
+logged_in
+check "a login row's failure is not a lock row's" 1 "$(guest fail local-login 'x')"
+check_true "so it gets no screendump" grep -q '^| local-login | FAIL | x |' "$GUEST_DIR/out/results.md"
 pin_features "'spotlight', 'panel', 'lock', 'motion'"
 apex_locked_in
 echo 'gnome-shell[1234]: Apex: feature motion enabled' >>"$GUEST_DIR/state/journal"
