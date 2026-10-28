@@ -1173,6 +1173,7 @@ vm_ssh() {
         "bash -s -- greeter"*) from greeter | grep . ;;
         "systemctl is-active --quiet gdm.service") [[ ! -e $STATE/gdm-down ]] ;;
         "pgrep -u 60578 -x gnome-shell") from greeter-pid | grep . ;;
+        "journalctl -b _UID=60578 _COMM=systemd -o short-monotonic --no-pager") from greeter-manager ;;
         "rm -rf $GUEST_TMP/candidate && mkdir -p $GUEST_TMP/candidate") ;;
         "cat > $GUEST_TMP/candidate/manifest.json && chmod 0644 $GUEST_TMP/candidate/manifest.json") cat >"$STATE/built-manifest" ;;
         "cat > $GUEST_TMP/candidate/Containerfile") cat >"$STATE/built-containerfile" ;;
@@ -1339,8 +1340,28 @@ rm -rf "$GUEST_DIR/state"
 mkdir -p "$GUEST_DIR/state"
 echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
 echo 4321 >"$GUEST_DIR/state/greeter-pid"
+cat >"$GUEST_DIR/state/greeter-manager" <<'EOF'
+[    9.701] guest systemd[811]: apex-folder-icons.service - Set the Apex icons of the Projects and Screenshots folders was skipped because of an unmet condition check (ConditionEnvironment=XDG_SESSION_CLASS=user).
+[    9.702] guest systemd[811]: apex-session-agent.service - Apex session agent was skipped because of an unmet condition check (ConditionEnvironment=XDG_SESSION_CLASS=user).
+[    9.705] guest systemd[811]: Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.
+[    9.710] guest systemd[811]: Reached target graphical-session.target - Current graphical user session.
+EOF
+cp "$GUEST_DIR/state/greeter-manager" "$GUEST_DIR/greeter-manager.ok"
 check "GDM's greeter with its gnome-shell" 0 "$(guest assert_greeter local)"
 check "passes" 1 "$(row local-greeter PASS)"
+check_true "and says no Apex user unit started" grep -q '^| local-greeter | PASS | .*whose user manager started no Apex user unit' "$GUEST_DIR/out/results.md"
+echo '[    9.703] guest systemd[811]: Started apex-session-agent.service - Apex session agent.' >>"$GUEST_DIR/state/greeter-manager"
+check "an Apex agent started in the greeter fails" 1 "$(guest assert_greeter local)"
+check_true "and quotes it" grep -q '^| local-greeter | FAIL | an Apex user unit started in the greeter: .*Started apex-session-agent.service' "$GUEST_DIR/out/results.md"
+cp "$GUEST_DIR/greeter-manager.ok" "$GUEST_DIR/state/greeter-manager"
+echo '[    9.703] guest systemd[811]: Starting apex-folder-icons.service - Set the Apex icons...' >>"$GUEST_DIR/state/greeter-manager"
+check "a oneshot Apex unit that ran in the greeter fails" 1 "$(guest assert_greeter local)"
+grep -v 'Reached target' "$GUEST_DIR/greeter-manager.ok" >"$GUEST_DIR/state/greeter-manager"
+check "a greeter manager read before graphical-session.target fails" 1 "$(guest assert_greeter local)"
+check_true "and names the target" grep -q "^| local-greeter | FAIL | the greeter's user manager (uid 60578) never reached graphical-session.target" "$GUEST_DIR/out/results.md"
+echo '-- No entries --' >"$GUEST_DIR/state/greeter-manager"
+check "a greeter manager that logged nothing fails" 1 "$(guest assert_greeter local)"
+cp "$GUEST_DIR/greeter-manager.ok" "$GUEST_DIR/state/greeter-manager"
 : >"$GUEST_DIR/state/greeter-pid"
 check "a greeter session without gnome-shell fails" 1 "$(guest assert_greeter local)"
 echo 4321 >"$GUEST_DIR/state/greeter-pid"

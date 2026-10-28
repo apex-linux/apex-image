@@ -964,12 +964,33 @@ shell_pid() {
     vm_ssh "pgrep -u $uid -x gnome-shell"
 }
 
+# Apex's user units are for the user's session; a oneshot that ran and exited is no longer
+# active, so the manager's journal tells whether one ever started.
+manager_reached_session() {
+    local uid=$1 log=$2
+    vm_ssh "journalctl -b _UID=$uid _COMM=systemd -o short-monotonic --no-pager" >"$log" 2>&1 &&
+        grep -qF 'Reached target graphical-session.target' "$log"
+}
+
+greeter_apex_units() {
+    local test=$1 uid=$2 log started
+    log=$QUALIFY_OUT/logs/$test.manager.journal.txt
+    # Before the target, the units it wants have not been started or skipped yet.
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" \
+        "the greeter's user manager (uid $uid) never reached graphical-session.target (logs/${log##*/})" \
+        manager_reached_session "$uid" "$log"
+    started=$(grep -E 'Start(ing|ed) apex-' "$log") || true
+    [[ -z $started ]] ||
+        fail "$test" "an Apex user unit started in the greeter: $(head -n 1 <<<"$started" | cut -c1-200) (logs/${log##*/})"
+}
+
 assert_greeter() {
     local test=$1-greeter
     wait_session "$test" greeter
     vm_ssh 'systemctl is-active --quiet gdm.service' || fail "$test" "gdm.service is not active"
     shell_pid "$SESSION_UID" >/dev/null || fail "$test" "no gnome-shell runs for the greeter (uid $SESSION_UID)"
-    result "$test" PASS "GDM's greeter: session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell as uid $SESSION_UID"
+    greeter_apex_units "$test" "$SESSION_UID"
+    result "$test" PASS "GDM's greeter: session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell as uid $SESSION_UID, whose user manager started no Apex user unit (logs/$test.manager.journal.txt)"
 }
 
 # GDM's greeter lists no locked account, and useradd leaves one locked. The password lives
