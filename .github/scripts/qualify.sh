@@ -145,6 +145,11 @@ readonly APEX_LOCK_FEATURE='Apex: feature lock enabled'
 readonly APEX_LOCK_TORN_DOWN='Apex: lock: screen blank, prompt torn down'
 readonly APEX_LOCK_REBUILT='Apex: lock: screen on, prompt rebuilt'
 readonly APEX_SAFE_KARG=apex.safe=1
+readonly APEX_AGENT=apex-session-agent.service
+readonly APEX_FOLDER_ICONS=apex-folder-icons.service
+# What a settled login shows: the agent never restarted; the icons' oneshot ran and exited 0.
+readonly APEX_AGENT_SETTLED='ActiveState=active NRestarts=0 SubState=running'
+readonly APEX_FOLDER_ICONS_SETTLED='ActiveState=inactive ExecMainCode=1 ExecMainStatus=0 Result=success'
 readonly APEX_SAFE_KARG_LINE='Apex: safe mode (apex.safe=1)'
 readonly WRONG_PASSWORD=notthepassword0
 readonly PKEXEC_UNIT=apex-qualify-pkexec
@@ -1213,8 +1218,31 @@ user_setting() {
     user_run "$uid" gsettings get "$schema" "$key"
 }
 
+user_unit_state() {
+    local uid=$1 unit=$2 props=$3
+    user_run "$uid" systemctl --user show -p "$props" --no-pager "$unit" | LC_ALL=C sort | paste -sd' ' -
+}
+
+# Exactly the user units the image ships: sets APEX_UNITS_WHY to the first difference.
+apex_units_settled() {
+    local uid=$1 units state
+    APEX_UNITS_WHY="cannot list the user units of $TEST_USER"
+    units=$(user_run "$uid" systemctl --user list-units --state=failed --plain --no-legend --no-pager "'apex*'") || return 1
+    APEX_UNITS_WHY="a failed Apex user unit: ${units//$'\n'/ }"
+    [[ -z $units ]] || return 1
+    units=$(user_run "$uid" systemctl --user list-units --state=active --plain --no-legend --no-pager "'apex*'") || return 1
+    APEX_UNITS_WHY="the active Apex user units are '${units//$'\n'/ }', not $APEX_AGENT alone"
+    [[ $(awk '{print $1}' <<<"$units") == "$APEX_AGENT" ]] || return 1
+    state=$(user_unit_state "$uid" "$APEX_AGENT" ActiveState,SubState,NRestarts) || return 1
+    APEX_UNITS_WHY="$APEX_AGENT is '$state', not '$APEX_AGENT_SETTLED'"
+    [[ $state == "$APEX_AGENT_SETTLED" ]] || return 1
+    state=$(user_unit_state "$uid" "$APEX_FOLDER_ICONS" ActiveState,Result,ExecMainCode,ExecMainStatus) || return 1
+    APEX_UNITS_WHY="$APEX_FOLDER_ICONS is '$state', not '$APEX_FOLDER_ICONS_SETTLED'"
+    [[ $state == "$APEX_FOLDER_ICONS_SETTLED" ]]
+}
+
 assert_apex_login() {
-    local test=$1 since=$2 pid log errors failure scheme agents status
+    local test=$1 since=$2 pid log errors failure scheme deadline status
     wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" \
         "the layer never created /run/user/$SESSION_UID/$CRASH_GUARD_MARKER: it did not reach enable, so the crash guard was never armed" \
         crash_guard_armed "$SESSION_UID"
@@ -1228,13 +1256,15 @@ assert_apex_login() {
     scheme=$(user_setting "$SESSION_UID" org.gnome.desktop.interface color-scheme) ||
         fail "$test" "cannot read $TEST_USER's color-scheme"
     [[ $scheme == "'default'" ]] || fail "$test" "color-scheme is $scheme after login, not GNOME's 'default'"
-    agents=$(user_run "$SESSION_UID" systemctl --user list-units --state=active --plain --no-legend --no-pager "'apex*'") ||
-        fail "$test" "cannot list the user units of $TEST_USER"
-    [[ -z $agents ]] || fail "$test" "an Apex user unit runs: $(tr '\n' ' ' <<<"$agents")"
+    deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT))
+    until apex_units_settled "$SESSION_UID"; do
+        ((SECONDS < deadline)) || fail "$test" "$APEX_UNITS_WHY"
+        sleep "$QUALIFY_POLL"
+    done
     errors=$(js_errors "$log")
     status=PASS
     ((errors == 0)) || status=WARN
-    result "$test" "$status" "$TEST_USER's session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell pid $pid answers; the Apex layer armed its crash guard and logged no failure; color-scheme 'default', no Apex user unit; $errors JS ERROR line(s) since login (logs/${log##*/})"
+    result "$test" "$status" "$TEST_USER's session $SESSION_ID ($SESSION_TYPE) on seat0, gnome-shell pid $pid answers; the Apex layer armed its crash guard and logged no failure; color-scheme 'default'; $APEX_AGENT runs, never restarted, $APEX_FOLDER_ICONS ran and exited 0, no other Apex user unit active and none failed; $errors JS ERROR line(s) since login (logs/${log##*/})"
 }
 
 lock_session() {
