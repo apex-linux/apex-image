@@ -1344,6 +1344,7 @@ cat >"$GUEST_DIR/state/greeter-manager" <<'EOF'
 [    9.701] guest systemd[811]: apex-folder-icons.service - Set the Apex icons of the Projects and Screenshots folders was skipped because of an unmet condition check (ConditionEnvironment=XDG_SESSION_CLASS=user).
 [    9.702] guest systemd[811]: apex-session-agent.service - Apex session agent was skipped because of an unmet condition check (ConditionEnvironment=XDG_SESSION_CLASS=user).
 [    9.705] guest systemd[811]: Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.
+[    9.710] guest systemd[811]: Reached target graphical-session.target - Current graphical user session.
 EOF
 cp "$GUEST_DIR/state/greeter-manager" "$GUEST_DIR/greeter-manager.ok"
 check "GDM's greeter with its gnome-shell" 0 "$(guest assert_greeter local)"
@@ -1355,9 +1356,11 @@ check_true "and quotes it" grep -q '^| local-greeter | FAIL | an Apex user unit 
 cp "$GUEST_DIR/greeter-manager.ok" "$GUEST_DIR/state/greeter-manager"
 echo '[    9.703] guest systemd[811]: Starting apex-folder-icons.service - Set the Apex icons...' >>"$GUEST_DIR/state/greeter-manager"
 check "a oneshot Apex unit that ran in the greeter fails" 1 "$(guest assert_greeter local)"
+grep -v 'Reached target' "$GUEST_DIR/greeter-manager.ok" >"$GUEST_DIR/state/greeter-manager"
+check "a greeter manager read before graphical-session.target fails" 1 "$(guest assert_greeter local)"
+check_true "and names the target" grep -q "^| local-greeter | FAIL | the greeter's user manager (uid 60578) never reached graphical-session.target" "$GUEST_DIR/out/results.md"
 echo '-- No entries --' >"$GUEST_DIR/state/greeter-manager"
 check "a greeter manager that logged nothing fails" 1 "$(guest assert_greeter local)"
-check_true "and says so" grep -q "^| local-greeter | FAIL | the greeter's user manager (uid 60578) logged nothing" "$GUEST_DIR/out/results.md"
 cp "$GUEST_DIR/greeter-manager.ok" "$GUEST_DIR/state/greeter-manager"
 : >"$GUEST_DIR/state/greeter-pid"
 check "a greeter session without gnome-shell fails" 1 "$(guest assert_greeter local)"

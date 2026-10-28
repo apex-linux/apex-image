@@ -966,12 +966,19 @@ shell_pid() {
 
 # Apex's user units are for the user's session; a oneshot that ran and exited is no longer
 # active, so the manager's journal tells whether one ever started.
+manager_reached_session() {
+    local uid=$1 log=$2
+    vm_ssh "journalctl -b _UID=$uid _COMM=systemd -o short-monotonic --no-pager" >"$log" 2>&1 &&
+        grep -qF 'Reached target graphical-session.target' "$log"
+}
+
 greeter_apex_units() {
     local test=$1 uid=$2 log started
     log=$QUALIFY_OUT/logs/$test.manager.journal.txt
-    vm_ssh "journalctl -b _UID=$uid _COMM=systemd -o short-monotonic --no-pager" >"$log" 2>&1 ||
-        fail "$test" "cannot read the journal of the greeter's user manager (uid $uid)"
-    grep -q 'systemd\[' "$log" || fail "$test" "the greeter's user manager (uid $uid) logged nothing (logs/${log##*/})"
+    # Before the target, the units it wants have not been started or skipped yet.
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" \
+        "the greeter's user manager (uid $uid) never reached graphical-session.target (logs/${log##*/})" \
+        manager_reached_session "$uid" "$log"
     started=$(grep -E 'Start(ing|ed) apex-' "$log") || true
     [[ -z $started ]] ||
         fail "$test" "an Apex user unit started in the greeter: $(head -n 1 <<<"$started" | cut -c1-200) (logs/${log##*/})"
