@@ -1593,7 +1593,11 @@ logged_in
 rm "$GUEST_DIR/state/takes-keys"
 echo "gnome-shell[1234]: JS ERROR: TypeError: can't convert undefined to object" >>"$GUEST_DIR/state/journal"
 check "a lock screen that starts no conversation fails" 1 "$(guest lock_matrix local 1000)"
-check_true "naming the first JS ERROR since the row began" grep -qF "| local-lock-wrong-password | FAIL | GDM started no password conversation 2s into pressing Enter on the lock screen (logs/local-lock-wrong-password.png) (the screen at the failure: logs/local-lock-wrong-password-failed.png); first JS ERROR since the row began: gnome-shell[1234]: JS ERROR: TypeError: can't convert undefined to object |" "$GUEST_DIR/out/results.md"
+lock_failure="| local-lock-wrong-password | FAIL | GDM started no password conversation 2s into pressing Enter"
+lock_failure+=" on the lock screen (logs/local-lock-wrong-password.png)"
+lock_failure+=" (the screen at the failure: logs/local-lock-wrong-password-failed.png);"
+lock_failure+=" first JS ERROR since the row began: gnome-shell[1234]: JS ERROR: TypeError: can't convert undefined to object |"
+check_true "naming the first JS ERROR since the row began" grep -qF "$lock_failure" "$GUEST_DIR/out/results.md"
 check_true "with a screendump after a pointer move" grep -qF "local-lock-wrong-password-failed.png" "$GUEST_DIR/state/qmp"
 logged_in
 rm "$GUEST_DIR/state/takes-keys"
