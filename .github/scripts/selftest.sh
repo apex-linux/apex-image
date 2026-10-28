@@ -1190,6 +1190,9 @@ vm_ssh() {
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
         "$(user_cmd "gsettings get $APEX_SCHEMA layer-enabled")") if [[ -e $STATE/tripped ]]; then echo false; else echo true; fi ;;
         "$(user_cmd "systemctl --user list-units --state=active --plain --no-legend --no-pager 'apex*'")") from agents ;;
+        "$(user_cmd "systemctl --user list-units --state=failed --plain --no-legend --no-pager 'apex*'")") from apex-failed ;;
+        "$(user_cmd 'systemctl --user show -p ActiveState,SubState,NRestarts --no-pager apex-session-agent.service')") from agent-props ;;
+        "$(user_cmd 'systemctl --user show -p ActiveState,Result,ExecMainCode,ExecMainStatus --no-pager apex-folder-icons.service')") from icons-props ;;
         "loginctl show-session 4 -p LockedHint --value") from locked ;;
         "loginctl lock-session 4")
             [[ -e $STATE/never-locks ]] || { echo yes >"$STATE/locked"; echo true >"$STATE/active"; rm -f "$STATE/asking"; }
@@ -1431,6 +1434,9 @@ logged_in() {
     echo "'default'" >"$GUEST_DIR/state/scheme"
     : >"$GUEST_DIR/state/marker"
     echo 'gnome-shell[1234]: Extension manager started' >"$GUEST_DIR/state/journal"
+    echo 'apex-session-agent.service loaded active running Apex session agent' >"$GUEST_DIR/state/agents"
+    printf '%s\n' SubState=running NRestarts=0 ActiveState=active >"$GUEST_DIR/state/agent-props"
+    printf '%s\n' Result=success ExecMainStatus=0 ExecMainCode=1 ActiveState=inactive >"$GUEST_DIR/state/icons-props"
 }
 logged_in
 check "login with the Apex layer, lock, and both unlocks" 0 "$(guest login_lock_unlock local)"
@@ -1457,8 +1463,29 @@ logged_in
 echo "'prefer-dark'" >"$GUEST_DIR/state/scheme"
 check "a login that changed color-scheme fails" 1 "$(guest login_lock_unlock local)"
 logged_in
-echo 'apex-session-agent.service loaded active running Apex agent' >"$GUEST_DIR/state/agents"
-check "a running Apex agent fails" 1 "$(guest login_lock_unlock local)"
+rm "$GUEST_DIR/state/agents"
+check "a login without the Apex agent fails" 1 "$(guest login_lock_unlock local)"
+check_true "and says so" grep -q "^| local-login | FAIL | the active Apex user units are '', not apex-session-agent.service alone" "$GUEST_DIR/out/results.md"
+logged_in
+echo 'apex-updated-user.service loaded active running Something else' >>"$GUEST_DIR/state/agents"
+check "another active Apex user unit fails" 1 "$(guest login_lock_unlock local)"
+logged_in
+echo 'apex-folder-icons.service loaded failed failed Set the Apex icons' >"$GUEST_DIR/state/apex-failed"
+check "a failed Apex user unit fails" 1 "$(guest login_lock_unlock local)"
+check_true "and names it" grep -q '^| local-login | FAIL | a failed Apex user unit: apex-folder-icons.service' "$GUEST_DIR/out/results.md"
+logged_in
+sed -i 's/NRestarts=0/NRestarts=1/' "$GUEST_DIR/state/agent-props"
+check "an agent that restarted fails" 1 "$(guest login_lock_unlock local)"
+check_true "and quotes its state" grep -q "^| local-login | FAIL | apex-session-agent.service is 'ActiveState=active NRestarts=1 SubState=running'" "$GUEST_DIR/out/results.md"
+logged_in
+sed -i 's/ExecMainCode=1/ExecMainCode=0/' "$GUEST_DIR/state/icons-props"
+check "folder icons that never ran fail" 1 "$(guest login_lock_unlock local)"
+logged_in
+sed -i 's/ExecMainStatus=0/ExecMainStatus=1/' "$GUEST_DIR/state/icons-props"
+check "folder icons that exited 1 fail" 1 "$(guest login_lock_unlock local)"
+logged_in
+printf '%s\n' ActiveState=activating Result=success ExecMainCode=0 ExecMainStatus=0 >"$GUEST_DIR/state/icons-props"
+check "folder icons still running at the deadline fail" 1 "$(guest login_lock_unlock local)"
 logged_in
 : >"$GUEST_DIR/state/js-error"
 check "a JS ERROR between lock and unlock fails" 1 "$(guest login_lock_unlock local)"
