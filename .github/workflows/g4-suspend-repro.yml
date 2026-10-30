@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: g4-suspend-repro
+
+# A draft PR that is never merged: G4's lock-suspend row on hosted KVM, no laptop time.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/g4-suspend-repro.yml
+      - .github/spike/g4-suspend-repro.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  repro:
+    name: ${{ matrix.guest }} ${{ matrix.gpu }} ${{ matrix.qemu }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        guest: [base, G]
+        gpu: [virtio-vga, VGA]
+        qemu: [fedora]
+        include:
+          - guest: base
+            gpu: virtio-vga
+            qemu: native
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Host setup (ci-host.sh kvm, qualify.sh host-setup), rpm2cpio
+        run: |
+          .github/scripts/ci-host.sh kvm
+          .github/scripts/qualify.sh host-setup
+          sudo apt-get install -y -qq --no-install-recommends rpm2cpio cpio
+
+      - name: Suspend arms (sw, rtc, s2idle), 2 trials each
+        env:
+          GUEST: ${{ matrix.guest }}
+          GPU: ${{ matrix.gpu }}
+          QEMU: ${{ matrix.qemu }}
+        run: sudo -E env "PATH=$PATH" .github/spike/g4-suspend-repro.sh "$GUEST" "$GPU" "$QEMU" 2
+
+      - name: Logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: g4-repro-${{ matrix.guest }}-${{ matrix.gpu }}-${{ matrix.qemu }}
+          path: |
+            ${{ runner.temp }}/g4-repro/logs
+            ${{ runner.temp }}/g4-repro/verdicts.tsv
+          retention-days: 7
+          if-no-files-found: ignore
