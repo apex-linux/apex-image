@@ -850,9 +850,8 @@ finish_trial() {
     VERDICT[${META[name]}]=$(jq -r '.verdict // "?"' "$TDIR/verdict.json" 2>/dev/null || echo '?')
 }
 
-# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc or s2idle (send-key);
-# OPT nothing (gsd's power-button-action), stdvga (VGA, not virtio-vga), bare, rN (a repeat),
-# fwN (the Nth of REPRO_EDK2_ALT).
+# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc or s2idle (send-key); OPT
+# nothing (gsd's power-button-action), stdvga (not virtio-vga), bare, rN (a repeat), fwN (REPRO_EDK2_ALT's Nth).
 run_trial() {
     local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need fw=0
     IFS=- read -r m wake opts <<<"$name"
