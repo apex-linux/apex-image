@@ -3497,6 +3497,84 @@ check "runner: and which locks are held" 'sleep inhibitor: held (idle sleep)' \
     "$(PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; inhibitor_status' _ "$APEX_ROOT/tools/runner/runner.sh")"
 kill "$!"
 
+# --- vm-keeper.sh: replay a vm.yml run only when it gave no verdict --------------------------
+VK="$TMP/vm-keeper"
+mkdir -p "$VK/bin"
+VK_NOW=1793376000
+VK_HEAD=$(printf 'c%.0s' {1..40})
+VK_OLD=$(printf 'd%.0s' {1..40})
+vk_run() { # ID SHA STATUS CONCLUSION BUILD_CONCLUSION AGE_MIN [EVENT ACTOR [ANNOTATION...]]: one run as gather() makes it
+    local id=$1 sha=$2 status=$3 conclusion=$4 build=$5 age=$6 event=${7:-push} actor=${8:-owner}
+    shift $(($# < 8 ? $# : 8))
+    jq -nc --argjson id "$id" --arg sha "$sha" --arg status "$status" --arg conclusion "$conclusion" --arg build "$build" \
+        --arg created "$(date -u -d "@$((VK_NOW - age * 60))" +%FT%TZ)" --arg event "$event" --arg actor "$actor" \
+        --args '{id: $id, event: $event, head_sha: $sha, status: $status, conclusion: (if $conclusion == "" then null else $conclusion end),
+            created_at: $created, actor: $actor, annotations: $ARGS.positional,
+            build: (if $build == "none" then null else {status: (if $build == "queued" then "queued" else "completed" end),
+                conclusion: (if $build == "" or $build == "queued" then null else $build end)} end)}' "$@"
+}
+vk_decide() { # CHANGED RUN_JSON...: the keeper's decision, newest run first
+    local changed=$1
+    shift
+    jq -n --argjson now "$VK_NOW" --arg head "$VK_HEAD" --argjson changed "$changed" \
+        '{now: $now, main_head: $head, changed_since_verdict: $changed, runs: [$ARGS.positional[] | fromjson]}' --args "$@" \
+        >"$VK/ctx.json"
+    "$APEX_ROOT/.github/scripts/vm-keeper.sh" decide "$VK/ctx.json"
+}
+NO_RESULTS='Gates file: the builder VM returned no results'
+check "keeper: no run yet" "none no vm.yml run yet" "$(vk_decide true)"
+check "keeper: a run queued for a runner waits" "wait run 9 is queued for a runner" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" queued '' queued 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
+check "keeper: a run pending behind the vm concurrency group waits, apart from a queued job" "wait run 9 is pending" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" pending '' none 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
+check "keeper: the last run's verdict, a failure that returned its results, is never replayed" "none run 9 is a verdict" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed failure failure 30 push owner 'Components, RPMs: the build in the builder VM failed (exit 1)')")"
+check "keeper: nor is a green one" "none run 9 is a verdict" "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed success success 30)")"
+check "keeper: a qualify-only run is advisory, not a gate verdict, and is not replayed" "none run 9 is advisory" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed failure failure 30 push owner 'qualify-only: advisory: records nothing, promotes nothing by design')")"
+for case in "cancelled|cancelled|" "failure|failure|$NO_RESULTS" "cancelled|cancelled|Build: The job was not acquired by Runner of type self-hosted even after multiple attempts" \
+    "failure|timed_out|"; do
+    IFS='|' read -r vk_conclusion vk_build vk_note <<<"$case"
+    check "keeper: no verdict ($vk_build${vk_note:+, $vk_note}) dispatches main's head" "dispatch $VK_HEAD" \
+        "$(vk_decide true "$(vk_run 9 "$VK_OLD" completed "$vk_conclusion" "$vk_build" 30 schedule owner ${vk_note:+"$vk_note"})")"
+done
+check "keeper: ssh 255 before the tar is no verdict either" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 9 "$VK_OLD" completed failure failure 30 push owner \
+        'Components, RPMs: ssh lost or never reached the builder VM (exit 255)' "$NO_RESULTS")")"
+check "keeper: never replays a commit whose verdict is known" "none main head ${VK_HEAD:0:12} has a verdict" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_HEAD" completed failure failure 300)")"
+check "keeper: nor when no vm.yml push path changed since the last verdict" "none no vm.yml push path changed since the last verdict" \
+    "$(vk_decide false "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_OLD" completed failure failure 300)")"
+check "keeper: a rejected dispatch approval (build skipped) is no run" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 10 "$VK_HEAD" completed failure skipped 10 workflow_dispatch owner)" "$(vk_run 9 "$VK_OLD" completed cancelled cancelled 30)")"
+check "keeper: once per 3 hours per commit" "wait already dispatched ${VK_HEAD:0:12} in the last 3 hours" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 120 workflow_dispatch 'github-actions[bot]')")"
+check "keeper: after 3 hours, again" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 190 workflow_dispatch 'github-actions[bot]')")"
+check "keeper: an owner's own dispatch is not the keeper's" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 60 workflow_dispatch owner)")"
+vk_day=()
+for n in 1 2 3 4; do vk_day+=("$(vk_run "$((20 - n))" "$VK_OLD" completed cancelled cancelled $((n * 200)) workflow_dispatch 'github-actions[bot]')"); done
+check "keeper: and at most 4 a day" "wait 4 dispatches in the last 24 hours" "$(vk_decide true "${vk_day[@]}")"
+check "keeper: the fifth is past the day" "dispatch $VK_HEAD" "$(vk_decide true "${vk_day[@]:0:3}" \
+    "$(vk_run 16 "$VK_OLD" completed cancelled cancelled 1500 workflow_dispatch 'github-actions[bot]')")"
+cat >"$VK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$FAKE_VK/gh.log"
+EOF
+chmod +x "$VK/bin/gh"
+vk_off() { env -u APEX_VM_KEEPER PATH="$VK/bin:$PATH" FAKE_VK="$VK" "$APEX_ROOT/.github/scripts/vm-keeper.sh" run; }
+check "keeper: the kill switch is checked first: off, it exits 0" \
+    "vm-keeper: off (repository variable APEX_VM_KEEPER is not on)|0" "$(vk_off)|$(rc_of vk_off)"
+check "keeper: and asks nothing of GitHub" "no call" "$([[ -e $VK/gh.log ]] && echo call || echo 'no call')"
+# shellcheck disable=SC2016 # expanded by the inner bash
+VK_RE=$(cd "$APEX_ROOT" && bash -c '. "$1"; paths_regex' _ .github/scripts/vm-keeper.sh)
+check_true "keeper: vm.yml's push paths match image/" grep -qE "$VK_RE" <<<"image/Containerfile"
+check_false "keeper: and not a workflow" grep -qE "$VK_RE" <<<".github/workflows/ci.yml"
+check_true "keeper: the cron's minute is the one it measures its lag from" grep -qF \
+    "cron: \"$(sed -n 's/.*KEEPER_MINUTE=\([0-9]*\).*/\1/p' "$APEX_ROOT/.github/scripts/vm-keeper.sh") * * * *\"" "$APEX_ROOT/.github/workflows/vm-keeper.yml"
+check_true "keeper: off in the workflow too, before the job starts" grep -qF "vars.APEX_VM_KEEPER == 'on'" "$APEX_ROOT/.github/workflows/vm-keeper.yml"
+
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
 mkdir -p "$V/bin"
