@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       trials:
-        description: "Trials in order. G = locked GNOME session, H = no session; sw = QMP system_wakeup (G4), rtc = RTC alarm, s2idle = keyboard; options -nothing, -stdvga, -bare, -rN, -fwN (REPRO_EDK2_ALT); empty = each job's own (virtio-vga, std VGA)"
+        description: "Trials in order. G = locked GNOME session, H = no session; sw = QMP system_wakeup (G4), rtc = RTC alarm, s2idle = keyboard, dpms = PowerSaveMode 3 then 0 x REPRO_DPMS_CYCLES; options -nothing, -stdvga, -bare, -rN, -fwN (REPRO_EDK2_ALT); empty = each job's own (virtio-vga, std VGA)"
         default: ""
       extras:
         description: "auto adds follow-ups chosen from the first verdicts; none adds nothing"
@@ -55,10 +55,10 @@ jobs:
       matrix:
         include:
           - set: virtio-vga
-            trials: H-sw-fw1 H-sw-fw2 H-sw G-s2idle H-s2idle
+            trials: H-sw-fw1 H-sw-fw2 H-sw G-dpms G-s2idle
             extras: auto
           - set: std VGA
-            trials: G-s2idle-stdvga G-s2idle-stdvga-r2 H-s2idle-stdvga
+            trials: G-s2idle-stdvga G-dpms-stdvga G-s2idle-stdvga-r2 H-s2idle-stdvga
             extras: none
     env:
       REPRO_TRIALS: ${{ inputs.trials || matrix.trials }}

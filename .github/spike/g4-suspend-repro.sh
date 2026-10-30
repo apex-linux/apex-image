@@ -22,6 +22,7 @@ export QUALIFY_BOOT_TIMEOUT=${QUALIFY_BOOT_TIMEOUT:-420} QUALIFY_LOGIN_TIMEOUT=$
 : "${REPRO_GUEST_IMAGE:=}"           # a bootc image to test instead of the derived one
 : "${REPRO_WAKE_WINDOW:=90}" # G4 waits 900 s; a healthy resume answers in seconds
 : "${REPRO_RTC_SECS:=25}"
+: "${REPRO_DPMS_CYCLES:=20}"
 : "${REPRO_PRINT_TIMES:=1}"
 : "${REPRO_DEBUGCON:=1}"
 : "${REPRO_DEADLINE:=$(($(date +%s) + 1500))}"
@@ -859,13 +860,54 @@ finish_trial() {
     VERDICT[${META[name]}]=$(jq -r '.verdict // "?"' "$TDIR/verdict.json" 2>/dev/null || echo '?')
 }
 
-# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc or s2idle (send-key); OPT
+# QEMU's frame: GNOME fills most of it; an inactive output or a text console leaves it mostly black.
+lit() {
+    python3 -I -c '
+import sys
+d = open(sys.argv[1], "rb").read()
+f = d.split(maxsplit=4)
+px = f[4]
+n = len(px) // 3
+sys.exit(0 if sum(1 for i in range(0, 3 * n, 3) if px[i] > 16 or px[i + 2] > 16) > n * 3 // 10 else 1)' "$1"
+}
+
+frame_lit() {
+    rm -f "$TDIR/frame.ppm"
+    qmp "$(jq -cn --arg f "$TDIR/frame.ppm" '{execute: "screendump", arguments: {filename: $f, format: "ppm"}}')" &&
+        sleep 1 && lit "$TDIR/frame.ppm"
+}
+
+# G4's local-lock-blank-wake: PowerSaveMode 3 then 0 through Mutter, REPRO_DPMS_CYCLES times.
+dpms_cycles() {
+    local i n=$REPRO_DPMS_CYCLES back=0 late=0 dark=0 since errors
+    since=$(vm_ssh 'date +%s') || since=$(date +%s)
+    for ((i = 1; i <= n; i++)); do
+        display_power 3 >>"$TDIR/dpms.txt" 2>&1 || echo "cycle $i: PowerSaveMode 3 failed" >>"$TDIR/dpms.txt"
+        sleep 2
+        display_power 0 >>"$TDIR/dpms.txt" 2>&1 || echo "cycle $i: PowerSaveMode 0 failed" >>"$TDIR/dpms.txt"
+        sleep 3
+        if frame_lit; then
+            back=$((back + 1))
+            continue
+        fi
+        screendump "$TRIAL_ID-dark-$i"
+        sleep 10
+        if frame_lit; then late=$((late + 1)); else dark=$((dark + 1)); fi
+        echo "cycle $i: dark 3 s after PowerSaveMode 0, $(frame_lit && echo lit || echo still dark) 10 s later" >>"$TDIR/dpms.txt"
+    done
+    vm_ssh "journalctl -b --since @$since -o short-monotonic _COMM=gnome-shell + _TRANSPORT=kernel" >"$TDIR/journal.txt" 2>&1 || true
+    errors=$(grep -cE 'Cursor update failed|drmModeAtomicCommit|[Aa]tomic.*(fail|Invalid)' "$TDIR/journal.txt" || true)
+    rm -f "$TDIR/frame.ppm"
+    finish_trial "DPMS $back/$n back, $late late, $dark dark; $errors atomic errors"
+}
+
+# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc, s2idle (send-key) or dpms; OPT
 # nothing (gsd's power-button-action), stdvga (not virtio-vga), bare, rN (a repeat), fwN (REPRO_EDK2_ALT's Nth).
 run_trial() {
     local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need fw=0
     IFS=- read -r m wake opts <<<"$name"
     case $m in G) mode=gnome ;; H) mode=headless ;; *) warn "unknown trial $name"; return 0 ;; esac
-    [[ $wake == sw || $wake == rtc || $wake == s2idle ]] || { warn "unknown wake in trial $name"; return 0; }
+    [[ $wake == sw || $wake == rtc || $wake == s2idle || $wake == dpms ]] || { warn "unknown wake in trial $name"; return 0; }
     [[ -$opts- != *-stdvga-* ]] || vga=std
     [[ -$opts- != *-bare-* ]] || inst=bare
     [[ -$opts- != *-nothing-* ]] || pba=nothing
@@ -901,6 +943,11 @@ run_trial() {
             >"$TDIR/mode-failed.txt" 2>&1 || true
         finish_trial MODE-FAILED
         VM_DIRTY=1
+        return 0
+    fi
+    if [[ $wake == dpms ]]; then
+        META[boot]=$BOOTN
+        dpms_cycles
         return 0
     fi
     S3_IN_BOOT=$((S3_IN_BOOT + 1))
@@ -1121,7 +1168,7 @@ publish() {
         "STUCK-FIRMWARE[-EARLY] (H1b in OVMF); STUCK-EARLY-KERNEL (H1b, waking vector to 'Low-level resume complete');" \
         "STUCK-DEVICE-RESUME (H2, E: 'open' names the callback); STUCK-POST-SUSPEND (tasks thawed, no 'PM: suspend exit': sysrq-w.txt);" \
         "RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED; USERSPACE-STUCK (heartbeats, no resume line); SKIP-NO-FW; SHELL-SILENT-AFTER-RESUME (the shell answers no D-Bus, so 'unlocked' is unknown: shell-silent.txt);" \
-        "SESSION-BROKEN (H-virtio-gpu-no-restore, H5); UNLOCKED-AFTER-RESUME; MODE-FAILED (mode-failed.txt); UNREACHABLE-BARE (no console instrumentation); NO-SUSPEND." \
+        "SESSION-BROKEN (H-virtio-gpu-no-restore, H5); UNLOCKED-AFTER-RESUME; MODE-FAILED (mode-failed.txt); DPMS n/N back, late (lit 10 s on), dark; UNREACHABLE-BARE (no console instrumentation); NO-SUSPEND." \
         "Logs: artifact g4-suspend-repro-logs (trials/<id>/: meta.tsv, verdict.json, serial-{pre,post,recovery}.txt, ovmf-post.txt, regs-*.txt, journal.txt; qmp-events.jsonl; *.png)."
 }
 
