@@ -11,9 +11,9 @@ The builder VM's one entry point for the self-hosted runner (tools/runner/README
 /usr/local/libexec/apex/ci-build, and binds the runner's key to it in authorized_keys
 with restrict,command=. It takes nothing but SSH_ORIGINAL_COMMAND, which must be exactly
 
-  ci-build <40 lowercase hex digits> [daily | next]
+  ci-build <40 lowercase hex digits> [daily | next | gate | g4]
 
-or `ci-build modes`, which prints the modes this copy takes ("daily next"): vm.yml asks
+or `ci-build modes`, which prints the modes this copy takes ("daily next gate g4"): vm.yml asks
 before it sends next, which an older copy refuses.
 
 It fetches main from APEX_CI_REMOTE, refuses a commit that main does not contain, checks
@@ -30,7 +30,11 @@ and 200 MiB in all three (each directory's SKIPPED lists the rest). stages.tsv h
 UTC second each stage began: ci-build's own and every "== " line of build-image.sh's
 log, then "end"; build-image.sh's "== plan: " line also goes to ci-build.txt as "plan".
 metrics/ holds metrics.sh's metrics.tsv, history.tsv and warnings.tsv (S4's
-budget, warning-only). With daily (vm.yml's scheduled run), metrics.sh also takes the
+budget, warning-only). The mode goes to build-image.sh as APEX_CI_MODE: none lets it
+choose (a qualify-only run when its conditions hold), daily and gate force the full gate
+run, gate with G4 due whatever its last pass, and g4 forces the qualify-only run, which
+build-image.sh refuses (exit 2) when its conditions fail; lane.sh promote runs for none,
+daily and gate only. With daily (vm.yml's scheduled run), metrics.sh also takes the
 image's size, and lane-absorb-report.sh runs after the build, whatever its result:
 absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv, one "family, SRPM,
 result, detail" line for each updates-testing row that is not "applies" or "same".
@@ -82,7 +86,7 @@ git_() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directo
 
 requested_sha() {
     local request=${SSH_ORIGINAL_COMMAND-}
-    [[ $request =~ ^ci-build\ ([0-9a-f]{40})(\ (daily|next))?$ ]] || return 1
+    [[ $request =~ ^ci-build\ ([0-9a-f]{40})(\ (daily|next|gate|g4))?$ ]] || return 1
     printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
 }
 
@@ -291,7 +295,8 @@ build_next() {
 }
 
 build() {
-    local sha=$1 out=$2 daily=$3 rc=0 promote
+    local sha=$1 out=$2 mode=$3 rc=0 promote daily=
+    [[ $mode != daily ]] || daily=daily
     local stamp=$out/.started
     : >"$stamp"
     clock "$out/stages.tsv" "fetch and check out"
@@ -302,7 +307,7 @@ build() {
     clock "$out/stages.tsv" "components (ci-build)"
     stage_components 9>&- </dev/null >&2
     log "== build-image.sh: RPMs, libfprint, lane, image, G4 when due, G2 twice, gates record"
-    bash tools/builder-vm/build-image.sh 9>&- </dev/null 2>&1 | stage_clock "$out" >&2 || rc=$?
+    APEX_CI_MODE=$mode bash tools/builder-vm/build-image.sh 9>&- </dev/null 2>&1 | stage_clock "$out" >&2 || rc=$?
     printf 'build-image %s\n' "$rc" >>"$out/ci-build.txt"
     clock "$out/stages.tsv" "results, metrics and promotion (ci-build)"
     lock_diff >"$out/lock.diff" 2>&1 || true
@@ -319,6 +324,10 @@ build() {
     fi
     [[ -z $daily ]] || stage_absorb "$out" "$stamp" || true
     ((rc == 0)) || return "$rc"
+    if [[ $mode == g4 ]]; then
+        printf 'promote skipped: g4 is qualify-only\n' >>"$out/ci-build.txt"
+        return 0
+    fi
     log "== promote the lane lock"
     promote=$(stage_promote) || rc=$?
     printf 'promote %s\n' "$promote" >>"$out/ci-build.txt"
@@ -333,10 +342,10 @@ main() {
     esac
     local sha mode out rc request
     if [[ ${SSH_ORIGINAL_COMMAND-} == "ci-build modes" ]]; then
-        echo "daily next"
+        echo "daily next gate g4"
         exit 0
     fi
-    request=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha> [daily | next]'"
+    request=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha> [daily | next | gate | g4]'"
     read -r sha mode <<<"$request"
 
     # stdout carries only the results tar.
@@ -353,7 +362,7 @@ main() {
     if [[ $mode == next ]]; then
         (set -e; : >"$out/.started"; build_next "$sha" "$out")
     else
-        (set -e; build "$sha" "$out" "${mode:+daily}")
+        (set -e; build "$sha" "$out" "$mode")
     fi
     rc=$?
     set -e
