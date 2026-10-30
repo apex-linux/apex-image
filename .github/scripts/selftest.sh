@@ -1996,6 +1996,41 @@ ct_features() { # LIST: apex-gnome's layer.js with FEATURES_IN_ENABLE_ORDER = [L
 }
 ct_choices motion spotlight
 ct_features "'motion', 'spotlight'"
+ct_user_units() { # SYSTEM DESKTOP: the user units the components' specs ship and enable, as main's
+    mkdir -p "$1/packaging" "$1/data" "$2/packaging" "$2/desktop/systemd/user"
+    printf '%s\n' '%files' '%{_userunitdir}/apex-session-agent.service' '%{_userpresetdir}/80-apex.preset' >"$1/packaging/apex.spec"
+    printf 'enable apex-session-agent.service\n' >"$1/data/80-apex.preset"
+    printf '[Unit]\nConditionEnvironment=XDG_SESSION_CLASS=user\n[Service]\nExecStart=/a\nRestart=on-failure\n[Install]\nWantedBy=graphical-session.target\n' \
+        >"$1/data/apex-session-agent.service"
+    printf '%s\n' '%files' '%{_userunitdir}/apex-shell-safe.service' '%{_userunitdir}/apex-folder-icons.service' \
+        '%{_userunitdir}/graphical-session.target.wants/apex-folder-icons.service' >"$2/packaging/apex-desktop.spec"
+    printf '[Unit]\nConditionEnvironment=XDG_SESSION_CLASS=user\n[Service]\nType=oneshot\nExecStart=/b\n' \
+        >"$2/desktop/systemd/user/apex-folder-icons.service"
+    printf '[Unit]\n' >"$2/desktop/systemd/user/apex-shell-safe.service"
+}
+ct_user_units "$CT/system" "$CT/desktop"
+G4U=$TMP/g4-user-units
+g4u() { # QUALIFY: g4_user_units' exit on a fresh copy of the components after "$G4U/edit"; its errors in $G4U/err
+    rm -rf "$G4U/system" "$G4U/desktop" && ct_user_units "$G4U/system" "$G4U/desktop"
+    (cd "$G4U" && eval "$(cat "$G4U/edit")")
+    (set +e; g4_user_units "$1" "$G4U/system" "$G4U/desktop" >"$G4U/out" 2>"$G4U/err"; echo $?)
+}
+mkdir -p "$G4U" && : >"$G4U/edit"
+check "g4 user units: main's qualify.sh expects what the components enable" 0 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+check "and names them" "long-running: apex-session-agent.service; oneshot: apex-folder-icons.service" "$(cat "$G4U/out")"
+sed '/^apex_units_settled() {$/,/^}$/d' "$APEX_ROOT/.github/scripts/qualify.sh" >"$G4U/qualify-0380e70.sh"
+check "g4 user units: a login contract that expects no Apex user unit (0380e70, run 11) fails" 1 "$(g4u "$G4U/qualify-0380e70.sh")"
+check_true "and names the agent it would not expect" grep -q "expects the long-running Apex user units 'none', but the components enable 'apex-session-agent.service'" "$G4U/err"
+echo "echo enable apex-extra.service >>system/data/80-apex.preset" >"$G4U/edit"
+check "g4 user units: a preset enabling a unit no spec installs fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+echo "sed -i 's/^Restart=.*/Type=oneshot/' system/data/apex-session-agent.service" >"$G4U/edit"
+check "g4 user units: an agent that became a oneshot fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+check_true "and says G4 expects it running" grep -q "expects the long-running Apex user units 'apex-session-agent.service', but the components enable 'none'" "$G4U/err"
+echo "sed -i '/^ConditionEnvironment=/d' desktop/desktop/systemd/user/apex-folder-icons.service" >"$G4U/edit"
+check "g4 user units: a unit that would start in the greeter fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+check_true "and says why" grep -q "apex-folder-icons.service: no ConditionEnvironment=XDG_SESSION_CLASS=user, so it starts in GDM's greeter" "$G4U/err"
+echo "sed -i '/target.wants/d' desktop/packaging/apex-desktop.spec" >"$G4U/edit"
+check "g4 user units: a oneshot nothing enables any more fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
 # The compose's repositories, as dnf5 repoquery --whatprovides answers: FILE PACKAGE lines.
 mkdir -p "$CT/bin"
 cat >"$CT/bin/dnf5" <<'EOF'
