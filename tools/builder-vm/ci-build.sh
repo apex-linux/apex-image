@@ -34,7 +34,9 @@ budget, warning-only). The mode goes to build-image.sh as APEX_CI_MODE: none let
 choose (a qualify-only run when its conditions hold), daily and gate force the full gate
 run, gate with G4 due whatever its last pass, and g4 forces the qualify-only run, which
 build-image.sh refuses (exit 2) when its conditions fail; lane.sh promote runs for none,
-daily and gate only. With daily (vm.yml's scheduled run), metrics.sh also takes the
+daily and gate only. For gate and g4, a commit whose build-image.sh predates APEX_CI_MODE
+is refused before it builds, and a run whose _build/plan.txt does not name the plan asked
+for exits 2 with its gates record removed ("plan refused" in ci-build.txt). With daily (vm.yml's scheduled run), metrics.sh also takes the
 image's size, and lane-absorb-report.sh runs after the build, whatever its result:
 absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv, one "family, SRPM,
 result, detail" line for each updates-testing row that is not "applies" or "same".
@@ -294,6 +296,17 @@ build_next() {
     return "$rc"
 }
 
+plan_of() { if [[ -s _build/plan.txt && _build/plan.txt -nt $1 ]]; then cat -- _build/plan.txt; else echo nothing; fi; }
+
+# MODE STAMP: gate and g4 ask build-image.sh for one plan; this run's plan.txt must name it.
+plan_honoured() {
+    case $1 in
+        gate) [[ $(plan_of "$2") == gate ]] ;;
+        g4) [[ $(plan_of "$2") == qualify-only ]] ;;
+        *) return 0 ;;
+    esac
+}
+
 build() {
     local sha=$1 out=$2 mode=$3 rc=0 promote daily=
     [[ $mode != daily ]] || daily=daily
@@ -306,9 +319,20 @@ build() {
     check_installed >>"$out/ci-build.txt"
     clock "$out/stages.tsv" "components (ci-build)"
     stage_components 9>&- </dev/null >&2
+    if [[ $mode == gate || $mode == g4 ]] && ! grep -q 'APEX_CI_MODE' tools/builder-vm/build-image.sh; then
+        printf 'plan refused: %s predates APEX_CI_MODE, so it cannot run %s\n' "$sha" "$mode" >>"$out/ci-build.txt"
+        log "refused: this commit's build-image.sh predates APEX_CI_MODE; it would not run $mode"
+        return "$EXIT_REFUSED"
+    fi
     log "== build-image.sh: RPMs, libfprint, lane, image, G4 when due, G2 twice, gates record"
     APEX_CI_MODE=$mode bash tools/builder-vm/build-image.sh 9>&- </dev/null 2>&1 | stage_clock "$out" >&2 || rc=$?
     printf 'build-image %s\n' "$rc" >>"$out/ci-build.txt"
+    if ! plan_honoured "$mode" "$stamp"; then
+        rm -f -- _build/gates-passed.txt
+        printf 'plan refused: build-image.sh ran %s, not %s; no gates record\n' "$(plan_of "$stamp")" "$mode" >>"$out/ci-build.txt"
+        log "refused: build-image.sh did not run the $mode plan; its gates record is removed"
+        rc=$EXIT_REFUSED
+    fi
     clock "$out/stages.tsv" "results, metrics and promotion (ci-build)"
     lock_diff >"$out/lock.diff" 2>&1 || true
     copy_if_newer _build/gates-passed.txt "$out/gates-passed.txt" "$stamp"

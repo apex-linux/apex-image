@@ -224,8 +224,11 @@ Owner steps that a change on `main` needs on the host, newest first.
   `ci-build <sha> [daily | next | gate | g4]`; an older copy refuses `gate` and `g4` with
   exit 2. With the builder VM running (`just vm-start`), from a checkout of current
   `main`: `just vm-ci-install`. Then `tools/runner/preflight.sh` shows
-  `PASS ci-build-modes ... daily next gate g4`. Until then, `vm.yml`'s dispatch plans
-  `gate` and `g4` are refused; a push, the schedule and plan `auto` are unaffected.
+  `PASS ci-build-modes ... daily next gate g4`. Until then, `vm.yml`'s scheduled run and
+  the dispatch plans `gate` and `g4` fail at once, before the VM builds anything, with
+  "run just vm-ci-install": an older copy passes no `APEX_CI_MODE`, so with
+  `t2-enabled` committed the daily run could go qualify-only. A push and plan `auto`
+  still run (build-image.sh chooses, as designed).
 
 - **The runner holds a sleep inhibitor during a job.** Run `just runner install` from a
   checkout of current `main`, while no VM run is in progress: it installs the new copy and

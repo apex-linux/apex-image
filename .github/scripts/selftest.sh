@@ -843,6 +843,8 @@ cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 echo "== plan: gate (G4 first)" >&2
 echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
 mkdir -p _build
+if [[ ${APEX_CI_MODE:-} == g4 && ! -e $FAKE/ignore-mode ]]; then echo qualify-only; else echo gate; fi >_build/plan.txt
+[[ ! -e $FAKE/no-plan ]] || rm _build/plan.txt
 echo "lock-sha256 x" >_build/gates-passed.txt
 echo "== G4, when qualify.sh g4-due says it is due"
 if [[ -e $FAKE/with-logs ]]; then
@@ -985,6 +987,24 @@ check "gate: the full gate run, promoted, no report, no size" "0|gate|promote|no
 rm -f "$CI_DIR/metrics.log"
 check "g4: qualify-only, and the installed ci-build never promotes it" "0|g4|no promotion|promote skipped: g4 is qualify-only" \
     "$(ci_request "ci-build $CI_SHA g4")|$(cat "$CI_DIR/ci-mode")|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^promote ')"
+: >"$CI_DIR/ignore-mode"
+check "g4 whose build-image.sh ran the full gate instead: exit 2, its gates record removed, nothing promoted" \
+    "2|plan refused: build-image.sh ran gate, not g4; no gates record|no record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$(tar -tf "$CI_DIR/out.tar" | grep -q gates-passed && echo record || echo 'no record')|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+check_false "and none is left in _build" test -e "$CI_DIR/home/apex-image/_build/gates-passed.txt"
+rm "$CI_DIR/ignore-mode"
+: >"$CI_DIR/no-plan"
+check "gate whose build-image.sh names no plan: exit 2, nothing promoted" "2|plan refused: build-image.sh ran nothing, not gate; no gates record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA gate")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "ci-build $CI_SHA")|$(cat "$CI_DIR/lane.log")"
+rm "$CI_DIR/no-plan"
+cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
+sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/ci-mode"
+check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
+    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/home/apex-image/_build/plan.txt && $CI_DIR/home/apex-image/_build/plan.txt -nt $CI_DIR/build-image-d.sh ]] && echo build || echo 'no build')"
+mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
     "$(ci_request "ci-build $CI_SHA daily"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
@@ -3673,6 +3693,11 @@ vm_step() { # NAME: the run: script of vm.yml's step NAME, as GitHub hands it to
 }
 cat >"$V/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
+if [[ $* == "apex-builder ci-build modes" ]]; then
+    [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
+    echo "daily next gate g4"
+    exit 0
+fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
 echo "::error::a line of the VM's log" >&2
 [[ ! -s $FAKE_VM/results.tar ]] || cat "$FAKE_VM/results.tar"
@@ -3783,10 +3808,21 @@ vm_run "$BUILD" SHA="$CI_SHA" EXTRA=g4 >/dev/null
 check "build: a g4 plan adds g4" "apex-builder ci-build $CI_SHA g4" "$(cat "$V/ssh.args")"
 vm_reset
 echo 2 >"$V/ssh.rc"
-check_true "build: a refused g4 says where to look, and how to upgrade" grep -qF \
-    "::error::ci-build refused $CI_SHA g4 (the log says why; a ci-build installed before gate and g4 refuses both: just vm-ci-install)" \
+check_true "build: a refused g4 says where to look" grep -qF \
+    "::error::ci-build refused $CI_SHA g4 (the log says why; ci-build.txt has any plan refused line)" \
     <(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=g4 >/dev/null; cat "$V/log")
 echo 0 >"$V/ssh.rc"
+: >"$V/old-host"
+for extra in daily gate g4; do
+    vm_reset
+    check "build: an installed ci-build before gate and g4 fails $extra at once, building nothing" \
+        "2|::error::the builder VM's ci-build predates gate and g4, so it cannot run $extra as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+        "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=$extra)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+done
+vm_reset
+check "build: a push still runs on it: build-image.sh chooses" "0|apex-builder ci-build $CI_SHA" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=)|$(cat "$V/ssh.args")"
+rm "$V/old-host"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"

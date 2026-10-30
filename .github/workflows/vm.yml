@@ -102,6 +102,19 @@ jobs:
           SHA: ${{ steps.commit.outputs.sha }}
           EXTRA: ${{ steps.commit.outputs.extra }}
         run: |
+          # A ci-build before gate and g4 sends no APEX_CI_MODE: daily could go qualify-only.
+          if [[ -n $EXTRA ]]; then
+            mrc=0
+            modes=$(ssh apex-builder ci-build modes 2>/dev/null) || mrc=$?
+            if ((mrc == 255)); then
+              echo "::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)"
+              exit 255
+            fi
+            if [[ " $modes " != *" gate "* ]]; then
+              echo "::error::the builder VM's ci-build predates gate and g4, so it cannot run $EXTRA as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
+              exit 2
+            fi
+          fi
           # The VM's build log is not trusted to issue workflow commands.
           token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
           echo "::stop-commands::$token"
@@ -111,7 +124,7 @@ jobs:
           echo "::$token::"
           case $rc in
             0) ;;
-            2) echo "::error::ci-build refused $SHA${EXTRA:+ $EXTRA (the log says why; a ci-build installed before gate and g4 refuses both: just vm-ci-install)}" ;;
+            2) echo "::error::ci-build refused $SHA${EXTRA:+ $EXTRA (the log says why; ci-build.txt has any plan refused line)}" ;;
             75) echo "::error::another build holds the builder VM" ;;
             255) echo "::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)" ;;
             *) echo "::error::the build in the builder VM failed (exit $rc)" ;;
