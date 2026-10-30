@@ -424,7 +424,7 @@ check "due when the last pass records no time" 0 "$(g4_due "$G4_DIR/base.key")"
 check "an empty key is an error, not a verdict" 1 "$(g4_due "$G4_DIR/empty.key")"
 check "a missing key too" 1 "$(g4_due "$G4_DIR/absent.key")"
 
-# --- build-image.sh: G2 twice, G4 when due, and the gates record ---------------------------
+# --- build-image.sh: G4 when due, G2 twice, both always, and the gates record --------------
 BUILD_DIR="$TMP/build-image"
 mkdir -p "$BUILD_DIR/work/tests/shots" "$BUILD_DIR/work/.github/scripts" "$BUILD_DIR/work/_build/image" \
     "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image/packages" "$BUILD_DIR/store"
@@ -435,6 +435,7 @@ printf 'lock\n' >"$BUILD_DIR/store/rpms.lock.next"
 LANE_LOCK_SHA=$(sha256sum <"$BUILD_DIR/store/rpms.lock.next" | cut -d' ' -f1)
 cat >"$BUILD_DIR/work/tests/shots/run.sh" <<'EOF'
 #!/usr/bin/env bash
+echo g2 >>"$FAKE/order"
 echo "$G2_RUNS" >"$FAKE/g2-runs"
 printf '%s|%s|%s\n' "$G2_IMAGE_DIR" "$G2_REPOS_BASE" "$G2_OUT_DIR" >"$FAKE/g2-env"
 exit "$(cat "$FAKE/g2-rc" 2>/dev/null || echo 0)"
@@ -443,21 +444,37 @@ cat >"$BUILD_DIR/work/.github/scripts/qualify.sh" <<'EOF'
 #!/usr/bin/env bash
 case $1 in
     g4-key) echo "package gdm-1:51.0-1.fc45.x86_64" ;;
-    g4-due) cat "$FAKE/g4-due-stdout" 2>/dev/null; exit "$(cat "$FAKE/g4-due-rc")" ;;
-    local) echo local >>"$FAKE/g4-ran"; exit "$(cat "$FAKE/g4-rc" 2>/dev/null || echo 0)" ;;
+    g4-due) echo "$QUALIFY_G4_RECORD" >"$FAKE/g4-due-record"; cat "$FAKE/g4-due-stdout" 2>/dev/null; exit "$(cat "$FAKE/g4-due-rc")" ;;
+    local)
+        echo local >>"$FAKE/g4-ran"
+        echo g4 >>"$FAKE/order"
+        printf 'image-id cafe\n' >"$QUALIFY_G4_RECORD"
+        cat "$FAKE/g4-rows" >"$PWD/_build/qualify/results.md"
+        exit "$(cat "$FAKE/g4-rc" 2>/dev/null || echo 0)" ;;
+    local-diag)
+        echo diag >>"$FAKE/order"
+        printf '%s %s\n' "$QUALIFY_OUT" "$2" >"$FAKE/diag-args"
+        exit "$(cat "$FAKE/diag-rc" 2>/dev/null || echo 0)" ;;
 esac
 EOF
+printf '| local-install | PASS | green | - |\n| local-g4 | PASS | recorded | - |\n' >"$BUILD_DIR/g4-rows"
 chmod +x "$BUILD_DIR/work/tests/shots/run.sh" "$BUILD_DIR/work/.github/scripts/qualify.sh"
+# build_gates [IMAGE_ONLY] [SCRIPT]: build-image.sh's gates, as main runs them, after SCRIPT.
 build_gates() {
     local image_only=${1:-0} rc=0
-    rm -f "$BUILD_DIR/work/_build/gates-passed.txt" "$BUILD_DIR/g4-ran"
+    rm -f "$BUILD_DIR/work/_build/gates-passed.txt" "$BUILD_DIR/g4-ran" "$BUILD_DIR/order"
     (cd "$BUILD_DIR/work" && FAKE=$BUILD_DIR APEX_STORE=$BUILD_DIR/store APEX_GNOME_SRC=$BUILD_DIR/work APEX_COMPONENTS=${APEX_COMPONENTS:-pinned} bash -c '
+        set -euo pipefail
         . "$1"
         image_id() { echo cafe; }
-        gate_g2 && gate_g4 "$2" && { [[ $G4_VERDICT == due ]] || record_gates; }' \
-        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$image_only") >"$BUILD_DIR/out" 2>&1 || rc=$?
+        eval "$3"
+        gates "$2"' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$image_only" "${2:-}") >"$BUILD_DIR/out" 2>&1 || rc=$?
     printf '%s\n' "$rc"
 }
+g4_record_is() { [[ $(cat "$BUILD_DIR/work/_build/g4-passed.txt" 2>/dev/null) == "$1" ]]; }
+no_pending() { [[ ! -e $BUILD_DIR/work/_build/qualify/g4-pending.txt ]]; }
+records() { if [[ -e $BUILD_DIR/work/_build/gates-passed.txt ]]; then echo record; else echo 'no record'; fi; }
 g2_result() {
     local image_id=$1 lock_sha256=$2
     printf 'image-id %s\nruns 2\nlock-sha256 %s\nstatus passed\n' "$image_id" "$lock_sha256" \
@@ -465,7 +482,12 @@ g2_result() {
 }
 g2_result cafe "$LANE_LOCK_SHA"
 echo 0 >"$BUILD_DIR/g4-due-rc"
-check "G2, then G4 when due, then the record" 0 "$(G2_RUNS=1 build_gates)"
+check "G4 when due, then G2, then the record" "0|g4 g2" "$(G2_RUNS=1 build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
+check_true "the record moves G4's key to g4-passed.txt" g4_record_is 'image-id cafe'
+check "g4-due reads the last pass's record" "$BUILD_DIR/work/_build/g4-passed.txt" "$(cat "$BUILD_DIR/g4-due-record")"
+check "ci-build gate makes G4 due: g4-due reads an empty record" "0|/dev/null" \
+    "$(APEX_CI_MODE=gate build_gates)|$(cat "$BUILD_DIR/g4-due-record")"
+check_true "and leaves nothing pending" no_pending
 check "G2 runs twice, whatever G2_RUNS says" 2 "$(cat "$BUILD_DIR/g2-runs")"
 check "G2 is apex-gnome's run.sh, given this image/, its REPOS_BASE and this _build/g2" \
     "$BUILD_DIR/work/image|$(containerfile_arg REPOS_BASE)|$BUILD_DIR/work/_build/g2" "$(cat "$BUILD_DIR/g2-env")"
@@ -475,24 +497,53 @@ check "the record names the lane lock the image carries, the image and G4's pass
     "$(paste -sd'|' "$BUILD_DIR/work/_build/gates-passed.txt")"
 check "a build from a dev-override component says so in its record" "components dev-override" \
     "$(APEX_COMPONENTS=dev-override build_gates >/dev/null; grep '^components ' "$BUILD_DIR/work/_build/gates-passed.txt")"
+printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
+echo 1 >"$BUILD_DIR/g4-rc"
+check "a G4 failure still runs G2, then local-diag, fails, and records nothing" "1|g4 g2 diag|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+check_true "nor moves its key" g4_record_is 'old record'
+check_true "and leaves nothing pending" no_pending
+check "local-diag runs on the image in its own QUALIFY_OUT" "$BUILD_DIR/work/_build/qualify/diag localhost/apex:build" \
+    "$(cat "$BUILD_DIR/diag-args")"
+echo 1 >"$BUILD_DIR/diag-rc"
+check "a failing local-diag changes no verdict" "1|g4 g2 diag|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+rm -f "$BUILD_DIR/g4-rc" "$BUILD_DIR/diag-rc"
+printf '| local-install | PASS | green | - |\n| local-lock | WARN | slow | - |\n' >"$BUILD_DIR/g4-rows"
+check "qualify.sh's exit 0 with a row that is not PASS fails G4, as record_g4_pass would" "1|no record" \
+    "$(build_gates)|$(records)"
+check_true "and moves no key" g4_record_is 'old record'
+printf '| local-install | PASS | green | - |\n| local-g4 | PASS | recorded | - |\n' >"$BUILD_DIR/g4-rows"
+echo 1 >"$BUILD_DIR/g2-rc"
+check "G4 passed, G2 failed: exit 1, no record, no diagnosis" "1|g4 g2|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+check_true "and g4-passed.txt is unchanged" g4_record_is 'old record'
+check_true "with nothing left pending" no_pending
+rm -f "$BUILD_DIR/g2-rc"
+# shellcheck disable=SC2016 # build_gates evaluates it in build-image.sh's shell
+check "a silent errexit inside gate_g4 fails the gates" "1|no record" \
+    "$(build_gates 0 'g4_verdict() { false; printf "%s\n" "$1" >"$G4_VERDICT_FILE"; }')|$(records)"
+check_true "with g4-passed.txt unchanged" g4_record_is 'old record'
+check_true "though G2 still ran" grep -qx g2 "$BUILD_DIR/order"
 echo 3 >"$BUILD_DIR/g4-due-rc"
 printf 'passed-at 2026-09-29T17:10:00Z\nimage-id beef\n' >"$BUILD_DIR/g4-due-stdout"
-check "G4 not due: the record" 0 "$(build_gates)"
+printf '| local-lock | FAIL | an older run | - |\n' >"$BUILD_DIR/work/_build/qualify/results.md"
+check "G4 not due: G2 runs, then the record, no diagnosis" "0|g2" "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
 check_false "without running G4" test -e "$BUILD_DIR/g4-ran"
+check_true "or reading an older run's results.md" grep -q 'an older run' "$BUILD_DIR/work/_build/qualify/results.md"
 check "names the pass G4 was not due for, not this image" "g4 not due: its key passed on 2026-09-29T17:10:00Z for image beef" \
     "$(grep '^g4 ' "$BUILD_DIR/work/_build/gates-passed.txt")"
 check_false "and claims no G4 pass for this image" grep -q 'G4 passed\|and G4 passed' "$BUILD_DIR/out"
 echo 0 >"$BUILD_DIR/g4-due-rc"
 check "--image-only with G4 due records nothing" "0:no record" \
     "$(build_gates 1):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
-echo 1 >"$BUILD_DIR/g4-rc"
-check "a G4 failure records nothing" "1:no record" \
-    "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
-rm -f "$BUILD_DIR/g4-rc"
+printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
 g2_result cafe "$(printf 'older lock\n' | sha256sum | cut -d' ' -f1)"
 check "a lane lock that moved during the gates records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'the lane lock moved while the gates ran' "$BUILD_DIR/out"
+check_true "nor moves G4's key" g4_record_is 'old record'
+check_true "nor leaves it pending" no_pending
 g2_result beef "$LANE_LOCK_SHA"
 check "a G2 result of another image records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
@@ -516,9 +567,233 @@ check_true "a case named before its subject is found too" grep -qx 'case default
 check_false "a failing case without a log prints nothing" grep -q '== G2 dock-pin' "$BUILD_DIR/out"
 check_false "nor does a passing line" grep -q '^== G2 PASS' "$BUILD_DIR/out"
 rm -rf "$G2_RUN1" "$BUILD_DIR/g2-rc"
+check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" break-glass \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f6)"
 check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
     "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
+
+# --- build-image.sh: qualify-only (T2) after a harness fix; the full gate run otherwise ------
+T2="$TMP/t2"
+T2W=$T2/home/apex-image
+mkdir -p "$T2W/.github/scripts" "$T2W/tools/builder-vm" "$T2W/tools/runner" "$T2W/image" "$T2W/tests/shots"
+cp "$APEX_ROOT/.github/scripts/lib.sh" "$T2W/.github/scripts/"
+cat >"$T2W/.github/scripts/qualify.sh" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+    g4-harness) cat "$FAKE/harness" ;;
+    g4-key) echo "package gdm-1:51.0-1.fc45.x86_64" ;;
+    g4-due) exit 0 ;;
+    local)
+        echo local >>"$FAKE/steps"
+        printf 'record\n' >"$QUALIFY_G4_RECORD"
+        cat "$FAKE/g4-rows" >"$PWD/_build/qualify/results.md"
+        exit "$(cat "$FAKE/g4-rc")" ;;
+    local-diag) echo diag >>"$FAKE/steps" ;;
+esac
+EOF
+cat >"$T2W/tools/components.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "components $1" >>"$FAKE/steps"
+[[ $1 != env ]] || echo 'export APEX_COMPONENTS=pinned'
+EOF
+# shellcheck disable=SC2016 # the fakes' own expansions
+for fake in tools/builder-vm/lane.sh tools/builder-vm/snapshot.sh .github/scripts/image.sh tests/shots/run.sh; do
+    printf '#!/usr/bin/env bash\necho "%s $*" >>"$FAKE/steps"\n' "${fake##*/}" >"$T2W/$fake"
+done
+printf 'x\n' | tee "$T2W/components.lock" "$T2W/Cargo.lock" "$T2W/image/Containerfile" "$T2W/tools/runner/runner.sh" >/dev/null
+printf '# on\n' >"$T2W/tools/builder-vm/t2-enabled"
+printf '_build/\n' >"$T2W/.gitignore"
+chmod +x "$T2W/.github/scripts/"*.sh "$T2W/tools/"*.sh "$T2W/tools/builder-vm/"*.sh "$T2W/tests/shots/run.sh"
+t2_git() { git -C "$T2W" -c user.name=t -c user.email=t@example.invalid -c init.defaultBranch=main "$@"; }
+t2_git init -q
+t2_git add -A
+t2_git commit -q -m image
+T2_REV=$(t2_git rev-parse HEAD)
+t2_head() { # PATH...: HEAD is the image's revision and one commit that changes each PATH, and main
+    t2_git checkout -q --detach "$T2_REV"
+    local path
+    for path; do
+        mkdir -p "$T2W/$(dirname "$path")"
+        echo "# change $path" >>"$T2W/$path"
+    done
+    t2_git add -A
+    t2_git commit -q -m change
+    t2_git update-ref refs/remotes/origin/main HEAD
+}
+t2_state() { # VERDICT MODE COMPONENTS HARNESS: the image cafe, its last G4 row, and HEAD's harness
+    mkdir -p "$T2W/_build/qualify" "$T2W/_build/g2/latest"
+    printf '%s\tcafe\th1\t%s\t2026-10-30T10:00:00Z\t%s\t%s\n' "$T2_REV" "$1" "$2" "$3" >"$T2W/_build/qualify/verdicts.tsv"
+    echo "$4" >"$T2/harness"
+    printf 'image-id cafe\nlock-sha256 x\n' >"$T2W/_build/g2/latest/result.txt"
+    printf '{"revision":"%s"}\n' "$T2_REV" >"$T2/manifest.json"
+    echo cafe >"$T2/image-id"
+    echo "$(($(date +%s) - 3600))" >"$T2/created"
+}
+# shellcheck disable=SC2016 # expanded by the inner bash
+T2_STUBS='sudo() {
+    case "$*" in
+        "podman image inspect --format {{.Id}} localhost/apex:build") cat "$FAKE/image-id" 2>/dev/null ;;
+        "podman image inspect --format {{.Created.Unix}} localhost/apex:build") cat "$FAKE/created" ;;
+        "podman run --rm --net=none --entrypoint /usr/bin/cat localhost/apex:build /usr/share/apex/manifest.json")
+            cat "$FAKE/manifest.json" ;;
+        "podman run"*) echo in_component >>"$FAKE/steps" ;;
+    esac
+}'
+t2_plan_of() { # [SCRIPT]: t2_plan's exit and its reason, after SCRIPT
+    local rc=0 why
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    why=$(cd "$T2W" && env HOME="$T2" FAKE="$T2" bash -c '. "$1"; eval "$2"; eval "$3"; t2_plan' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$T2_STUBS" "${1:-}" 2>&1) || rc=$?
+    printf '%s|%s' "$rc" "$why"
+}
+t2_rc() { local out; out=$(t2_plan_of "$@"); printf '%s' "${out%%|*}"; }
+t2_main() { # [SCRIPT [ARG...]]: build-image.sh's main ARGs, after SCRIPT; prints its exit
+    local rc=0 script=${1:-}
+    shift || true
+    rm -f "$T2/steps"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$T2W" && env HOME="$T2/home" FAKE="$T2" APEX_GNOME_SRC="$T2W" bash -c '. "$1"; eval "$2"; eval "$3"; shift 3; main "$@"' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$T2_STUBS" "$script" "$@") >"$T2/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+t2_steps() { paste -sd' ' "$T2/steps" 2>/dev/null; }
+printf '| local-install | PASS | green | - |\n| local-lock | FAIL | no lock | lock |\n' >"$T2/g4-rows"
+echo 1 >"$T2/g4-rc"
+
+t2_head .github/scripts/qualify.sh
+t2_state FAIL gate pinned h2
+check "T2: a qualify.sh fix after a G4 FAIL of this image is qualify-only" "0|" "$(t2_plan_of)"
+printf 'lock-sha256 x\n' >"$T2W/_build/gates-passed.txt"
+printf 'old record\n' >"$T2W/_build/g4-passed.txt"
+check "T2: G4 alone, then local-diag: no in_component, lane, image.sh, snapshot or G2" \
+    "1|components fetch components env local diag" "$(t2_main)|$(t2_steps)"
+check "T2: the live log starts with the plan" "== plan: qualify-only (advisory)" "$(head -n 1 "$T2/out")"
+check "T2: plan.txt says so, for metrics.sh" qualify-only "$(cat "$T2W/_build/plan.txt")"
+check_false "T2: a stale gates-passed.txt is gone" test -e "$T2W/_build/gates-passed.txt"
+check "T2: so ci-build promotes nothing" "skipped: no gates record" \
+    "$(cd "$T2W" && bash -c '. "$1"; stage_promote' _ "$APEX_ROOT/tools/builder-vm/ci-build.sh")"
+check "T2: the real G4 record is untouched, and its key is not kept" "old record|none" \
+    "$(cat "$T2W/_build/g4-passed.txt")|$(find "$T2W/_build/qualify-only" -type f | wc -l | sed 's/^0$/none/')"
+check "T2: its verdict row: commit, image, harness, FAIL, mode t2, pinned" \
+    "$(t2_git rev-parse HEAD) cafe h2 FAIL t2 pinned" "$(tail -n 1 "$T2W/_build/qualify/verdicts.tsv" | cut -f1-4,6,7 | tr '\t' ' ')"
+check "T2: another fix to the same failing harness is not qualify-only" \
+    "1|the harness is the one that failed on image cafe" "$(t2_plan_of)"
+echo h3 >"$T2/harness"
+check "T2: a new harness after a t2 FAIL is" 0 "$(t2_rc)"
+echo 0 >"$T2/g4-rc"
+printf '| local-install | PASS | green | - |\n' >"$T2/g4-rows"
+check "T2: a pass exits 0, and records nothing but its row" "0|PASS t2|no record" \
+    "$(t2_main)|$(tail -n 1 "$T2W/_build/qualify/verdicts.tsv" | cut -f4,6 | tr '\t' ' ')|$([[ -e $T2W/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+check "T2: after a t2 PASS the next run is a full gate run" \
+    "1|image cafe's last G4 verdict is PASS (t2, pinned), not a pinned gate or t2 FAIL" "$(t2_plan_of)"
+echo 1 >"$T2/g4-rc"
+
+for path in components.lock image/Containerfile image/system_files/usr/share/apex/README.md Cargo.lock Cargo.toml \
+    crates/apex-lane/README.md tools/components.sh tools/builder-vm/lane.sh tools/builder-vm/build-image.sh \
+    tools/builder-vm/cosign.env .github/scripts/lib.sh .github/scripts/image.sh; do
+    t2_head .github/scripts/qualify.sh "$path"
+    t2_state FAIL gate pinned h2
+    check "T3: a diff that touches $path" "1|$path changed since the image's revision" "$(t2_plan_of)"
+done
+for path in .github/scripts/qualify-allowed-failures.txt .github/scripts/selftest.sh .github/scripts/contracts.sh \
+    .github/workflows/vm.yml tools/runner/runner.sh docs/vm.md tools/builder-vm/README.md tools/builder-vm/ci-build.sh \
+    tools/builder-vm/desktop-vm.sh tools/builder-vm/rehearsal/x.sh tools/builder-vm/t2-enabled; do
+    t2_head "$path"
+    t2_state FAIL gate pinned h2
+    check "T2: a harness diff of $path alone" 0 "$(t2_rc)"
+done
+t2_git checkout -q --detach "$T2_REV"
+t2_git mv image/Containerfile docs-Containerfile.md
+t2_git commit -q -m rename
+t2_git update-ref refs/remotes/origin/main HEAD
+check "T3: a rename out of image/ counts its old path" "1|image/Containerfile changed since the image's revision" "$(t2_plan_of)"
+
+t2_head .github/scripts/qualify.sh
+t2_state FAIL gate pinned h2
+for case in \
+    ": >\"\$FAKE/manifest.json\"|1|localhost/apex:build has no manifest revision" \
+    "echo '{\"revision\":\"x\"}' >\"\$FAKE/manifest.json\"|1|localhost/apex:build has no manifest revision" \
+    "rm -f \"\$FAKE/image-id\"|1|no localhost/apex:build" \
+    "echo \$((\$(date +%s) - 73 * 3600)) >\"\$FAKE/created\"|1|image cafe is 72 hours old or more" \
+    ": >\"\$FAKE/created\"|1|no creation time for localhost/apex:build" \
+    "echo h1 >\"\$FAKE/harness\"|1|the harness is the one that failed on image cafe" \
+    ": >\"\$FAKE/harness\"|1|no harness digest (qualify.sh g4-harness)" \
+    "echo beef >\"\$FAKE/image-id\"|1|image beef has no G4 verdict in _build/qualify/verdicts.tsv" \
+    "rm _build/qualify/verdicts.tsv|1|image cafe has no G4 verdict in _build/qualify/verdicts.tsv" \
+    "rm _build/g2/latest/result.txt|0|" \
+    "rm tools/builder-vm/t2-enabled|1|qualify-only is off: no tools/builder-vm/t2-enabled" \
+    "export APEX_SRC_SYSTEM=/dev|1|a dev-override component (APEX_SRC_*)" \
+    "APEX_KERNEL=fedora|1|only the 45 image with its kernel pair"; do
+    setup=${case%%|*}
+    t2_state FAIL gate pinned h2
+    check "T2 conditions: after $setup" "${case#*|}" "$(t2_plan_of "$setup")"
+    t2_git checkout -q -- tools/builder-vm/t2-enabled
+done
+t2_state FAIL gate pinned h2
+printf 'image-id beef\n' >"$T2W/_build/g2/latest/result.txt"
+check "T3: an image G2 last ran on, or the last gate run's, only" "0|1|image cafe is neither G2's last nor the last gate run's" \
+    "$(t2_rc)|$(t2_plan_of "printf 'x\tbeef\th1\tFAIL\tt\tgate\tpinned\n' >>_build/qualify/verdicts.tsv")"
+for row in "PASS gate pinned" "NOT-DUE gate pinned" "FAIL image-only pinned" "FAIL break-glass pinned" "FAIL gate dev-override" \
+    "FAIL gate unknown"; do
+    # shellcheck disable=SC2086 # the row's three words
+    t2_state $row h2
+    check "T3: the image's last G4 row is $row" "1|image cafe's last G4 verdict is ${row%% *} ($(cut -d' ' -f2 <<<"$row"), ${row##* }), not a pinned gate or t2 FAIL" \
+        "$(t2_plan_of)"
+done
+t2_state FAIL gate pinned h2
+t2_git checkout -q --detach "$T2_REV"
+check "T3: HEAD is the image's revision" "1|HEAD is the image's revision: nothing to qualify again" "$(t2_plan_of)"
+t2_head .github/scripts/qualify.sh
+T2_HEAD=$(t2_git rev-parse HEAD)
+t2_git checkout -q --orphan elsewhere
+t2_git commit -q -m elsewhere
+t2_git update-ref refs/remotes/origin/main HEAD
+t2_git checkout -q --detach "$T2_HEAD"
+check "T3: an image whose revision is not on origin/main" "1|its revision $T2_REV is not on origin/main" "$(t2_plan_of)"
+t2_head .github/scripts/qualify.sh
+t2_state FAIL gate pinned h2
+echo '# synced, not committed' >>"$T2W/image/Containerfile"
+check "T3: a modified tracked file the diff of commits cannot see (a local vm-image's sync)" \
+    "1|the working tree has changes no commit holds:  M image/Containerfile" "$(t2_plan_of)"
+t2_git checkout -q -- image/Containerfile
+echo new >"$T2W/image/untracked.repo"
+check "T3: an untracked file too" "1|the working tree has changes no commit holds: ?? image/untracked.repo" "$(t2_plan_of)"
+rm "$T2W/image/untracked.repo"
+check "and a clean tree is qualify-only again" 0 "$(t2_rc)"
+
+# The fail-safe: every helper of the detection fails, and the run is the full gate run.
+T2_BROKEN='image_id() { return 1; }; image_revision() { return 1; }; image_created() { return 1; }
+    git_() { return 1; }; qualify() { return 1; }; last_verdict() { return 1; }; last_gate_image() { return 1; }
+    harness_only_diff() { return 1; }; harness_path() { return 1; }; compgen() { return 1; }'
+check "fail-safe: every detection helper fails: the full gate run" 1 "$(t2_rc "$T2_BROKEN")"
+for helper in image_id image_revision image_created git_ qualify last_verdict harness_only_diff; do
+    check "fail-safe: $helper alone fails: the full gate run" 1 "$(t2_rc "$helper() { return 1; }")"
+done
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: an unset variable in the detection is the full gate run too" 1 "$(t2_rc 'image_revision() { echo "$UNSET_X"; }')"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: main with every helper broken runs the full gate, and says why" \
+    "0|== plan: gate (G4 first)|build_inputs build_image gates" \
+    "$(t2_main "$T2_BROKEN"'; build_inputs() { echo build_inputs >>"$FAKE/steps"; }
+        build_image() { echo build_image >>"$FAKE/steps"; }; gates() { echo gates >>"$FAKE/steps"; }')|$(head -n 1 "$T2/out")|$(grep -oE '^(build_inputs|build_image|gates)$' "$T2/steps" | paste -sd' ')"
+check "and plan.txt says gate" gate "$(cat "$T2W/_build/plan.txt")"
+# shellcheck disable=SC2016 # expanded by the inner bash
+T2_STOP_BUILD='build_inputs() { echo build_inputs >>"$FAKE/steps"; }; build_image() { :; }; gates() { :; }'
+for mode in gate daily; do
+    check "APEX_CI_MODE=$mode: the full gate run, though qualify-only's conditions hold" \
+        "0|== plan: gate (G4 first)|plan: ci-build $mode: the full gate run|build_inputs" \
+        "$(APEX_CI_MODE=$mode t2_main "$T2_STOP_BUILD")|$(sed -n 1,2p "$T2/out" | paste -sd'|')|$(grep -x build_inputs "$T2/steps")"
+done
+check "APEX_CI_MODE=g4: qualify-only" "1|== plan: qualify-only (advisory)|local" \
+    "$(APEX_CI_MODE=g4 t2_main)|$(head -n 1 "$T2/out")|$(grep -x local "$T2/steps")"
+check "APEX_CI_MODE=g4 whose conditions fail: refused, exit 2, nothing runs" \
+    "2|ci-build g4: qualify-only refused: the harness is the one that failed on image cafe|" \
+    "$(APEX_CI_MODE=g4 t2_main)|$(cat "$T2/out")|$(t2_steps)"
+check "APEX_CI_MODE=g4 with --image-only: refused" "2|ci-build g4: qualify-only refused: --image-only" \
+    "$(APEX_CI_MODE=g4 t2_main '' --image-only)|$(cat "$T2/out")"
+check "APEX_CI_MODE of another word: exit 2" "2|APEX_CI_MODE=G4: not daily, gate or g4" "$(APEX_CI_MODE=G4 t2_main)|$(cat "$T2/out")"
+check "--image-only is never qualify-only" "1|== plan: gate (G4 first)" "$(t2_main '' --image-only)|$(head -n 1 "$T2/out")"
 
 # --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
 # fw_fn SCRIPT [ARG]: SCRIPT runs in a shell that sourced firmware.sh; ARG is its $2.
@@ -576,14 +851,32 @@ esac
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
+echo "== plan: gate (G4 first)" >&2
+echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
 mkdir -p _build
+if [[ ${APEX_CI_MODE:-} == g4 && ! -e $FAKE/ignore-mode ]]; then echo qualify-only; else echo gate; fi >_build/plan.txt
+[[ ! -e $FAKE/no-plan ]] || rm _build/plan.txt
 echo "lock-sha256 x" >_build/gates-passed.txt
+echo "== G4, when qualify.sh g4-due says it is due"
 if [[ -e $FAKE/with-logs ]]; then
-    mkdir -p _build/qualify/logs
+    mkdir -p _build/qualify/logs _build/qualify/diag/logs _build/g2/20261030-1200/run-1 _build/g2/20261030-1200/run-2
+    ln -sfn 20261030-1200 _build/g2/latest
+    printf 'secret\n' | tee _build/qualify/diag/key _build/qualify/diag/key.pub _build/qualify/diag/authorized_keys >/dev/null
+    echo '| local-lock | FAIL | x | - |' >_build/qualify/diag/results.md
     echo shot >_build/qualify/logs/local-lock.png
     echo journal >_build/qualify/logs/local-unlock.journal.txt
     truncate -s 21M _build/qualify/logs/local.serial.log
+    echo diag >_build/qualify/diag/logs/local-lock.journal.txt
+    printf '%s\n' 'PASS motion: ok' 'FAIL dock-pin: a pinned favourite shows' >_build/g2/latest/run-1/assert.txt
+    printf '%s\n' 'FAIL motion: exit 139' >_build/g2/latest/run-2/assert.txt
+    for run in 1 2; do
+        for case in motion dock-pin glass; do echo "$case" >"_build/g2/latest/run-$run/$case.log"; done
+    done
+    truncate -s 19M _build/g2/latest/run-2/motion.log
+    mkdir -p _build/qualify/diag/logs
+    for n in 0 1 2 3 4 5 6 7 8 9; do truncate -s 19M "_build/qualify/diag/logs/bulk-$n.log"; done
 fi
+echo "== G2, the headless shell, 2 runs" >&2
 exit "$(cat "$FAKE/build-rc")"
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane.sh" <<'EOF'
@@ -625,10 +918,15 @@ check "ci-build builds a commit of main" 0 "$(ci_request "ci-build $CI_SHA")"
 check "checked out at that commit, then cleaned keeping _build" "checkout -q --force --detach $CI_SHA|clean -q -ffdx -e /_build/" \
     "$(grep -E '^(checkout|clean)' "$CI_DIR/git.log" | paste -sd'|')"
 check "and promoted the lane lock after the gates" promote "$(cat "$CI_DIR/lane.log")"
-check "stdout is the results tar" "./ci-build.txt ./gates-passed.txt ./lock.diff" \
+check "stdout is the results tar" "./ci-build.txt ./gates-passed.txt ./lock.diff ./stages.tsv" \
     "$(tar -tf "$CI_DIR/out.tar" | grep -v '^\./$' | sort | paste -sd' ')"
-check "ci-build.txt names the commit and the promotion" "sha $CI_SHA|build-image 0|promote passed|exit 0" \
+check "ci-build.txt names the commit, build-image's plan and the promotion" "sha $CI_SHA|plan gate (G4 first)|build-image 0|promote passed|exit 0" \
     "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -Ev '^(started|finished) ' | paste -sd'|')"
+check "stages.tsv: when each stage began, ci-build's and build-image's, then the end" \
+    "fetch and check out|components (ci-build)|plan: gate (G4 first)|G4, when qualify.sh g4-due says it is due|G2, the headless shell, 2 runs|results, metrics and promotion (ci-build)|end" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./stages.tsv | cut -f2 | paste -sd'|')"
+check "each at a UTC second" 7 "$(tar -xOf "$CI_DIR/out.tar" ./stages.tsv | cut -f1 | grep -cxE '[0-9]{10}')"
+check_true "build-image's log still reaches ci-build's, line by line" grep -qx '== G4, when qualify.sh g4-due says it is due' "$CI_DIR/err"
 echo 1 >"$CI_DIR/build-rc"
 check "a failed build exits with its status and promotes nothing" "1:no promotion" \
     "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
@@ -644,8 +942,17 @@ check "a failed G4 returns this run's logs for vm.yml's artifact" \
     "$(tar -tf "$CI_DIR/out.tar" | grep '^\./qualify-logs/.' | sort | paste -sd' ')"
 check "and names the file over 20 MiB it left out" "local.serial.log 21504 KiB" \
     "$(tar -xOf "$CI_DIR/out.tar" ./qualify-logs/SKIPPED)"
+check "each G2 run's assert.txt and its failing cases' logs, no passing case's, through apex-gnome's latest symlink" \
+    "./g2-logs/run-1/assert.txt ./g2-logs/run-1/dock-pin.log ./g2-logs/run-1/motion.log ./g2-logs/run-2/assert.txt ./g2-logs/run-2/dock-pin.log ./g2-logs/run-2/motion.log" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep '^\./g2-logs/.' | grep -v '/$' | sort | paste -sd' ')"
+check_true "qualify.sh local-diag's logs" tar -xOf "$CI_DIR/out.tar" ./diag-logs/logs/local-lock.journal.txt
+check_true "and its results" tar -xOf "$CI_DIR/out.tar" ./diag-logs/results.md
+check "but never its ssh key: the artifact is kept 14 days" "" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep -E '^\./diag-logs/(.*/)?(key|key\.pub|authorized_keys)$')"
+check "within one 200 MiB for all three: the diagnosis's last 19 MiB log is left out, and named" "logs/bulk-9.log 19456 KiB" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./diag-logs/SKIPPED)"
 rm "$CI_DIR/with-logs"
-rm -rf "$CI_DIR/home/apex-image/_build/qualify"
+rm -rf "$CI_DIR/home/apex-image/_build/qualify" "$CI_DIR/home/apex-image/_build/g2"
 echo 0 >"$CI_DIR/build-rc"
 cp "$APEX_ROOT/tools/builder-vm/ci-build.sh" "$CI_DIR/home/apex-image/tools/builder-vm/ci-build.sh"
 ci_request "ci-build $CI_SHA" >/dev/null
@@ -690,9 +997,35 @@ check "without daily no report runs" "0:no report" \
     "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
 check "metrics run on every build, the image's size only on the daily one" "metrics size|metrics no-size" \
     "$(paste -sd'|' "$CI_DIR/metrics.log")"
+check "build-image.sh gets an empty APEX_CI_MODE: it chooses" "0|" "$(ci_request "ci-build $CI_SHA")|$(cat "$CI_DIR/ci-mode")"
+rm -f "$CI_DIR/metrics.log"
+check "gate: the full gate run, promoted, no report, no size" "0|gate|promote|no report|metrics no-size" \
+    "$(ci_request "ci-build $CI_SHA gate")|$(cat "$CI_DIR/ci-mode")|$(cat "$CI_DIR/lane.log")|$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')|$(cat "$CI_DIR/metrics.log")"
+rm -f "$CI_DIR/metrics.log"
+check "g4: qualify-only, and the installed ci-build never promotes it" "0|g4|no promotion|promote skipped: g4 is qualify-only" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(cat "$CI_DIR/ci-mode")|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^promote ')"
+: >"$CI_DIR/ignore-mode"
+check "g4 whose build-image.sh ran the full gate instead: exit 2, its gates record removed, nothing promoted" \
+    "2|plan refused: build-image.sh ran gate, not g4; no gates record|no record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$(tar -tf "$CI_DIR/out.tar" | grep -q gates-passed && echo record || echo 'no record')|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+check_false "and none is left in _build" test -e "$CI_DIR/home/apex-image/_build/gates-passed.txt"
+rm "$CI_DIR/ignore-mode"
+: >"$CI_DIR/no-plan"
+check "gate whose build-image.sh names no plan: exit 2, nothing promoted" "2|plan refused: build-image.sh ran nothing, not gate; no gates record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA gate")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "ci-build $CI_SHA")|$(cat "$CI_DIR/lane.log")"
+rm "$CI_DIR/no-plan"
+cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
+sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/ci-mode"
+check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
+    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/home/apex-image/_build/plan.txt && $CI_DIR/home/apex-image/_build/plan.txt -nt $CI_DIR/build-image-d.sh ]] && echo build || echo 'no build')"
+mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
     "$(ci_request "ci-build $CI_SHA daily"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
+check "daily: build-image.sh gets APEX_CI_MODE=daily" daily "$(cat "$CI_DIR/ci-mode")"
 echo 0 >"$CI_DIR/build-rc"
 rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh" \
     "$CI_DIR/home/apex-image/tools/builder-vm/metrics.sh"
@@ -700,11 +1033,13 @@ rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/bu
 # ci-build <sha> next: the next release only, report-only, never a promotion.
 CIW=$CI_DIR/home/apex-image
 for request in "ci-build $CI_SHA next " "ci-build $CI_SHA NEXT" "ci-build $CI_SHA next daily" "ci-build next $CI_SHA" \
-    "ci-build $CI_SHA daily next" "ci-build modes " "ci-build modes $CI_SHA"; do
+    "ci-build $CI_SHA daily next" "ci-build modes " "ci-build modes $CI_SHA" "ci-build $CI_SHA g4 daily" \
+    "ci-build $CI_SHA G4" "ci-build $CI_SHA g4 " "ci-build $CI_SHA gate g4" "ci-build $CI_SHA plan=g4" \
+    "ci-build $CI_SHA GATE" "ci-build $CI_SHA t2" "ci-build g4 $CI_SHA" "ci-build g4"; do
     check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
         "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 done
-check "ci-build modes names daily and next, before any git or lock" "0|daily next|no git" \
+check "ci-build modes names daily, next, gate and g4, before any git or lock" "0|daily next gate g4|no git" \
     "$(ci_request "ci-build modes")|$(cat "$CI_DIR/out.tar")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 mv "$CIW/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-45.sh"
 cat >"$CIW/tools/builder-vm/build-image.sh" <<'EOF'
@@ -875,6 +1210,54 @@ check "APEX_GNOME_SRC is apex-gnome, whose recipes the lane takes" \
     "export APEX_GNOME_SRC=$CO/work/_build/components/apex-gnome|export APEX_LANE_RECIPES=$CO/work:$CO/work/_build/components/apex-gnome" \
     "$(co_out env | grep -E 'APEX_GNOME_SRC|APEX_LANE_RECIPES' | paste -sd'|')"
 
+# --- tools/components.sh provenance: a pin is on main, or a cherry-pick -x of main on pin/* ---
+PV=$CO/src/apex-system
+co_git -C "$PV" checkout -q -b claude/feature HEAD~1
+echo feature >"$PV/f" && co_git -C "$PV" add f && co_git -C "$PV" commit -qm feature
+PV_FEATURE=$(co_git -C "$PV" rev-parse HEAD)
+co_git -C "$PV" checkout -q main
+echo fix >"$PV/b" && co_git -C "$PV" add b && co_git -C "$PV" commit -qm "fix b"
+PV_FIX=$(co_git -C "$PV" rev-parse HEAD)
+echo three >"$PV/a" && co_git -C "$PV" commit -qam "fix a"
+PV_FIX_A=$(co_git -C "$PV" rev-parse HEAD)
+pv_pin() { co_git -C "$PV" checkout -q -b "pin/$1" "$CO_SYS_OLD"; }
+pv_pin clean
+co_git -C "$PV" cherry-pick -x "$PV_FIX" >/dev/null
+pv_pin conflict
+if ! co_git -C "$PV" cherry-pick -x "$PV_FIX_A" >/dev/null 2>&1; then
+    echo 'three, by hand' >"$PV/a" && co_git -C "$PV" add a
+    co_git -C "$PV" -c core.editor=true cherry-pick --continue >/dev/null
+fi
+pv_pin extra
+co_git -C "$PV" cherry-pick -n "$PV_FIX" && echo extra >"$PV/c" && co_git -C "$PV" add c
+co_git -C "$PV" commit -qm "fix b, and more" -m "(cherry picked from commit $PV_FIX)"
+pv_pin bare
+co_git -C "$PV" cherry-pick "$PV_FIX" >/dev/null
+pv_pin offmain
+co_git -C "$PV" cherry-pick -x "$PV_FEATURE" >/dev/null
+co_git -C "$PV" checkout -q main
+co_git -C "$PV" push -q --force "$CO/apex-system.git" 'refs/heads/*:refs/heads/*'
+pv_tip() { co_git -C "$PV" rev-parse "$1"; }
+pv() { # SHA: provenance of apex-system pinned at SHA, its log in $CO/provenance.log
+    co_lock "apex-system $CO/apex-system.git $1"
+    (cd "$CO/work" && tools/components.sh fetch >/dev/null 2>&1 && tools/components.sh provenance) >"$CO/provenance.log" 2>&1
+    echo $?
+}
+check "provenance: a pin on main" 0 "$(pv "$PV_FIX")"
+check "provenance: a cherry-pick -x of main on pin/*" 0 "$(pv "$(pv_tip pin/clean)")"
+check "provenance: a hand-resolved conflict, same paths (no patch-id match)" 0 "$(pv "$(pv_tip pin/conflict)")"
+check "provenance: a pick that changes a path its original does not" 1 "$(pv "$(pv_tip pin/extra)")"
+check_true "and names the path" grep -q 'changes paths that .* does not: c$' "$CO/provenance.log"
+check "provenance: a pick without its trailer" 1 "$(pv "$(pv_tip pin/bare)")"
+check_true "and says so" grep -q 'has no (cherry picked from commit X) trailer' "$CO/provenance.log"
+check "provenance: a pick of a commit that is not on main" 1 "$(pv "$(pv_tip pin/offmain)")"
+check_true "and names it" grep -q "names ${PV_FEATURE:0:12}, which is not on main" "$CO/provenance.log"
+check "provenance: a commit on neither main nor pin/*" 1 "$(pv "$PV_FEATURE")"
+check_true "and says so" grep -q 'is neither on main nor on a pin/\* branch' "$CO/provenance.log"
+co_lock "apex-system $CO/apex-system.git $PV_FIX"
+check "provenance: a dev-override is refused" 1 \
+    "$(cd "$CO/work" && APEX_SRC_APEX_SYSTEM=../src/apex-system tools/components.sh fetch >/dev/null 2>&1 && rc_of tools/components.sh provenance)"
+
 # --- build-image.sh: each RPM from its pinned component, after components.sh fetch and env ---
 BI="$TMP/build-image-components"
 BIW=$BI/home/apex-image
@@ -901,8 +1284,8 @@ bi_main() {
         build_inputs() { printf "%s|%s\n" "${APEX_SYSTEM_SRC:-unset}" "${APEX_KERNEL_SRC:-unset}" >"$FAKE/first-step"; }
         build_image() { :; }
         gate_g2() { :; }
-        gate_g4() { G4_VERDICT=due; }
-        main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >/dev/null 2>&1
+        gate_g4() { g4_verdict due; }
+        main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >"$BI/main-out" 2>&1
 }
 rm -f "$BIW/components.lock"
 check "no components.lock: the build stops before its first step" "1|no step" \
@@ -911,6 +1294,7 @@ echo "apex-kernel /x $CO_KERNEL" >"$BIW/components.lock"
 (unset APEX_SYSTEM_SRC APEX_KERNEL_SRC; bi_main)
 check "fetch, then env, in effect at the first build step" "fetch env|/pinned/system|/pinned/kernel" \
     "$(paste -sd' ' "$BI/components.log")|$(cat "$BI/first-step")"
+check "the live log starts with the plan" "== plan: gate (G4 first)" "$(head -n 1 "$BI/main-out")"
 (cd "$BIW" && rm -rf _build && FAKE=$BI APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
     APEX_KERNEL_SRC=/pinned/kernel bash -c '
     . "$1"
@@ -1206,6 +1590,7 @@ password_typed() {
     else
         cp "$STATE/session-after-login" "$STATE/session"
         : >"$STATE/manager-active"
+        if [[ -e $STATE/apex-lock ]]; then echo 'gnome-shell[1234]: Apex: feature lock enabled' >>"$STATE/journal"; fi
         if [[ -e $STATE/safe-booted ]]; then echo 'Apex: safe mode (apex.safe=1)' >>"$STATE/journal"; fi
         if [[ -e $STATE/tripped ]]; then echo 'Apex: safe mode (layer-enabled is false)' >>"$STATE/journal"; fi
         if [[ -e $STATE/safe-js-error ]]; then echo 'gnome-shell[1236]: JS ERROR: TypeError: y is null' >>"$STATE/journal"; fi
@@ -1279,6 +1664,29 @@ qmp() {
     done
 }
 login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-login" 1000; }
+# cmd_local and local-diag with their install, boots and counted rollback as PASS rows: from
+# the login through the greeter on, what they run is the real code against this guest.
+local_flow_stubs() {
+    ensure_key() { :; }
+    install_disk() { :; }
+    start_vm() { # a power-cycle brings a lost guest back to its greeter, unless it stays dead
+        [[ -e $STATE/unreachable && ! -e $STATE/stays-dead ]] || return 0
+        rm "$STATE/unreachable"
+        echo "$2" >"$STATE/power-cycled"
+        vm_reboot
+    }
+    stop_vm() { :; }
+    drop_disk() { :; }
+    save_journal() { :; }
+    save_bootc_status_fixture() { :; }
+    assert_bootloader_updated() { :; }
+    as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
+    assert_green() { result "$1" PASS "green on sha256:feed"; }
+    stage_local_candidate() { LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
+    counted_rollback() { result "$1-fallback" PASS "back on $2"; }
+    create_test_user() { result "$1-user" PASS made; }
+    set_test_password() { result "$1-password" PASS set; }
+}
 # journalctl -b -o short-monotonic -g 'PATTERN' [_UID=N] over $STATE/mono's "SECONDS UID MESSAGE"
 # lines; like journalctl, no match exits 1.
 mono_journal() {
@@ -1308,6 +1716,9 @@ vm_ssh() {
         "bash -s -- greeter"*) from greeter | grep . ;;
         "systemctl is-active --quiet gdm.service") [[ ! -e $STATE/gdm-down ]] ;;
         "pgrep -u 60578 -x gnome-shell") from greeter-pid | grep . ;;
+        true) [[ ! -e $STATE/unreachable ]] ;;
+        "rpm-ostree kargs --delete=apex.safe=1") rm -f "$STATE/karg" "$STATE/safe-booted"; : >"$STATE/apex-lock" ;;
+        "command -v apexctl") echo /usr/bin/apexctl ;;
         "journalctl -b _UID=60578 _COMM=systemd -o short-monotonic --no-pager") from greeter-manager ;;
         "rm -rf $GUEST_TMP/candidate && mkdir -p $GUEST_TMP/candidate") ;;
         "cat > $GUEST_TMP/candidate/manifest.json && chmod 0644 $GUEST_TMP/candidate/manifest.json") cat >"$STATE/built-manifest" ;;
@@ -1326,6 +1737,7 @@ vm_ssh() {
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
         "$(user_cmd "gsettings get $APEX_SCHEMA layer-enabled")") if [[ -e $STATE/tripped ]]; then echo false; else echo true; fi ;;
         "$(user_cmd "systemctl --user list-units --state=active --plain --no-legend --no-pager 'apex*'")") from agents ;;
+        "$(user_cmd 'systemctl --user stop apex-qualify-pkexec.service')") rm -f "$STATE/pkexec-running"; echo 0 >"$STATE/polkit" ;;
         "$(user_cmd "systemctl --user list-units --state=failed --plain --no-legend --no-pager 'apex*'")") from apex-failed ;;
         "$(user_cmd 'systemctl --user show -p ActiveState,SubState,NRestarts --no-pager apex-session-agent.service')") from agent-props ;;
         "$(user_cmd 'systemctl --user show -p ActiveState,Result,ExecMainCode,ExecMainStatus --no-pager apex-folder-icons.service')") from icons-props ;;
@@ -1352,16 +1764,29 @@ vm_ssh() {
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
             if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
         *"gsettings reset org.gnome.desktop.a11y.interface reduced-motion") ;;
-        *"gsettings set $APEX_SCHEMA layer-enabled true") ;;
+        *"gsettings set $APEX_SCHEMA layer-enabled true") rm -f "$STATE/tripped" ;;
         "rpm-ostree kargs --append=apex.safe=1") : >"$STATE/karg" ;;
         "grep -qw apex.safe=1 /proc/cmdline") [[ -e $STATE/safe-booted ]] ;;
         "loginctl unlock-session 4")
-            echo no >"$STATE/locked"
-            echo false >"$STATE/active"
+            if [[ -e $STATE/stays-locked && -e $STATE/unlocked-once ]]; then
+                echo yes >"$STATE/locked"
+                echo true >"$STATE/active"
+            else
+                echo no >"$STATE/locked"
+                echo false >"$STATE/active"
+            fi
+            : >"$STATE/unlocked-once"
+            if [[ -e $STATE/lose-guest ]]; then rm "$STATE/lose-guest"; : >"$STATE/unreachable"; fi
+            if [[ -e $STATE/drop-session ]]; then
+                rm -f "$STATE/drop-session" "$STATE/session" "$STATE/manager-active" "$STATE/asking"
+                echo 'c1 60578 wayland' >"$STATE/greeter"
+                conversations 0
+            fi
             if [[ -e $STATE/crash ]]; then echo 1235 >"$STATE/pid"; fi
             if [[ -e $STATE/js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: x is null' >>"$STATE/journal"; fi ;;
         "loginctl terminate-user $TEST_USER")
             rm -f "$STATE/session" "$STATE/manager-active" "$STATE/asking"
+            echo 'c1 60578 wayland' >"$STATE/greeter"
             conversations 0 ;;
         "systemctl -q is-active user@1000.service") [[ -e $STATE/manager-active ]] ;;
         "id -u $TEST_USER") echo 1000 ;;
@@ -1925,8 +2350,8 @@ logged_in
 rm -f "$GUEST_DIR/record"
 printf '%s\n' "package gdm-1:51.0-1.fc45.x86_64" "file bbbb /usr/bin/apexctl" >"$GUEST_DIR/state/key"
 check "a full pass records the guest's G4 key" 0 "$(guest record_g4_pass local localhost/apex:build)"
-check "sorted, as g4-due reads it, then the time and the image" \
-    "file bbbb /usr/bin/apexctl|package gdm-1:51.0-1.fc45.x86_64|passed-at|image-id cafe" \
+check "sorted, as g4-due reads it, with the harness, then the time and the image" \
+    "file bbbb /usr/bin/apexctl|harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64|passed-at|image-id cafe" \
     "$(sed 's/^passed-at .*/passed-at/' "$GUEST_DIR/record" | paste -sd'|')"
 check "so G4 is no longer due" 3 "$(g4_due "$GUEST_DIR/record" "$GUEST_DIR/record")"
 rm -f "$GUEST_DIR/record"
@@ -1934,7 +2359,8 @@ record_g4_pass_after_rows() {
     printf '%s\n' "$@" >"$GUEST_DIR/rows"
     local rc=0
     QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' QUALIFY_LAYOUT=${LAYOUT:-separate-boot} \
-        bash -c 'cp "$3" "$QUALIFY_OUT/results.md"; . "$1"; STATE=$2; vm_ssh() { cat >/dev/null; cat "$STATE/key"; }; record_g4_pass local localhost/apex:build' \
+        bash -c 'cp "$3" "$QUALIFY_OUT/results.md"; . "$1"; DIAG=${DIAG_MODE:-}; STATE=$2; as_root() { echo cafe; }
+            vm_ssh() { cat >/dev/null; cat "$STATE/key"; }; record_g4_pass local localhost/apex:build' \
         _ "$APEX_ROOT/.github/scripts/qualify.sh" "$GUEST_DIR/state" "$GUEST_DIR/rows" >"$GUEST_DIR/stderr" 2>&1 || rc=$?
     printf '%s\n' "$rc"
 }
@@ -1944,6 +2370,197 @@ check "nor one with a WARN row" "1:no record" \
     "$(record_g4_pass_after_rows '| local-login | WARN | 2 JS ERROR |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
 check "nor a to-disk run, which skipped the counted rollback" "1:no record" \
     "$(LAYOUT=to-disk record_g4_pass_after_rows '| local-install | PASS | x |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+printf '%s\n' "package gdm-1:51.0-1.fc45.x86_64" "file bbbb /usr/bin/apexctl" >"$GUEST_DIR/state/key"
+check "every row a PASS on separate-boot records the pass" "0:record" \
+    "$(record_g4_pass_after_rows '| local-install | PASS | x |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+rm -f "$GUEST_DIR/record"
+check "the same rows under local-diag record nothing" "1:no record" \
+    "$(DIAG_MODE=1 record_g4_pass_after_rows '| local-install | PASS | x |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+check_true "and say local-diag is diagnostic only" grep -qF 'local-diag is diagnostic only: no G4 pass is recorded' "$GUEST_DIR/stderr"
+
+check "nor one with a FAIL, BLOCKED or NOT-RUN row" "1:no record|1:no record|1:no record" \
+    "$(for status in FAIL BLOCKED NOT-RUN; do
+        rm -f "$GUEST_DIR/record"
+        printf '%s:%s\n' "$(record_g4_pass_after_rows "| local-lock-esc | $status | x |")" \
+            "$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+    done | paste -sd'|')"
+
+# --- G4's harness: qualify.sh, lib.sh and the allowed failures are in the key ---------------
+H="$TMP/harness"
+mkdir -p "$H/.github/scripts"
+cp "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/lib.sh" \
+    "$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt" "$H/.github/scripts/"
+h_key() { # the g4-key of an image whose guest key is one package, by the harness in $H
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    bash -c '. "$1"; g4_key_of_image() { echo "package gdm-1:51.0-1.fc45.x86_64"; }; cmd_g4_key localhost/apex:build' \
+        _ "$H/.github/scripts/qualify.sh"
+}
+h_base=$(h_key)
+check "g4-key: the image's key and one harness line" \
+    "harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64" \
+    "$(paste -sd'|' <<<"$h_base")"
+for h_file in qualify.sh lib.sh qualify-allowed-failures.txt; do
+    cp "$H/.github/scripts/$h_file" "$H/$h_file.orig"
+    echo '# a changed row' >>"$H/.github/scripts/$h_file"
+    check_false "g4-key: a changed $h_file changes the key" test "$(h_key)" = "$h_base"
+    cp "$H/$h_file.orig" "$H/.github/scripts/$h_file"
+done
+check "and the same three files give the same key" "$h_base" "$(h_key)"
+key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-a.key"
+echo 'harness aaaa' >>"$G4_DIR/harness-a.key"
+record_pass "$G4_DIR/harness-a.key" "$(date -u -d '-1 day' +%FT%TZ)"
+key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-b.key"
+echo 'harness bbbb' >>"$G4_DIR/harness-b.key"
+check "g4-due: due when only the harness changed" 0 "$(g4_due "$G4_DIR/harness-b.key")"
+check_true "and names the new harness" grep -qF 'harness bbbb' "$G4_DIR/out"
+
+# --- main: local-diag refuses G4's directory before touching it; no command shows a stale diag --
+mkdir -p "$H/_build/qualify/logs" "$H/_build/qualify/logs.previous"
+echo '| local-g4 | PASS | x |' >"$H/_build/qualify/results.md"
+: >"$H/_build/qualify/logs/kept"
+: >"$H/_build/qualify/logs.previous/kept"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "main local-diag at G4's QUALIFY_OUT exits 1" 1 \
+    "$(rc_of env -u QUALIFY_OUT bash -c '. "$1"; require() { :; }; main local-diag localhost/apex:build' _ "$H/.github/scripts/qualify.sh")"
+check "and leaves its results.md, logs/ and logs.previous/ as they were" "| local-g4 | PASS | x |:kept:kept" \
+    "$(cat "$H/_build/qualify/results.md"):$(ls "$H/_build/qualify/logs"):$(ls "$H/_build/qualify/logs.previous")"
+STALE="$TMP/stale-diag"
+mkdir -p "$STALE"
+printf '| Unit | Result | Detail |\n|---|---|---|\n| lock-esc | FAIL | old |\n' >"$STALE/diag.md"
+: >"$STALE/diag.state"
+: >"$STALE/diag-errexit.txt"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "cmd_local after an earlier local-diag in the same QUALIFY_OUT" 0 \
+    "$(rc_of env QUALIFY_OUT="$STALE" GITHUB_STEP_SUMMARY="$STALE/summary" GITHUB_ACTIONS='' \
+        bash -c '. "$1"; require() { :; }; cmd_local() { :; }; main local localhost/apex:build' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
+check_false "publishes no local-diag section" grep -q 'local-diag' "$STALE/summary"
+check "and leaves none of its files" "" "$(cd "$STALE" && ls diag.md diag.state diag-errexit.txt 2>/dev/null)"
+
+# --- cmd_local and local-diag on the fake guest, from the login through the greeter on ---------
+local_ready() { # logged in once, so that the guest has its user's files; cmd_local reboots it to the greeter
+    logged_in
+    echo 4321 >"$GUEST_DIR/state/greeter-pid"
+    printf '%s\n' '[    9.701] guest systemd[811]: Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.' \
+        '[    9.710] guest systemd[811]: Reached target graphical-session.target - Current graphical user session.' \
+        >"$GUEST_DIR/state/greeter-manager"
+    : >"$GUEST_DIR/state/esc-ignored"
+    : >"$GUEST_DIR/state/apex-lock"
+    rm -f "$GUEST_DIR/record"
+}
+rows_of() { awk -F' [|] ' '{ sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/results.md" | paste -sd'|'; }
+local_ready
+check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:build')"
+check "in cmd_local's row order, with no row after the first FAIL" \
+    "local-install PASS|local-stage PASS|local-fallback PASS|local-password PASS|local-login-boot PASS|local-greeter-login PASS|local-boot-metrics SKIP|local-login PASS|local-lock PASS|local-unlock PASS|local-unlock-signal PASS|local-user-units PASS|local-lock-wrong-password PASS|local-lock-esc FAIL" \
+    "$(rows_of)"
+check_false "and no G4 pass is recorded" test -e "$GUEST_DIR/record"
+
+local_ready
+check "local-diag: a FAIL at Esc fails local-diag" 1 "$(guest eval 'local_flow_stubs; cmd_local_diag localhost/apex:build')"
+diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/diag.md" | paste -sd'|'; }
+# On this guest Esc also leaves polkit's dialog open, and no policy file exists: two more
+# FAILs, each the unit's own.
+check "but every unit after it still runs, each with its own verdict" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS" \
+    "$(diag_units)"
+check_true "the suspend runs last, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
+    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend "
+check_false "and the safe karg is gone" test -e "$GUEST_DIR/state/karg"
+check_true "and the reset closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
+    grep -q '^| crash-guard | PASS | local-crash-guard PASS' "$GUEST_DIR/out/diag.md"
+check_true "the Esc unit quotes its first failure" \
+    grep -q '^| lock-esc | FAIL | Esc did not end the password conversation' "$GUEST_DIR/out/diag.md"
+check_true "blank and wake ran: its row is in results.md" grep -q '^| local-lock-blank-wake | ' "$GUEST_DIR/out/results.md"
+check_false "and no G4 pass is recorded" test -e "$GUEST_DIR/record"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/out/results.md"
+rm -f "$H/_build/g4-passed.txt"
+diag_rc=0
+env -u QUALIFY_G4_RECORD QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 \
+    GITHUB_ACTIONS='' APEX_GNOME_SRC="$GUEST_DIR/gnome" bash "$TMP/qualify-fake-guest.sh" "$H/.github/scripts/qualify.sh" \
+    "$GUEST_DIR/state" eval 'local_flow_stubs; cmd_local_diag login-lock-unlock localhost/apex:build' >"$GUEST_DIR/stderr" 2>&1 ||
+    diag_rc=$?
+check "local-diag with G4's default record path: its unit passes" "0:login-lock-unlock PASS" "$diag_rc:$(diag_units)"
+check_false "and it writes no g4-passed.txt there" test -e "$H/_build/g4-passed.txt"
+
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/drop-session"
+check "local-diag: a session lost between two units fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
+check "the unit before the loss fails, and the next runs after a fresh login" \
+    "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
+check_true "naming the lost session" \
+    grep -q '^| login-lock-unlock | FAIL | passed, but before the next unit session 4 of apexqa was gone |$' "$GUEST_DIR/out/diag.md"
+check_true "the fresh login went through the greeter" grep -q '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"
+
+# A guest that stops answering ssh between units is power-cycled once on the same disk.
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+check "local-diag: a guest lost between two units fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
+check "the unit before the loss fails, and the next runs on the power-cycled guest" \
+    "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
+check_true "naming the lost guest" grep -qF \
+    '| login-lock-unlock | FAIL | passed, but guest lost after login-lock-unlock: it stopped answering ssh, and local-diag power-cycled it on the same disk |' \
+    "$GUEST_DIR/out/diag.md"
+check "on the same disk, with its own serial log" local-diag-recovered "$(cat "$GUEST_DIR/state/power-cycled")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/stays-dead"
+check "local-diag: when the power-cycle does not bring the guest back, the rest is BLOCKED" \
+    "login-lock-unlock FAIL|lock-wrong-password BLOCKED|lock-esc BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; diag_units)"
+check_true "the next unit names the failed recovery" grep -qF \
+    '| lock-wrong-password | BLOCKED | the reset before it failed: the guest still does not answer ssh after a power-cycle |' \
+    "$GUEST_DIR/out/diag.md"
+check_true "and the ones after it are not tried again" grep -qF \
+    '| lock-esc | BLOCKED | the guest was lost after login-lock-unlock, and a power-cycle did not bring it back |' \
+    "$GUEST_DIR/out/diag.md"
+
+# 4. a lock unit with the layer off is not a test of the Apex lock
+local_ready
+rm "$GUEST_DIR/state/esc-ignored" "$GUEST_DIR/state/apex-lock"
+check "local-diag: a lock unit in a login that never enabled the lock fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag lock-wrong-password localhost/apex:build')"
+check "as BLOCKED, not PASS against the stock lock" "lock-wrong-password BLOCKED" "$(diag_units)"
+check_true "naming the missing feature line" \
+    grep -qE "^\| lock-wrong-password \| BLOCKED \| the pinned apex-gnome [0-9a-f]+ lists 'lock', but this login never logged 'Apex: feature lock enabled' \|$" \
+    "$GUEST_DIR/out/diag.md"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/tripped"
+check "nor in a safe-mode login" "lock-esc BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag lock-esc localhost/apex:build' >/dev/null; diag_units)"
+check_true "saying so" grep -qF '| lock-esc | BLOCKED | this login runs in safe mode: no Apex layer to test |' "$GUEST_DIR/out/diag.md"
+
+# 5. a reset that cannot unlock blocks the next unit
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/stays-locked"
+check "local-diag: a reset that never sees the unlock blocks the next unit" \
+    "login-lock-unlock PASS|lock-wrong-password BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
+check_true "saying the session stayed locked" \
+    grep -q '^| lock-wrong-password | BLOCKED | the reset before it failed: session 4 still locked' "$GUEST_DIR/out/diag.md"
+
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "local-diag: a bare errexit in a unit fails local-diag" 1 \
+    "$(guest eval 'trap_errexit; local_flow_stubs; polkit_actions() { local n; n=$(echo 2); false; echo "$n"; }; cmd_local_diag polkit-actions localhost/apex:build')"
+check "as that unit's FAIL, not a silent pass" "polkit-actions FAIL" "$(diag_units)"
+check_true "naming the command errexit stopped at" \
+    grep -qE '^\| polkit-actions \| FAIL \| exited 1 without a FAIL row: line [0-9]+: false exited 1 \|$' "$GUEST_DIR/out/diag.md"
+
+check "local-diag: an unknown unit is refused" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag lock-nothing localhost/apex:build')"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "local-diag refuses G4's QUALIFY_OUT" 1 \
+    "$(rc_of bash -c '. "$1"; QUALIFY_OUT=$APEX_ROOT/_build/qualify; diag_refuse_g4_out' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
 
 # boot_metrics is warning-only: whatever the journal lacks, G4 goes on to the login steps.
 boot_then_login() { # MONO_LINES...: boot_metrics, then login_lock_unlock, as the local flow runs them
@@ -2312,6 +2929,54 @@ check "qemu parity: a second QEMU command line fails rather than going unread" 1
 check_true "and counts them" grep -q 'qualify-two.sh: 2 QEMU -machine options, expected 1' "$QP/err"
 { cat "${QP_REAL[0]}"; printf '    # -machine pc -cpu max: a comment\n'; } >"$QP/qualify-comment.sh"
 check "qemu parity: a comment naming flags is not a QEMU line" 0 "$(qp_rc "$QP/qualify-comment.sh" "${QP_REAL[1]}")"
+
+# --- markers.sh: G4's journal markers against an inventory of their source context ---------
+QM=$TMP/qualify-markers
+mkdir -p "$QM/src/upstream/tree/src" "$QM/src/apex-gnome/tree"
+echo upstream-1.0-1.fc45 >"$QM/src/upstream/nvr"
+echo apex-gnome@0 >"$QM/src/apex-gnome/nvr"
+printf '%s\n' 'static int log_it(int done) {' '        if (done)' '                log("Reached the end of %s.");' '}' >"$QM/src/upstream/tree/src/end.c"
+printf "console.warn('Apex: up');\n" >"$QM/src/apex-gnome/tree/up.js"
+qm_sha() { sed -n "$2,$3p" "$1" | sha256sum | cut -d' ' -f1; }
+cat >"$QM/qualify.sh" <<'EOF'
+readonly DONE_MARKS=('Reached the end of' 'Apex: up')
+x=$(vm_ssh "journalctl -b -o cat | grep -m 1 'kernel noise'")
+EOF
+qm_inventory() {
+    printf '%s\n' '# inventory' '' 'marker: Reached the end of' 'kind: upstream' \
+        "source: upstream src/end.c 2-3 $(qm_sha "$QM/src/upstream/tree/src/end.c" 2 3)" \
+        'reviewed: upstream-1.0-1.fc45' 'guard: only when done' '' \
+        'marker: Apex: up' 'kind: apex' "source: apex-gnome up.js 1-1 $(qm_sha "$QM/src/apex-gnome/tree/up.js" 1 1)" \
+        'reviewed: apex-gnome@0' 'guard: always' '' 'marker: kernel noise' 'kind: other' 'guard: diagnostic only'
+}
+qm_inventory >"$QM/inventory.txt"
+qm_rc() { (set +e; qualify_markers "$QM/qualify.sh" "$1" "$QM/src" >"$QM/out" 2>"$QM/err"; echo $?); }
+check "markers: every marker has an entry whose context is unchanged" 0 "$(qm_rc "$QM/inventory.txt")"
+check "and the summary counts them" "3 markers, 2 with their source context, unchanged in apex-gnome@0 upstream-1.0-1.fc45" "$(cat "$QM/out")"
+echo "grep -q 'Reached a new line' \"\$log\"" >>"$QM/qualify.sh"
+check "markers: a marker G4 waits for without an entry fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names it" grep -q "G4 waits for 'Reached a new line' .*has no entry for it" "$QM/err"
+sed -i '$d' "$QM/qualify.sh"
+sed -i "/^x=/d" "$QM/qualify.sh"
+check "markers: an entry no G4 row waits for fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names it" grep -q "has an entry for 'kernel noise', which no G4 row waits for any more" "$QM/err"
+printf '%s\n' "x=\$(vm_ssh \"journalctl -b -o cat | grep -m 1 'kernel noise'\")" >>"$QM/qualify.sh"
+sed -i 's/if (done)/if (done \&\& !quiet)/' "$QM/src/upstream/tree/src/end.c"
+check "markers: a guard that changed in the current build fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names the build and the lines" grep -q "the context of upstream src/end.c:2-3, reviewed at upstream-1.0-1.fc45, changed in upstream-1.0-1.fc45" "$QM/err"
+sed -i 's/if (done \&\& !quiet)/if (done)/; 1i /* a new first line */' "$QM/src/upstream/tree/src/end.c"
+check "markers: the same context on other lines passes" 0 "$(qm_rc "$QM/inventory.txt")"
+check_true "and says where it moved" grep -q "is unchanged in upstream-1.0-1.fc45, at line 3" "$QM/err"
+rm "$QM/src/apex-gnome/tree/up.js"
+check "markers: a source file the build no longer has fails" 1 "$(qm_rc "$QM/inventory.txt")"
+printf "console.warn('Apex: up');\n" >"$QM/src/apex-gnome/tree/up.js"
+qm_inventory | sed '/^guard: always$/d' >"$QM/inventory-noguard.txt"
+check "markers: an entry without its guard fails" 1 "$(qm_rc "$QM/inventory-noguard.txt")"
+mkdir -p "$QM/none"
+(set +e; qualify_markers "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/qualify-markers.txt" "$QM/none" \
+    >/dev/null 2>"$QM/err-main") || true
+check "markers: every journal line main's qualify.sh waits for has an entry, and every entry a marker" 0 \
+    "$(grep -c -e 'has no entry for it' -e 'no G4 row waits for' -e 'needs kind: upstream or apex' -e 'no guard: line' "$QM/err-main")"
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }
@@ -3315,8 +3980,8 @@ case $1 in
     running) [[ ${FAKE_VM:-up} == up ]] ;;
     ssh)
         if [[ $2 == *"ci-build modes"* ]]; then
-            [[ ${FAKE_MODES:-new} == new ]] || { echo "ci-build: refused" >&2; exit 2; }
-            echo "daily next"
+            [[ ${FAKE_MODES:-new} != old ]] || { echo "ci-build: refused" >&2; exit 2; }
+            if [[ ${FAKE_MODES:-new} == next ]]; then echo "daily next"; else echo "daily next gate g4"; fi
             exit 0
         fi
         if [[ $2 == *cosign* ]]; then
@@ -3388,10 +4053,11 @@ check "before runner.sh key the key rows skip, and the host still passes" "rc=0 
     "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
 check "a stopped builder VM skips the binding and cosign" "rc=0 SKIP SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build) $(pf_row vm-cosign)"
-check "a forced command on the current grammar passes, naming its modes" "PASS|daily next" \
-    "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 1), $NF }' "$PF/out")"
-check_true "an old one's row says how to upgrade" grep -q 'old grammar (no next): just vm-ci-install' \
+check "a forced command on the current grammar passes, naming its modes" "PASS|next gate g4" \
+    "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 2), $(NF - 1), $NF }' "$PF/out")"
+check_true "an old one's row says how to upgrade" grep -q 'an old grammar (no next, gate or g4): just vm-ci-install' \
     <<<"$(pf FAKE_MODES=old >/dev/null; cat "$PF/out")"
+check "one that takes next but not gate and g4 fails the row too" FAIL "$(pf FAKE_MODES=next >/dev/null; pf_row ci-build-modes)"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
 # --- install-cosign.sh: the pinned release only, checked before it is installed ----------
 IC="$TMP/install-cosign"
@@ -3508,6 +4174,81 @@ check_true "and says why, naming just vm-start" grep -qF \
 rb_stop
 check "runner: nothing listening does not answer" 1 "$(rc_of rb "$rb_port" builder_answers)"
 
+# --- runner.sh: jobs only on AC power, the builder VM's unit, and the runs waiting ----------
+RP="$TMP/runner-power"
+rp() { # SCRIPT: SCRIPT with runner.sh's functions and $RP/ps as /sys/class/power_supply
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    HOME=$RP/home timeout 4 bash -c '. "$1"; POWER_SUPPLY_DIR=$2/ps BUILDER_POLL=1 BUILDER_LOG_EVERY=1; eval "$3"' _ \
+        "$APEX_ROOT/tools/runner/runner.sh" "$RP" "$1"
+}
+rp_supply() { mkdir -p "$RP/ps/$1"; [[ -z ${2:-} ]] || echo "$2" >"$RP/ps/$1/online"; }
+mkdir -p "$RP/ps"
+check "runner: a host with no supply to read (a desktop) is on AC" 0 "$(rc_of rp on_ac_power)"
+rp_supply BAT0
+rp_supply AC 0
+rp_supply ucsi-source-psy-USBC000:001 0
+check "runner: a laptop whose AC and USB-C supplies are offline is on battery" 1 "$(rc_of rp on_ac_power)"
+rp_rc=0
+rp wait_for_ac 2>"$RP/wait.log" || rp_rc=$?
+check "runner: and takes no job, saying why" "124|yes" \
+    "$rp_rc|$(grep -q 'on battery: no job is taken until the host is on AC power' "$RP/wait.log" && echo yes)"
+rp_supply ucsi-source-psy-USBC000:001 1
+check "runner: USB-C power counts" 0 "$(rc_of rp on_ac_power)"
+rp_supply AC 1
+check "runner: and wait_for_ac returns at once" 0 "$(rc_of rp wait_for_ac)"
+check "runner: once checks AC power, then the builder VM" "    wait_for_builder" \
+    "$(grep -A1 -xF '    wait_for_ac' "$APEX_ROOT/tools/runner/runner.sh" | tail -n 1)"
+rp_unit=$(APEX_VM_DIR=/vm APEX_VM_SSH_PORT=2299 APEX_VM_MEM=8G rp builder_unit)
+rp_bin=$RP/home/.local/share/apex/runner/builder-vm/builder-vm.sh
+for line in Type=forking PIDFile=/vm/qemu.pid 'Environment=APEX_VM_DIR=/vm APEX_VM_SSH_PORT=2299 APEX_VM_MEM=8G' \
+    "ExecStart=$rp_bin start" "ExecStop=$rp_bin stop" WantedBy=default.target; do
+    check_true "runner: apex-builder.service has $line" grep -qxF "$line" <<<"$rp_unit"
+done
+# shellcheck disable=SC2016 # the script's own text
+check_true "runner: builder-vm.sh start daemonizes, so Type=forking holds" grep -q -- '-pidfile "$PIDFILE" -daemonize' \
+    "$APEX_ROOT/tools/builder-vm/builder-vm.sh"
+mkdir -p "$RP/bin"
+cat >"$RP/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"$FAKE_RP/systemctl.log"
+EOF
+for t in podman loginctl curl jq; do printf '#!/usr/bin/env bash\n' >"$RP/bin/$t"; done
+cat >"$RP/bin/id" <<'EOF'
+#!/usr/bin/env bash
+if [[ $* == -u ]]; then echo 1000; else exec /usr/bin/id "$@"; fi
+EOF
+chmod +x "$RP/bin/"*
+rp_install() { # [--autostart]: runner.sh install on fakes; prints its exit
+    local rc=0
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$RP/bin:$PATH" FAKE_RP="$RP" HOME="$RP/home" XDG_CONFIG_HOME="$RP/home/.config" bash -c '
+        . "$1"; shift; require_ready() { :; }; token() { echo t; }; main install "$@"' _ \
+        "$APEX_ROOT/tools/runner/runner.sh" "$@" >/dev/null 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+check "runner: install --autostart" 0 "$(rp_install --autostart)"
+check "runner: writes apex-builder.service, and installs builder-vm.sh with firmware.sh" "unit|script|firmware" \
+    "$([[ -s $RP/home/.config/systemd/user/apex-builder.service ]] && echo unit)|$([[ -x $RP/home/.local/share/apex/runner/builder-vm/builder-vm.sh ]] && echo script)|$([[ -s $RP/home/.local/share/apex/runner/builder-vm/firmware.sh ]] && echo firmware)"
+check "runner: apex-runner.service wants it and starts after it" \
+    "Wants=network-online.target apex-builder.service|After=network-online.target apex-builder.service" \
+    "$(grep -E '^(Wants|After)=' "$RP/home/.config/systemd/user/apex-runner.service" | paste -sd'|')"
+check_true "runner: and enables it" grep -qx 'systemctl --user enable apex-builder.service' "$RP/systemctl.log"
+check "runner: a plain install takes autostart away again" "0|no unit|Wants=network-online.target" \
+    "$(rp_install)|$([[ -e $RP/home/.config/systemd/user/apex-builder.service ]] && echo unit || echo 'no unit')|$(grep '^Wants=' "$RP/home/.config/systemd/user/apex-runner.service")"
+check "runner: any other argument is refused" 1 "$(rp_install --autostart extra)"
+check "runner: --autostart belongs to install only" 1 \
+    "$(PATH="$RP/bin:$PATH" HOME="$RP/home" rc_of "$APEX_ROOT/tools/runner/runner.sh" status --autostart)"
+rp_runs() { # QUEUED_JSON PENDING_JSON: waiting_runs with the API's answers
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    rp 'api() { case $2 in *status=queued*) printf "%s" "$Q" ;; *) [[ $P != fail ]] || return 22; printf "%s" "$P" ;; esac; }
+        date() { echo 1793376000; }; waiting_runs' 2>/dev/null
+}
+check "runner: status names each vm.yml run waiting for a runner, and its wait" \
+    "vm.yml run 7 queued (push, 0123456789ab) since 2026-10-30T15:00:00Z: 60 min|vm.yml runs pending: unknown (the token cannot read apex-image's Actions)" \
+    "$(Q='{"total_count":1,"workflow_runs":[{"id":7,"event":"push","head_sha":"0123456789abcdef","created_at":"2026-10-30T15:00:00Z"}]}' P=fail rp_runs | paste -sd'|')"
+check "runner: and says when none waits" "vm.yml runs queued: none|vm.yml runs pending: none" \
+    "$(Q='{"total_count":0,"workflow_runs":[]}' P='{"total_count":0,"workflow_runs":[]}' rp_runs | paste -sd'|')"
+
 # --- runner.sh once: logind's inhibitor locks are held while the job runs, and only then ------
 FI="$TMP/runner-inhibit"
 mkdir -p "$FI/bin"
@@ -3559,28 +4300,29 @@ ri_released() { # the locks end with the job: tail --pid sees the watcher gone w
     return 1
 }
 ri_rc=0
-ri 0 'handle-lid-switch idle sleep' || ri_rc=$?
+ri 0 'handle-lid-switch idle shutdown sleep' || ri_rc=$?
 check "runner: a job that succeeds exits 0 through the watcher" 0 "$ri_rc"
 check "runner: no lock while the runner waits for a job" "" "$(cat "$FI/before-job")"
-check "runner: sleep, idle and the lid switch are held while the job runs" \
-    'handle-lid-switch idle sleep' "$(cat "$FI/during-job")"
+check "runner: sleep, idle, the lid switch and shutdown are held while the job runs" \
+    'handle-lid-switch idle shutdown sleep' "$(cat "$FI/during-job")"
 check_true "and the job's log says so" grep -qF \
-    'sleep inhibitor: held (sleep idle handle-lid-switch) for VM job: vm, until the job ends' "$FI/err"
+    'sleep inhibitor: held (sleep idle handle-lid-switch shutdown) for VM job: vm, until the job ends' "$FI/err"
 check_true "the runner's own output passes unchanged" grep -qx '2026-10-30 12:26:00Z: Running job: vm' "$FI/out"
 check "runner: the locks end with the job" 0 "$(rc_of ri_released)"
 ri_rc=0
-ri 1 'handle-lid-switch idle sleep' || ri_rc=$?
+ri 1 'handle-lid-switch idle shutdown sleep' || ri_rc=$?
 check "runner: a job that fails keeps its exit status" 1 "$ri_rc"
 check "runner: and its locks end too" 0 "$(rc_of ri_released)"
 : >"$FI/refuse-sleep"
 : >"$FI/refuse-handle-lid-switch"
-ri 0 idle
-check "runner: polkit's refusal of sleep and the lid leaves idle held" idle "$(cat "$FI/during-job")"
+ri 0 'idle shutdown'
+check "runner: polkit's refusal of sleep and the lid leaves idle and shutdown held" 'idle shutdown' "$(cat "$FI/during-job")"
 check_true "and the job's log names each refusal and asks to keep the laptop awake" grep -qF \
     'sleep inhibitor: refused (sleep: Failed to inhibit: Access denied;handle-lid-switch: Failed to inhibit: Access denied); keep the laptop awake for this job' \
     "$FI/err"
 rm "$FI/refuse-sleep" "$FI/refuse-handle-lid-switch"
-echo 'handle-lid-switch idle sleep' >"$FI/expect"
+check_true "a shutdown lock is in block mode, so a power-off warns and fails" grep -q ' shutdown VM job: vm block$' "$FI/locks"
+echo 'handle-lid-switch idle shutdown sleep' >"$FI/expect"
 echo 0 >"$FI/rc"
 : >"$FI/locks"
 : >"$FI/hold"
@@ -3588,7 +4330,7 @@ echo 0 >"$FI/rc"
 PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" setsid bash -c '. "$1"; attach_job apex-kvm-x' _ \
     "$APEX_ROOT/tools/runner/runner.sh" >/dev/null 2>&1 &
 ri_pid=$!
-for _ in $(seq 50); do [[ $(ri_held) == 'handle-lid-switch idle sleep' ]] && break; sleep 0.1; done
+for _ in $(seq 50); do [[ $(ri_held) == 'handle-lid-switch idle shutdown sleep' ]] && break; sleep 0.1; done
 kill -TERM -- "-$ri_pid" 2>/dev/null || true
 wait "$ri_pid" 2>/dev/null || true
 check "runner: a job stopped by a signal (systemctl stop) leaves no lock" 0 "$(rc_of ri_released)"
@@ -3617,6 +4359,11 @@ vm_step() { # NAME: the run: script of vm.yml's step NAME, as GitHub hands it to
 }
 cat >"$V/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
+if [[ $* == "apex-builder ci-build modes" ]]; then
+    [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
+    echo "daily next gate g4"
+    exit 0
+fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
 echo "::error::a line of the VM's log" >&2
 [[ ! -s $FAKE_VM/results.tar ]] || cat "$FAKE_VM/results.tar"
@@ -3645,10 +4392,38 @@ vm_results() { # FILE=CONTENT...: the results tar ci-build would return
     tar -C "$V/results" -cf "$V/results.tar" .
 }
 COMMIT='Commit'
-BUILD='Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)'
+BUILD='Components, RPMs, lane, image, G4 when due, G2 twice, gates, promote (builder VM)'
 GATES='Gates file'
 check "vm.yml has the three steps the selftest runs" "yes yes yes" \
     "$(for s in "$COMMIT" "$BUILD" "$GATES"; do [[ -n $(vm_step "$s") ]] && printf 'yes ' || printf 'no '; done | sed 's/ $//')"
+
+# vm_push_queues FILE...: would a push to main touching FILEs queue vm.yml, by its paths filter
+vm_push_queues() {
+    local glob re file
+    while read -r glob; do
+        re=$(sed -e 's/[.+]/\\&/g' -e 's/\*\*/\x01/g' -e 's/\*/[^\/]*/g' -e 's/\x01/.*/g' <<<"$glob")
+        for file in "$@"; do [[ $file =~ ^$re$ ]] && { echo yes; return; }; done
+    done < <(awk '/^    paths:$/ { p = 1; next } p && /^      - / { print $2; next } p { exit }' "$APEX_ROOT/.github/workflows/vm.yml")
+    echo no
+}
+for queued in components.lock Cargo.lock Cargo.toml image/Containerfile image/system_files/usr/share/apex/README.md \
+    crates/apex-lane/src/vm/promote.rs tools/components.sh .github/scripts/qualify.sh \
+    .github/scripts/qualify-allowed-failures.txt .github/scripts/image.sh .github/scripts/lib.sh \
+    tools/builder-vm/build-image.sh tools/builder-vm/lane.sh tools/builder-vm/snapshot.sh \
+    tools/builder-vm/metrics.sh tools/builder-vm/lane-absorb-report.sh; do
+    check "push paths: $queued queues a run" yes "$(vm_push_queues "$queued")"
+done
+for skipped in tools/runner/runner.sh tools/runner/README.md tools/builder-vm/ci-build.sh tools/builder-vm/builder-vm.sh \
+    tools/builder-vm/desktop-vm.sh tools/builder-vm/desktop-disk.sh tools/builder-vm/shell-dev.sh \
+    tools/builder-vm/shell-dev-guest.sh tools/builder-vm/provision.sh tools/builder-vm/publish-image.sh \
+    tools/builder-vm/install-cosign.sh tools/builder-vm/firmware.sh tools/builder-vm/lane-rehearsal.sh \
+    tools/builder-vm/rehearsal/x.sh tools/builder-vm/README.md .github/scripts/selftest.sh .github/scripts/contracts.sh \
+    .github/workflows/vm.yml .github/workflows/ci.yml crates/apex-lanex/x.rs tools/components.shx; do
+    check "push paths: $skipped alone queues nothing" no "$(vm_push_queues "$skipped")"
+done
+check "push paths: every file of tools/builder-vm that builds or gates is named, and only those" \
+    "build-image.sh lane-absorb-report.sh lane.sh metrics.sh snapshot.sh" \
+    "$(for f in "$APEX_ROOT"/tools/builder-vm/*; do [[ $(vm_push_queues "tools/builder-vm/${f##*/}") == no ]] || printf '%s\n' "${f##*/}"; done | sort | paste -sd' ')"
 
 vm_reset
 check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
@@ -3661,6 +4436,17 @@ check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
 vm_reset
 check "Commit: a short sha is an error" "1|::error::not a full commit sha: abc123" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA=abc123)|$(cat "$V/log")"
+for plan in gate g4; do
+    vm_reset
+    check "Commit: a dispatch with plan $plan sends it" "0|sha=$CI_SHA extra=$plan" \
+        "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=$plan)|$(paste -sd' ' "$V/output")"
+done
+vm_reset
+check "Commit: plan auto sends nothing" "0|sha=$CI_SHA" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=auto)|$(cat "$V/output")"
+vm_reset
+check "Commit: another plan is an error" "1|::error::not a plan: daily (auto, gate or g4)" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=daily)|$(cat "$V/log")"
 
 for case in "0:" "1:::error::the build in the builder VM failed (exit 1)" "2:::error::ci-build refused $CI_SHA" \
     "75:::error::another build holds the builder VM" \
@@ -3684,28 +4470,85 @@ vm_run "$BUILD" SHA="$CI_SHA" EXTRA= >/dev/null
 check "build: a push asks for the build alone" "apex-builder ci-build $CI_SHA" "$(cat "$V/ssh.args")"
 vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily >/dev/null
 check "build: the daily run adds daily" "apex-builder ci-build $CI_SHA daily" "$(cat "$V/ssh.args")"
+vm_run "$BUILD" SHA="$CI_SHA" EXTRA=g4 >/dev/null
+check "build: a g4 plan adds g4" "apex-builder ci-build $CI_SHA g4" "$(cat "$V/ssh.args")"
+vm_reset
+echo 2 >"$V/ssh.rc"
+check_true "build: a refused g4 says where to look" grep -qF \
+    "::error::ci-build refused $CI_SHA g4 (the log says why; ci-build.txt has any plan refused line)" \
+    <(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=g4 >/dev/null; cat "$V/log")
+echo 0 >"$V/ssh.rc"
+: >"$V/old-host"
+for extra in daily gate g4; do
+    vm_reset
+    check "build: an installed ci-build before gate and g4 fails $extra at once, building nothing" \
+        "2|::error::the builder VM's ci-build predates gate and g4, so it cannot run $extra as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+        "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=$extra)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+done
+vm_reset
+check "build: a push still runs on it: build-image.sh chooses" "0|apex-builder ci-build $CI_SHA" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=)|$(cat "$V/ssh.args")"
+rm "$V/old-host"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
+GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"
 vm_reset
-vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
-    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png"
+vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
+    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png" "g2-logs/run-1/motion.log=log" \
+    "diag-logs/local-lock/journal.txt=diag" "stages.tsv=$(printf '1793370000\tfetch and check out\n1793370090\t1/4 rpms\n1793374200\tG4, due\n1793378000\tend')"
 check "gates: a green build passes" 0 "$(vm_gates)"
-check "gates: with each result in the summary" "## Builder VM|### ci-build|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
+check "gates: with each result in the summary" "## Builder VM|### ci-build|### Stages|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
     "$(grep -E '^##' "$V/summary" | paste -sd'|')"
+check "gates: each stage with its UTC start and its minutes" \
+    "| fetch and check out | 14:20:00 | 1.5 |;| 1/4 rpms | 14:21:30 | 68.5 |;| G4, due | 15:30:00 | 63.3 |" \
+    "$(grep -E '^\| (fetch|1/4|G4)' "$V/summary" | paste -sd';')"
 check_true "gates: G4's table has its header with the layer feature column" \
     grep -qx '| Test | Result | Detail | Layer feature |' "$V/summary"
-check "gates: and G4's logs for the artifact" "logs=$V/temp/logs|local.png" \
-    "$(cat "$V/output")|$(ls "$V/temp/logs/qualify-logs")"
+check "gates: and G4's, G2's and the diagnosis's logs for the artifact" "logs=$V/temp/logs|diag-logs g2-logs qualify-logs" \
+    "$(cat "$V/output")|$(find "$V/temp/logs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' ')"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\nexit 0' "$CI_SHA")" "gates-passed.txt=lock-sha256 x"
+check "gates: a gates file without ci-build's promotion line is no pass" \
+    "1|::error::no gates record: G2 or G4 did not pass (promote not reported)" "$(vm_gates)|$(cat "$V/log")"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote skipped: no gates record\nexit 0' "$CI_SHA")"
+check "gates: nor is ci-build's exit 0 without a gates record" \
+    "1|::error::no gates record: G2 or G4 did not pass (promote skipped: no gates record)" "$(vm_gates)|$(cat "$V/log")"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote unchanged: rpms.lock is rpms.lock.next\nexit 0' "$CI_SHA")"
+check "gates: an unchanged lane lock after a pass is green" 0 "$(vm_gates)"
+# Run 16's layout: G4 failed at its fifth row, G2 passed, ci-build exit 1.
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nstarted 2026-10-30T12:30:02Z\nbuild-image 1\nfinished 2026-10-30T14:20:11Z\nexit 1' "$CI_SHA")" \
+    "lock.diff=no change" "g2-result.txt=$(printf 'image-id cafe\nruns 2\nstatus passed')" \
+    "g4-results.md=$(printf '| local-install | PASS | green | - |\n| local-stage | PASS | staged | - |\n| local-red | PASS | rolled back | - |\n| local-login | PASS | 12 s | - |\n| local-lock-suspend | FAIL | no resumed screendump | lock |')" \
+    "qualify-logs/local-lock-suspend.png=png" "metrics/history.tsv=$(printf 'finished\tsha\n')"
+check "gates: run 16's tar fails on ci-build's exit" "1|::error::ci-build exited 1: no gates record" \
+    "$(vm_gates)|$(grep -v '^::notice title=G4 frontier::' "$V/log")"
+check "gates: and shows G4's frontier, the furthest row it reached" "Frontier: row 5, local-lock-suspend FAIL" \
+    "$(grep '^Frontier: ' "$V/summary")"
+check "gates: and as a notice, which the API keeps after the artifact expires" \
+    "::notice title=G4 frontier::row 5, local-lock-suspend FAIL" "$(grep '^::notice title=G4 frontier' "$V/log")"
+# A qualify-only run (T2): advisory, so never a green run, whatever it says.
+for t2 in "build-image 0|promote skipped: no gates record|exit 0" "build-image 1|exit 1" "build-image 0|promote passed|exit 0"; do
+    vm_reset
+    vm_results "ci-build.txt=$(printf 'sha %s\nplan qualify-only (advisory)\n%s' "$CI_SHA" "${t2//|/$'\n'}")" \
+        "g4-results.md=| local-install | PASS | green | - |"
+    check "gates: a qualify-only run ($t2) ends non-green, with its notice" \
+        "1|::notice title=qualify-only::advisory: records nothing, promotes nothing by design" \
+        "$(vm_gates)|$(grep -v '^::notice title=G4 frontier::' "$V/log")"
+    check_true "gates: and still writes its summary" grep -qx '### G4 (results.md)' "$V/summary"
+done
 vm_reset
 vm_results "ci-build.txt=sha $CI_SHA" "lock.diff=x"
-check "gates: a red build without a gates file fails" "1|::error::no gates file: G2 or G4 did not pass" \
+check "gates: a red build without a gates file fails" "1|::error::ci-build exited without an exit line: no gates record" \
     "$(vm_gates)|$(cat "$V/log")"
 check "gates: and still writes its summary, but no artifact without logs" "yes|" \
     "$(grep -q '^### ci-build' "$V/summary" && echo yes)|$(cat "$V/output" 2>/dev/null)"
 vm_reset
 check "gates: an empty results tar is an error" "1|::error::the builder VM returned no results" "$(vm_gates)|$(cat "$V/log")"
 vm_reset
-vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "absorb/report.md=# Lane absorption report
+vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "absorb/report.md=# Lane absorption report
 | Family | x |" "absorb/rows.tsv=x" "absorb/warnings.tsv=$(printf 'gnome-shell\tgnome-shell-51.1-1.fc45\tfails\t0015-lock.patch: 100%% of hunk 4\nptyxis\tptyxis-51.0-1.fc45\tfuzz\t1 patch(es); x')"
 check "gates: the daily run's warnings never fail the step" 0 "$(vm_gates)"
 check "gates: one escaped warning per family" \
@@ -3714,18 +4557,18 @@ check "gates: one escaped warning per family" \
 check "gates: the report joins the summary and the artifact" "### Absorption (lane-absorb-report.sh)|warnings.tsv" \
     "$(grep -o '^### Absorption.*' "$V/summary")|$([[ -s $V/temp/logs/absorb/warnings.tsv ]] && echo warnings.tsv)"
 vm_reset
-vm_results "gates-passed.txt=x" "absorb/warnings.tsv=$(printf 'evil\tx\tfails\tline one\n::error::injected\tx\tfails\ty')"
+vm_results "$GREEN_CI" "gates-passed.txt=x" "absorb/warnings.tsv=$(printf 'evil\tx\tfails\tline one\n::error::injected\tx\tfails\ty')"
 vm_gates >/dev/null
 check "gates: a warning line cannot issue a command of its own" 0 "$(grep -c '^::error::injected' "$V/log")"
 check "gates: and its family cannot end the title property" \
     "::warning title=absorb %3A%3Aerror%3A%3Ainjected::x (updates-testing): fails y" "$(grep 'injected' "$V/log")"
 check_true "gates: the artifact is vm-logs-<sha>" grep -qF "name: vm-logs-\${{ steps.commit.outputs.sha }}" "$APEX_ROOT/.github/workflows/vm.yml"
 vm_reset
-vm_results "gates-passed.txt=x" "ci-build.txt=$(printf 'sha %s\nstale /usr/local/libexec/apex/ci-build differs from this commit'"'"'s tools/builder-vm/ci-build.sh: run just vm-ci-install' "$CI_SHA")"
+vm_results "gates-passed.txt=x" "ci-build.txt=$(printf 'sha %s\nstale /usr/local/libexec/apex/ci-build differs from this commit'"'"'s tools/builder-vm/ci-build.sh: run just vm-ci-install\npromote passed\nexit 0' "$CI_SHA")"
 check "gates: a stale ci-build warns, and never fails the step" "0|::warning title=ci-build stale::the builder VM's installed ci-build differs from this commit's; run just vm-ci-install (tools/runner/README.md, Troubleshooting)" \
     "$(vm_gates)|$(grep '^::warning title=ci-build' "$V/log")"
 vm_reset
-vm_results "gates-passed.txt=x" "metrics/history.tsv=$(printf 'finished\tsha\tversion\tgates\tsize\tlayers\tprevious_size\tsize_change_pct\tnew_bytes\tfamilies\tfirmware\tloader\tkernel\tinitrd\tuserspace\tgreeter\tdesktop\n2026-10-24T03:20:00Z\t%s\t45.1\tyes\t1258291200\t70\t1048576000\t20.0\t209715200\t-\t-\t-\t1.0\t2.0\t12.5\t16.0\t3.0' "$CI_SHA")" \
+vm_results "$GREEN_CI" "gates-passed.txt=x" "metrics/history.tsv=$(printf 'finished\tsha\tversion\tgates\tsize\tlayers\tprevious_size\tsize_change_pct\tnew_bytes\tfamilies\tfirmware\tloader\tkernel\tinitrd\tuserspace\tgreeter\tdesktop\n2026-10-24T03:20:00Z\t%s\t45.1\tyes\t1258291200\t70\t1048576000\t20.0\t209715200\t-\t-\t-\t1.0\t2.0\t12.5\t16.0\t3.0' "$CI_SHA")" \
     "metrics/warnings.tsv=$(printf 'size\tthe image grew 20.0 %% against x\nuserspace\t12.5 s, more than 20 %% above')"
 check "gates: metrics warnings never fail the step" 0 "$(vm_gates)"
 check "gates: the metrics table, in MiB and seconds" "| 2026-10-24T03:20:00Z | ${CI_SHA:0:12} | yes | 1200 | 20.0 | 200 | 12.5 | 16.0 | 3.0 |" \
@@ -3866,6 +4709,23 @@ check "metrics: a red build has no size, no rechunk and no boot values" "no - - 
 check "metrics: the history keeps every build" 5 "$(($(wc -l <"$M/store/metrics.tsv") - 1))"
 for _ in $(seq 30); do m_run >/dev/null; done
 check "metrics: and only the last 30 of them" "31 31" "$(wc -l <"$M/store/metrics.tsv") $(wc -l <"$M/out/history.tsv")"
+m_t2() { # PLAN: one run whose _build/plan.txt says PLAN; prints metrics.sh's exit
+    local rc=0
+    : >"$M/stamp"
+    sleep 0.01
+    echo "$1" >"$M/co/_build/plan.txt"
+    printf 'kernel 1.0\nuserspace 30.0\ngreeter 40.0\ndesktop 3.0\n' >"$M/co/_build/qualify/boot.tsv"
+    rm -rf "$M/out"
+    env PATH="$M/bin:$PATH" FAKE_M="$M" APEX_STORE="$M/store" APEX_METRICS_IMAGE_SH="$M/bin/image.sh" GITHUB_ACTIONS='' \
+        bash "$M/co/tools/builder-vm/metrics.sh" "$M/out" "$M/stamp" "$CI_SHA" "$M/lock.diff" 2>/dev/null || rc=$?
+    printf '%s' "$rc"
+}
+M_LAST=$(tail -n 1 "$M/store/metrics.tsv")
+check "metrics: a qualify-only run adds no row to the history, and exits 0" "0|no new row|no metrics" \
+    "$(m_t2 qualify-only)|$([[ $(tail -n 1 "$M/store/metrics.tsv") == "$M_LAST" ]] && echo 'no new row')|$([[ -e $M/out/metrics.tsv ]] && echo metrics || echo 'no metrics')"
+check "metrics: a gate run's does, with its boot values" "0|30.0|metrics" \
+    "$(m_t2 gate)|$(tail -n 1 "$M/store/metrics.tsv" | cut -f15)|$([[ -e $M/out/metrics.tsv ]] && echo metrics || echo 'no metrics')"
+rm -f "$M/co/_build/plan.txt"
 check "metrics: OUT that cannot be written is the one error" 1 \
     "$(env PATH="$M/bin:$PATH" APEX_STORE="$M/store" bash "$M/co/tools/builder-vm/metrics.sh" /proc/x "$M/stamp" "$CI_SHA" "$M/lock.diff" >/dev/null 2>&1; echo $?)"
 

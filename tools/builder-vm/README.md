@@ -43,8 +43,6 @@ order:
 - the rebuild lane's packages (gnome-shell, from apex-gnome's recipe), into
   `rpms.lock.next` of the store below;
 - the image, from those RPMs and that lock;
-- G2 (apex-gnome's `tests/shots/run.sh`, always twice, as `just vm-g2`), which stops the
-  build when it fails;
 - G4 (`qualify.sh local`, below), when `qualify.sh g4-due` says it is due: the image's
   G4 key differs from the last G4 pass, or that pass is 7 days old. The key
   (`qualify.sh g4-key`) holds the NEVRAs of gdm, gnome-shell, mutter, gjs,
@@ -53,7 +51,46 @@ order:
   overlay (`image/system_files`: the install config, the schema override, the presets,
   the polkit rules, the bootloader-update drop-in) and of the kargs. When G4 is not due,
   the build says which image passed it and when. `just vm-image-only` only says whether
-  G4 is due.
+  G4 is due. G4 fails on any row of `results.md` that is not PASS;
+- G2 (apex-gnome's `tests/shots/run.sh`, always twice, as `just vm-g2`).
+
+G4 runs first because it fails far more often, and both gates always run, so one build
+shows both verdicts; it exits with the status of the first gate that failed. G4 writes
+its key to `_build/qualify/g4-pending.txt`; only the gates record below moves it to
+`_build/g4-passed.txt`, so a key is recorded only for an image whose G2 passed too.
+After a G4 failure, `qualify.sh local-diag` runs every G4 unit on its own, in
+`_build/qualify/diag`, so one build shows every failing row; it records nothing and
+never changes the verdict.
+
+Every G4 verdict, in every mode, adds a row to `_build/qualify/verdicts.tsv`: the commit,
+the image ID, the harness digest (`qualify.sh g4-harness`), the verdict, the UTC time,
+the mode (`gate`, `image-only`, `break-glass` or `t2`) and `APEX_COMPONENTS`. A
+break-glass image has the same tag, so its rows say so and never count for qualify-only.
+
+**Qualify-only (T2, advisory).** After a G4 failure whose fix is in the harness alone,
+the next build reruns G4 on the image already built, without the RPMs, the lane, the
+image or G2, and then `local-diag` when it fails. It writes no gates record and no G4
+key (it keeps `_build/qualify-only/`), so nothing it does promotes; `vm.yml` never shows
+it green, and `metrics.sh` keeps it out of S4's history. The live log starts with
+`== plan: qualify-only (advisory)`, or `== plan: gate (G4 first)` and why not. It runs
+only when every one of these holds, and the full gate run does otherwise (any check that
+cannot be made counts as failed):
+
+- `tools/builder-vm/t2-enabled` is committed (delete it to turn qualify-only off);
+- the build is the 45 image with its kernel pair, not `--image-only`, no
+  `APEX_SRC_<NAME>` is set, and `git status` shows a clean working tree (a local `just
+  vm-image` may sync uncommitted files, which the diff below cannot see);
+- the revision in the image's own `/usr/share/apex/manifest.json` is on `origin/main`,
+  and `git diff --no-renames` from it to `HEAD` touches only qualify.sh, its allowlist,
+  selftest.sh, contracts.sh, `.github/workflows/`, `tools/runner/`, `.md` files outside
+  `image/` and `crates/`, or the builder-VM scripts that build nothing (`ci-build.sh`,
+  `builder-vm.sh`, `desktop-*.sh`, `shell-dev*.sh`, `provision.sh`, `publish-image.sh`,
+  `install-cosign.sh`, `firmware.sh`, `lane-rehearsal.sh`, `rehearsal/`). `lib.sh` means
+  the full gate: `image.sh` sources it too;
+- the image's last `verdicts.tsv` row is a FAIL of a `gate` or `t2` run with pinned
+  components, and its harness digest differs from `HEAD`'s;
+- the image is the one in `_build/g2/latest/result.txt` or the last `gate` row's;
+- the image is less than 72 hours old.
 
 The signed RPMs of apex-system, apex-desktop and libfprint are cached in
 `_build/rpm-cache/COMPONENT/KEY`, KEY being the component's own content key (`rpms.sh
@@ -70,8 +107,8 @@ When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
 image ID`, or `not due: its key passed on DATE for image ID`) and `components pinned`, or
 `components dev-override` for a build with `APEX_SRC_<NAME>` set
-(`tools/components.sh help`). It is not written when `rpms.lock.next` changed while the
-gates ran. `just pkg-promote` refuses a lock it does not name, and a dev-override build.
+(`tools/components.sh help`). Neither record is written when `rpms.lock.next` changed
+while the gates ran. `just pkg-promote` refuses a lock it does not name, and a dev-override build.
 
 The Apex RPM key signs every RPM; nothing pushes or signs the image.
 

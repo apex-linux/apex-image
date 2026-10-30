@@ -158,10 +158,11 @@ jobs:
     env:
       APEX_LAYER_TESTS_NO_SKIP: "1"
     steps:
-      - name: git, python3, diffutils, gjs, glib2, gi-compile-repository for the layer's fixture typelibs, bubblewrap, and dbus-daemon for each case's session bus
+      - name: git, python3, diffutils, gjs, glib2, gi-compile-repository for the layer's fixture typelibs, bubblewrap, dbus-daemon for each case's session bus, and rpm-build, dnf5-plugins and patch for markers.sh's sources
         run: >-
           dnf5 -y --setopt=install_weak_deps=False --repo=fedora --repo=updates install
           git-core python3 diffutils gjs glib2 /usr/bin/gi-compile-repository bubblewrap dbus-daemon bash coreutils gawk grep sed
+          rpm-build dnf5-plugins patch
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -173,10 +174,18 @@ jobs:
           tools/components.sh fetch
           tools/components.sh env >"$RUNNER_TEMP/components.env"
 
+      - name: Every pin is on its component's main, or a cherry-pick -x of main on a pin/* branch
+        run: tools/components.sh provenance
+
       - name: The image installs and checks the hardware profile's firmware (apex-system)
         run: |
           . "$RUNNER_TEMP/components.env"
           .github/scripts/contracts.sh
+
+      - name: The journal lines G4 waits for, against the current Fedora sources (qualify-markers.txt)
+        run: |
+          . "$RUNNER_TEMP/components.env"
+          .github/scripts/markers.sh
 
       - uses: apex-linux/apex-ci/actions/fedora-rust@6e5d6c625ccb44ba31d1ca97a2a94a27205940a1 # main
 

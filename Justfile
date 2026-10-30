@@ -110,7 +110,7 @@ vm-ssh *args:
 vm-sync:
     tools/builder-vm/builder-vm.sh sync
 
-# Build the RPMs, libfprint, the rebuild lane and the image in the builder VM (nothing is pushed), then G2 twice, and G4 when qualify.sh g4-due says it is due.
+# Build the RPMs, libfprint, the rebuild lane and the image in the builder VM (nothing is pushed), then G4 when qualify.sh g4-due says it is due, and G2 twice.
 vm-image:
     tools/builder-vm/builder-vm.sh image
 

@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: components.sh fetch | env | promotable
+usage: components.sh fetch | env | promotable | provenance
 
 The component checkouts the image builds from, pinned by components.lock at the root of
 this checkout: one line per repository, `NAME GIT-URL SHA` (40 lowercase hex digits);
@@ -22,6 +22,10 @@ blank lines and lines starting with # are skipped.
               dev-override); refuses a state older than components.lock
   promotable  exit 0 when the last fetch used only pinned clones (or there is no
               components.lock), 1 otherwise
+  provenance  exit 0 when every pin of the last pinned fetch is on its component's main,
+              or on a pin/* branch whose commits past main are each a `git cherry-pick -x`
+              of a commit X on main, with a `(cherry picked from commit X)` trailer and
+              changing only paths that X changes; 1 otherwise
 
 APEX_SRC_<NAME> (NAME upper-cased, - as _; APEX_SRC_APEX_DESKTOP for apex-desktop)
 points at a sibling checkout to use instead of the pinned clone, relative to this
@@ -171,12 +175,49 @@ cmd_promotable() {
     fi
 }
 
+# Why commit C of REPO is no cherry-pick of a commit on MAIN that changes the same paths.
+not_a_pick() {
+    local repo=$1 c=$2 main=$3 x extra
+    (($(git_in "$repo" rev-list --no-walk --count --min-parents=2 "$c") == 0)) || { echo "is a merge"; return; }
+    x=$(git_in "$repo" log -1 --format=%B "$c" | sed -n 's/^(cherry picked from commit \([0-9a-f]\{40\}\))$/\1/p' | tail -n 1)
+    [[ -n $x ]] || { echo "has no (cherry picked from commit X) trailer"; return; }
+    git_in "$repo" merge-base --is-ancestor "$x" "$main" 2>/dev/null || { echo "names ${x:0:12}, which is not on main"; return; }
+    extra=$(comm -23 <(git_in "$repo" diff --name-only "$c^" "$c" | LC_ALL=C sort) \
+        <(git_in "$repo" diff --name-only "$x^" "$x" | LC_ALL=C sort) | paste -sd' ' -)
+    [[ -z $extra ]] || echo "changes paths that ${x:0:12} does not: $extra"
+}
+
+cmd_provenance() {
+    cmd_promotable || die "provenance checks the pinned clones: run components.sh fetch without APEX_SRC_*"
+    local name url sha repo main=refs/remotes/origin/main c why bad=0 picked
+    while read -r name url sha; do
+        repo=$DIR/$name
+        if git_in "$repo" merge-base --is-ancestor "$sha" "$main" 2>/dev/null; then
+            log "$name: ${sha:0:12} is on main"
+            continue
+        fi
+        if ! git_in "$repo" for-each-ref --contains "$sha" --format='%(refname)' refs/remotes/origin/pin | grep -q .; then
+            log "error: $name: ${sha:0:12} is neither on main nor on a pin/* branch"
+            bad=1
+            continue
+        fi
+        picked=1
+        for c in $(git_in "$repo" rev-list --reverse "$main..$sha"); do
+            why=$(not_a_pick "$repo" "$c" "$main")
+            [[ -z $why ]] || { log "error: $name: ${c:0:12}, on the way from main to the pin ${sha:0:12}, $why"; picked=0 bad=1; }
+        done
+        ((picked == 0)) || log "$name: ${sha:0:12} is on a pin/* branch, cherry-picked from main"
+    done < <(read_lock)
+    return "$bad"
+}
+
 main() {
     (($# == 1)) || { usage >&2; exit "$EXIT_USAGE"; }
     case $1 in
         fetch) cmd_fetch ;;
         env) cmd_env ;;
         promotable) cmd_promotable ;;
+        provenance) cmd_provenance ;;
         -h | --help | help) usage ;;
         *) usage >&2; exit "$EXIT_USAGE" ;;
     esac

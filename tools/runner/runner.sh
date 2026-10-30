@@ -15,13 +15,20 @@ apex-runner.service keeps one runner waiting. No sudo, and no root on the host.
   runner.sh image      build the runner image (a pinned actions/runner, SHA-256 checked)
   runner.sh check      a throwaway container: the builder VM's ci-build answers, and no
                        other port of this host's loopback is reachable
-  runner.sh install    install and start apex-runner.service
-  runner.sh once       one JIT runner for one job (what the service runs), once the
-                       builder VM's sshd answers; while the job runs, it holds logind's
-                       sleep, idle and lid-switch inhibitor locks that polkit grants
-  runner.sh status     the service, the waiting container, the group's runners and the
-                       inhibitor locks held
-  runner.sh uninstall  stop and remove the service (keeps the key, the token and the image)
+  runner.sh install [--autostart]
+                       install and start apex-runner.service; with --autostart also
+                       apex-builder.service, which starts the builder VM with your
+                       session and stops it cleanly, and the runner waits for it (a
+                       plain install removes apex-builder.service again)
+  runner.sh once       one JIT runner for one job (what the service runs), once the host
+                       is on AC power and the builder VM's sshd answers; while the job
+                       runs, it holds logind's sleep, idle, lid-switch and shutdown
+                       inhibitor locks that polkit grants (a power-off then fails, naming
+                       the job, unless forced)
+  runner.sh status     the service, the waiting container, the group's runners, the
+                       inhibitor locks held, and vm.yml's runs waiting for a runner
+  runner.sh uninstall  stop and remove the services (keeps the key, the token, the image
+                       and the builder VM)
 
 Files, in ~/.config/apex/runner/:
   token     the fine-grained token (organisation permission "Self-hosted runners: read
@@ -43,10 +50,11 @@ readonly API=https://api.github.com
 readonly API_VERSION=2022-11-28
 readonly GROUP=apex-kvm
 readonly LABEL=apex-kvm
-readonly UNIT=apex-runner.service
+readonly UNIT=apex-runner.service BUILDER_UNIT=apex-builder.service
 BUILDER_POLL=30 BUILDER_LOG_EVERY=600
+POWER_SUPPLY_DIR=/sys/class/power_supply
 # Taken one by one: polkit may grant idle and refuse sleep or the lid to a service.
-readonly INHIBIT_WHO=apex-runner INHIBIT_WHAT=(sleep idle handle-lid-switch)
+readonly INHIBIT_WHO=apex-runner INHIBIT_WHAT=(sleep idle handle-lid-switch shutdown)
 INHIBIT_WAIT=5
 
 ORG=${APEX_RUNNER_ORG:-apex-linux}
@@ -255,6 +263,26 @@ wait_for_builder() {
     done
 }
 
+# A supply that reports online=1 (mains, USB-C); a host with none to read is a desktop.
+on_ac_power() {
+    local online found=
+    for online in "$POWER_SUPPLY_DIR"/*/online; do
+        [[ -e $online ]] || continue
+        found=1
+        [[ $(cat -- "$online" 2>/dev/null) != 1 ]] || return 0
+    done
+    [[ -z $found ]]
+}
+
+wait_for_ac() {
+    local waited=0
+    until on_ac_power; do
+        ((waited % BUILDER_LOG_EVERY)) || log "on battery: no job is taken until the host is on AC power"
+        sleep "$BUILDER_POLL"
+        waited=$((waited + BUILDER_POLL))
+    done
+}
+
 inhibitors_held() {
     systemd-inhibit --list --no-pager 2>/dev/null |
         awk -v who="$INHIBIT_WHO" '$1 == who { print $6 }' | sort -u | paste -sd' ' -
@@ -314,6 +342,7 @@ attach_job() { podman start --attach "$1" | watch_job; }
 cmd_once() {
     require_tools podman curl jq
     require_ready
+    wait_for_ac
     wait_for_builder
     local id name response runner_id env_file args
     id=$(group_id)
@@ -335,18 +364,63 @@ cmd_once() {
     attach_job "$name"
 }
 
+# builder-vm.sh start daemonizes QEMU and returns once ssh is up: Type=forking, its pidfile.
+builder_unit() {
+    local env="APEX_VM_DIR=$VM_DIR APEX_VM_SSH_PORT=$SSH_PORT${APEX_VM_MEM:+ APEX_VM_MEM=$APEX_VM_MEM}${APEX_VM_CPUS:+ APEX_VM_CPUS=$APEX_VM_CPUS}"
+    cat <<EOF
+[Unit]
+Description=Apex builder VM, for apex-runner.service (tools/runner/README.md, Autostart)
+
+[Service]
+Type=forking
+PIDFile=$VM_DIR/qemu.pid
+Environment=$env
+ExecStart=$INSTALL_DIR/builder-vm/builder-vm.sh start
+ExecStop=$INSTALL_DIR/builder-vm/builder-vm.sh stop
+TimeoutStartSec=420
+TimeoutStopSec=180
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+install_builder_unit() {
+    install -D -m 0755 "$HERE/../builder-vm/builder-vm.sh" "$INSTALL_DIR/builder-vm/builder-vm.sh"
+    install -m 0644 "$HERE/../builder-vm/firmware.sh" "$INSTALL_DIR/builder-vm/firmware.sh"
+    builder_unit >"$UNIT_DIR/$BUILDER_UNIT"
+    systemctl --user daemon-reload
+    systemctl --user enable "$BUILDER_UNIT"
+    log "enabled $BUILDER_UNIT: the builder VM starts with your session (systemctl --user start $BUILDER_UNIT now)"
+}
+
+remove_builder_unit() {
+    [[ -e $UNIT_DIR/$BUILDER_UNIT ]] || return 0
+    systemctl --user disable "$BUILDER_UNIT" 2>/dev/null || true
+    rm -f -- "$UNIT_DIR/$BUILDER_UNIT"
+    rm -rf -- "$INSTALL_DIR/builder-vm"
+    log "removed $BUILDER_UNIT; a running builder VM keeps running (just vm-stop)"
+}
+
 cmd_install() {
+    local autostart=$1 needs=
     require_tools podman systemctl loginctl
     require_ready
     token >/dev/null
     install -D -m 0755 "$HERE/runner.sh" "$INSTALL_DIR/runner.sh"
     install -m 0644 "$HERE/Containerfile" "$INSTALL_DIR/Containerfile"
     mkdir -p "$UNIT_DIR"
+    if ((autostart)); then
+        install_builder_unit
+        needs=" $BUILDER_UNIT"
+    else
+        remove_builder_unit
+    fi
     cat >"$UNIT_DIR/$UNIT" <<EOF
 [Unit]
 Description=Apex self-hosted runner: one just-in-time runner per job (tools/runner/README.md)
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target$needs
+After=network-online.target$needs
 
 [Service]
 Type=simple
@@ -373,6 +447,8 @@ cmd_status() {
     systemctl --user --no-pager status "$UNIT" || true
     podman ps --filter "name=^$LABEL-" --format '{{.Names}} {{.Status}}' || true
     inhibitor_status
+    if on_ac_power; then echo "power: on AC"; else echo "power: on battery, so no job is taken"; fi
+    waiting_runs
     id=$(group_id) && [[ -n $id ]] &&
         api GET "/orgs/$ORG/actions/runner-groups/$id/runners?per_page=100" |
         jq -r '.runners[] | "\(.name) \(.status) busy=\(.busy)"'
@@ -388,7 +464,23 @@ inhibitor_status() {
     fi
 }
 
+# Queued: a job waits for a runner; pending: the run waits behind the vm concurrency group.
+waiting_runs() {
+    local state runs
+    for state in queued pending; do
+        runs=$(api GET "/repos/$ORG/$REPO/actions/workflows/vm.yml/runs?status=$state&per_page=20" 2>/dev/null) || {
+            echo "vm.yml runs $state: unknown (the token cannot read $REPO's Actions)"
+            continue
+        }
+        jq -r --arg state "$state" --argjson now "$(date +%s)" '
+            if .total_count == 0 then "vm.yml runs \($state): none" else
+            .workflow_runs[] | "vm.yml run \(.id) \($state) (\(.event), \(.head_sha[0:12])) since \(.created_at): " +
+                "\((($now - (.created_at | fromdateiso8601)) / 60) | floor) min" end' <<<"$runs"
+    done
+}
+
 cmd_uninstall() {
+    remove_builder_unit
     systemctl --user disable --now "$UNIT" 2>/dev/null || true
     rm -f -- "$UNIT_DIR/$UNIT"
     systemctl --user daemon-reload
@@ -398,15 +490,19 @@ cmd_uninstall() {
 
 main() {
     [[ $(id -u) -ne 0 ]] || die "run as your normal user: the runner is rootless"
-    local cmd=${1:-help}
+    local cmd=${1:-help} autostart=0
     shift || true
-    (($# == 0)) || die "runner.sh $cmd takes no arguments"
+    if [[ $cmd == install && ${1:-} == --autostart ]]; then
+        autostart=1
+        shift
+    fi
+    (($# == 0)) || die "runner.sh $cmd takes no arguments but install's --autostart"
     case $cmd in
         group) cmd_group ;;
         key) cmd_key ;;
         image) cmd_image ;;
         check) cmd_check ;;
-        install) cmd_install ;;
+        install) cmd_install "$autostart" ;;
         once) cmd_once ;;
         status) cmd_status ;;
         uninstall) cmd_uninstall ;;
