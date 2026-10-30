@@ -17,6 +17,7 @@ export QUALIFY_BOOT_TIMEOUT=${QUALIFY_BOOT_TIMEOUT:-420} QUALIFY_LOGIN_TIMEOUT=$
 : "${REPRO_EXTRAS:=auto}"
 : "${REPRO_KERNEL:=7.2.11-300.fc45}" # "base" keeps the base image's kernel
 : "${REPRO_EDK2:=20260812-9.fc45}"   # the guest's DMI line in run 17: BIOS edk2-20260812-9.fc45
+: "${REPRO_EDK2_ALT:=20260508-14.fc45 20260812-10.fc45}" # -fw1, -fw2: the release before, the build after
 : "${REPRO_QEMU:=fedora}"            # fedora: Fedora 45's qemu-kvm-core in a container; native: the host's
 : "${REPRO_GUEST_IMAGE:=}"           # a bootc image to test instead of the derived one
 : "${REPRO_WAKE_WINDOW:=90}" # G4 waits 900 s; a healthy resume answers in seconds
@@ -308,6 +309,8 @@ elif fw["s3"]:
     v = "STUCK-FIRMWARE"
 elif fw["ran"]:
     v = "STUCK-FIRMWARE-EARLY"
+elif hb:
+    v = "USERSPACE-STUCK"
 else:
     v = "NO-GUEST-OUTPUT"
 def yn(b):
@@ -505,7 +508,7 @@ ARG EDK2_RPM
 # bootc's /mnt points at a var/mnt it lacks: the runner's /mnt work directory is bound here.
 RUN set -eux; \
     if [ -L /mnt ]; then rm /mnt; mkdir /mnt; fi; \
-    dnf -y install qemu-kvm-core qemu-device-display-virtio-vga "$EDK2_RPM"; \
+    dnf -y install qemu-kvm-core qemu-device-display-virtio-vga cpio "$EDK2_RPM"; \
     dnf clean all; \
     rpm -q qemu-kvm-core qemu-system-x86-core qemu-device-display-virtio-vga edk2-ovmf
 EOF
@@ -561,6 +564,18 @@ EOF
          qemu-system-x86_64 --version | head -n 1 >> /out/versions.txt'
     as_root chown -R "$(id -u):$(id -g)" "$QUALIFY_OUT/fw"
     export OVMF_CODE=$QUALIFY_OUT/fw/OVMF_CODE.fd OVMF_VARS=$QUALIFY_OUT/fw/OVMF_VARS.fd OVMF_FORMAT=raw
+    local nvr n=0
+    for nvr in $REPRO_EDK2_ALT; do
+        n=$((n + 1))
+        mkdir -p "$QUALIFY_OUT/fw$n"
+        # shellcheck disable=SC2016 # the container's sh expands $1 and $2
+        as_root podman run --rm -v "$QUALIFY_OUT/fw$n:/out" "$QEMU_IMAGE" sh -c \
+            'cd /tmp && curl -fsSLo ovmf.rpm "$1" && rpm2cpio ovmf.rpm | cpio -idm --quiet &&
+             cp -L usr/share/edk2/ovmf/OVMF_CODE.fd usr/share/edk2/ovmf/OVMF_VARS.fd /out/ && echo "edk2-ovmf-$2" >/out/versions.txt' \
+            _ "$KOJI/edk2/${nvr%-*}/${nvr##*-}/noarch/edk2-ovmf-$nvr.noarch.rpm" "$nvr" ||
+            warn "edk2-ovmf-$nvr not extracted: -fw$n trials are skipped"
+    done
+    as_root chown -R "$(id -u):$(id -g)" "$QUALIFY_OUT"/fw*
 }
 
 # Fedora's QEMU in the host's PID and network namespaces as the runner's uid, so the pidfile,
@@ -624,12 +639,16 @@ kill_vm() {
     VM_NAME=
 }
 
-PUBLISHED=0 SETUP_S=0 BOOTN=0 VM_VGA='' VM_DIRTY=0 S3_IN_BOOT=0 BOOT_ID='' KALLSYMS='' OVMF_LOG=/dev/null TRIAL_N=0 TDIR='' TRIAL_ID=''
+PUBLISHED=0 SETUP_S=0 BOOTN=0 VM_VGA='' VM_FW='' VM_DIRTY=0 S3_IN_BOOT=0 BOOT_ID='' KALLSYMS='' OVMF_LOG=/dev/null TRIAL_N=0 TDIR='' TRIAL_ID=''
 declare -A META=() VERDICT=()
 
 boot_vm() {
-    local vga=${1:-virtio} log
+    local vga=${1:-virtio} fw=${2:-0} log dir=$QUALIFY_OUT/fw
     kill_vm
+    ((fw == 0)) || dir=$QUALIFY_OUT/fw$fw
+    export OVMF_CODE=$dir/OVMF_CODE.fd OVMF_VARS=$dir/OVMF_VARS.fd
+    [[ $VM_FW == "$fw" ]] || rm -f -- "$QUALIFY_OUT/repro.vars"
+    VM_FW=$fw
     BOOTN=$((BOOTN + 1))
     log=repro-boot$BOOTN
     rm -f "$EVENTS_SOCK"
@@ -641,7 +660,7 @@ boot_vm() {
         OVMF_LOG=$LOGS/$log.ovmf.log
         extra+=(-debugcon "file:$OVMF_LOG" -global isa-debugcon.iobase=0x402)
     fi
-    mark "boot $BOOTN ($vga VGA): start_vm repro $log ${extra[*]}"
+    mark "boot $BOOTN ($vga VGA, $(cat "$dir/versions.txt" 2>/dev/null | head -n 1)): start_vm repro $log ${extra[*]}"
     if [[ $vga == std ]]; then start_vm_stdvga repro "$log" "${extra[@]}"; else start_vm repro "$log" "${extra[@]}"; fi
     VM_VGA=$vga
     (wait_ssh) || { mark "boot $BOOTN: no SSH"; return 1; }
@@ -817,38 +836,45 @@ finish_trial() {
 }
 
 # MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc or s2idle (send-key);
-# OPT nothing (gsd's power-button-action), stdvga (VGA, not virtio-vga), bare, rN (a repeat).
+# OPT nothing (gsd's power-button-action), stdvga (VGA, not virtio-vga), bare, rN (a repeat),
+# fwN (the Nth of REPRO_EDK2_ALT).
 run_trial() {
-    local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need
+    local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need fw=0
     IFS=- read -r m wake opts <<<"$name"
     case $m in G) mode=gnome ;; H) mode=headless ;; *) warn "unknown trial $name"; return 0 ;; esac
     [[ $wake == sw || $wake == rtc || $wake == s2idle ]] || { warn "unknown wake in trial $name"; return 0; }
     [[ -$opts- != *-stdvga-* ]] || vga=std
     [[ -$opts- != *-bare-* ]] || inst=bare
     [[ -$opts- != *-nothing-* ]] || pba=nothing
+    [[ ! -$opts- =~ -fw([0-9])- ]] || fw=${BASH_REMATCH[1]}
     TRIAL_N=$((TRIAL_N + 1))
     TRIAL_ID=$(printf 't%02d-%s' "$TRIAL_N" "$name")
     TDIR=$TRIALS_DIR/$TRIAL_ID
     mkdir -p "$TDIR"
-    META=([trial]=$TRIAL_ID [name]=$name [mode]=$mode [wake]=$wake [inst]=$inst [pba]=$pba [vga]=$vga
+    META=([trial]=$TRIAL_ID [name]=$name [mode]=$mode [wake]=$wake [inst]=$inst [pba]=$pba [vga]=$vga [fw]=$fw
         [qmp_log]=$QMP_LOG [t_start]=$(now))
     # A failing trial: lock and suspend 20 s, the window, diagnostics 25 s, recovery up to 105 s,
     # the kill 15 s; a boot first (with the GNOME autologin) about 150 s more.
     need=$((REPRO_WAKE_WINDOW + 200))
-    if ! vm_alive || [[ $VM_VGA != "$vga" || $VM_DIRTY == 1 ]]; then need=$((need + 150)); fi
+    if ! vm_alive || [[ $VM_VGA != "$vga" || $VM_FW != "$fw" || $VM_DIRTY == 1 ]]; then need=$((need + 150)); fi
     if (($(left) < need)); then
         mark "skipped: $(left)s left, a failing trial may need ${need}s"
         finish_trial SKIP-BUDGET
         return 0
     fi
-    if ! vm_alive || [[ $VM_VGA != "$vga" || $VM_DIRTY == 1 ]]; then
-        boot_vm "$vga" || { finish_trial BOOT-FAILED; VM_DIRTY=1; return 0; }
+    if ! vm_alive || [[ $VM_VGA != "$vga" || $VM_FW != "$fw" || $VM_DIRTY == 1 ]]; then
+        if ((fw)) && [[ ! -s $QUALIFY_OUT/fw$fw/OVMF_CODE.fd ]]; then
+            finish_trial SKIP-NO-FW
+            return 0
+        fi
+        boot_vm "$vga" "$fw" || { finish_trial BOOT-FAILED; VM_DIRTY=1; return 0; }
         VM_DIRTY=0
     fi
     if ! ensure_mode "$mode"; then
         mark "mode $mode not reached"
         vm_ssh 'loginctl list-sessions; systemctl --no-pager status gdm.service; dmesg | grep -iE "drm|bochs|virtio_gpu"
-            journalctl -b --no-pager -o short-monotonic -u gdm.service _COMM=gnome-shell _COMM=gdm-session-wor _COMM=gnome-session-b' \
+            journalctl -b --no-pager -o short-monotonic -u gdm.service _COMM=gnome-shell _COMM=gdm-session-wor _COMM=gnome-session-b
+            echo "== journalctl -b -p warning"; journalctl -b --no-pager -o short-monotonic -p warning' \
             >"$TDIR/mode-failed.txt" 2>&1 || true
         finish_trial MODE-FAILED
         VM_DIRTY=1
@@ -1002,7 +1028,7 @@ repro_cleanup() {
 }
 
 env_report() {
-    local cpu nested
+    local cpu nested d
     cpu=$(lscpu | sed -n 's/^Model name: *//p' | head -n 1 || true)
     # One of the two never exists: under pipefail, cat's 1 would end the run in silence.
     nested=$(cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null | head -n 1 || true)
@@ -1011,6 +1037,7 @@ env_report() {
             "$(free -g | awk '/^Mem:/ {print $2 "G"}')"
         printf 'QEMU (%s): %s\n' "$REPRO_QEMU" "$(qemu-system-x86_64 --version 2>/dev/null | head -n 1)"
         printf 'firmware: %s\n' "$(tr '\n' ' ' <"$QUALIFY_OUT/fw/versions.txt" 2>/dev/null)"
+        for d in "$QUALIFY_OUT"/fw[0-9]; do [[ ! -s $d/versions.txt ]] || printf -- '-%s: %s\n' "${d##*/}" "$(cat "$d/versions.txt")"; done
         printf 'base %s; guest %s; kernel %s\n' "$REPRO_BASE" "${REPRO_GUEST_IMAGE:-$GUEST_IMAGE_BUILT}" "$REPRO_KERNEL"
     } >"$LOGS/env.txt"
 }
@@ -1070,7 +1097,7 @@ publish() {
         "Verdicts: PASS; PASS-SLOW (H4); RESUSPENDED (A, H1a); POWERED-OFF (C, H1, R0: see KEY_POWER and 'Power key pressed'); COLD-BOOT (D);" \
         "STUCK-FIRMWARE[-EARLY] (H1b in OVMF); STUCK-EARLY-KERNEL (H1b, waking vector to 'Low-level resume complete');" \
         "STUCK-DEVICE-RESUME (H2, E: 'open' names the callback); STUCK-POST-SUSPEND (tasks thawed, no 'PM: suspend exit': sysrq-w.txt);" \
-        "RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED; SHELL-SILENT-AFTER-RESUME (the shell answers no D-Bus, so 'unlocked' is unknown);" \
+        "RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED; USERSPACE-STUCK (heartbeats, no resume line); SKIP-NO-FW; SHELL-SILENT-AFTER-RESUME (the shell answers no D-Bus, so 'unlocked' is unknown);" \
         "SESSION-BROKEN (H-virtio-gpu-no-restore, H5); UNLOCKED-AFTER-RESUME; MODE-FAILED (mode-failed.txt); UNREACHABLE-BARE (no console instrumentation); NO-SUSPEND." \
         "Logs: artifact g4-suspend-repro-logs (trials/<id>/: meta.tsv, verdict.json, serial-{pre,post,recovery}.txt, ovmf-post.txt, regs-*.txt, journal.txt; qmp-events.jsonl; *.png)."
 }
