@@ -187,6 +187,8 @@ LOCK_ROW=
 LOCK_ROW_SINCE=
 DIAG=
 DIAG_LOGIN_SINCE=
+DIAG_SHELL_PID=
+DIAG_LOST=
 DIAG_RC=0
 QUALIFY_ERRLOG=
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-suspend
@@ -2049,8 +2051,11 @@ diag_refuse_g4_out() {
 }
 
 diag_save_state() {
+    DIAG_SHELL_PID=
+    [[ -z $SESSION_UID ]] || DIAG_SHELL_PID=$(shell_pid "$SESSION_UID" 2>/dev/null) || DIAG_SHELL_PID=
     printf '%s=%s\n' SESSION_ID "$SESSION_ID" SESSION_UID "$SESSION_UID" SESSION_TYPE "$SESSION_TYPE" \
-        DIAG_LOGIN_SINCE "$DIAG_LOGIN_SINCE" >"$QUALIFY_OUT/diag.state"
+        DIAG_LOGIN_SINCE "$DIAG_LOGIN_SINCE" DIAG_SHELL_PID "$DIAG_SHELL_PID" DIAG_LOST "$DIAG_LOST" \
+        >"$QUALIFY_OUT/diag.state"
 }
 
 # A unit runs in a subshell: what the next one needs comes back through this file, and
@@ -2060,7 +2065,9 @@ diag_load_state() {
     [[ -f $QUALIFY_OUT/diag.state ]] || return 0
     while IFS='=' read -r key value; do
         case $key in
-            SESSION_ID | SESSION_UID | SESSION_TYPE | DIAG_LOGIN_SINCE) printf -v "$key" '%s' "$value" ;;
+            SESSION_ID | SESSION_UID | SESSION_TYPE | DIAG_LOGIN_SINCE | DIAG_SHELL_PID | DIAG_LOST)
+                printf -v "$key" '%s' "$value"
+                ;;
         esac
     done <"$QUALIFY_OUT/diag.state"
 }
@@ -2069,10 +2076,34 @@ diag_need_login() {
     [[ -n $DIAG_LOGIN_SINCE ]] || fail "$1" "local-diag's state has no login time: an earlier unit lost the session"
 }
 
+# A unit that cannot test what it is for writes BLOCKED, not FAIL.
+diag_block() {
+    result "$1" BLOCKED "$2"
+    exit 3
+}
+
+# The Apex lock is under test only if this login's layer loaded: no safe mode, and the
+# lock feature enabled when the pin lists it.
+diag_layer_active() {
+    local test=$1 features deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT))
+    diag_need_login "$test"
+    ! user_journal_has "$DIAG_LOGIN_SINCE" "Apex: safe mode" ||
+        diag_block "$test" "this login runs in safe mode: no Apex layer to test"
+    features=$(pinned_features) ||
+        diag_block "$test" "no feature list in \$APEX_GNOME_SRC/$APEX_LAYER_JS (tools/components.sh env sets APEX_GNOME_SRC)"
+    grep -qx lock <<<"$features" || return 0
+    until user_journal_has "$DIAG_LOGIN_SINCE" "$APEX_LOCK_FEATURE"; do
+        ((SECONDS < deadline)) ||
+            diag_block "$test" "the pinned $(pinned_gnome) lists 'lock', but this login never logged '$APEX_LOCK_FEATURE'"
+        sleep "$QUALIFY_POLL"
+    done
+}
+
 diag_matrix_row() {
     local row=$1 test=local-lock-$1 pid base
     diag_need_login "$test"
     wait_session "$test" user "$TEST_USER"
+    diag_layer_active "$test"
     pid=$(shell_pid "$SESSION_UID") || fail "$test" "no gnome-shell runs as $TEST_USER"
     base=$(password_conversations)
     case $row in
@@ -2103,19 +2134,44 @@ diag_unit() {
     esac
 }
 
-# Between units: the guest answers, the test user has a session, unlocked, and no pkexec
-# dialog a failed unit left open takes the next unit's keys.
+conversations_settled() {
+    local before
+    before=$(password_conversations)
+    sleep "$QUALIFY_POLL"
+    [[ $(password_conversations) == "$before" ]]
+}
+
+# Keeps the last unit's session and gnome-shell, unlocked and without a pkexec dialog; if
+# either is gone, DIAG_LOST names it and a fresh login through the greeter replaces them.
 diag_reset() {
-    local test=local-diag-reset found
+    local test=local-diag-reset found='' id='' uid='' type='' pid=''
+    DIAG_LOST=
     vm_ssh true || fail "$test" "the guest does not answer ssh"
     if found=$(active_session user "$TEST_USER"); then
-        read -r SESSION_ID SESSION_UID SESSION_TYPE <<<"$found"
-        user_run "$SESSION_UID" systemctl --user stop "$PKEXEC_UNIT.service" >/dev/null 2>&1 || true
-        vm_ssh "loginctl unlock-session $SESSION_ID" || fail "$test" "loginctl unlock-session $SESSION_ID failed"
+        read -r id uid type <<<"$found"
+        pid=$(shell_pid "$uid") || pid=
+        if [[ $id != "$SESSION_ID" ]]; then
+            DIAG_LOST="session ${SESSION_ID:-none} was gone, session $id in its place"
+        elif [[ $pid != "$DIAG_SHELL_PID" ]]; then
+            DIAG_LOST="gnome-shell ${DIAG_SHELL_PID:-none} of session $id was gone, ${pid:-none} in its place"
+        fi
     else
+        DIAG_LOST="session ${SESSION_ID:-none} of $TEST_USER was gone"
+    fi
+    if [[ -n $DIAG_LOST ]]; then
+        [[ -z $found ]] || log_out "$test" "$uid"
         DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
         greeter_login "$test"
+        diag_layer_active "$test"
+    else
+        SESSION_ID=$id SESSION_UID=$uid SESSION_TYPE=$type
+        user_run "$SESSION_UID" systemctl --user stop "$PKEXEC_UNIT.service" >/dev/null 2>&1 || true
+        vm_ssh "loginctl unlock-session $SESSION_ID" || fail "$test" "loginctl unlock-session $SESSION_ID failed"
     fi
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "session $SESSION_ID still locked ${QUALIFY_LOCK_TIMEOUT}s after loginctl unlock-session" \
+        lockedhint_and_screensaver_agree "$SESSION_ID" "$SESSION_UID" no
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after pkexec stopped" polkit_quiet
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the password conversations did not settle" conversations_settled
 }
 
 # A unit's own subshell: its fail() or a bare errexit ends the unit, not local-diag. Never
@@ -2135,10 +2191,14 @@ diag_run() {
 
 # NAME RC FROM: the unit's verdict from the rows it wrote after line FROM of results.md.
 diag_verdict() {
-    local unit=$1 rc=$2 from=$3 rows failed
+    local unit=$1 rc=$2 from=$3 rows failed blocked
     rows=$(tail -n "+$((from + 1))" "$QUALIFY_OUT/results.md")
     failed=$(awk -F' [|] ' '$2 == "FAIL" { print $3; exit }' <<<"$rows")
-    if ((rc == 0)) && [[ -z $failed ]]; then
+    blocked=$(awk -F' [|] ' '$2 == "BLOCKED" { print $3; exit }' <<<"$rows")
+    if [[ -z $failed && -n $blocked ]]; then
+        DIAG_STATUS[$unit]=BLOCKED
+        DIAG_DETAIL[$unit]=$blocked
+    elif ((rc == 0)) && [[ -z $failed ]]; then
         DIAG_STATUS[$unit]=PASS
         DIAG_DETAIL[$unit]=$(awk -F' [|] ' '{ sub(/^[|] /, "", $1); printf "%s%s %s", sep, $1, $2; sep = ", " }' <<<"$rows")
     else
@@ -2163,7 +2223,7 @@ diag_table() {
 
 cmd_local_diag() {
     (($# >= 1)) || die "usage: qualify.sh local-diag [UNIT...] localhost/NAME:TAG"
-    local image=${*: -1} digest unit wanted from first=1 failed=0
+    local image=${*: -1} digest unit wanted from previous='' failed=0
     local -a asked=("${@:1:$#-1}")
     [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
         die "expected a local image reference localhost/NAME[:TAG], got '$image'"
@@ -2203,13 +2263,21 @@ cmd_local_diag() {
     assert_green local-login-boot "$digest"
     DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
     greeter_login local
+    diag_save_state
 
     for unit in "${DIAG_RUN[@]}"; do
-        if ((first)); then
-            first=0
-        else
+        if [[ -n $previous ]]; then
             from=$(wc -l <"$QUALIFY_OUT/results.md")
             diag_run diag_reset
+            if [[ -n $DIAG_LOST ]]; then
+                if [[ ${DIAG_STATUS[$previous]} == PASS ]]; then
+                    DIAG_STATUS[$previous]=FAIL
+                    DIAG_DETAIL[$previous]="passed, but before the next unit $DIAG_LOST"
+                else
+                    DIAG_DETAIL[$previous]+="; before the next unit $DIAG_LOST"
+                fi
+                DIAG_LOST=
+            fi
             if ((DIAG_RC != 0)); then
                 diag_verdict "$unit" "$DIAG_RC" "$from"
                 DIAG_STATUS[$unit]=BLOCKED
@@ -2221,6 +2289,7 @@ cmd_local_diag() {
         from=$(wc -l <"$QUALIFY_OUT/results.md")
         diag_run diag_unit "$unit"
         diag_verdict "$unit" "$DIAG_RC" "$from"
+        previous=$unit
         diag_table
         log "local-diag: $unit ${DIAG_STATUS[$unit]}"
     done
@@ -2353,6 +2422,7 @@ main() {
     if [[ -d $QUALIFY_OUT/logs ]]; then mv "$QUALIFY_OUT/logs" "$QUALIFY_OUT/logs.previous"; fi
     mkdir -p "$QUALIFY_OUT/logs" "$QUALIFY_OUT/fixtures"
     : >"$QUALIFY_OUT/results.md"
+    rm -f "$QUALIFY_OUT/diag.md" "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag-errexit.txt"
     trap cleanup EXIT
     trap_errexit
     "cmd_$cmd" "$@"
