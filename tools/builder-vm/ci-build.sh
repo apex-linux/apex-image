@@ -23,9 +23,13 @@ it), build-image.sh (the RPMs, libfprint, the rebuild lane, the image, G2 twice,
 due, _build/gates-passed.txt), and lane.sh promote when the gates passed. The log goes to
 stderr; stdout is a tar of the results: ci-build.txt, gates-passed.txt, g2-result.txt,
 g4-results.md and g4-passed.txt when this run wrote them, lock.diff (rpms.lock to
-rpms.lock.next before the promotion), and qualify-logs/: the screendumps, journals and
-serial logs this run's G4 wrote, each at most 20 MiB and 200 MiB in all (SKIPPED lists
-the rest). metrics/ holds metrics.sh's metrics.tsv, history.tsv and warnings.tsv (S4's
+rpms.lock.next before the promotion), qualify-logs/: the screendumps, journals and
+serial logs this run's G4 wrote, g2-logs/: each G2 run's assert.txt and its failing
+cases' logs, and diag-logs/: what qualify.sh local-diag wrote, each file at most 20 MiB
+and 200 MiB in all three (each directory's SKIPPED lists the rest). stages.tsv has the
+UTC second each stage began: ci-build's own and every "== " line of build-image.sh's
+log, then "end"; build-image.sh's "== plan: " line also goes to ci-build.txt as "plan".
+metrics/ holds metrics.sh's metrics.tsv, history.tsv and warnings.tsv (S4's
 budget, warning-only). With daily (vm.yml's scheduled run), metrics.sh also takes the
 image's size, and lane-absorb-report.sh runs after the build, whatever its result:
 absorb/ holds its report.md, rows.tsv, logs/ and warnings.tsv, one "family, SRPM,
@@ -66,6 +70,8 @@ readonly EXIT_REFUSED=2
 readonly EXIT_BUSY=75
 readonly LOG_MAX_FILE_KIB=20480
 readonly LOG_MAX_TOTAL_KIB=204800
+
+LOGS_KIB=0
 
 log() { printf 'ci-build: %s\n' "$*" >&2; }
 refuse() { log "refused: $*"; exit "$EXIT_REFUSED"; }
@@ -159,20 +165,45 @@ copy_if_newer() {
     if [[ -s $source && $source -nt $stamp ]]; then cp -- "$source" "$destination"; fi
 }
 
-# The evidence behind G4's rows, for vm.yml's artifact; this run's files only.
+# The evidence behind G4's rows, for vm.yml's artifact; this run's files only. Every
+# copy into one artifact shares LOGS_KIB, and so the 200 MiB.
 copy_qualify_logs() {
-    local source=$1 destination=$2 stamp=$3 total=0 size path
+    local source=$1 destination=$2 stamp=$3 size path
     [[ -d $source ]] || return 0
     mkdir -p -- "$destination"
     while IFS=' ' read -r size path; do
         size=$(((size + 1023) / 1024))
-        if ((size > LOG_MAX_FILE_KIB || total + size > LOG_MAX_TOTAL_KIB)); then
+        if ((size > LOG_MAX_FILE_KIB || LOGS_KIB + size > LOG_MAX_TOTAL_KIB)); then
             printf '%s %s KiB\n' "$path" "$size" >>"$destination/SKIPPED"
             continue
         fi
-        total=$((total + size))
+        LOGS_KIB=$((LOGS_KIB + size))
+        mkdir -p -- "$destination/$(dirname -- "$path")"
         cp -- "$source/$path" "$destination/$path"
-    done < <(find "$source" -maxdepth 1 -type f -newer "$stamp" -printf '%s %f\n' | sort -k2)
+    done < <(find "$source" -maxdepth "${4:-1}" -type f -newer "$stamp" -printf '%s %P\n' | sort -k2 |
+        { if (($# > 4)); then grep -E "^[0-9]+ (${5})$" || true; else cat; fi; })
+}
+
+# Each G2 run's assert.txt and the logs of the cases it failed.
+copy_g2_logs() {
+    local runs=$1 destination=$2 stamp=$3 cases
+    [[ -d $runs ]] || return 0
+    cases=$({ cat -- "$runs"/run-*/assert.txt 2>/dev/null || true; } | awk '$1 == "FAIL" { sub(/:$/, "", $2); print $2 }' |
+        { grep -xE '[A-Za-z0-9_-]+' || true; } | sort -u | paste -sd'|' -)
+    copy_qualify_logs "$runs" "$destination" "$stamp" 2 "run-[0-9]+/(assert\.txt${cases:+|(${cases})\.log})"
+}
+
+clock() { printf '%(%s)T\t%s\n' -1 "$2" >>"$1"; }
+
+# build-image.sh's log passes through unchanged; each "== " line also starts a stage.
+stage_clock() {
+    local out=$1 line
+    while IFS= read -r line; do
+        printf '%s\n' "$line"
+        [[ $line == '== '* ]] || continue
+        clock "$out/stages.tsv" "${line#== }"
+        [[ $line != '== plan: '* ]] || printf 'plan %s\n' "${line#== plan: }" >>"$out/ci-build.txt"
+    done
 }
 
 # The early warning of S1b's absorption; it never gates.
@@ -184,7 +215,7 @@ stage_absorb() {
     mkdir -p -- "$out/absorb"
     copy_if_newer _build/absorb/report.md "$out/absorb/report.md" "$stamp"
     copy_if_newer _build/absorb/rows.tsv "$out/absorb/rows.tsv" "$stamp"
-    copy_qualify_logs _build/absorb/logs "$out/absorb/logs" "$stamp"
+    LOGS_KIB=0 copy_qualify_logs _build/absorb/logs "$out/absorb/logs" "$stamp"
     [[ -s $out/absorb/rows.tsv ]] || return 0
     awk -F'\t' '$2 == "testing" && $4 != "applies" && $4 != "same" { print $1 "\t" $3 "\t" $4 "\t" $5 }' \
         "$out/absorb/rows.tsv" >"$out/absorb/warnings.tsv"
@@ -263,20 +294,25 @@ build() {
     local sha=$1 out=$2 daily=$3 rc=0 promote
     local stamp=$out/.started
     : >"$stamp"
+    clock "$out/stages.tsv" "fetch and check out"
     fetch_main
     check_out "$sha"
     cd -- "$CHECKOUT"
     check_installed >>"$out/ci-build.txt"
+    clock "$out/stages.tsv" "components (ci-build)"
     stage_components 9>&- </dev/null >&2
-    log "== build-image.sh: RPMs, libfprint, lane, image, G2 twice, G4 when due, gates record"
-    bash tools/builder-vm/build-image.sh 9>&- </dev/null >&2 || rc=$?
+    log "== build-image.sh: RPMs, libfprint, lane, image, G4 when due, G2 twice, gates record"
+    bash tools/builder-vm/build-image.sh 9>&- </dev/null 2>&1 | stage_clock "$out" >&2 || rc=$?
     printf 'build-image %s\n' "$rc" >>"$out/ci-build.txt"
+    clock "$out/stages.tsv" "results, metrics and promotion (ci-build)"
     lock_diff >"$out/lock.diff" 2>&1 || true
     copy_if_newer _build/gates-passed.txt "$out/gates-passed.txt" "$stamp"
     copy_if_newer _build/g2/latest/result.txt "$out/g2-result.txt" "$stamp"
     copy_if_newer _build/qualify/results.md "$out/g4-results.md" "$stamp"
     copy_if_newer _build/g4-passed.txt "$out/g4-passed.txt" "$stamp"
     copy_qualify_logs _build/qualify/logs "$out/qualify-logs" "$stamp"
+    copy_g2_logs _build/g2/latest "$out/g2-logs" "$stamp"
+    copy_qualify_logs _build/qualify/diag "$out/diag-logs" "$stamp" 2
     if [[ -f tools/builder-vm/metrics.sh ]]; then
         bash tools/builder-vm/metrics.sh "$out/metrics" "$stamp" "$sha" "$out/lock.diff" ${daily:+size} 9>&- </dev/null >&2 ||
             log "metrics: exit $?; they never gate"
@@ -321,6 +357,7 @@ main() {
     fi
     rc=$?
     set -e
+    clock "$out/stages.tsv" end
     printf 'finished %s\nexit %s\n' "$(utc_now)" "$rc" >>"$out/ci-build.txt"
     rm -f -- "$out/.started"
     tar -C "$out" -cf - . >&3

@@ -6,11 +6,23 @@ name: vm
 on:
   push:
     branches: [main]
+    # Only what the build or its gates read (tools/runner/README.md, What a run does).
     paths:
       - components.lock
+      - Cargo.lock
+      - Cargo.toml
       - image/**
       - crates/apex-lane/**
-      - tools/**
+      - tools/components.sh
+      - .github/scripts/qualify.sh
+      - .github/scripts/qualify-allowed-failures.txt
+      - .github/scripts/image.sh
+      - .github/scripts/lib.sh
+      - tools/builder-vm/build-image.sh
+      - tools/builder-vm/lane.sh
+      - tools/builder-vm/snapshot.sh
+      - tools/builder-vm/metrics.sh
+      - tools/builder-vm/lane-absorb-report.sh
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -74,7 +86,7 @@ jobs:
 
       # ci-build (tools/builder-vm/ci-build.sh) runs every stage in the VM, starting with the
       # components hook for tools/components.sh fetch; the RPM key and ~/apex-store stay there.
-      - name: Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)
+      - name: Components, RPMs, lane, image, G4 when due, G2 twice, gates, promote (builder VM)
         env:
           SHA: ${{ steps.commit.outputs.sha }}
           EXTRA: ${{ steps.commit.outputs.extra }}
@@ -105,7 +117,7 @@ jobs:
           tar -xf "$RUNNER_TEMP/results.tar" -C "$out" --no-same-owner --no-same-permissions
           logs=$RUNNER_TEMP/logs
           mkdir -p "$logs"
-          for d in qualify-logs absorb metrics; do
+          for d in qualify-logs g2-logs diag-logs absorb metrics; do
             if [[ -d $out/$d ]]; then cp -r -- "$out/$d" "$logs/"; fi
           done
           if [[ -n $(ls -A "$logs") ]]; then echo "logs=$logs" >>"$GITHUB_OUTPUT"; fi
@@ -115,16 +127,36 @@ jobs:
             cat -- "$out/$2"
             printf '```\n\n'
           }
+          field() { sed -n "s/^$1 //p" "$out/ci-build.txt" 2>/dev/null | tail -n 1; }
+          exit_status=$(field exit)
+          promote=$(field promote)
+          plan=$(field plan)
           {
             echo "## Builder VM"
             echo
             section "ci-build" ci-build.txt
+            if [[ -s $out/stages.tsv ]]; then
+              printf '### Stages\n\n| Stage | Began (UTC) | Minutes |\n|---|---|---|\n'
+              began='' stage=''
+              while IFS=$'\t' read -r at next; do
+                [[ $at =~ ^[0-9]+$ ]] || continue
+                if [[ -n $began ]]; then
+                  printf '| %s | %s | %d.%d |\n' "${stage//|/\\|}" "$(date -u -d "@$began" +%T)" \
+                    $(((at - began) / 60)) $(((at - began) % 60 * 10 / 60))
+                fi
+                began=$at stage=$next
+              done <"$out/stages.tsv"
+              echo
+            fi
             section "Gates (gates-passed.txt)" gates-passed.txt
             section "Lane lock (rpms.lock to rpms.lock.next, before the promotion)" lock.diff
             section "G2 (result.txt)" g2-result.txt
             section "G4 record (g4-passed.txt)" g4-passed.txt
             if [[ -s $out/g4-results.md ]]; then
-              printf '### G4 (results.md)\n\n| Test | Result | Detail | Layer feature |\n|---|---|---|---|\n'
+              # qualify.sh stops at the first failing row: the last row is as far as G4 got.
+              printf '### G4 (results.md)\n\nFrontier: row %s, %s\n\n' "$(grep -c '^|' "$out/g4-results.md")" \
+                "$(grep '^|' "$out/g4-results.md" | tail -n 1 | awk -F'|' '{ gsub(/^ +| +$/, "", $2); gsub(/ /, "", $3); print $2 " " $3 }')"
+              printf '| Test | Result | Detail | Layer feature |\n|---|---|---|---|\n'
               cat -- "$out/g4-results.md"
             fi
             if [[ -s $out/metrics/history.tsv ]]; then
@@ -157,7 +189,19 @@ jobs:
               echo "::warning title=absorb $(esc_prop "$family")::$(esc "$srpm") (updates-testing): $(esc "$result") $(esc "$detail")"
             done <"$out/absorb/warnings.tsv"
           fi
-          [[ -s $out/gates-passed.txt ]] || { echo "::error::no gates file: G2 or G4 did not pass"; exit 1; }
+          # The installed ci-build's own lines decide; a qualify-only run is never green.
+          if [[ $plan == qualify-only* ]]; then
+            echo "::notice title=qualify-only::advisory: records nothing, promotes nothing by design"
+            exit 1
+          fi
+          if [[ $exit_status != 0 ]]; then
+            echo "::error::ci-build exited $(esc "${exit_status:-without an exit line}"): no gates record"
+            exit 1
+          fi
+          case $promote in
+            passed | unchanged:*) ;;
+            *) echo "::error::no gates record: G2 or G4 did not pass (promote $(esc "${promote:-not reported}"))"; exit 1 ;;
+          esac
 
       - name: G4's screendumps, journals and serial logs, the absorption report and the metrics
         if: ${{ !cancelled() && steps.results.outputs.logs != '' }}

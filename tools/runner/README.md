@@ -270,8 +270,16 @@ Owner steps that a change on `main` needs on the host, newest first.
 
 ## What a run does
 
-`vm.yml` runs on a push to `main` that touches `components.lock`, `image/**`,
-`crates/apex-lane/**` or `tools/**`, once a day, and on `workflow_dispatch`. A dispatch
+`vm.yml` runs once a day, on `workflow_dispatch`, and on a push to `main` that touches
+what the build or its gates read: `components.lock`, `Cargo.lock`, `Cargo.toml` (both
+feed the lane's tool id and every family's content key), `image/**` (its READMEs ship in
+the image, so they count), `crates/apex-lane/**`, `tools/components.sh`, qualify.sh,
+`qualify-allowed-failures.txt`, `image.sh` and `lib.sh` in `.github/scripts/`, and
+`build-image.sh`, `lane.sh`, `snapshot.sh`, `metrics.sh` and `lane-absorb-report.sh` in
+`tools/builder-vm/`. Each such push queues a run of about two hours on the laptop. A push
+that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
+vm-ci-install`), the other `tools/builder-vm` scripts or any `.md` under
+`tools/builder-vm/` queues nothing: the next run takes it. A dispatch
 with a `sha` input builds that commit of `main` instead of the head, and needs the
 `vm-dispatch` approval first.
 
@@ -303,12 +311,21 @@ is labelled `degraded=` for each of them. On 45 a failure still holds or stops t
 as before. The job is report-only: it warns on a failure and never fails the run, and
 nothing it builds is promoted, pushed or published.
 
-The gates step writes the results to the job summary. It fails when there is no gates
-file. The artifact `vm-logs-<sha>` holds the logs the run returned, and is kept 14 days:
+The gates step writes the results to the job summary: ci-build's lines, a table of the
+stages (when each began and its minutes, from `stages.tsv`), the gates file, the lane
+lock's diff, G2's result, and G4's rows with its frontier, the last row it reached.
+Whether the run is green comes from what the installed ci-build reports, never from a
+file build-image.sh writes: `exit 0` and `promote passed` or `promote unchanged`, so a
+green run always means a gates record. A qualify-only run (`plan qualify-only` in
+ci-build.txt) is advisory: it records nothing and promotes nothing by design, so it ends
+non-green with a notice that says so. The artifact `vm-logs-<sha>` holds the logs the run
+returned, and is kept 14 days:
 
 | Directory | When | Size |
 |---|---|---|
-| `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all; `SKIPPED` names what was left out |
+| `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all with `g2-logs/` and `diag-logs/`; `SKIPPED` names what was left out |
+| `g2-logs/` | G2 ran | each run's `assert.txt` and its failing cases' logs, under the same caps |
+| `diag-logs/` | `qualify.sh local-diag` ran after a G4 failure | what it wrote, under the same caps |
 | `absorb/` | the daily run | the absorption report: `report.md`, `rows.tsv`, `warnings.tsv` and each SRPM's `logs/`, under the same caps |
 | `metrics/` | every run | `metrics.tsv` (this build), `history.tsv` (the last 30) and `warnings.tsv` |
 
@@ -329,8 +346,10 @@ only, so push builds stay fast.
 The absorption report also joins the summary, with a warning for each family whose
 updates-testing build does not take its series with `git apply`. The selftest runs
 vm.yml's Commit, build and gates steps, taken from the workflow itself, against a fake
-`ssh` and canned results: a green build, a red one, a busy VM (75), a refused commit
-(2), an empty tar and a daily run with warnings.
+`ssh` and canned results: a green build, a red one, run 16's layout, qualify-only runs,
+a busy VM (75), a refused commit (2), an empty tar and a daily run with warnings. It
+also matches files against the push paths: a `tools/runner`-only push queues nothing,
+a qualify.sh-only push queues a run.
 
 The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and

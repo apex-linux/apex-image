@@ -576,14 +576,26 @@ esac
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
+echo "== plan: gate (G4 first)" >&2
 mkdir -p _build
 echo "lock-sha256 x" >_build/gates-passed.txt
+echo "== G4, when qualify.sh g4-due says it is due"
 if [[ -e $FAKE/with-logs ]]; then
-    mkdir -p _build/qualify/logs
+    mkdir -p _build/qualify/logs _build/qualify/diag/local-lock _build/g2/latest/run-1 _build/g2/latest/run-2
     echo shot >_build/qualify/logs/local-lock.png
     echo journal >_build/qualify/logs/local-unlock.journal.txt
     truncate -s 21M _build/qualify/logs/local.serial.log
+    echo diag >_build/qualify/diag/local-lock/journal.txt
+    printf '%s\n' 'PASS motion: ok' 'FAIL dock-pin: a pinned favourite shows' >_build/g2/latest/run-1/assert.txt
+    printf '%s\n' 'FAIL motion: exit 139' >_build/g2/latest/run-2/assert.txt
+    for run in 1 2; do
+        for case in motion dock-pin glass; do echo "$case" >"_build/g2/latest/run-$run/$case.log"; done
+    done
+    truncate -s 19M _build/g2/latest/run-2/motion.log
+    mkdir -p _build/qualify/diag/bulk
+    for n in 0 1 2 3 4 5 6 7 8 9; do truncate -s 19M "_build/qualify/diag/bulk/$n.log"; done
 fi
+echo "== G2, the headless shell, 2 runs" >&2
 exit "$(cat "$FAKE/build-rc")"
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane.sh" <<'EOF'
@@ -625,10 +637,15 @@ check "ci-build builds a commit of main" 0 "$(ci_request "ci-build $CI_SHA")"
 check "checked out at that commit, then cleaned keeping _build" "checkout -q --force --detach $CI_SHA|clean -q -ffdx -e /_build/" \
     "$(grep -E '^(checkout|clean)' "$CI_DIR/git.log" | paste -sd'|')"
 check "and promoted the lane lock after the gates" promote "$(cat "$CI_DIR/lane.log")"
-check "stdout is the results tar" "./ci-build.txt ./gates-passed.txt ./lock.diff" \
+check "stdout is the results tar" "./ci-build.txt ./gates-passed.txt ./lock.diff ./stages.tsv" \
     "$(tar -tf "$CI_DIR/out.tar" | grep -v '^\./$' | sort | paste -sd' ')"
-check "ci-build.txt names the commit and the promotion" "sha $CI_SHA|build-image 0|promote passed|exit 0" \
+check "ci-build.txt names the commit, build-image's plan and the promotion" "sha $CI_SHA|plan gate (G4 first)|build-image 0|promote passed|exit 0" \
     "$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -Ev '^(started|finished) ' | paste -sd'|')"
+check "stages.tsv: when each stage began, ci-build's and build-image's, then the end" \
+    "fetch and check out|components (ci-build)|plan: gate (G4 first)|G4, when qualify.sh g4-due says it is due|G2, the headless shell, 2 runs|results, metrics and promotion (ci-build)|end" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./stages.tsv | cut -f2 | paste -sd'|')"
+check "each at a UTC second" 7 "$(tar -xOf "$CI_DIR/out.tar" ./stages.tsv | cut -f1 | grep -cxE '[0-9]{10}')"
+check_true "build-image's log still reaches ci-build's, line by line" grep -qx '== G4, when qualify.sh g4-due says it is due' "$CI_DIR/err"
 echo 1 >"$CI_DIR/build-rc"
 check "a failed build exits with its status and promotes nothing" "1:no promotion" \
     "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
@@ -644,8 +661,14 @@ check "a failed G4 returns this run's logs for vm.yml's artifact" \
     "$(tar -tf "$CI_DIR/out.tar" | grep '^\./qualify-logs/.' | sort | paste -sd' ')"
 check "and names the file over 20 MiB it left out" "local.serial.log 21504 KiB" \
     "$(tar -xOf "$CI_DIR/out.tar" ./qualify-logs/SKIPPED)"
+check "each G2 run's assert.txt and its failing cases' logs, no passing case's" \
+    "./g2-logs/run-1/assert.txt ./g2-logs/run-1/dock-pin.log ./g2-logs/run-1/motion.log ./g2-logs/run-2/assert.txt ./g2-logs/run-2/dock-pin.log ./g2-logs/run-2/motion.log" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep '^\./g2-logs/.' | grep -v '/$' | sort | paste -sd' ')"
+check_true "qualify.sh local-diag's logs" tar -xOf "$CI_DIR/out.tar" ./diag-logs/local-lock/journal.txt
+check "within one 200 MiB for all three: the diagnosis's last 19 MiB log is left out, and named" "bulk/9.log 19456 KiB" \
+    "$(tar -xOf "$CI_DIR/out.tar" ./diag-logs/SKIPPED)"
 rm "$CI_DIR/with-logs"
-rm -rf "$CI_DIR/home/apex-image/_build/qualify"
+rm -rf "$CI_DIR/home/apex-image/_build/qualify" "$CI_DIR/home/apex-image/_build/g2"
 echo 0 >"$CI_DIR/build-rc"
 cp "$APEX_ROOT/tools/builder-vm/ci-build.sh" "$CI_DIR/home/apex-image/tools/builder-vm/ci-build.sh"
 ci_request "ci-build $CI_SHA" >/dev/null
@@ -3401,10 +3424,38 @@ vm_results() { # FILE=CONTENT...: the results tar ci-build would return
     tar -C "$V/results" -cf "$V/results.tar" .
 }
 COMMIT='Commit'
-BUILD='Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)'
+BUILD='Components, RPMs, lane, image, G4 when due, G2 twice, gates, promote (builder VM)'
 GATES='Gates file'
 check "vm.yml has the three steps the selftest runs" "yes yes yes" \
     "$(for s in "$COMMIT" "$BUILD" "$GATES"; do [[ -n $(vm_step "$s") ]] && printf 'yes ' || printf 'no '; done | sed 's/ $//')"
+
+# vm_push_queues FILE...: would a push to main touching FILEs queue vm.yml, by its paths filter
+vm_push_queues() {
+    local glob re file
+    while read -r glob; do
+        re=$(sed -e 's/[.+]/\\&/g' -e 's/\*\*/\x01/g' -e 's/\*/[^\/]*/g' -e 's/\x01/.*/g' <<<"$glob")
+        for file in "$@"; do [[ $file =~ ^$re$ ]] && { echo yes; return; }; done
+    done < <(awk '/^    paths:$/ { p = 1; next } p && /^      - / { print $2; next } p { exit }' "$APEX_ROOT/.github/workflows/vm.yml")
+    echo no
+}
+for queued in components.lock Cargo.lock Cargo.toml image/Containerfile image/system_files/usr/share/apex/README.md \
+    crates/apex-lane/src/vm/promote.rs tools/components.sh .github/scripts/qualify.sh \
+    .github/scripts/qualify-allowed-failures.txt .github/scripts/image.sh .github/scripts/lib.sh \
+    tools/builder-vm/build-image.sh tools/builder-vm/lane.sh tools/builder-vm/snapshot.sh \
+    tools/builder-vm/metrics.sh tools/builder-vm/lane-absorb-report.sh; do
+    check "push paths: $queued queues a run" yes "$(vm_push_queues "$queued")"
+done
+for skipped in tools/runner/runner.sh tools/runner/README.md tools/builder-vm/ci-build.sh tools/builder-vm/builder-vm.sh \
+    tools/builder-vm/desktop-vm.sh tools/builder-vm/desktop-disk.sh tools/builder-vm/shell-dev.sh \
+    tools/builder-vm/shell-dev-guest.sh tools/builder-vm/provision.sh tools/builder-vm/publish-image.sh \
+    tools/builder-vm/install-cosign.sh tools/builder-vm/firmware.sh tools/builder-vm/lane-rehearsal.sh \
+    tools/builder-vm/rehearsal/x.sh tools/builder-vm/README.md .github/scripts/selftest.sh .github/scripts/contracts.sh \
+    .github/workflows/vm.yml .github/workflows/ci.yml crates/apex-lanex/x.rs tools/components.shx; do
+    check "push paths: $skipped alone queues nothing" no "$(vm_push_queues "$skipped")"
+done
+check "push paths: every file of tools/builder-vm that builds or gates is named, and only those" \
+    "build-image.sh lane-absorb-report.sh lane.sh metrics.sh snapshot.sh" \
+    "$(for f in "$APEX_ROOT"/tools/builder-vm/*; do [[ $(vm_push_queues "tools/builder-vm/${f##*/}") == no ]] || printf '%s\n' "${f##*/}"; done | sort | paste -sd' ')"
 
 vm_reset
 check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
@@ -3442,26 +3493,60 @@ vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily >/dev/null
 check "build: the daily run adds daily" "apex-builder ci-build $CI_SHA daily" "$(cat "$V/ssh.args")"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
+GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"
 vm_reset
-vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
-    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png"
+vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
+    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png" "g2-logs/run-1/motion.log=log" \
+    "diag-logs/local-lock/journal.txt=diag" "stages.tsv=$(printf '1793370000\tfetch and check out\n1793370090\t1/4 rpms\n1793374200\tG4, due\n1793378000\tend')"
 check "gates: a green build passes" 0 "$(vm_gates)"
-check "gates: with each result in the summary" "## Builder VM|### ci-build|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
+check "gates: with each result in the summary" "## Builder VM|### ci-build|### Stages|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
     "$(grep -E '^##' "$V/summary" | paste -sd'|')"
+check "gates: each stage with its UTC start and its minutes" \
+    "| fetch and check out | 14:20:00 | 1.5 |;| 1/4 rpms | 14:21:30 | 68.5 |;| G4, due | 15:30:00 | 63.3 |" \
+    "$(grep -E '^\| (fetch|1/4|G4)' "$V/summary" | paste -sd';')"
 check_true "gates: G4's table has its header with the layer feature column" \
     grep -qx '| Test | Result | Detail | Layer feature |' "$V/summary"
-check "gates: and G4's logs for the artifact" "logs=$V/temp/logs|local.png" \
-    "$(cat "$V/output")|$(ls "$V/temp/logs/qualify-logs")"
+check "gates: and G4's, G2's and the diagnosis's logs for the artifact" "logs=$V/temp/logs|diag-logs g2-logs qualify-logs" \
+    "$(cat "$V/output")|$(find "$V/temp/logs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' ')"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\nexit 0' "$CI_SHA")" "gates-passed.txt=lock-sha256 x"
+check "gates: a gates file without ci-build's promotion line is no pass" \
+    "1|::error::no gates record: G2 or G4 did not pass (promote not reported)" "$(vm_gates)|$(cat "$V/log")"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote skipped: no gates record\nexit 0' "$CI_SHA")"
+check "gates: nor is ci-build's exit 0 without a gates record" \
+    "1|::error::no gates record: G2 or G4 did not pass (promote skipped: no gates record)" "$(vm_gates)|$(cat "$V/log")"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote unchanged: rpms.lock is rpms.lock.next\nexit 0' "$CI_SHA")"
+check "gates: an unchanged lane lock after a pass is green" 0 "$(vm_gates)"
+# Run 16's layout: G4 failed at its fifth row, G2 passed, ci-build exit 1.
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nstarted 2026-10-30T12:30:02Z\nbuild-image 1\nfinished 2026-10-30T14:20:11Z\nexit 1' "$CI_SHA")" \
+    "lock.diff=no change" "g2-result.txt=$(printf 'image-id cafe\nruns 2\nstatus passed')" \
+    "g4-results.md=$(printf '| local-install | PASS | green | - |\n| local-stage | PASS | staged | - |\n| local-red | PASS | rolled back | - |\n| local-login | PASS | 12 s | - |\n| local-lock-suspend | FAIL | no resumed screendump | lock |')" \
+    "qualify-logs/local-lock-suspend.png=png" "metrics/history.tsv=$(printf 'finished\tsha\n')"
+check "gates: run 16's tar fails on ci-build's exit" "1|::error::ci-build exited 1: no gates record" "$(vm_gates)|$(cat "$V/log")"
+check "gates: and shows G4's frontier, the furthest row it reached" "Frontier: row 5, local-lock-suspend FAIL" \
+    "$(grep '^Frontier: ' "$V/summary")"
+# A qualify-only run (T2): advisory, so never a green run, whatever it says.
+for t2 in "build-image 0|promote skipped: no gates record|exit 0" "build-image 1|exit 1" "build-image 0|promote passed|exit 0"; do
+    vm_reset
+    vm_results "ci-build.txt=$(printf 'sha %s\nplan qualify-only (advisory)\n%s' "$CI_SHA" "${t2//|/$'\n'}")" \
+        "g4-results.md=| local-install | PASS | green | - |"
+    check "gates: a qualify-only run ($t2) ends non-green, with its notice" \
+        "1|::notice title=qualify-only::advisory: records nothing, promotes nothing by design" "$(vm_gates)|$(cat "$V/log")"
+    check_true "gates: and still writes its summary" grep -qx '### G4 (results.md)' "$V/summary"
+done
 vm_reset
 vm_results "ci-build.txt=sha $CI_SHA" "lock.diff=x"
-check "gates: a red build without a gates file fails" "1|::error::no gates file: G2 or G4 did not pass" \
+check "gates: a red build without a gates file fails" "1|::error::ci-build exited without an exit line: no gates record" \
     "$(vm_gates)|$(cat "$V/log")"
 check "gates: and still writes its summary, but no artifact without logs" "yes|" \
     "$(grep -q '^### ci-build' "$V/summary" && echo yes)|$(cat "$V/output" 2>/dev/null)"
 vm_reset
 check "gates: an empty results tar is an error" "1|::error::the builder VM returned no results" "$(vm_gates)|$(cat "$V/log")"
 vm_reset
-vm_results "ci-build.txt=sha $CI_SHA" "gates-passed.txt=lock-sha256 x" "absorb/report.md=# Lane absorption report
+vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "absorb/report.md=# Lane absorption report
 | Family | x |" "absorb/rows.tsv=x" "absorb/warnings.tsv=$(printf 'gnome-shell\tgnome-shell-51.1-1.fc45\tfails\t0015-lock.patch: 100%% of hunk 4\nptyxis\tptyxis-51.0-1.fc45\tfuzz\t1 patch(es); x')"
 check "gates: the daily run's warnings never fail the step" 0 "$(vm_gates)"
 check "gates: one escaped warning per family" \
@@ -3470,18 +3555,18 @@ check "gates: one escaped warning per family" \
 check "gates: the report joins the summary and the artifact" "### Absorption (lane-absorb-report.sh)|warnings.tsv" \
     "$(grep -o '^### Absorption.*' "$V/summary")|$([[ -s $V/temp/logs/absorb/warnings.tsv ]] && echo warnings.tsv)"
 vm_reset
-vm_results "gates-passed.txt=x" "absorb/warnings.tsv=$(printf 'evil\tx\tfails\tline one\n::error::injected\tx\tfails\ty')"
+vm_results "$GREEN_CI" "gates-passed.txt=x" "absorb/warnings.tsv=$(printf 'evil\tx\tfails\tline one\n::error::injected\tx\tfails\ty')"
 vm_gates >/dev/null
 check "gates: a warning line cannot issue a command of its own" 0 "$(grep -c '^::error::injected' "$V/log")"
 check "gates: and its family cannot end the title property" \
     "::warning title=absorb %3A%3Aerror%3A%3Ainjected::x (updates-testing): fails y" "$(grep 'injected' "$V/log")"
 check_true "gates: the artifact is vm-logs-<sha>" grep -qF "name: vm-logs-\${{ steps.commit.outputs.sha }}" "$APEX_ROOT/.github/workflows/vm.yml"
 vm_reset
-vm_results "gates-passed.txt=x" "ci-build.txt=$(printf 'sha %s\nstale /usr/local/libexec/apex/ci-build differs from this commit'"'"'s tools/builder-vm/ci-build.sh: run just vm-ci-install' "$CI_SHA")"
+vm_results "gates-passed.txt=x" "ci-build.txt=$(printf 'sha %s\nstale /usr/local/libexec/apex/ci-build differs from this commit'"'"'s tools/builder-vm/ci-build.sh: run just vm-ci-install\npromote passed\nexit 0' "$CI_SHA")"
 check "gates: a stale ci-build warns, and never fails the step" "0|::warning title=ci-build stale::the builder VM's installed ci-build differs from this commit's; run just vm-ci-install (tools/runner/README.md, Troubleshooting)" \
     "$(vm_gates)|$(grep '^::warning title=ci-build' "$V/log")"
 vm_reset
-vm_results "gates-passed.txt=x" "metrics/history.tsv=$(printf 'finished\tsha\tversion\tgates\tsize\tlayers\tprevious_size\tsize_change_pct\tnew_bytes\tfamilies\tfirmware\tloader\tkernel\tinitrd\tuserspace\tgreeter\tdesktop\n2026-10-24T03:20:00Z\t%s\t45.1\tyes\t1258291200\t70\t1048576000\t20.0\t209715200\t-\t-\t-\t1.0\t2.0\t12.5\t16.0\t3.0' "$CI_SHA")" \
+vm_results "$GREEN_CI" "gates-passed.txt=x" "metrics/history.tsv=$(printf 'finished\tsha\tversion\tgates\tsize\tlayers\tprevious_size\tsize_change_pct\tnew_bytes\tfamilies\tfirmware\tloader\tkernel\tinitrd\tuserspace\tgreeter\tdesktop\n2026-10-24T03:20:00Z\t%s\t45.1\tyes\t1258291200\t70\t1048576000\t20.0\t209715200\t-\t-\t-\t1.0\t2.0\t12.5\t16.0\t3.0' "$CI_SHA")" \
     "metrics/warnings.tsv=$(printf 'size\tthe image grew 20.0 %% against x\nuserspace\t12.5 s, more than 20 %% above')"
 check "gates: metrics warnings never fail the step" 0 "$(vm_gates)"
 check "gates: the metrics table, in MiB and seconds" "| 2026-10-24T03:20:00Z | ${CI_SHA:0:12} | yes | 1200 | 20.0 | 200 | 12.5 | 16.0 | 3.0 |" \
