@@ -69,9 +69,9 @@ the digest that will be published.
                                      greeter, then run each UNIT on its own, in this
                                      order, whatever an earlier one did: boot-metrics
                                      login-lock-unlock lock-wrong-password lock-esc
-                                     lock-blank-wake lock-suspend lock-reduce-motion
-                                     polkit-agent polkit-actions crash-guard
-                                     safe-karg-lock (all when none is named). Needs its
+                                     lock-blank-wake lock-reduce-motion polkit-agent
+                                     polkit-actions crash-guard safe-karg-lock
+                                     lock-suspend (all when none is named). Needs its
                                      own QUALIFY_OUT; writes diag.md there, one row per
                                      unit, and exits 1 when one did not pass
   qualify.sh g4-harness              print the digest of qualify.sh, lib.sh and
@@ -191,8 +191,9 @@ DIAG_SHELL_PID=
 DIAG_LOST=
 DIAG_RC=0
 QUALIFY_ERRLOG=
-readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-suspend
-    lock-reduce-motion polkit-agent polkit-actions crash-guard safe-karg-lock)
+# cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
+readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
+    polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend)
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -2055,7 +2056,7 @@ diag_save_state() {
     [[ -z $SESSION_UID ]] || DIAG_SHELL_PID=$(shell_pid "$SESSION_UID" 2>/dev/null) || DIAG_SHELL_PID=
     printf '%s=%s\n' SESSION_ID "$SESSION_ID" SESSION_UID "$SESSION_UID" SESSION_TYPE "$SESSION_TYPE" \
         DIAG_LOGIN_SINCE "$DIAG_LOGIN_SINCE" DIAG_SHELL_PID "$DIAG_SHELL_PID" DIAG_LOST "$DIAG_LOST" \
-        >"$QUALIFY_OUT/diag.state"
+        VM_SERIAL "$VM_SERIAL" >"$QUALIFY_OUT/diag.state"
 }
 
 # A unit runs in a subshell: what the next one needs comes back through this file, and
@@ -2065,7 +2066,7 @@ diag_load_state() {
     [[ -f $QUALIFY_OUT/diag.state ]] || return 0
     while IFS='=' read -r key value; do
         case $key in
-            SESSION_ID | SESSION_UID | SESSION_TYPE | DIAG_LOGIN_SINCE | DIAG_SHELL_PID | DIAG_LOST)
+            SESSION_ID | SESSION_UID | SESSION_TYPE | DIAG_LOGIN_SINCE | DIAG_SHELL_PID | DIAG_LOST | VM_SERIAL)
                 printf -v "$key" '%s' "$value"
                 ;;
         esac
@@ -2141,25 +2142,53 @@ conversations_settled() {
     [[ $(password_conversations) == "$before" ]]
 }
 
-# Keeps the last unit's session and gnome-shell, unlocked and without a pkexec dialog; if
-# either is gone, DIAG_LOST names it and a fresh login through the greeter replaces them.
+# safe-karg-lock leaves apex.safe=1 and crash-guard layer-enabled false: a lock unit after
+# them would test upstream's lock. Sets the caller's relogin when it rebooted.
+diag_restore_layer() {
+    local test=$1 uid=$2 changed=''
+    if [[ -n $uid && $(user_setting "$uid" "$APEX_SCHEMA" layer-enabled 2>/dev/null) == false ]]; then
+        user_run "$uid" gsettings set "$APEX_SCHEMA" layer-enabled true || fail "$test" "cannot turn the layer back on"
+        changed=1
+    fi
+    if vm_ssh "grep -qw $APEX_SAFE_KARG /proc/cmdline"; then
+        vm_ssh "rpm-ostree kargs --delete=$APEX_SAFE_KARG" >/dev/null || fail "$test" "rpm-ostree kargs --delete=$APEX_SAFE_KARG failed"
+        changed=1
+    fi
+    [[ -n $changed ]] || return 0
+    vm_reboot
+    relogin=1
+}
+
+# PREVIOUS NEXT: keeps PREVIOUS's session and gnome-shell, unlocked and without a pkexec
+# dialog. What is gone is named in DIAG_LOST, then replaced by a fresh login.
 diag_reset() {
-    local test=local-diag-reset found='' id='' uid='' type='' pid=''
+    local test=local-diag-reset previous=$1 next=$2 found='' id='' uid='' type='' pid='' relogin=''
     DIAG_LOST=
-    vm_ssh true || fail "$test" "the guest does not answer ssh"
-    if found=$(active_session user "$TEST_USER"); then
+    if ! vm_ssh true; then
+        DIAG_LOST="guest lost after $previous: it stopped answering ssh, and local-diag power-cycled it on the same disk"
+        stop_vm
+        start_vm local local-diag-recovered
+        wait_ssh
+        vm_ssh true || fail "$test" "the guest still does not answer ssh after a power-cycle"
+        relogin=1
+    elif found=$(active_session user "$TEST_USER"); then
         read -r id uid type <<<"$found"
         pid=$(shell_pid "$uid") || pid=
         if [[ $id != "$SESSION_ID" ]]; then
-            DIAG_LOST="session ${SESSION_ID:-none} was gone, session $id in its place"
+            DIAG_LOST="before the next unit session ${SESSION_ID:-none} was gone, session $id in its place"
         elif [[ $pid != "$DIAG_SHELL_PID" ]]; then
-            DIAG_LOST="gnome-shell ${DIAG_SHELL_PID:-none} of session $id was gone, ${pid:-none} in its place"
+            DIAG_LOST="before the next unit gnome-shell ${DIAG_SHELL_PID:-none} of session $id was gone, ${pid:-none} in its place"
+        fi
+        if [[ -n $DIAG_LOST ]]; then
+            log_out "$test" "$uid"
+            uid='' relogin=1
         fi
     else
-        DIAG_LOST="session ${SESSION_ID:-none} of $TEST_USER was gone"
+        DIAG_LOST="before the next unit session ${SESSION_ID:-none} of $TEST_USER was gone"
+        relogin=1
     fi
-    if [[ -n $DIAG_LOST ]]; then
-        [[ -z $found ]] || log_out "$test" "$uid"
+    [[ $next != lock-* ]] || diag_restore_layer "$test" "$uid"
+    if [[ -n $relogin ]]; then
         DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
         greeter_login "$test"
         diag_layer_active "$test"
@@ -2223,7 +2252,7 @@ diag_table() {
 
 cmd_local_diag() {
     (($# >= 1)) || die "usage: qualify.sh local-diag [UNIT...] localhost/NAME:TAG"
-    local image=${*: -1} digest unit wanted from previous='' failed=0
+    local image=${*: -1} digest unit wanted from previous='' failed=0 gone=''
     local -a asked=("${@:1:$#-1}")
     [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
         die "expected a local image reference localhost/NAME[:TAG], got '$image'"
@@ -2266,25 +2295,34 @@ cmd_local_diag() {
     diag_save_state
 
     for unit in "${DIAG_RUN[@]}"; do
+        if [[ -n $gone ]]; then
+            DIAG_STATUS[$unit]=BLOCKED
+            DIAG_DETAIL[$unit]=$gone
+            diag_table
+            continue
+        fi
         if [[ -n $previous ]]; then
             from=$(wc -l <"$QUALIFY_OUT/results.md")
-            diag_run diag_reset
+            diag_run diag_reset "$previous" "$unit"
             if [[ -n $DIAG_LOST ]]; then
                 if [[ ${DIAG_STATUS[$previous]} == PASS ]]; then
                     DIAG_STATUS[$previous]=FAIL
-                    DIAG_DETAIL[$previous]="passed, but before the next unit $DIAG_LOST"
+                    DIAG_DETAIL[$previous]="passed, but $DIAG_LOST"
                 else
-                    DIAG_DETAIL[$previous]+="; before the next unit $DIAG_LOST"
+                    DIAG_DETAIL[$previous]+="; $DIAG_LOST"
                 fi
-                DIAG_LOST=
             fi
             if ((DIAG_RC != 0)); then
                 diag_verdict "$unit" "$DIAG_RC" "$from"
                 DIAG_STATUS[$unit]=BLOCKED
                 DIAG_DETAIL[$unit]="the reset before it failed: ${DIAG_DETAIL[$unit]}"
+                [[ $DIAG_LOST != "guest lost after "* ]] ||
+                    gone="the guest was lost after $previous, and a power-cycle did not bring it back"
+                DIAG_LOST=
                 diag_table
                 continue
             fi
+            DIAG_LOST=
         fi
         from=$(wc -l <"$QUALIFY_OUT/results.md")
         diag_run diag_unit "$unit"

@@ -1156,7 +1156,12 @@ login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-
 local_flow_stubs() {
     ensure_key() { :; }
     install_disk() { :; }
-    start_vm() { :; }
+    start_vm() { # a power-cycle brings a lost guest back to its greeter, unless it stays dead
+        [[ -e $STATE/unreachable && ! -e $STATE/stays-dead ]] || return 0
+        rm "$STATE/unreachable"
+        echo "$2" >"$STATE/power-cycled"
+        vm_reboot
+    }
     stop_vm() { :; }
     drop_disk() { :; }
     save_journal() { :; }
@@ -1198,7 +1203,8 @@ vm_ssh() {
         "bash -s -- greeter"*) from greeter | grep . ;;
         "systemctl is-active --quiet gdm.service") [[ ! -e $STATE/gdm-down ]] ;;
         "pgrep -u 60578 -x gnome-shell") from greeter-pid | grep . ;;
-        true) ;;
+        true) [[ ! -e $STATE/unreachable ]] ;;
+        "rpm-ostree kargs --delete=apex.safe=1") rm -f "$STATE/karg" "$STATE/safe-booted"; : >"$STATE/apex-lock" ;;
         "command -v apexctl") echo /usr/bin/apexctl ;;
         "journalctl -b _UID=60578 _COMM=systemd -o short-monotonic --no-pager") from greeter-manager ;;
         "rm -rf $GUEST_TMP/candidate && mkdir -p $GUEST_TMP/candidate") ;;
@@ -1245,7 +1251,7 @@ vm_ssh() {
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
             if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
         *"gsettings reset org.gnome.desktop.a11y.interface reduced-motion") ;;
-        *"gsettings set $APEX_SCHEMA layer-enabled true") ;;
+        *"gsettings set $APEX_SCHEMA layer-enabled true") rm -f "$STATE/tripped" ;;
         "rpm-ostree kargs --append=apex.safe=1") : >"$STATE/karg" ;;
         "grep -qw apex.safe=1 /proc/cmdline") [[ -e $STATE/safe-booted ]] ;;
         "loginctl unlock-session 4")
@@ -1257,6 +1263,7 @@ vm_ssh() {
                 echo false >"$STATE/active"
             fi
             : >"$STATE/unlocked-once"
+            if [[ -e $STATE/lose-guest ]]; then rm "$STATE/lose-guest"; : >"$STATE/unreachable"; fi
             if [[ -e $STATE/drop-session ]]; then
                 rm -f "$STATE/drop-session" "$STATE/session" "$STATE/manager-active" "$STATE/asking"
                 echo 'c1 60578 wayland' >"$STATE/greeter"
@@ -1938,8 +1945,11 @@ diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$G
 # On this guest Esc also leaves polkit's dialog open, and no policy file exists: two more
 # FAILs, each the unit's own.
 check "but every unit after it still runs, each with its own verdict" \
-    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-suspend PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS" \
     "$(diag_units)"
+check_true "the suspend runs last, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
+    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend "
+check_false "and the safe karg is gone" test -e "$GUEST_DIR/state/karg"
 check_true "and the reset closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
     grep -q '^| crash-guard | PASS | local-crash-guard PASS' "$GUEST_DIR/out/diag.md"
 check_true "the Esc unit quotes its first failure" \
@@ -1968,6 +1978,32 @@ check "the unit before the loss fails, and the next runs after a fresh login" \
 check_true "naming the lost session" \
     grep -q '^| login-lock-unlock | FAIL | passed, but before the next unit session 4 of apexqa was gone |$' "$GUEST_DIR/out/diag.md"
 check_true "the fresh login went through the greeter" grep -q '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"
+
+# A guest that stops answering ssh between units is power-cycled once on the same disk.
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+check "local-diag: a guest lost between two units fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
+check "the unit before the loss fails, and the next runs on the power-cycled guest" \
+    "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
+check_true "naming the lost guest" grep -qF \
+    '| login-lock-unlock | FAIL | passed, but guest lost after login-lock-unlock: it stopped answering ssh, and local-diag power-cycled it on the same disk |' \
+    "$GUEST_DIR/out/diag.md"
+check "on the same disk, with its own serial log" local-diag-recovered "$(cat "$GUEST_DIR/state/power-cycled")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/stays-dead"
+check "local-diag: when the power-cycle does not bring the guest back, the rest is BLOCKED" \
+    "login-lock-unlock FAIL|lock-wrong-password BLOCKED|lock-esc BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; diag_units)"
+check_true "the next unit names the failed recovery" grep -qF \
+    '| lock-wrong-password | BLOCKED | the reset before it failed: the guest still does not answer ssh after a power-cycle |' \
+    "$GUEST_DIR/out/diag.md"
+check_true "and the ones after it are not tried again" grep -qF \
+    '| lock-esc | BLOCKED | the guest was lost after login-lock-unlock, and a power-cycle did not bring it back |' \
+    "$GUEST_DIR/out/diag.md"
 
 # 4. a lock unit with the layer off is not a test of the Apex lock
 local_ready
