@@ -983,8 +983,9 @@ repro_cleanup() {
 
 env_report() {
     local cpu nested
-    cpu=$(lscpu | sed -n 's/^Model name: *//p' | head -n 1)
-    nested=$(cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null | head -n 1)
+    cpu=$(lscpu | sed -n 's/^Model name: *//p' | head -n 1 || true)
+    # One of the two never exists: under pipefail, cat's 1 would end the run in silence.
+    nested=$(cat /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested 2>/dev/null | head -n 1 || true)
     {
         printf 'host kernel %s; CPU %s; nested %s; %s vCPUs, %s RAM\n' "$(uname -r)" "$cpu" "${nested:-?}" "$(nproc)" \
             "$(free -g | awk '/^Mem:/ {print $2 "G"}')"
