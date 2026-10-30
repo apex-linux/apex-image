@@ -76,8 +76,19 @@ read_lock() {
     done <"$LOCK"
 }
 
+# A build killed between its root container and the chown back leaves root's files in the
+# checkout (build-image.sh in_component), which neither clean nor rm can then remove.
+reclaim() {
+    local name=$1 dest=$2
+    [[ -e $dest && -n $(find "$dest" ! -user "$(id -u)" -print -quit) ]] || return 0
+    log "$name: taking back the files another user left in $dest"
+    sudo -n chown -R "$(id -u):$(id -g)" -- "$dest" ||
+        die "$name: $dest holds another user's files, and sudo -n cannot take them back"
+}
+
 clone_pinned() {
     local name=$1 url=$2 sha=$3 dest=$DIR/$1
+    reclaim "$name" "$dest"
     if [[ -d $dest/.git && $(git_in "$dest" remote get-url origin 2>/dev/null) == "$url" ]]; then
         git_in "$dest" fetch -q --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
     else
