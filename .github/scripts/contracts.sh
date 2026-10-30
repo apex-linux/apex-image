@@ -156,6 +156,7 @@ copies=(
     "$APEX_GNOME_SRC/tests/layer/fixtures/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA"
     "$APEX_GNOME_SRC/tests/layer/fixtures/apex-shell-safe.service"
     "$APEX_DESKTOP_SRC/desktop/systemd/user/apex-shell-safe.service"
+    "$APEX_GNOME_SRC/tests/layer/fixtures/apex-shell-guard.sh" "$APEX_DESKTOP_SRC/desktop/systemd/apex-shell-guard.sh"
 )
 if [[ -d $APEX_SYSTEM_SRC/crates/apex-session-agent ]]; then
     copies+=("$APEX_SYSTEM_SRC/crates/apex-session-agent/tests/data/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA")

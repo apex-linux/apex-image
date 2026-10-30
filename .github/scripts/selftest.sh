@@ -1950,8 +1950,9 @@ ct_g2_weekday() { # PATCHED SMOKE: the clock-show-weekday values G2's patched.sh
 ct_g2_weekday clock-show-weekday=true clock-show-weekday=true
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
+printf '#!/usr/bin/env bash\n' >"$CT/desktop/desktop/systemd/apex-shell-guard.sh"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
-    "$CT/gnome/tests/layer/fixtures/"
+    "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/gnome/tests/layer/fixtures/"
 ct_run() {
     PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
         APEX_GNOME_SRC="$CT/gnome" rc_of "$APEX_ROOT/.github/scripts/contracts.sh"
@@ -1983,6 +1984,12 @@ mkdir -p "$CT/system/crates/apex-session-agent/tests/data"
 check "contracts: the session agent without its schema copy" 1 "$(ct_run)"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/system/crates/apex-session-agent/tests/data/"
 check "contracts: the session agent with its schema copy" 0 "$(ct_run)"
+printf '#!/bin/sh\n' >"$CT/gnome/tests/layer/fixtures/apex-shell-guard.sh"
+check "contracts: apex-gnome's crash guard script copy differs from apex-desktop's" 1 "$(ct_run)"
+rm "$CT/gnome/tests/layer/fixtures/apex-shell-guard.sh"
+check "contracts: apex-gnome's crash guard script copy is missing" 1 "$(ct_run)"
+cp "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/gnome/tests/layer/fixtures/"
+check "contracts: the crash guard script copies equal" 0 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
