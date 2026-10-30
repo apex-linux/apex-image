@@ -25,8 +25,9 @@ stderr; stdout is a tar of the results: ci-build.txt, gates-passed.txt, g2-resul
 g4-results.md and g4-passed.txt when this run wrote them, lock.diff (rpms.lock to
 rpms.lock.next before the promotion), qualify-logs/: the screendumps, journals and
 serial logs this run's G4 wrote, g2-logs/: each G2 run's assert.txt and its failing
-cases' logs, and diag-logs/: what qualify.sh local-diag wrote, each file at most 20 MiB
-and 200 MiB in all three (each directory's SKIPPED lists the rest). stages.tsv has the
+cases' logs (_build/g2/latest is apex-gnome's symlink to its run), and diag-logs/:
+local-diag's diag.md, diag-errexit.txt, results.md and logs/, never its ssh key; each
+file at most 20 MiB and 200 MiB in all three (each directory's SKIPPED lists the rest). stages.tsv has the
 UTC second each stage began: ci-build's own and every "== " line of build-image.sh's
 log, then "end"; build-image.sh's "== plan: " line also goes to ci-build.txt as "plan".
 metrics/ holds metrics.sh's metrics.tsv, history.tsv and warnings.tsv (S4's
@@ -186,7 +187,7 @@ copy_qualify_logs() {
         LOGS_KIB=$((LOGS_KIB + size))
         mkdir -p -- "$destination/$(dirname -- "$path")"
         cp -- "$source/$path" "$destination/$path"
-    done < <(find "$source" -maxdepth "${4:-1}" -type f -newer "$stamp" -printf '%s %P\n' | sort -k2 |
+    done < <(find -H "$source" -maxdepth "${4:-1}" -type f -newer "$stamp" -printf '%s %P\n' | sort -k2 |
         { if (($# > 4)); then grep -E "^[0-9]+ (${5})$" || true; else cat; fi; })
 }
 
@@ -341,7 +342,8 @@ build() {
     copy_if_newer _build/g4-passed.txt "$out/g4-passed.txt" "$stamp"
     copy_qualify_logs _build/qualify/logs "$out/qualify-logs" "$stamp"
     copy_g2_logs _build/g2/latest "$out/g2-logs" "$stamp"
-    copy_qualify_logs _build/qualify/diag "$out/diag-logs" "$stamp" 2
+    # Never local-diag's ssh key (key, key.pub, authorized_keys): the artifact is kept 14 days.
+    copy_qualify_logs _build/qualify/diag "$out/diag-logs" "$stamp" 2 'logs/[^/]+|diag\.md|diag-errexit\.txt|results\.md'
     if [[ -f tools/builder-vm/metrics.sh ]]; then
         bash tools/builder-vm/metrics.sh "$out/metrics" "$stamp" "$sha" "$out/lock.diff" ${daily:+size} 9>&- </dev/null >&2 ||
             log "metrics: exit $?; they never gate"

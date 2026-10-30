@@ -859,19 +859,22 @@ if [[ ${APEX_CI_MODE:-} == g4 && ! -e $FAKE/ignore-mode ]]; then echo qualify-on
 echo "lock-sha256 x" >_build/gates-passed.txt
 echo "== G4, when qualify.sh g4-due says it is due"
 if [[ -e $FAKE/with-logs ]]; then
-    mkdir -p _build/qualify/logs _build/qualify/diag/local-lock _build/g2/latest/run-1 _build/g2/latest/run-2
+    mkdir -p _build/qualify/logs _build/qualify/diag/logs _build/g2/20261030-1200/run-1 _build/g2/20261030-1200/run-2
+    ln -sfn 20261030-1200 _build/g2/latest
+    printf 'secret\n' | tee _build/qualify/diag/key _build/qualify/diag/key.pub _build/qualify/diag/authorized_keys >/dev/null
+    echo '| local-lock | FAIL | x | - |' >_build/qualify/diag/results.md
     echo shot >_build/qualify/logs/local-lock.png
     echo journal >_build/qualify/logs/local-unlock.journal.txt
     truncate -s 21M _build/qualify/logs/local.serial.log
-    echo diag >_build/qualify/diag/local-lock/journal.txt
+    echo diag >_build/qualify/diag/logs/local-lock.journal.txt
     printf '%s\n' 'PASS motion: ok' 'FAIL dock-pin: a pinned favourite shows' >_build/g2/latest/run-1/assert.txt
     printf '%s\n' 'FAIL motion: exit 139' >_build/g2/latest/run-2/assert.txt
     for run in 1 2; do
         for case in motion dock-pin glass; do echo "$case" >"_build/g2/latest/run-$run/$case.log"; done
     done
     truncate -s 19M _build/g2/latest/run-2/motion.log
-    mkdir -p _build/qualify/diag/bulk
-    for n in 0 1 2 3 4 5 6 7 8 9; do truncate -s 19M "_build/qualify/diag/bulk/$n.log"; done
+    mkdir -p _build/qualify/diag/logs
+    for n in 0 1 2 3 4 5 6 7 8 9; do truncate -s 19M "_build/qualify/diag/logs/bulk-$n.log"; done
 fi
 echo "== G2, the headless shell, 2 runs" >&2
 exit "$(cat "$FAKE/build-rc")"
@@ -939,11 +942,14 @@ check "a failed G4 returns this run's logs for vm.yml's artifact" \
     "$(tar -tf "$CI_DIR/out.tar" | grep '^\./qualify-logs/.' | sort | paste -sd' ')"
 check "and names the file over 20 MiB it left out" "local.serial.log 21504 KiB" \
     "$(tar -xOf "$CI_DIR/out.tar" ./qualify-logs/SKIPPED)"
-check "each G2 run's assert.txt and its failing cases' logs, no passing case's" \
+check "each G2 run's assert.txt and its failing cases' logs, no passing case's, through apex-gnome's latest symlink" \
     "./g2-logs/run-1/assert.txt ./g2-logs/run-1/dock-pin.log ./g2-logs/run-1/motion.log ./g2-logs/run-2/assert.txt ./g2-logs/run-2/dock-pin.log ./g2-logs/run-2/motion.log" \
     "$(tar -tf "$CI_DIR/out.tar" | grep '^\./g2-logs/.' | grep -v '/$' | sort | paste -sd' ')"
-check_true "qualify.sh local-diag's logs" tar -xOf "$CI_DIR/out.tar" ./diag-logs/local-lock/journal.txt
-check "within one 200 MiB for all three: the diagnosis's last 19 MiB log is left out, and named" "bulk/9.log 19456 KiB" \
+check_true "qualify.sh local-diag's logs" tar -xOf "$CI_DIR/out.tar" ./diag-logs/logs/local-lock.journal.txt
+check_true "and its results" tar -xOf "$CI_DIR/out.tar" ./diag-logs/results.md
+check "but never its ssh key: the artifact is kept 14 days" "" \
+    "$(tar -tf "$CI_DIR/out.tar" | grep -E '^\./diag-logs/(.*/)?(key|key\.pub|authorized_keys)$')"
+check "within one 200 MiB for all three: the diagnosis's last 19 MiB log is left out, and named" "logs/bulk-9.log 19456 KiB" \
     "$(tar -xOf "$CI_DIR/out.tar" ./diag-logs/SKIPPED)"
 rm "$CI_DIR/with-logs"
 rm -rf "$CI_DIR/home/apex-image/_build/qualify" "$CI_DIR/home/apex-image/_build/g2"
