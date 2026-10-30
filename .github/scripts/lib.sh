@@ -321,6 +321,88 @@ dnf_repo_args() {
     fi
 }
 
+# qualify_markers QUALIFY_SH INVENTORY SOURCES: every journal line G4 waits for has an entry
+# whose source context is unchanged in SOURCES/PKG/tree, the build named in SOURCES/PKG/nvr.
+qualify_markers() {
+    python3 - "$@" <<'EOF'
+import hashlib
+import os
+import re
+import sys
+
+qualify, inventory, sources = sys.argv[1:4]
+
+logical, buf = [], ""
+for line in open(qualify, encoding="utf-8").read().splitlines():
+    if line.lstrip().startswith("#"):
+        continue
+    buf += line.rstrip("\\").rstrip() + " "
+    if line.rstrip().endswith(("\\", "|", "&&", "||")) or buf.count("(") > buf.count(")"):
+        continue
+    logical.append(buf)
+    buf = ""
+waited = set()
+for line in logical:
+    marks = re.match(r"\s*readonly [A-Z_]*MARKS?=\(?(.*?)\)?\s*$", line)
+    if marks:
+        quoted = (a or b for a, b in re.findall(r"'([^']*)'|\"([^\"]*)\"", marks.group(1)))
+        waited.update(q.split("$")[0].strip() for q in quoted if q.split("$")[0].strip())
+        continue
+    for literal in re.findall(r"(?:--grep|\s-g|grep(?:\s+-[-A-Za-z0-9]+(?:\s+[0-9]+)?)*)\s+'([^'$]+)'", line):
+        if "journalctl" in line or re.search(re.escape(literal) + r"'\s+\"\$log\"", line):
+            waited.add(literal)
+
+entries, problems, checked = {}, [], set()
+for block in open(inventory, encoding="utf-8").read().split("\n\n"):
+    fields = {}
+    for line in block.splitlines():
+        if line and not line.startswith("#"):
+            key, _, value = line.partition(": ")
+            fields.setdefault(key, []).append(value)
+    if fields:
+        entries[fields["marker"][0]] = fields
+
+for marker in sorted(waited - entries.keys()):
+    problems.append(f"G4 waits for '{marker}' ({qualify}), but {inventory} has no entry for it")
+for marker in sorted(entries.keys() - waited):
+    problems.append(f"{inventory} has an entry for '{marker}', which no G4 row waits for any more")
+for marker, fields in sorted(entries.items()):
+    kind = fields.get("kind", [""])[0]
+    if not fields.get("guard"):
+        problems.append(f"'{marker}': no guard: line")
+    if kind == "other":
+        continue
+    if kind not in ("upstream", "apex") or not fields.get("source") or not fields.get("reviewed"):
+        problems.append(f"'{marker}': an {kind or 'unknown'} entry needs kind: upstream or apex, source: and reviewed: lines")
+        continue
+    for source in fields["source"]:
+        pkg, path, span, digest = source.split()
+        start, end = map(int, span.split("-"))
+        tree = os.path.join(sources, pkg, "tree")
+        nvr = open(os.path.join(sources, pkg, "nvr"), encoding="utf-8").read().strip() if os.path.isdir(tree) else "?"
+        checked.add(nvr)
+        try:
+            lines = open(os.path.join(tree, path), encoding="utf-8", errors="replace").read().split("\n")
+        except OSError:
+            problems.append(f"'{marker}': {pkg} {nvr} has no {path} (reviewed at {' '.join(fields['reviewed'])})")
+            continue
+        size = end - start + 1
+        at = [i + 1 for i in range(len(lines) - size + 1)
+              if hashlib.sha256(("\n".join(lines[i:i + size]) + "\n").encode()).hexdigest() == digest]
+        if not at:
+            now = "\n".join(f"    {n}: {lines[n - 1]}" for n in range(start, min(end, len(lines)) + 1))
+            problems.append(f"'{marker}': the context of {pkg} {path}:{start}-{end}, reviewed at "
+                            f"{' '.join(fields['reviewed'])}, changed in {nvr}; review its guard and record it again. Those lines now:\n{now}")
+        elif start not in at:
+            print(f"note: '{marker}': {pkg} {path}:{start}-{end} is unchanged in {nvr}, at line {at[0]}", file=sys.stderr)
+for problem in problems:
+    print(f"error: {problem}", file=sys.stderr)
+if problems:
+    sys.exit(1)
+print(f"{len(waited)} markers, {sum(e['kind'][0] != 'other' for e in entries.values())} with their source context, unchanged in {' '.join(sorted(checked))}")
+EOF
+}
+
 # Only registry.fedoraproject.org keeps old Fedora digests: quay.io/fedora forgets one
 # within a day of the tag moving, before Renovate's daily PR can merge.
 is_fedora_pin() {
