@@ -1,0 +1,31 @@
+systemd[1856]: Starting evolution-addressbook-factory.service - Evolution address book service...
+systemd[1856]: Started evolution-addressbook-factory.service - Evolution address book service.
+gnome-shell[1954]: Error connecting to the screencast service
+gsd-usb-protection[2068]: Failed to fetch USBGuard parameters: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable
+gsd-power[2053]: gsd_power_backlight_abs_to_percentage: assertion 'max > min' failed
+gnome-shell[1954]: Apex: feature motion enabled
+gsd-media-keys[2052]: Failed to grab accelerator for keybinding settings:hibernate
+gsd-media-keys[2052]: Failed to grab accelerator for keybinding settings:playback-repeat
+gnome-shell[1954]: Apex: feature shadows enabled
+gnome-shell[1954]: Apex: feature spotlight enabled
+gnome-shell[1954]: Apex: feature panel enabled
+gnome-shell[1954]: Apex: feature glass enabled
+gnome-shell[1954]: St.ButtonMask.ONE is deprecated, use St.ButtonMask.PRIMARY instead.
+gnome-shell[1954]: St.ButtonMask.THREE is deprecated, use St.ButtonMask.SECONDARY instead.
+gnome-shell[1954]: Apex: feature dock enabled
+gnome-shell[1954]: Apex: feature overview enabled
+gnome-shell[1954]: Apex: feature lock enabled
+gnome-shell[1954]: Apex: feature quick-settings enabled
+gnome-shell[1954]: Apex: feature end-session enabled
+gnome-shell[1954]: Apex: feature indicators enabled
+gnome-shell[1954]: Apex: feature polkit enabled
+gnome-shell[1954]: Apex: feature notifications enabled
+gnome-shell[1954]: Error looking up permission: GDBus.Error:org.freedesktop.portal.Error.NotFound: No entry for geolocation
+gnome-shell-calendar-server[2009]: e_cal_client_set_default_timezone: assertion 'zone != NULL' failed
+gnome-shell-calendar-server[2009]: e_cal_client_set_default_timezone: assertion 'zone != NULL' failed
+gnome-shell-calendar-server[2009]: e_cal_client_set_default_timezone: assertion 'zone != NULL' failed
+gnome-shell-calendar-server[2009]: e_cal_client_set_default_timezone: assertion 'zone != NULL' failed
+gnome-shell[1954]: GNOME Shell started at Wed Oct 28 2026 05:12:35 GMT+0000 (Coordinated Universal Time)
+gnome-shell[1954]: Registering display with GDM
+gnome-shell[1954]: Failed to get PolKit permission: Polkit.Error: GDBus.Error:org.freedesktop.PolicyKit1.Error.Failed: Action org.freedesktop.bolt.enroll is not registered
+libcanberra-login-sound.desktop[2072]: Failed to play sound: File or data not found

@@ -1148,6 +1148,29 @@ co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-desktop $CO/apex-desktop
 check "a new pin moves the clone and cleans it" "0:$CO_SYS:clean" \
     "$(components fetch):$(git -C "$CO/work/_build/components/apex-system" rev-parse HEAD):$([[ -e $CO/work/_build/components/apex-system/stray ]] && echo stray || echo clean)"
 
+mkdir -p "$CO/bin"
+cat >"$CO/bin/find" <<'FIND'
+#!/bin/bash
+[[ -n ${CO_FOREIGN:-} && " $* " == *" -user "* ]] && { echo "$1/target/rpm/BUILD"; exit 0; }
+exec /usr/bin/find "$@"
+FIND
+cat >"$CO/bin/sudo" <<'SUDO'
+#!/bin/bash
+echo "$*" >>"$CO_SUDO_LOG"
+[[ -z ${CO_NO_SUDO:-} ]] || exit 1
+shift
+exec "$@"
+SUDO
+chmod +x "$CO/bin/find" "$CO/bin/sudo"
+co_sudo() { (cd "$CO/work" && PATH="$CO/bin:$PATH" CO_SUDO_LOG="$CO/sudo.log" rc_of env "$@" tools/components.sh fetch); }
+: >"$CO/sudo.log"
+check "a clean checkout needs no sudo" "0:" "$(co_sudo):$(cat "$CO/sudo.log")"
+check "files a killed root build left are taken back before the clean" \
+    "0:-n chown -R $(id -u):$(id -g) -- $CO/work/_build/components/apex-system" \
+    "$(co_sudo CO_FOREIGN=1):$(head -n 1 "$CO/sudo.log")"
+check "without sudo -n the fetch fails rather than build from an unclean checkout" 1 \
+    "$(co_sudo CO_FOREIGN=1 CO_NO_SUDO=1)"
+
 rm -rf "$CO/work/_build/components/apex-system"
 git clone -q --depth 1 "file://$CO/apex-system.git" "$CO/work/_build/components/apex-system"
 git -C "$CO/work/_build/components/apex-system" remote set-url origin "$CO/apex-system.git"
@@ -1689,6 +1712,9 @@ vm_ssh() {
         "systemd-analyze") from analyze | grep . ;;
         "systemd-analyze blame --no-pager | head -n 10") from blame ;;
         "journalctl -b -q --no-pager -o short-monotonic "*) mono_journal "$cmd" ;;
+        "journalctl -b -"[0-9]*" -u $ASSESS_UNIT -o cat --no-pager -q | grep -q -- $FORCED_RED_CHECK")
+            local assess_boot=${cmd#journalctl -b -}
+            from "assess.-${assess_boot%% *}" | grep -q -- "$FORCED_RED_CHECK" ;;
         *) printf 'unexpected vm_ssh: %s\n' "$cmd" >&2; return 99 ;;
     esac
 }
@@ -2499,6 +2525,60 @@ check "errexit: a failed assignment names itself" "qualify.sh: line 1: v=\$(prin
 check "errexit: failures the script tolerates print nothing" "done" \
     "$(errexit_of 'x=$(false; echo y) || true; if ! false; then :; fi; false || true; set +e; false; set -e; v=$(grep -q z /dev/null || true); echo done >&2')"
 
+# --- G4 against real guest journals: runs 6, 7, 8, 11, 13 and 16 (g4-fixtures/README.md) ---------
+G4F=$APEX_ROOT/.github/scripts/g4-fixtures
+G4F_USER=$(sed -n 's/^readonly TEST_USER=//p' "$APEX_ROOT/.github/scripts/qualify.sh")
+g4f() { sed "s/@TEST_USER@/$G4F_USER/g" "$G4F/$1"; }
+g4f_boot() { # FIXTURE: boot_metrics and the login steps on that real boot journal
+    local -a lines
+    mapfile -t lines < <(g4f "$1")
+    boot_then_login "${lines[@]}"
+}
+check "run 6's boot (43094ed, no user shell yet): boot metrics never end G4" 0 "$(g4f_boot run6-boot.mono)"
+check "and the boot row passes, the greeter timed at systemd's start of its shell" 1 "$(row local-boot-metrics PASS)"
+check "greeter 8.989, as run 6 logged it" "greeter 8.989" "$(grep '^greeter ' "$GUEST_DIR/out/boot.tsv" | paste -sd' ')"
+check_true "the desktop untimed, by name" grep -q "desktop: no 'gdm-password:session.: session opened for user $G4F_USER'" <<<"$(boot_row)"
+logged_in
+g4f run13-analyze.txt >"$GUEST_DIR/state/analyze"
+g4f run13-boot.mono >"$GUEST_DIR/state/mono"
+check "run 13's boot, greeter to the user's shell: boot metrics" 0 "$(guest boot_metrics local)"
+check "times each phase from its real lines" "kernel 0.942 initrd 2.660 userspace 24.437 greeter 9.020 desktop 1.146" \
+    "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
+green_boot
+printf '%s\n' ' -3 a' ' -2 b' ' -1 c' '  0 d' >"$GUEST_DIR/state/boots"
+g4f run7-red-boot.assess >"$GUEST_DIR/state/assess.-3"
+g4f run8-red-boot.assess >"$GUEST_DIR/state/assess.-2"
+g4f run16-forced-red-boot.assess >"$GUEST_DIR/state/assess.-1"
+# shellcheck disable=SC2016 # QUALIFY_OUT expands in the fake guest
+check "runs 7, 8 and 16's red boots: only the boot the hook forced red counts" "0|1" \
+    "$(guest eval 'forced_red_boots 3 >"$QUALIFY_OUT/forced"')|$(cat "$GUEST_DIR/out/forced")"
+rm -rf "$GUEST_DIR/state"
+mkdir -p "$GUEST_DIR/state"
+echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
+echo 865 >"$GUEST_DIR/state/greeter-pid"
+g4f run16-greeter.manager >"$GUEST_DIR/state/greeter-manager"
+check "run 16's greeter manager: no Apex user unit starts in the greeter" 0 "$(guest assert_greeter local-settled)"
+check "and the greeter row passes" 1 "$(row local-settled-greeter PASS)"
+logged_in
+g4f run11-login.journal >"$GUEST_DIR/state/journal"
+check "run 11's login journal (0380e70), on today's contract: the login passes" 0 "$(guest login_only local)"
+check_true "with no JS ERROR and no Apex failure in its real lines" grep -q '^| local-login | PASS | .*; 0 JS ERROR line(s) since login' "$GUEST_DIR/out/results.md"
+apex_locked_in
+rm "$GUEST_DIR/state/takes-keys"
+g4f run13-lock-esc.journal >>"$GUEST_DIR/state/journal"
+check "run 13's lock, from its prompt to its JS ERROR, starting no conversation: fails" 1 "$(guest lock_matrix local 1000)"
+check_true "and the first lock row quotes run 13's JS ERROR" grep -q "^| local-lock-wrong-password | FAIL | .*gnome-shell\[1935\]: JS ERROR: TypeError: can't convert undefined to object" \
+    "$GUEST_DIR/out/results.md"
+apex_locked_in
+g4f run16-lock-blank-wake.journal >>"$GUEST_DIR/state/journal"
+: >"$GUEST_DIR/state/blank-unlogged"
+: >"$GUEST_DIR/state/wake-unlogged"
+check "run 16's blank and wake (5197371), whose shell logged neither line: fails" 1 "$(guest lock_matrix local 1000)"
+check_true "naming the blank line, with no JS ERROR in its real lines" grep -q \
+    "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen blank, prompt torn down' after the screen blanked.*no JS ERROR since the row began" \
+    "$GUEST_DIR/out/results.md"
+rm -rf "$GUEST_DIR/state"
+
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
     local ga_reached=$1 allowlist=$2
@@ -2533,6 +2613,41 @@ ct_features() { # LIST: apex-gnome's layer.js with FEATURES_IN_ENABLE_ORDER = [L
 }
 ct_choices motion spotlight
 ct_features "'motion', 'spotlight'"
+ct_user_units() { # SYSTEM DESKTOP: the user units the components' specs ship and enable, as main's
+    mkdir -p "$1/packaging" "$1/data" "$2/packaging" "$2/desktop/systemd/user"
+    printf '%s\n' '%files' '%{_userunitdir}/apex-session-agent.service' '%{_userpresetdir}/80-apex.preset' >"$1/packaging/apex.spec"
+    printf 'enable apex-session-agent.service\n' >"$1/data/80-apex.preset"
+    printf '[Unit]\nConditionEnvironment=XDG_SESSION_CLASS=user\n[Service]\nExecStart=/a\nRestart=on-failure\n[Install]\nWantedBy=graphical-session.target\n' \
+        >"$1/data/apex-session-agent.service"
+    printf '%s\n' '%files' '%{_userunitdir}/apex-shell-safe.service' '%{_userunitdir}/apex-folder-icons.service' \
+        '%{_userunitdir}/graphical-session.target.wants/apex-folder-icons.service' >"$2/packaging/apex-desktop.spec"
+    printf '[Unit]\nConditionEnvironment=XDG_SESSION_CLASS=user\n[Service]\nType=oneshot\nExecStart=/b\n' \
+        >"$2/desktop/systemd/user/apex-folder-icons.service"
+    printf '[Unit]\n' >"$2/desktop/systemd/user/apex-shell-safe.service"
+}
+ct_user_units "$CT/system" "$CT/desktop"
+G4U=$TMP/g4-user-units
+g4u() { # QUALIFY: g4_user_units' exit on a fresh copy of the components after "$G4U/edit"; its errors in $G4U/err
+    rm -rf "$G4U/system" "$G4U/desktop" && ct_user_units "$G4U/system" "$G4U/desktop"
+    (cd "$G4U" && eval "$(cat "$G4U/edit")")
+    (set +e; g4_user_units "$1" "$G4U/system" "$G4U/desktop" >"$G4U/out" 2>"$G4U/err"; echo $?)
+}
+mkdir -p "$G4U" && : >"$G4U/edit"
+check "g4 user units: main's qualify.sh expects what the components enable" 0 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+check "and names them" "long-running: apex-session-agent.service; oneshot: apex-folder-icons.service" "$(cat "$G4U/out")"
+sed '/^apex_units_settled() {$/,/^}$/d' "$APEX_ROOT/.github/scripts/qualify.sh" >"$G4U/qualify-0380e70.sh"
+check "g4 user units: a login contract that expects no Apex user unit (0380e70, run 11) fails" 1 "$(g4u "$G4U/qualify-0380e70.sh")"
+check_true "and names the agent it would not expect" grep -q "expects the long-running Apex user units 'none', but the components enable 'apex-session-agent.service'" "$G4U/err"
+echo "echo enable apex-extra.service >>system/data/80-apex.preset" >"$G4U/edit"
+check "g4 user units: a preset enabling a unit no spec installs fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+echo "sed -i 's/^Restart=.*/Type=oneshot/' system/data/apex-session-agent.service" >"$G4U/edit"
+check "g4 user units: an agent that became a oneshot fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+check_true "and says G4 expects it running" grep -q "expects the long-running Apex user units 'apex-session-agent.service', but the components enable 'none'" "$G4U/err"
+echo "sed -i '/^ConditionEnvironment=/d' desktop/desktop/systemd/user/apex-folder-icons.service" >"$G4U/edit"
+check "g4 user units: a unit that would start in the greeter fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
+check_true "and says why" grep -q "apex-folder-icons.service: no ConditionEnvironment=XDG_SESSION_CLASS=user, so it starts in GDM's greeter" "$G4U/err"
+echo "sed -i '/target.wants/d' desktop/packaging/apex-desktop.spec" >"$G4U/edit"
+check "g4 user units: a oneshot nothing enables any more fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
 # The compose's repositories, as dnf5 repoquery --whatprovides answers: FILE PACKAGE lines.
 mkdir -p "$CT/bin"
 cat >"$CT/bin/dnf5" <<'EOF'
@@ -2685,6 +2800,77 @@ check "contracts: a free-form kill switch, no <choices>" 1 "$(ct_kill '' "'motio
 check_true "says it cannot be checked" grep -q '^error: disabled-features has no <choices>: it takes any name' "$CT/out"
 check_true "naming apex-desktop" grep -q '^error: contracts: apex-desktop (.*): see above' "$CT/out"
 ct_kill 'motion spotlight' "'motion', 'spotlight'" >/dev/null
+
+# --- contracts.sh: G4's QEMU and the desktop VM's, read from the scripts themselves ------
+QP=$TMP/qemu-parity
+mkdir -p "$QP"
+qp_rc() { (set +e; qemu_parity "$@" 2>"$QP/err"; echo $?); }
+QP_REAL=("$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/tools/builder-vm/desktop-vm.sh")
+check "qemu parity: main's qualify.sh and desktop-vm.sh agree" 0 "$(qp_rc "${QP_REAL[@]}")"
+check "qemu parity: each runs q35 with vmport=off on the host CPU" "machine q35,accel=kvm,vmport=off|cpu host" \
+    "$(qemu_flags "${QP_REAL[0]}" | paste -sd'|')"
+sed 's/,vmport=off -cpu host/ -cpu host/' "${QP_REAL[0]}" >"$QP/qualify-no-vmport.sh"
+check "qemu parity: a G4 VM without vmport=off (qualify.sh at 5197371) fails" 1 \
+    "$(qp_rc "$QP/qualify-no-vmport.sh" "${QP_REAL[1]}")"
+check_true "and says what vmport=off is for" grep -q 'qualify-no-vmport.sh: -machine q35,accel=kvm lacks vmport=off' "$QP/err"
+sed 's/ -cpu host / -cpu max /' "${QP_REAL[1]}" >"$QP/desktop-cpu.sh"
+check "qemu parity: another -cpu fails" 1 "$(qp_rc "${QP_REAL[0]}" "$QP/desktop-cpu.sh")"
+check_true "and names both" grep -q 'desktop-cpu.sh runs QEMU with machine q35,accel=kvm,vmport=off cpu max, but .*qualify.sh with machine q35,accel=kvm,vmport=off cpu host' "$QP/err"
+sed 's/-machine q35,accel=kvm,vmport=off/-machine pc,accel=kvm,vmport=off/' "${QP_REAL[1]}" >"$QP/desktop-pc.sh"
+check "qemu parity: another machine type fails" 1 "$(qp_rc "${QP_REAL[0]}" "$QP/desktop-pc.sh")"
+{ cat "${QP_REAL[0]}"; printf 'qemu-system-x86_64 -machine q35 -cpu host\n'; } >"$QP/qualify-two.sh"
+check "qemu parity: a second QEMU command line fails rather than going unread" 1 "$(qp_rc "$QP/qualify-two.sh" "${QP_REAL[1]}")"
+check_true "and counts them" grep -q 'qualify-two.sh: 2 QEMU -machine options, expected 1' "$QP/err"
+{ cat "${QP_REAL[0]}"; printf '    # -machine pc -cpu max: a comment\n'; } >"$QP/qualify-comment.sh"
+check "qemu parity: a comment naming flags is not a QEMU line" 0 "$(qp_rc "$QP/qualify-comment.sh" "${QP_REAL[1]}")"
+
+# --- markers.sh: G4's journal markers against an inventory of their source context ---------
+QM=$TMP/qualify-markers
+mkdir -p "$QM/src/upstream/tree/src" "$QM/src/apex-gnome/tree"
+echo upstream-1.0-1.fc45 >"$QM/src/upstream/nvr"
+echo apex-gnome@0 >"$QM/src/apex-gnome/nvr"
+printf '%s\n' 'static int log_it(int done) {' '        if (done)' '                log("Reached the end of %s.");' '}' >"$QM/src/upstream/tree/src/end.c"
+printf "console.warn('Apex: up');\n" >"$QM/src/apex-gnome/tree/up.js"
+qm_sha() { sed -n "$2,$3p" "$1" | sha256sum | cut -d' ' -f1; }
+cat >"$QM/qualify.sh" <<'EOF'
+readonly DONE_MARKS=('Reached the end of' 'Apex: up')
+x=$(vm_ssh "journalctl -b -o cat | grep -m 1 'kernel noise'")
+EOF
+qm_inventory() {
+    printf '%s\n' '# inventory' '' 'marker: Reached the end of' 'kind: upstream' \
+        "source: upstream src/end.c 2-3 $(qm_sha "$QM/src/upstream/tree/src/end.c" 2 3)" \
+        'reviewed: upstream-1.0-1.fc45' 'guard: only when done' '' \
+        'marker: Apex: up' 'kind: apex' "source: apex-gnome up.js 1-1 $(qm_sha "$QM/src/apex-gnome/tree/up.js" 1 1)" \
+        'reviewed: apex-gnome@0' 'guard: always' '' 'marker: kernel noise' 'kind: other' 'guard: diagnostic only'
+}
+qm_inventory >"$QM/inventory.txt"
+qm_rc() { (set +e; qualify_markers "$QM/qualify.sh" "$1" "$QM/src" >"$QM/out" 2>"$QM/err"; echo $?); }
+check "markers: every marker has an entry whose context is unchanged" 0 "$(qm_rc "$QM/inventory.txt")"
+check "and the summary counts them" "3 markers, 2 with their source context, unchanged in apex-gnome@0 upstream-1.0-1.fc45" "$(cat "$QM/out")"
+echo "grep -q 'Reached a new line' \"\$log\"" >>"$QM/qualify.sh"
+check "markers: a marker G4 waits for without an entry fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names it" grep -q "G4 waits for 'Reached a new line' .*has no entry for it" "$QM/err"
+sed -i '$d' "$QM/qualify.sh"
+sed -i "/^x=/d" "$QM/qualify.sh"
+check "markers: an entry no G4 row waits for fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names it" grep -q "has an entry for 'kernel noise', which no G4 row waits for any more" "$QM/err"
+printf '%s\n' "x=\$(vm_ssh \"journalctl -b -o cat | grep -m 1 'kernel noise'\")" >>"$QM/qualify.sh"
+sed -i 's/if (done)/if (done \&\& !quiet)/' "$QM/src/upstream/tree/src/end.c"
+check "markers: a guard that changed in the current build fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names the build and the lines" grep -q "the context of upstream src/end.c:2-3, reviewed at upstream-1.0-1.fc45, changed in upstream-1.0-1.fc45" "$QM/err"
+sed -i 's/if (done \&\& !quiet)/if (done)/; 1i /* a new first line */' "$QM/src/upstream/tree/src/end.c"
+check "markers: the same context on other lines passes" 0 "$(qm_rc "$QM/inventory.txt")"
+check_true "and says where it moved" grep -q "is unchanged in upstream-1.0-1.fc45, at line 3" "$QM/err"
+rm "$QM/src/apex-gnome/tree/up.js"
+check "markers: a source file the build no longer has fails" 1 "$(qm_rc "$QM/inventory.txt")"
+printf "console.warn('Apex: up');\n" >"$QM/src/apex-gnome/tree/up.js"
+qm_inventory | sed '/^guard: always$/d' >"$QM/inventory-noguard.txt"
+check "markers: an entry without its guard fails" 1 "$(qm_rc "$QM/inventory-noguard.txt")"
+mkdir -p "$QM/none"
+(set +e; qualify_markers "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/qualify-markers.txt" "$QM/none" \
+    >/dev/null 2>"$QM/err-main") || true
+check "markers: every journal line main's qualify.sh waits for has an entry, and every entry a marker" 0 \
+    "$(grep -c -e 'has no entry for it' -e 'no G4 row waits for' -e 'needs kind: upstream or apex' -e 'no guard: line' "$QM/err-main")"
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }

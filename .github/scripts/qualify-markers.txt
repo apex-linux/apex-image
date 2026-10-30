@@ -1,0 +1,134 @@
+# The journal lines G4 waits for, with the source context that logs them: .github/scripts/markers.sh
+# checks each against the current Fedora build, and qualify.sh's markers against these entries.
+
+marker: Reached target graphical-session.target
+kind: upstream
+source: systemd src/core/target.c 199-200 80f0456ee877d55fde4783b4c0c5ea9593aa321cc8bbca31f353bcf9cfbc7eba
+source: systemd src/core/unit.c 1415-1427 686473c68e404e56f219c5b85b3bd6bed7e76c054b67a74354489dd8b6214bca
+reviewed: systemd-262-3.fc45
+guard: The user manager logs it when graphical-session.target's start job ends JOB_DONE. The unit is named by its id under StatusUnitFormat=combined (the default, "id - description") or name; under description the line names the description only.
+
+marker: Started org.gnome.Shell@gdm.service
+kind: upstream
+source: systemd src/core/job.c 650-651 5bacca8c65dda21be015d81b5bc70397b3f59b66b834a1ba2f1563da01bd8add
+source: systemd src/core/service.c 6368-6377 84e35bbd6db3f20b3e1842a6da45426feaecde1f28654d8141bd3aa029778bb0
+source: systemd src/core/job.c 779-800 131801d948b1890f4c7d1c35803bccf798aebc5457b66a9ff1675588f9ab0a6a
+source: systemd src/core/unit.c 1415-1427 686473c68e404e56f219c5b85b3bd6bed7e76c054b67a74354489dd8b6214bca
+reviewed: systemd-262-3.fc45
+guard: The generic "Started %s." of a start job that ends JOB_DONE on a unit that is not a oneshot service: gnome-shell's units are Type=notify, so after READY=1. A unit skipped on an unmet condition logs "skipped" instead. Named by id as for graphical-session.target.
+
+marker: Started org.gnome.Shell@user.service
+kind: upstream
+source: systemd src/core/job.c 650-651 5bacca8c65dda21be015d81b5bc70397b3f59b66b834a1ba2f1563da01bd8add
+source: systemd src/core/service.c 6368-6377 84e35bbd6db3f20b3e1842a6da45426feaecde1f28654d8141bd3aa029778bb0
+source: systemd src/core/job.c 779-800 131801d948b1890f4c7d1c35803bccf798aebc5457b66a9ff1675588f9ab0a6a
+source: systemd src/core/unit.c 1415-1427 686473c68e404e56f219c5b85b3bd6bed7e76c054b67a74354489dd8b6214bca
+reviewed: systemd-262-3.fc45
+guard: The generic "Started %s." of a start job that ends JOB_DONE on a unit that is not a oneshot service: gnome-shell's units are Type=notify, so after READY=1. A unit skipped on an unmet condition logs "skipped" instead. Named by id as for graphical-session.target.
+
+marker: Started org.gnome.Shell@wayland.service
+kind: upstream
+source: systemd src/core/job.c 650-651 5bacca8c65dda21be015d81b5bc70397b3f59b66b834a1ba2f1563da01bd8add
+source: systemd src/core/service.c 6368-6377 84e35bbd6db3f20b3e1842a6da45426feaecde1f28654d8141bd3aa029778bb0
+source: systemd src/core/job.c 779-800 131801d948b1890f4c7d1c35803bccf798aebc5457b66a9ff1675588f9ab0a6a
+source: systemd src/core/unit.c 1415-1427 686473c68e404e56f219c5b85b3bd6bed7e76c054b67a74354489dd8b6214bca
+reviewed: systemd-262-3.fc45
+guard: The generic "Started %s." of a start job that ends JOB_DONE on a unit that is not a oneshot service: gnome-shell's units are Type=notify, so after READY=1. A unit skipped on an unmet condition logs "skipped" instead. Named by id as for graphical-session.target.
+
+marker: Finished apex-shell-safe.service
+kind: upstream
+source: systemd src/core/service.c 6368-6377 84e35bbd6db3f20b3e1842a6da45426feaecde1f28654d8141bd3aa029778bb0
+source: systemd src/core/unit.c 1415-1427 686473c68e404e56f219c5b85b3bd6bed7e76c054b67a74354489dd8b6214bca
+reviewed: systemd-262-3.fc45
+guard: Only for a Type=oneshot service whose start job ends JOB_DONE (apex-shell-safe.service is one); any other service logs "Started %s.". Named by id as for graphical-session.target.
+
+marker: Start(ing|ed) apex-
+kind: upstream
+source: systemd src/core/job.c 584-591 6cf472ae8f25e0e6c070f4c2f82ae1af4bba43aafee3b114f0f80c2b671e6779
+source: systemd src/core/job.c 650-651 5bacca8c65dda21be015d81b5bc70397b3f59b66b834a1ba2f1563da01bd8add
+source: systemd src/core/job.c 779-800 131801d948b1890f4c7d1c35803bccf798aebc5457b66a9ff1675588f9ab0a6a
+reviewed: systemd-262-3.fc45
+guard: G4 forbids these in the greeter's manager. "Starting %s..." when a start job begins, "Started %s." when it ends JOB_DONE; a unit skipped on ConditionEnvironment= logs "skipped" and neither, so the pattern sees only units that really start.
+
+marker: ordering cycle
+kind: upstream
+source: systemd src/core/transaction.c 460-462 79f233651b4d785e7f417a377a7429781f4404e3bd978cc258d57fd780789d0b
+reviewed: systemd-262-3.fc45
+guard: G4 forbids it. PID 1 logs "Found ordering cycle: …" when a transaction it builds has a cycle, before deleting a job to break it.
+
+marker: Registering session with GDM
+kind: upstream
+source: gnome-shell js/misc/loginManager.js 56-57 73e3e80a41c147b74fa5ff0732d73a247fb44cf6503ccecd96bdd1462b5351da
+source: gnome-shell js/ui/main.js 327-327 324fc40df92fea593dc7829f49da1be7315a33011b6a5e08db22d741d988e229
+reviewed: gnome-shell-51.0-1.fc45
+guard: Every shell, the greeter's and the user's, logs it from _initializeUI, unconditionally, before startup-prepared.
+
+marker: Registering display with GDM
+kind: upstream
+source: gnome-shell js/misc/loginManager.js 74-75 684acc81ed5ee7a1e81e42bb685f2bfb936a552c36bb46ad6cabb742c1464a27
+source: gnome-shell js/ui/main.js 348-378 38080c31517d025c80af32394512cfd4c805008aa58cd18f39c9508f6ec873ec
+reviewed: gnome-shell-51.0-1.fc45
+guard: Logged at layoutManager's startup-complete, in every session mode, the greeter's too.
+
+marker: GNOME Shell started at
+kind: upstream
+source: gnome-shell js/ui/main.js 348-358 323c6aa87d61576ea8bcbc39cde0fbff28d1984b18fc4a25dda732e5fec97d61
+reviewed: gnome-shell-51.0-1.fc45
+guard: Only at startup-complete, and only when sessionMode.currentMode is neither 'gdm' nor 'initial-setup': GDM's greeter never logs it, so it is the greeter's last fallback mark only for an older shell.
+
+marker: gdm-password:session.: session opened for user
+kind: upstream
+source: pam modules/pam_unix/pam_unix_sess.c 92-101 ee9d55a4aef00c105a237adfe4aeafb9d0b16d8eb990efdd744d96c283b141f6
+source: pam libpam/pam_syslog.c 80-82 2aff14fe0ad9149ec0dbee53261fb9def19beb8e9046d27395d6c9150af0da78
+reviewed: pam-1.7.2-4.fc45
+guard: pam_unix's open_session logs it unless the module has 'quiet'. pam_syslog prefixes "pam_unix(SERVICE:session):", and GDM's password login runs the gdm-password service. systemd-user also logs a "session opened" for the user, earlier, under its own service.
+
+marker: authentication failure
+kind: upstream
+source: pam modules/pam_unix/support.c 773-777 9293da76fe4a49d9676b1c13f937ca6f5394836cd86ef786994c2d07592f2480
+source: pam modules/pam_unix/support.c 829-833 8f72133d3a0ef15b131d124924c538569462884acfb9a266308af8a266f62588
+source: pam libpam/pam_syslog.c 80-82 2aff14fe0ad9149ec0dbee53261fb9def19beb8e9046d27395d6c9150af0da78
+reviewed: pam-1.7.2-4.fc45
+guard: pam_unix logs it when a password check fails and the module keeps a failure record (data_name), once per wrong password. The prefix names the service: gdm-password at the lock screen.
+
+marker: pam_unix\(polkit-1:auth\): authentication failure
+kind: upstream
+source: pam modules/pam_unix/support.c 773-777 9293da76fe4a49d9676b1c13f937ca6f5394836cd86ef786994c2d07592f2480
+source: pam modules/pam_unix/support.c 829-833 8f72133d3a0ef15b131d124924c538569462884acfb9a266308af8a266f62588
+source: pam libpam/pam_syslog.c 80-82 2aff14fe0ad9149ec0dbee53261fb9def19beb8e9046d27395d6c9150af0da78
+reviewed: pam-1.7.2-4.fc45
+guard: As "authentication failure", for polkit-agent-helper-1, which runs the polkit-1 service: one per wrong password, even while the dialog keeps one request open.
+
+marker: FAILED to authenticate to gain authorization for action org.freedesktop.policykit.exec
+kind: upstream
+source: polkit src/polkitbackend/polkitbackendinteractiveauthority.c 751-753 15299588eb96525c80a0e96b7d9108c33b6f9de1388d46651419cf5833673023
+source: polkit src/polkitbackend/polkitbackendinteractiveauthority.c 875-876 8e0d94f9a84c146d215fa0b0f287def39aced73c8c5d5400c36333251ebad182
+reviewed: polkit-127-5.fc45
+guard: polkitd logs it in check_authorization_challenge_cb, which runs once, when the agent's request ends without success (a dismissed or failed request), never for each wrong password the dialog retries within one request.
+
+marker: JS ERROR
+kind: upstream
+source: gjs gjs/jsapi-util.cpp 557-561 1692129ebb993d75b97592a1e981e4f208f0478823449e39ddf1a095e0cf7b8d
+reviewed: gjs-1.90.0-1.fc45
+guard: gjs logs every exception gjs_log_exception_full reports, caught (WARNING) or uncaught (CRITICAL), with this prefix.
+
+marker: aborting the shell
+kind: apex
+source: apex-gnome desktop/shell/js/ui/apex/fault/feature.js 35-35 61c631b14a78de87b35b8d9a79edf23fe4951106a4b7bdfc01cbc229d2f959f0
+reviewed: apex-gnome@84d0a54f
+guard: apex-gnome's test fault, enabled only by APEX_SHELL_TEST_FAULT=abort-after-enable in the test user's file.
+
+marker: Apex: safe mode (layer-enabled is false)
+kind: apex
+source: apex-gnome desktop/shell/js/ui/apex/hooks.js 35-35 00a2adfd4f05eabfc3b4bba7dd9c84d2141e4c8b8c684f1cc3c3520effecfe5a
+source: apex-gnome desktop/shell/js/ui/apex/hooks.js 54-54 5b2b7349280ddf037c4f030da14e9f6c59a7b8039a6c7cb3fa0bc02d9f05714c
+reviewed: apex-gnome@84d0a54f
+guard: The layer logs it once, at its first safe-mode check, when the crash guard has turned layer-enabled off.
+
+marker: ^[[:space:]]*-?[0-9]+[[:space:]]
+kind: other
+guard: journalctl --list-boots output, counted to know how many boots the journal has; not a logged message.
+
+marker: virtio|drm|PM: .*(fail|error)
+kind: other
+guard: Diagnostic only: the first kernel line on virtio, DRM or a PM failure is appended to a lock row's failure detail; no row waits for it.

@@ -1,0 +1,86 @@
+[    8.426583] guest systemd[819]: Queued start job for default target default.target.
+[    8.431662] guest systemd[819]: Created slice app.slice - User Application Slice.
+[    8.431724] guest systemd[819]: Started systemd-tmpfiles-clean.timer - Daily Cleanup of User's Temporary Directories.
+[    8.431749] guest systemd[819]: Reached target paths.target - Paths.
+[    8.431828] guest systemd[819]: Reached target timers.target - Timers.
+[    8.435490] guest systemd[819]: Starting dbus.socket - D-Bus User Message Bus Socket...
+[    8.436584] guest systemd[819]: Listening on pipewire-pulse.socket - PipeWire PulseAudio.
+[    8.436952] guest systemd[819]: Listening on pipewire.socket - PipeWire Multimedia System Sockets.
+[    8.439425] guest systemd[819]: Listening on systemd-ask-password.socket - Query the User Interactively for a Password.
+[    8.441147] guest systemd[819]: Listening on systemd-journalctl.socket - Journal Log Access Socket.
+[    8.442689] guest systemd[819]: Listening on systemd-storage-fs.socket - Simple File System Backed Storage Provider.
+[    8.443914] guest systemd[819]: Starting systemd-tmpfiles-setup.service - Create User Files and Directories...
+[    8.453148] guest systemd[819]: Listening on dbus.socket - D-Bus User Message Bus Socket.
+[    8.453285] guest systemd[819]: Reached target sockets.target - Sockets.
+[    8.468213] guest systemd[819]: Finished systemd-tmpfiles-setup.service - Create User Files and Directories.
+[    8.468557] guest systemd[819]: Reached target basic.target - Basic System.
+[    8.471180] guest systemd[819]: Started mpris-proxy.service - Bluetooth mpris proxy.
+[    8.471218] guest systemd[819]: Reached target default.target - Main User Target.
+[    8.471279] guest systemd[819]: Startup finished in 195ms.
+[    8.489053] guest systemd[819]: Created slice session.slice - User Core Session Slice.
+[    8.490972] guest systemd[819]: Starting dbus-broker.service - D-Bus User Message Bus...
+[    8.538925] guest systemd[819]: Started dbus-broker.service - D-Bus User Message Bus.
+[    8.630365] guest systemd[819]: Created slice app-gnome\x2dsession\x2dmanager.slice - Slice /app/gnome-session-manager.
+[    8.630542] guest systemd[819]: gnome-initial-setup-copy-worker.service - GNOME Initial Setup Copy Worker skipped, unmet condition check ConditionEnvironment=XDG_SESSION_CLASS=user
+[    8.632552] guest systemd[819]: Starting gnome-session-monitor.service - Monitor Session leader for GNOME Session...
+[    8.634108] guest systemd[819]: Starting xdg-user-dirs.service - User folders update...
+[    8.650913] guest systemd[819]: Started gnome-session-monitor.service - Monitor Session leader for GNOME Session.
+[    8.652986] guest systemd[819]: Finished xdg-user-dirs.service - User folders update.
+[    8.653640] guest systemd[819]: Reached target graphical-session-pre.target - Session services which should run early before the graphical session is brought up.
+[    8.653858] guest systemd[819]: Reached target gnome-session-pre.target - Tasks to be run before GNOME Session starts.
+[    8.655458] guest systemd[819]: Starting gnome-session-manager@gnome-login.service - GNOME Session Manager (session: gnome-login)...
+[    8.692969] guest systemd[819]: Started gnome-session-manager@gnome-login.service - GNOME Session Manager (session: gnome-login).
+[    8.693513] guest systemd[819]: Reached target gnome-session-manager.target - GNOME Session Manager is ready.
+[    8.696275] guest systemd[819]: Starting org.gnome.Shell@gdm.service - GNOME Shell...
+[    9.495582] guest systemd[819]: Starting at-spi-dbus-bus.service - Accessibility services bus...
+[    9.525880] guest systemd[819]: Started at-spi-dbus-bus.service - Accessibility services bus.
+[    9.714938] guest systemd[819]: Created slice app-dbus\x2d:1.11\x2dorg.a11y.atspi.Registry.slice - Slice /app/dbus-:1.11-org.a11y.atspi.Registry.
+[    9.718419] guest systemd[819]: Started dbus-:1.11-org.a11y.atspi.Registry@0.service.
+[   10.407494] guest systemd[819]: Starting xdg-permission-store.service - sandboxed app permission store...
+[   10.435381] guest systemd[819]: Started xdg-permission-store.service - sandboxed app permission store.
+[   10.464867] guest systemd[819]: Created slice app-dbus\x2d:1.3\x2dorg.gnome.Shell.Notifications.slice - Slice /app/dbus-:1.3-org.gnome.Shell.Notifications.
+[   10.468430] guest systemd[819]: Started dbus-:1.3-org.gnome.Shell.Notifications@0.service.
+[   10.469669] guest systemd[819]: Started org.gnome.Shell@gdm.service - GNOME Shell.
+[   10.471745] guest systemd[819]: Reached target gnome-session-initialized.target - GNOME Session is initialized.
+[   10.472579] guest systemd[819]: Reached target gnome-session-basic-services.target - GNOME basic session services.
+[   10.472702] guest systemd[819]: Reached target gnome-session@gnome-login.target - GNOME Session (session: gnome-login).
+[   10.476378] guest systemd[819]: Starting gnome-session-signal-init.service - Signal initialization done to GNOME Session Manager...
+[   10.485366] guest systemd[819]: Starting org.freedesktop.IBus.session.GNOME.service - IBus Daemon for GNOME...
+[   10.488784] guest systemd[819]: Starting org.gnome.SettingsDaemon.A11ySettings.service - GNOME accessibility service...
+[   10.492355] guest systemd[819]: Starting org.gnome.SettingsDaemon.Keyboard.service - GNOME keyboard configuration service...
+[   10.493923] guest systemd[819]: Starting org.gnome.SettingsDaemon.MediaKeys.service - GNOME keyboard shortcuts service...
+[   10.505236] guest systemd[819]: Starting org.gnome.SettingsDaemon.Power.service - GNOME power management service...
+[   10.507575] guest systemd[819]: Starting org.gnome.SettingsDaemon.Rfkill.service - GNOME RFKill support service...
+[   10.509250] guest systemd[819]: Starting org.gnome.SettingsDaemon.Sharing.service - GNOME file sharing service...
+[   10.520604] guest systemd[819]: Starting org.gnome.SettingsDaemon.Smartcard.service - GNOME smartcard service...
+[   10.523420] guest systemd[819]: Starting org.gnome.SettingsDaemon.UsbProtection.service - GNOME USB protection service...
+[   10.527515] guest systemd[819]: Finished gnome-session-signal-init.service - Signal initialization done to GNOME Session Manager.
+[   10.558435] guest systemd[819]: Started org.gnome.SettingsDaemon.Smartcard.service - GNOME smartcard service.
+[   10.559944] guest systemd[819]: Reached target org.gnome.SettingsDaemon.Smartcard.target - GNOME smartcard target.
+[   10.572674] guest systemd[819]: Started org.gnome.SettingsDaemon.A11ySettings.service - GNOME accessibility service.
+[   10.573749] guest systemd[819]: Reached target org.gnome.SettingsDaemon.A11ySettings.target - GNOME accessibility target.
+[   10.587209] guest systemd[819]: Started org.gnome.SettingsDaemon.Keyboard.service - GNOME keyboard configuration service.
+[   10.588168] guest systemd[819]: Reached target org.gnome.SettingsDaemon.Keyboard.target - GNOME keyboard configuration target.
+[   10.602776] guest systemd[819]: Started org.gnome.SettingsDaemon.Rfkill.service - GNOME RFKill support service.
+[   10.604246] guest systemd[819]: Reached target org.gnome.SettingsDaemon.Rfkill.target - GNOME RFKill support target.
+[   10.611250] guest systemd[819]: Started org.gnome.SettingsDaemon.UsbProtection.service - GNOME USB protection service.
+[   10.612878] guest systemd[819]: Started org.gnome.SettingsDaemon.Sharing.service - GNOME file sharing service.
+[   10.614760] guest systemd[819]: Reached target org.gnome.SettingsDaemon.Sharing.target - GNOME file sharing target.
+[   10.615754] guest systemd[819]: Reached target org.gnome.SettingsDaemon.UsbProtection.target - GNOME USB protection target.
+[   10.620234] guest systemd[819]: Started org.gnome.SettingsDaemon.Power.service - GNOME power management service.
+[   10.620762] guest systemd[819]: Reached target org.gnome.SettingsDaemon.Power.target - GNOME power management target.
+[   10.653175] guest systemd[819]: Started org.gnome.SettingsDaemon.MediaKeys.service - GNOME keyboard shortcuts service.
+[   10.654759] guest systemd[819]: Created slice app-dbus\x2d:1.3\x2dorg.gnome.ScreenSaver.slice - Slice /app/dbus-:1.3-org.gnome.ScreenSaver.
+[   10.655649] guest systemd[819]: Reached target org.gnome.SettingsDaemon.MediaKeys.target - GNOME keyboard shortcuts target.
+[   10.658852] guest systemd[819]: Started dbus-:1.3-org.gnome.ScreenSaver@0.service.
+[   10.672271] guest systemd[819]: Started pipewire.service - PipeWire Multimedia Service.
+[   10.675602] guest systemd[819]: Started wireplumber.service - Multimedia Service Session Manager.
+[   10.678966] guest systemd[819]: Started pipewire-pulse.service - PipeWire PulseAudio.
+[   10.993766] guest systemd[819]: Started org.freedesktop.IBus.session.GNOME.service - IBus Daemon for GNOME.
+[   10.998087] guest systemd[819]: Reached target gnome-session.target - GNOME Session.
+[   10.999392] guest systemd[819]: Reached target graphical-session.target - Current graphical user session.
+[   10.999759] guest systemd[819]: apex-folder-icons.service - Set the Apex icons of the Projects and Screenshots folders skipped, unmet condition check ConditionEnvironment=XDG_SESSION_CLASS=user
+[   11.000411] guest systemd[819]: apex-session-agent.service - Apex session agent: window radius, terminal caret, the crash-guard offer, Updates Ready and the battery refresh rate skipped, unmet condition check ConditionEnvironment=XDG_SESSION_CLASS=user
+[   11.000530] guest systemd[819]: gnome-initial-setup-first-login.service - GNOME Initial Setup skipped, unmet condition check ConditionEnvironment=XDG_SESSION_CLASS=user
+[   11.042170] guest systemd[819]: Created slice app-dbus\x2d:1.3\x2dorg.freedesktop.portal.IBus.slice - Slice /app/dbus-:1.3-org.freedesktop.portal.IBus.
+[   11.051667] guest systemd[819]: Started dbus-:1.3-org.freedesktop.portal.IBus@0.service.

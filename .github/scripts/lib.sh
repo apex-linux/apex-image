@@ -321,6 +321,199 @@ dnf_repo_args() {
     fi
 }
 
+# qemu_flags FILE: "machine VALUE" and "cpu VALUE" of the one QEMU command line in FILE.
+qemu_flags() {
+    local opt
+    local -a values
+    for opt in machine cpu; do
+        mapfile -t values < <(grep -v '^[[:space:]]*#' "$1" |
+            grep -oE -- "(^|[[:space:](])-${opt}[[:space:]]+[^[:space:]\\)]+" | awk '{ print $2 }' | tr -d "\"'")
+        ((${#values[@]} == 1)) || { warn "$1: ${#values[@]} QEMU -$opt options, expected 1"; return 1; }
+        printf '%s %s\n' "$opt" "${values[0]}"
+    done
+}
+
+# qemu_parity FILE...: the files' guests get the same -machine and -cpu, and vmport=off.
+qemu_parity() {
+    local f flags first="" firstflags="" rc=0
+    for f in "$@"; do
+        flags=$(qemu_flags "$f") || { rc=1; continue; }
+        if [[ ,$(sed -n 's/^machine //p' <<<"$flags"), != *,vmport=off,* ]]; then
+            warn "$f: -machine $(sed -n 's/^machine //p' <<<"$flags") lacks vmport=off, so the guest's vmmouse drops relative pointer moves"
+            rc=1
+        fi
+        if [[ -z $first ]]; then
+            first=$f firstflags=$flags
+        elif [[ $flags != "$firstflags" ]]; then
+            warn "$f runs QEMU with $(paste -sd' ' <<<"$flags"), but $first with $(paste -sd' ' <<<"$firstflags")"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
+# g4_user_units QUALIFY_SH COMPONENT_SRC...: G4's login contract (apex_units_settled) expects
+# exactly the user units the components' specs ship and enable for a graphical session.
+g4_user_units() {
+    python3 - "$@" <<'EOF'
+import configparser
+import fnmatch
+import os
+import re
+import sys
+
+qualify, components = sys.argv[1], sys.argv[2:]
+text = open(qualify, encoding="utf-8").read()
+values = dict(re.findall(r"^readonly ([A-Z_]+)=(\S+)$", text, re.M))
+body = re.search(r"^apex_units_settled\(\) \{\n(.*?)^\}", text, re.M | re.S)
+expected = {"long-running": set(), "oneshot": set()}
+for var, props in re.findall(r'user_unit_state "\$uid" "\$([A-Z_]+)" (\S+)', body.group(1) if body else ""):
+    kind = "long-running" if "SubState" in props else "oneshot"
+    expected[kind].add(values.get(var, "$" + var))
+
+
+def files_named(root, name):
+    found = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in (".git", "_build", "target")]
+        found += [os.path.join(d, name)] if name in files else []
+    return found
+
+
+shipped, wants, enables, problems = {}, set(), [], []
+for src in components:
+    specs = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(src, "packaging")) for f in fs if f.endswith(".spec")]
+    for spec in specs:
+        spec_text = open(spec, encoding="utf-8").read()
+        for path in set(re.findall(r"%\{_userunitdir\}/(\S+?)'?$", spec_text, re.M)):
+            target, _, unit = path.rpartition("/")
+            if target.endswith(".target.wants"):
+                wants.add(unit)
+            elif not target and unit.endswith(".service"):
+                where = [f for f in files_named(src, unit) if "/user/" in f or "/data/" in f]
+                if len(where) != 1:
+                    problems.append(f"{spec}: {unit} is installed from {len(where)} files, expected 1")
+                    continue
+                shipped[unit] = where[0]
+        for preset in set(re.findall(r"%\{_userpresetdir\}/(\S+)$", spec_text, re.M)):
+            for f in files_named(src, preset):
+                enables += [w[1] for w in map(str.split, open(f, encoding="utf-8")) if w[:1] == ["enable"]]
+
+for pattern in enables:
+    matches = [u for u in shipped if fnmatch.fnmatch(u, pattern)]
+    wants.update(matches or [pattern])
+
+found = {"long-running": set(), "oneshot": set()}
+for unit in sorted(wants):
+    if unit not in shipped:
+        problems.append(f"{unit} is enabled for every user, but no spec of {' '.join(components)} installs it")
+        continue
+    unit_file = configparser.ConfigParser(strict=False, interpolation=None)
+    unit_file.optionxform = str
+    unit_file.read(shipped[unit], encoding="utf-8")
+    service = unit_file["Service"] if unit_file.has_section("Service") else {}
+    oneshot = service.get("Type") == "oneshot" and service.get("RemainAfterExit", "no") not in ("yes", "true", "1")
+    found["oneshot" if oneshot else "long-running"].add(unit)
+    conditions = unit_file.get("Unit", "ConditionEnvironment", fallback="")
+    if "greeter_apex_units" in text and "XDG_SESSION_CLASS=user" not in conditions:
+        problems.append(f"{shipped[unit]}: no ConditionEnvironment=XDG_SESSION_CLASS=user, so it starts in GDM's greeter, where G4 allows no Apex user unit")
+
+for kind in ("long-running", "oneshot"):
+    if found[kind] != expected[kind]:
+        problems.append(
+            f"G4's login contract ({qualify}, apex_units_settled) expects the {kind} Apex user units "
+            f"'{' '.join(sorted(expected[kind])) or 'none'}', but the components enable "
+            f"'{' '.join(sorted(found[kind])) or 'none'}'")
+for p in problems:
+    print(f"error: {p}", file=sys.stderr)
+if problems:
+    sys.exit(1)
+print(f"long-running: {' '.join(sorted(found['long-running'])) or 'none'}; oneshot: {' '.join(sorted(found['oneshot'])) or 'none'}")
+EOF
+}
+
+# qualify_markers QUALIFY_SH INVENTORY SOURCES: every journal line G4 waits for has an entry
+# whose source context is unchanged in SOURCES/PKG/tree, the build named in SOURCES/PKG/nvr.
+qualify_markers() {
+    python3 - "$@" <<'EOF'
+import hashlib
+import os
+import re
+import sys
+
+qualify, inventory, sources = sys.argv[1:4]
+
+logical, buf = [], ""
+for line in open(qualify, encoding="utf-8").read().splitlines():
+    if line.lstrip().startswith("#"):
+        continue
+    buf += line.rstrip("\\").rstrip() + " "
+    if line.rstrip().endswith(("\\", "|", "&&", "||")) or buf.count("(") > buf.count(")"):
+        continue
+    logical.append(buf)
+    buf = ""
+waited = set()
+for line in logical:
+    marks = re.match(r"\s*readonly [A-Z_]*MARKS?=\(?(.*?)\)?\s*$", line)
+    if marks:
+        quoted = (a or b for a, b in re.findall(r"'([^']*)'|\"([^\"]*)\"", marks.group(1)))
+        waited.update(q.split("$")[0].strip() for q in quoted if q.split("$")[0].strip())
+        continue
+    for literal in re.findall(r"(?:--grep|\s-g|grep(?:\s+-[-A-Za-z0-9]+(?:\s+[0-9]+)?)*)\s+'([^'$]+)'", line):
+        if "journalctl" in line or re.search(re.escape(literal) + r"'\s+\"\$log\"", line):
+            waited.add(literal)
+
+entries, problems, checked = {}, [], set()
+for block in open(inventory, encoding="utf-8").read().split("\n\n"):
+    fields = {}
+    for line in block.splitlines():
+        if line and not line.startswith("#"):
+            key, _, value = line.partition(": ")
+            fields.setdefault(key, []).append(value)
+    if fields:
+        entries[fields["marker"][0]] = fields
+
+for marker in sorted(waited - entries.keys()):
+    problems.append(f"G4 waits for '{marker}' ({qualify}), but {inventory} has no entry for it")
+for marker in sorted(entries.keys() - waited):
+    problems.append(f"{inventory} has an entry for '{marker}', which no G4 row waits for any more")
+for marker, fields in sorted(entries.items()):
+    kind = fields.get("kind", [""])[0]
+    if not fields.get("guard"):
+        problems.append(f"'{marker}': no guard: line")
+    if kind == "other":
+        continue
+    if kind not in ("upstream", "apex") or not fields.get("source") or not fields.get("reviewed"):
+        problems.append(f"'{marker}': an {kind or 'unknown'} entry needs kind: upstream or apex, source: and reviewed: lines")
+        continue
+    for source in fields["source"]:
+        pkg, path, span, digest = source.split()
+        start, end = map(int, span.split("-"))
+        tree = os.path.join(sources, pkg, "tree")
+        nvr = open(os.path.join(sources, pkg, "nvr"), encoding="utf-8").read().strip() if os.path.isdir(tree) else "?"
+        checked.add(nvr)
+        try:
+            lines = open(os.path.join(tree, path), encoding="utf-8", errors="replace").read().split("\n")
+        except OSError:
+            problems.append(f"'{marker}': {pkg} {nvr} has no {path} (reviewed at {' '.join(fields['reviewed'])})")
+            continue
+        size = end - start + 1
+        at = [i + 1 for i in range(len(lines) - size + 1)
+              if hashlib.sha256(("\n".join(lines[i:i + size]) + "\n").encode()).hexdigest() == digest]
+        if not at:
+            now = "\n".join(f"    {n}: {lines[n - 1]}" for n in range(start, min(end, len(lines)) + 1))
+            problems.append(f"'{marker}': the context of {pkg} {path}:{start}-{end}, reviewed at "
+                            f"{' '.join(fields['reviewed'])}, changed in {nvr}; review its guard and record it again. Those lines now:\n{now}")
+        elif start not in at:
+            print(f"note: '{marker}': {pkg} {path}:{start}-{end} is unchanged in {nvr}, at line {at[0]}", file=sys.stderr)
+for problem in problems:
+    print(f"error: {problem}", file=sys.stderr)
+if problems:
+    sys.exit(1)
+print(f"{len(waited)} markers, {sum(e['kind'][0] != 'other' for e in entries.values())} with their source context, unchanged in {' '.join(sorted(checked))}")
+EOF
+}
+
 # Only registry.fedoraproject.org keeps old Fedora digests: quay.io/fedora forgets one
 # within a day of the tag moving, before Renovate's daily PR can merge.
 is_fedora_pin() {
