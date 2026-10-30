@@ -813,6 +813,29 @@ co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-desktop $CO/apex-desktop
 check "a new pin moves the clone and cleans it" "0:$CO_SYS:clean" \
     "$(components fetch):$(git -C "$CO/work/_build/components/apex-system" rev-parse HEAD):$([[ -e $CO/work/_build/components/apex-system/stray ]] && echo stray || echo clean)"
 
+mkdir -p "$CO/bin"
+cat >"$CO/bin/find" <<'FIND'
+#!/bin/bash
+[[ -n ${CO_FOREIGN:-} && " $* " == *" -user "* ]] && { echo "$1/target/rpm/BUILD"; exit 0; }
+exec /usr/bin/find "$@"
+FIND
+cat >"$CO/bin/sudo" <<'SUDO'
+#!/bin/bash
+echo "$*" >>"$CO_SUDO_LOG"
+[[ -z ${CO_NO_SUDO:-} ]] || exit 1
+shift
+exec "$@"
+SUDO
+chmod +x "$CO/bin/find" "$CO/bin/sudo"
+co_sudo() { (cd "$CO/work" && PATH="$CO/bin:$PATH" CO_SUDO_LOG="$CO/sudo.log" rc_of env "$@" tools/components.sh fetch); }
+: >"$CO/sudo.log"
+check "a clean checkout needs no sudo" "0:" "$(co_sudo):$(cat "$CO/sudo.log")"
+check "files a killed root build left are taken back before the clean" \
+    "0:-n chown -R $(id -u):$(id -g) -- $CO/work/_build/components/apex-system" \
+    "$(co_sudo CO_FOREIGN=1):$(head -n 1 "$CO/sudo.log")"
+check "without sudo -n the fetch fails rather than build from an unclean checkout" 1 \
+    "$(co_sudo CO_FOREIGN=1 CO_NO_SUDO=1)"
+
 rm -rf "$CO/work/_build/components/apex-system"
 git clone -q --depth 1 "file://$CO/apex-system.git" "$CO/work/_build/components/apex-system"
 git -C "$CO/work/_build/components/apex-system" remote set-url origin "$CO/apex-system.git"
