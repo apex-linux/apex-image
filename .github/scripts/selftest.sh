@@ -451,6 +451,10 @@ case $1 in
         printf 'image-id cafe\n' >"$QUALIFY_G4_RECORD"
         cat "$FAKE/g4-rows" >"$PWD/_build/qualify/results.md"
         exit "$(cat "$FAKE/g4-rc" 2>/dev/null || echo 0)" ;;
+    local-diag)
+        echo diag >>"$FAKE/order"
+        printf '%s %s\n' "$QUALIFY_OUT" "$2" >"$FAKE/diag-args"
+        exit "$(cat "$FAKE/diag-rc" 2>/dev/null || echo 0)" ;;
 esac
 EOF
 printf '| local-install | PASS | green | - |\n| local-g4 | PASS | recorded | - |\n' >"$BUILD_DIR/g4-rows"
@@ -492,18 +496,23 @@ check "a build from a dev-override component says so in its record" "components 
     "$(APEX_COMPONENTS=dev-override build_gates >/dev/null; grep '^components ' "$BUILD_DIR/work/_build/gates-passed.txt")"
 printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
 echo 1 >"$BUILD_DIR/g4-rc"
-check "a G4 failure still runs G2, fails, and records nothing" "1|g4 g2|no record" \
+check "a G4 failure still runs G2, then local-diag, fails, and records nothing" "1|g4 g2 diag|no record" \
     "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
 check_true "nor moves its key" g4_record_is 'old record'
 check_true "and leaves nothing pending" no_pending
-rm -f "$BUILD_DIR/g4-rc"
+check "local-diag runs on the image in its own QUALIFY_OUT" "$BUILD_DIR/work/_build/qualify/diag localhost/apex:build" \
+    "$(cat "$BUILD_DIR/diag-args")"
+echo 1 >"$BUILD_DIR/diag-rc"
+check "a failing local-diag changes no verdict" "1|g4 g2 diag|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+rm -f "$BUILD_DIR/g4-rc" "$BUILD_DIR/diag-rc"
 printf '| local-install | PASS | green | - |\n| local-lock | WARN | slow | - |\n' >"$BUILD_DIR/g4-rows"
 check "qualify.sh's exit 0 with a row that is not PASS fails G4, as record_g4_pass would" "1|no record" \
     "$(build_gates)|$(records)"
 check_true "and moves no key" g4_record_is 'old record'
 printf '| local-install | PASS | green | - |\n| local-g4 | PASS | recorded | - |\n' >"$BUILD_DIR/g4-rows"
 echo 1 >"$BUILD_DIR/g2-rc"
-check "G4 passed, G2 failed: exit 1, no record" "1|g4 g2|no record" \
+check "G4 passed, G2 failed: exit 1, no record, no diagnosis" "1|g4 g2|no record" \
     "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
 check_true "and g4-passed.txt is unchanged" g4_record_is 'old record'
 check_true "with nothing left pending" no_pending
@@ -516,7 +525,7 @@ check_true "though G2 still ran" grep -qx g2 "$BUILD_DIR/order"
 echo 3 >"$BUILD_DIR/g4-due-rc"
 printf 'passed-at 2026-09-29T17:10:00Z\nimage-id beef\n' >"$BUILD_DIR/g4-due-stdout"
 printf '| local-lock | FAIL | an older run | - |\n' >"$BUILD_DIR/work/_build/qualify/results.md"
-check "G4 not due: G2 runs, then the record" "0|g2" "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
+check "G4 not due: G2 runs, then the record, no diagnosis" "0|g2" "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
 check_false "without running G4" test -e "$BUILD_DIR/g4-ran"
 check_true "or reading an older run's results.md" grep -q 'an older run' "$BUILD_DIR/work/_build/qualify/results.md"
 check "names the pass G4 was not due for, not this image" "g4 not due: its key passed on 2026-09-29T17:10:00Z for image beef" \

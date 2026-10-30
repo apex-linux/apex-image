@@ -58,6 +58,9 @@ G4 runs first because it fails far more often, and both gates always run, so one
 shows both verdicts; it exits with the status of the first gate that failed. G4 writes
 its key to `_build/qualify/g4-pending.txt`; only the gates record below moves it to
 `_build/g4-passed.txt`, so a key is recorded only for an image whose G2 passed too.
+After a G4 failure, `qualify.sh local-diag` runs every G4 unit on its own, in
+`_build/qualify/diag`, so one build shows every failing row; it records nothing and
+never changes the verdict.
 
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for

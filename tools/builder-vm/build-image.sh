@@ -13,7 +13,8 @@ signed, and nothing promotes the lane's lock. G1 runs in the build; after it G4
 from the last pass, or that pass is a week old), then G2 (apex-gnome's tests/shots/run.sh,
 twice). Both gates always run, so one run shows both verdicts; the exit status is the
 first gate's that failed. G4 fails on any row of _build/qualify/results.md that is not
-PASS. Its key goes to _build/qualify/g4-pending.txt, and only the gates record moves it
+PASS; after a failure, qualify.sh local-diag runs each G4 unit on its own in
+_build/qualify/diag, which records nothing and never changes the verdict. Its key goes to _build/qualify/g4-pending.txt, and only the gates record moves it
 to _build/g4-passed.txt. When G2 passed and G4 passed or was not due,
 _build/gates-passed.txt names the lane lock the image carries, the image, G4's verdict,
 and whether the components were pinned or a dev-override; `lane.sh promote` requires it,
@@ -62,6 +63,7 @@ readonly G4_KEY=_build/image/g4-key.txt
 readonly G4_RECORD=_build/g4-passed.txt
 readonly G4_PENDING=_build/qualify/g4-pending.txt
 readonly G4_VERDICT_FILE=_build/image/g4-verdict.txt
+readonly G4_DIAG=_build/qualify/diag
 readonly G2_RUNS_PER_BUILD=2
 readonly G4_NOT_DUE=3
 
@@ -106,6 +108,7 @@ g4_rows_passed() {
     [[ -s _build/qualify/results.md ]] || return 1
     ! awk -F'|' '{ gsub(/ /, "", $3) } $3 != "PASS" { found = 1 } END { exit !found }' _build/qualify/results.md
 }
+run_diag() { QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_OUT=$PWD/$G4_DIAG qualify local-diag "$IMAGE"; }
 # Written to a file: gate_g4 runs in a subshell of its own, for errexit.
 g4_verdict() { printf '%s\n' "$1" >"$G4_VERDICT_FILE"; }
 
@@ -203,6 +206,7 @@ gate_g4() {
                 id=$(image_id)
                 g4_verdict "passed for image $id"
             else
+                g4_verdict failed
                 echo "G4 failed (_build/qualify/results.md): $IMAGE is built, but its lock must not be promoted" >&2
                 return 1
             fi ;;
@@ -232,12 +236,23 @@ record_gates() {
     echo "just pkg-promote makes the lane lock it carries rpms.lock"
 }
 
+# Each unit of G4 on its own after a G4 failure, so one run shows every failing row. It
+# records nothing, and never changes the gates' verdict.
+diagnose_g4() {
+    echo "== G4 diagnosis (qualify.sh local-diag, records nothing)"
+    if run_diag; then
+        echo "local-diag: every unit passed ($G4_DIAG/diag.md)"
+    else
+        echo "local-diag: exit $? ($G4_DIAG/diag.md); the gates' verdict stands" >&2
+    fi
+}
+
 # G4 first: it fails far more often than G2. Both always run, each in its own errexit
 # subshell, which || around gates would switch off: call it bare.
 gates() {
     local image_only=$1 g4=0 g2=0 rec=0 rc
     mkdir -p _build/qualify
-    rm -f -- "$G4_PENDING" "$G4_VERDICT_FILE"
+    rm -rf -- "$G4_PENDING" "$G4_VERDICT_FILE" "$G4_DIAG"
     set +e
     (set -e; gate_g4 "$image_only")
     g4=$?
@@ -245,7 +260,12 @@ gates() {
     g2=$?
     set -e
     G4_VERDICT=
-    if ((g4 == 0)); then G4_VERDICT=$(cat -- "$G4_VERDICT_FILE"); fi
+    if [[ -s $G4_VERDICT_FILE ]]; then G4_VERDICT=$(cat -- "$G4_VERDICT_FILE"); fi
+    if ((g4 == 0)) && [[ -z $G4_VERDICT || $G4_VERDICT == failed ]]; then
+        echo "gate_g4 returned 0 with the verdict '$G4_VERDICT'" >&2
+        g4=1
+    fi
+    [[ $G4_VERDICT != failed ]] || diagnose_g4
     if ((g4 == 0 && g2 == 0)) && [[ $G4_VERDICT != due ]]; then
         set +e
         (set -e; record_gates)
