@@ -852,6 +852,54 @@ check "APEX_GNOME_SRC is apex-gnome, whose recipes the lane takes" \
     "export APEX_GNOME_SRC=$CO/work/_build/components/apex-gnome|export APEX_LANE_RECIPES=$CO/work:$CO/work/_build/components/apex-gnome" \
     "$(co_out env | grep -E 'APEX_GNOME_SRC|APEX_LANE_RECIPES' | paste -sd'|')"
 
+# --- tools/components.sh provenance: a pin is on main, or a cherry-pick -x of main on pin/* ---
+PV=$CO/src/apex-system
+co_git -C "$PV" checkout -q -b claude/feature HEAD~1
+echo feature >"$PV/f" && co_git -C "$PV" add f && co_git -C "$PV" commit -qm feature
+PV_FEATURE=$(co_git -C "$PV" rev-parse HEAD)
+co_git -C "$PV" checkout -q main
+echo fix >"$PV/b" && co_git -C "$PV" add b && co_git -C "$PV" commit -qm "fix b"
+PV_FIX=$(co_git -C "$PV" rev-parse HEAD)
+echo three >"$PV/a" && co_git -C "$PV" commit -qam "fix a"
+PV_FIX_A=$(co_git -C "$PV" rev-parse HEAD)
+pv_pin() { co_git -C "$PV" checkout -q -b "pin/$1" "$CO_SYS_OLD"; }
+pv_pin clean
+co_git -C "$PV" cherry-pick -x "$PV_FIX" >/dev/null
+pv_pin conflict
+if ! co_git -C "$PV" cherry-pick -x "$PV_FIX_A" >/dev/null 2>&1; then
+    echo 'three, by hand' >"$PV/a" && co_git -C "$PV" add a
+    co_git -C "$PV" -c core.editor=true cherry-pick --continue >/dev/null
+fi
+pv_pin extra
+co_git -C "$PV" cherry-pick -n "$PV_FIX" && echo extra >"$PV/c" && co_git -C "$PV" add c
+co_git -C "$PV" commit -qm "fix b, and more" -m "(cherry picked from commit $PV_FIX)"
+pv_pin bare
+co_git -C "$PV" cherry-pick "$PV_FIX" >/dev/null
+pv_pin offmain
+co_git -C "$PV" cherry-pick -x "$PV_FEATURE" >/dev/null
+co_git -C "$PV" checkout -q main
+co_git -C "$PV" push -q --force "$CO/apex-system.git" 'refs/heads/*:refs/heads/*'
+pv_tip() { co_git -C "$PV" rev-parse "$1"; }
+pv() { # SHA: provenance of apex-system pinned at SHA, its log in $CO/provenance.log
+    co_lock "apex-system $CO/apex-system.git $1"
+    (cd "$CO/work" && tools/components.sh fetch >/dev/null 2>&1 && tools/components.sh provenance) >"$CO/provenance.log" 2>&1
+    echo $?
+}
+check "provenance: a pin on main" 0 "$(pv "$PV_FIX")"
+check "provenance: a cherry-pick -x of main on pin/*" 0 "$(pv "$(pv_tip pin/clean)")"
+check "provenance: a hand-resolved conflict, same paths (no patch-id match)" 0 "$(pv "$(pv_tip pin/conflict)")"
+check "provenance: a pick that changes a path its original does not" 1 "$(pv "$(pv_tip pin/extra)")"
+check_true "and names the path" grep -q 'changes paths that .* does not: c$' "$CO/provenance.log"
+check "provenance: a pick without its trailer" 1 "$(pv "$(pv_tip pin/bare)")"
+check_true "and says so" grep -q 'has no (cherry picked from commit X) trailer' "$CO/provenance.log"
+check "provenance: a pick of a commit that is not on main" 1 "$(pv "$(pv_tip pin/offmain)")"
+check_true "and names it" grep -q "names ${PV_FEATURE:0:12}, which is not on main" "$CO/provenance.log"
+check "provenance: a commit on neither main nor pin/*" 1 "$(pv "$PV_FEATURE")"
+check_true "and says so" grep -q 'is neither on main nor on a pin/\* branch' "$CO/provenance.log"
+co_lock "apex-system $CO/apex-system.git $PV_FIX"
+check "provenance: a dev-override is refused" 1 \
+    "$(cd "$CO/work" && APEX_SRC_APEX_SYSTEM=../src/apex-system tools/components.sh fetch >/dev/null 2>&1 && rc_of tools/components.sh provenance)"
+
 # --- build-image.sh: each RPM from its pinned component, after components.sh fetch and env ---
 BI="$TMP/build-image-components"
 BIW=$BI/home/apex-image
