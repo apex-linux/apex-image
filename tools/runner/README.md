@@ -284,7 +284,9 @@ for the VM's log. In the VM, `ci-build` then:
 3. runs `tools/components.sh fetch` once the repository has it (the components hook);
 4. runs `build-image.sh`: the RPMs, libfprint, the rebuild lane, the image, G4 when
    `qualify.sh g4-due` says it is due, G2 twice (both gates always run), and
-   `_build/gates-passed.txt`;
+   `_build/gates-passed.txt`; after a G4 failure whose fix touches only the harness, it
+   reruns G4 alone on that image instead, advisory, and records nothing
+   (tools/builder-vm/README.md, Qualify-only);
 5. runs `lane.sh promote` when the gates passed and `rpms.lock.next` differs from
    `rpms.lock`;
 6. on the daily run only (`ci-build <sha> daily`), runs `lane-absorb-report.sh`

@@ -22,6 +22,21 @@ and whether the components were pinned or a dev-override; `lane.sh promote` requ
 and pinned components. Neither record is written when the lane lock moved while the
 gates ran.
 
+Every G4 verdict, in every mode, adds a row to _build/qualify/verdicts.tsv: the commit,
+the image ID, qualify.sh g4-harness's digest, the verdict, the UTC time, the mode (gate,
+image-only or t2) and APEX_COMPONENTS.
+
+A qualify-only run (T2, advisory) reruns G4 alone on the built image after a fix to the
+harness only, and records and promotes nothing: no gates record, no G4 key (it goes to
+_build/qualify-only/). It runs, with tools/builder-vm/t2-enabled committed, only when
+all of these hold, and otherwise the full gate run does: the image's own manifest
+revision is on origin/main and `git diff` from it to HEAD touches only the harness, CI,
+the runner, docs or the dev tools (lib.sh, image/, components.lock, Cargo.*, a build
+script: the full gate); the last verdicts.tsv row of the image is a FAIL of a gate or t2
+run with pinned components, and its harness digest is not HEAD's; the image is the one
+G2 last ran on, or the last gate row's; it is under 72 hours old. _build/plan.txt names
+the plan. After a failure it runs qualify.sh local-diag too.
+
 tools/components.sh fetch and env run before the first build step: each RPM is built
 from its pinned component (the apex RPM from apex-system, apex-desktop from
 apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECIPES).
@@ -65,6 +80,11 @@ readonly G4_RECORD=_build/g4-passed.txt
 readonly G4_PENDING=_build/qualify/g4-pending.txt
 readonly G4_VERDICT_FILE=_build/image/g4-verdict.txt
 readonly G4_DIAG=_build/qualify/diag
+readonly VERDICTS=_build/qualify/verdicts.tsv
+readonly PLAN_FILE=_build/plan.txt
+readonly T2_ENABLED=tools/builder-vm/t2-enabled
+readonly T2_DIR=_build/qualify-only
+readonly T2_MAX_AGE_SECONDS=$((72 * 3600))
 readonly G2_RUNS_PER_BUILD=2
 readonly G4_NOT_DUE=3
 
@@ -97,13 +117,18 @@ sign_rpms() {
 }
 
 image_id() { sudo podman image inspect --format '{{.Id}}' "$IMAGE"; }
+image_revision() {
+    sudo podman run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/manifest.json | jq -er .revision
+}
+image_created() { sudo podman image inspect --format '{{.Created.Unix}}' "$IMAGE"; }
+git_() { git -c safe.directory="$PWD" "$@"; }
 sha256_of() { sha256sum <"$1" | cut -d' ' -f1; }
 qualify() { .github/scripts/qualify.sh "$@"; }
 run_g2() {
     G2_RUNS=$G2_RUNS_PER_BUILD G2_IMAGE_DIR=$PWD/image G2_REPOS_BASE=$(lib release_arg REPOS_BASE) \
         G2_OUT_DIR=$PWD/_build/g2 "$APEX_GNOME_SRC/tests/shots/run.sh" "$IMAGE"
 }
-run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_G4_RECORD=$PWD/$G4_PENDING qualify local "$IMAGE"; }
+run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_G4_RECORD=$PWD/${1:-$G4_PENDING} qualify local "$IMAGE"; }
 # record_g4_pass refuses SKIP and WARN rows; the gate refuses the same.
 g4_rows_passed() {
     [[ -s _build/qualify/results.md ]] || return 1
@@ -112,6 +137,17 @@ g4_rows_passed() {
 run_diag() { QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_OUT=$PWD/$G4_DIAG qualify local-diag "$IMAGE"; }
 # Written to a file: gate_g4 runs in a subshell of its own, for errexit.
 g4_verdict() { printf '%s\n' "$1" >"$G4_VERDICT_FILE"; }
+
+# VERDICT MODE: what a qualify-only run decides from. A missing row only rules one out.
+add_verdict() {
+    local sha id harness
+    sha=$(git_ rev-parse HEAD 2>/dev/null) || sha=-
+    id=$(image_id 2>/dev/null) || id=-
+    harness=$(qualify g4-harness 2>/dev/null) || harness=-
+    mkdir -p "$(dirname "$VERDICTS")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sha" "${id:--}" "${harness:--}" "$1" "$(date -u +%FT%TZ)" "$2" \
+        "${APEX_COMPONENTS:-unknown}" >>"$VERDICTS" || echo "G4: no row in $VERDICTS" >&2
+}
 
 build_inputs() {
     echo "== 1/4 the apex RPM (apex-system) and apex-desktop (apex-desktop)"
@@ -194,7 +230,8 @@ gate_g2() {
 }
 
 gate_g4() {
-    local image_only=$1 rc=0 last_pass id
+    local image_only=$1 rc=0 last_pass id mode=gate
+    ((!image_only)) || mode=image-only
     echo "== G4, when qualify.sh g4-due says it is due"
     qualify g4-key "$IMAGE" >"$G4_KEY" || return
     last_pass=$(QUALIFY_G4_RECORD=$PWD/$G4_RECORD qualify g4-due "$G4_KEY") || rc=$?
@@ -202,17 +239,21 @@ gate_g4() {
         0)
             if ((image_only)); then
                 g4_verdict due
+                add_verdict DUE image-only
                 echo "G4 is due but not run with --image-only: just vm-qualify, then just vm-image-only, before just pkg-promote"
             elif run_g4 && g4_rows_passed; then
                 id=$(image_id)
                 g4_verdict "passed for image $id"
+                add_verdict PASS gate
             else
                 g4_verdict failed
+                add_verdict FAIL gate
                 echo "G4 failed (_build/qualify/results.md): $IMAGE is built, but its lock must not be promoted" >&2
                 return 1
             fi ;;
         "$G4_NOT_DUE")
-            g4_verdict "not due: its key passed on $(sed -n 's/^passed-at //p' <<<"$last_pass") for image $(sed -n 's/^image-id //p' <<<"$last_pass")" ;;
+            g4_verdict "not due: its key passed on $(sed -n 's/^passed-at //p' <<<"$last_pass") for image $(sed -n 's/^image-id //p' <<<"$last_pass")"
+            add_verdict NOT-DUE "$mode" ;;
         *) return "$rc" ;;
     esac
 }
@@ -279,8 +320,84 @@ gates() {
     done
 }
 
+# What a qualify-only run may follow: the harness, CI, the runner, docs, the dev tools.
+# lib.sh is image.sh's too.
+harness_path() {
+    case $1 in
+        .github/scripts/qualify.sh | .github/scripts/qualify-allowed-failures.txt) ;;
+        .github/scripts/selftest.sh | .github/scripts/contracts.sh | .github/workflows/*) ;;
+        tools/runner/*) ;;
+        image/* | crates/*) return 1 ;;
+        *.md) ;;
+        tools/builder-vm/ci-build.sh | tools/builder-vm/builder-vm.sh | tools/builder-vm/desktop-*.sh) ;;
+        tools/builder-vm/shell-dev*.sh | tools/builder-vm/provision.sh | tools/builder-vm/publish-image.sh) ;;
+        tools/builder-vm/install-cosign.sh | tools/builder-vm/firmware.sh | tools/builder-vm/lane-rehearsal.sh) ;;
+        tools/builder-vm/rehearsal/* | "$T2_ENABLED") ;;
+        *) return 1 ;;
+    esac
+}
+
+harness_only_diff() {
+    local path paths
+    paths=$(git_ diff --no-renames --name-only "$1" HEAD) || return 1
+    [[ -n $paths ]] || { echo "HEAD is the image's revision: nothing to qualify again"; return 1; }
+    while IFS= read -r path; do
+        harness_path "$path" || { echo "$path changed since the image's revision"; return 1; }
+    done <<<"$paths"
+}
+
+last_verdict() { awk -F'\t' -v id="$1" '$2 == id { row = $0 } END { if (row == "") exit 1; print row }' "$VERDICTS" 2>/dev/null; }
+last_gate_image() { awk -F'\t' '$6 == "gate" { id = $2 } END { print id }' "$VERDICTS" 2>/dev/null; }
+
+# Every condition of a qualify-only run: a condition not met, or any helper that fails,
+# means the full gate run. It prints why not.
+t2_plan() {
+    local id rev row blob verdict mode components harness created
+    [[ -f $T2_ENABLED ]] || { echo "qualify-only is off: no $T2_ENABLED"; return 1; }
+    [[ $BUILD == _build && -z ${APEX_KERNEL:-} ]] || { echo "only the 45 image with its kernel pair"; return 1; }
+    [[ -z $(compgen -v APEX_SRC_) ]] || { echo "a dev-override component (APEX_SRC_*)"; return 1; }
+    id=$(image_id) && [[ -n $id ]] || { echo "no $IMAGE"; return 1; }
+    rev=$(image_revision) && [[ $rev =~ ^[0-9a-f]{40}$ ]] || { echo "$IMAGE has no manifest revision"; return 1; }
+    git_ merge-base --is-ancestor "$rev" origin/main || { echo "its revision $rev is not on origin/main"; return 1; }
+    harness_only_diff "$rev" || return 1
+    row=$(last_verdict "$id") || { echo "image $id has no G4 verdict in $VERDICTS"; return 1; }
+    IFS=$'\t' read -r _ _ blob verdict _ mode components <<<"$row"
+    [[ $verdict == FAIL && ($mode == gate || $mode == t2) && $components == pinned ]] ||
+        { echo "image $id's last G4 verdict is $verdict ($mode, $components), not a pinned gate or t2 FAIL"; return 1; }
+    harness=$(qualify g4-harness) && [[ -n $harness ]] || { echo "no harness digest (qualify.sh g4-harness)"; return 1; }
+    [[ $harness != "$blob" ]] || { echo "the harness is the one that failed on image $id"; return 1; }
+    [[ $id == "$(sed -n 's/^image-id //p' "$G2_RESULT" 2>/dev/null)" || $id == "$(last_gate_image)" ]] ||
+        { echo "image $id is neither G2's last nor the last gate run's"; return 1; }
+    created=$(image_created) && [[ $created =~ ^[0-9]+$ ]] || { echo "no creation time for $IMAGE"; return 1; }
+    (($(date +%s) - created < T2_MAX_AGE_SECONDS)) || { echo "image $id is 72 hours old or more"; return 1; }
+}
+
+# G4 alone on the built image, after a harness fix: advisory, so nothing is recorded.
+qualify_only() {
+    local rc
+    use_components
+    [[ ${APEX_COMPONENTS:-} == pinned ]] || { echo "qualify-only: components ${APEX_COMPONENTS:-unknown}" >&2; return 1; }
+    mkdir -p _build/qualify "$T2_DIR"
+    rm -rf -- "$G4_DIAG" "$T2_DIR/g4-pending.txt"
+    echo "== G4 (qualify-only, advisory): qualify.sh local on $IMAGE"
+    set +e
+    (set -e; run_g4 "$T2_DIR/g4-pending.txt" && g4_rows_passed)
+    rc=$?
+    set -e
+    rm -f -- "$T2_DIR/g4-pending.txt"
+    if ((rc == 0)); then
+        add_verdict PASS t2
+        echo "qualify-only: G4 passed on image $(image_id); the full gate run decides, and records"
+        return 0
+    fi
+    add_verdict FAIL t2
+    echo "qualify-only: G4 failed (_build/qualify/results.md); it records nothing and promotes nothing" >&2
+    diagnose_g4
+    return "$rc"
+}
+
 main() {
-    local image_only=0
+    local image_only=0 why
     APEX_KERNEL=
     while (($#)); do
         case $1 in
@@ -299,10 +416,20 @@ main() {
     if [[ ${APEX_FEDORA:-45} != 45 ]]; then
         FEDORA=$(lib release_arg REPOS_BASE) || exit 2
         echo "== the next lane: Fedora $APEX_FEDORA, $IMAGE, $LANE_LOCK; nothing promotes or pushes"
-    else
-        echo "== plan: gate (G4 first)"
     fi
-    rm -f "$GATES_PASSED"
+    rm -f -- "$GATES_PASSED" "$PLAN_FILE"
+    if [[ $BUILD == _build ]]; then
+        mkdir -p _build
+        if ((!image_only)) && why=$(t2_plan 2>&1); then
+            echo "== plan: qualify-only (advisory)"
+            echo qualify-only >"$PLAN_FILE"
+            qualify_only
+            return
+        fi
+        echo "== plan: gate (G4 first)"
+        echo "plan: ${why:-a full run}"
+        echo gate >"$PLAN_FILE"
+    fi
     # Every full run starts from empty outputs: the containers write them as root, and a
     # stale RPM next to a new one would let dnf pick either.
     if ((!image_only)); then
