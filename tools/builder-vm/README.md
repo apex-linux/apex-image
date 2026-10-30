@@ -43,8 +43,6 @@ order:
 - the rebuild lane's packages (gnome-shell, from apex-gnome's recipe), into
   `rpms.lock.next` of the store below;
 - the image, from those RPMs and that lock;
-- G2 (apex-gnome's `tests/shots/run.sh`, always twice, as `just vm-g2`), which stops the
-  build when it fails;
 - G4 (`qualify.sh local`, below), when `qualify.sh g4-due` says it is due: the image's
   G4 key differs from the last G4 pass, or that pass is 7 days old. The key
   (`qualify.sh g4-key`) holds the NEVRAs of gdm, gnome-shell, mutter, gjs,
@@ -53,14 +51,20 @@ order:
   overlay (`image/system_files`: the install config, the schema override, the presets,
   the polkit rules, the bootloader-update drop-in) and of the kargs. When G4 is not due,
   the build says which image passed it and when. `just vm-image-only` only says whether
-  G4 is due.
+  G4 is due. G4 fails on any row of `results.md` that is not PASS;
+- G2 (apex-gnome's `tests/shots/run.sh`, always twice, as `just vm-g2`).
+
+G4 runs first because it fails far more often, and both gates always run, so one build
+shows both verdicts; it exits with the status of the first gate that failed. G4 writes
+its key to `_build/qualify/g4-pending.txt`; only the gates record below moves it to
+`_build/g4-passed.txt`, so a key is recorded only for an image whose G2 passed too.
 
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
 image ID`, or `not due: its key passed on DATE for image ID`) and `components pinned`, or
 `components dev-override` for a build with `APEX_SRC_<NAME>` set
-(`tools/components.sh help`). It is not written when `rpms.lock.next` changed while the
-gates ran. `just pkg-promote` refuses a lock it does not name, and a dev-override build.
+(`tools/components.sh help`). Neither record is written when `rpms.lock.next` changed
+while the gates ran. `just pkg-promote` refuses a lock it does not name, and a dev-override build.
 
 The Apex RPM key signs every RPM; nothing pushes or signs the image.
 
