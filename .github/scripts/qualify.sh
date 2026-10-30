@@ -470,6 +470,7 @@ start_vm() {
     QMP_SOCKET=$QUALIFY_OUT/qmp/$name.sock
     rm -f "$QUALIFY_OUT/$name.pid" "$QMP_SOCKET"
     # vmport=off: the guest's vmmouse would take only absolute events, and drop a 'rel' move.
+    # Std VGA (bochs-drm): virtio-gpu's control queue stalls after an s2idle resume (#127).
     qemu-system-x86_64 -name "apex-$name" -machine q35,accel=kvm,vmport=off -cpu host \
         -m "$QUALIFY_MEM" -smp "$QUALIFY_SMP" \
         -drive "if=pflash,format=$OVMF_FORMAT,unit=0,readonly=on,file=$OVMF_CODE" \
@@ -477,7 +478,7 @@ start_vm() {
         -drive "file=$disk,format=raw,if=virtio,cache=writeback,discard=unmap" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$QUALIFY_SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 -device virtio-rng-pci \
-        -device virtio-vga -display none -global ICH9-LPC.disable_s3=0 \
+        -device VGA -display none -global ICH9-LPC.disable_s3=0 \
         -serial "file:$VM_SERIAL" -monitor none \
         -qmp "unix:$QMP_SOCKET,server=on,wait=off" \
         -pidfile "$QUALIFY_OUT/$name.pid" -daemonize "$@"

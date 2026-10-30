@@ -352,6 +352,18 @@ qemu_parity() {
     return "$rc"
 }
 
+# g4_display FILE: the one QEMU display device in FILE is std VGA; virtio-gpu's control
+# queue stalls after an s2idle resume and the shell hangs (apex-image#127).
+g4_display() {
+    local -a devices
+    mapfile -t devices < <(grep -v '^[[:space:]]*#' "$1" |
+        grep -oE -- "(^|[[:space:](])-device[[:space:]]+(VGA|[A-Za-z0-9-]*(vga|gpu|display)[^[:space:]\\)]*)" |
+        awk '{ print $2 }' | tr -d "\"'")
+    [[ ${devices[*]} == VGA ]] && return 0
+    warn "$1: QEMU display device(s) '${devices[*]}', expected VGA alone: virtio-gpu's control queue stalls after an s2idle resume (apex-image#127)"
+    return 1
+}
+
 # g4_user_units QUALIFY_SH COMPONENT_SRC...: G4's login contract (apex_units_settled) expects
 # exactly the user units the components' specs ship and enable for a graphical session.
 g4_user_units() {
