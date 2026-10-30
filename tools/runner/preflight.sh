@@ -23,8 +23,9 @@ and exit 1 when any row fails.
   runner-key   the runner's ssh key, known_hosts and config (after runner.sh key)
   ci-build     the key's forced command in the builder VM (after just vm-ci-install,
                while the VM runs)
-  ci-build-modes  that forced command takes `ci-build modes`, daily and next: an older
-               copy, on the old grammar, refuses vm.yml's next-compose (just vm-ci-install)
+  ci-build-modes  that forced command takes `ci-build modes`, daily, next, gate and g4: an
+               older copy refuses next-compose and vm.yml's gate and g4 plans (just
+               vm-ci-install)
   vm-host-key  the runner's known_hosts holds the builder VM's current host key (a new VM,
                after builder-vm.sh destroy and create, has a new one)
   vm-cosign    the builder VM's /usr/local/bin/cosign is the version and sha256 that
@@ -212,10 +213,10 @@ check_runner_key() {
         return
     fi
     modes=$("$builder_vm" ssh "SSH_ORIGINAL_COMMAND='ci-build modes' $CI_BUILD" 2>/dev/null)
-    if [[ " $modes " == *" next "* ]]; then
+    if [[ " $modes " == *" next "* && " $modes " == *" g4 "* && " $modes " == *" gate "* ]]; then
         row PASS ci-build-modes "$CI_BUILD takes: $modes"
     else
-        row FAIL ci-build-modes "$CI_BUILD is on the old grammar (no next): just vm-ci-install (tools/runner/README.md, Upgrades)"
+        row FAIL ci-build-modes "$CI_BUILD is on an old grammar (no next, gate or g4): just vm-ci-install (tools/runner/README.md, Upgrades)"
     fi
 }
 

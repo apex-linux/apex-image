@@ -244,6 +244,16 @@ lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.m
 
 Owner steps that a change on `main` needs on the host, newest first.
 
+- **`ci-build` takes `gate` and `g4` (train r18).** The forced command's grammar is now
+  `ci-build <sha> [daily | next | gate | g4]`; an older copy refuses `gate` and `g4` with
+  exit 2. With the builder VM running (`just vm-start`), from a checkout of current
+  `main`: `just vm-ci-install`. Then `tools/runner/preflight.sh` shows
+  `PASS ci-build-modes ... daily next gate g4`. Until then, `vm.yml`'s scheduled run and
+  the dispatch plans `gate` and `g4` fail at once, before the VM builds anything, with
+  "run just vm-ci-install": an older copy passes no `APEX_CI_MODE`, so with
+  `t2-enabled` committed the daily run could go qualify-only. A push and plan `auto`
+  still run (build-image.sh chooses, as designed).
+
 - **The runner holds a sleep inhibitor during a job.** Run `just runner install` from a
   checkout of current `main`, while no VM run is in progress: it installs the new copy and
   restarts the service. A restart during a job would end that job. The next job's log
@@ -294,10 +304,22 @@ Owner steps that a change on `main` needs on the host, newest first.
 
 ## What a run does
 
-`vm.yml` runs on a push to `main` that touches `components.lock`, `image/**`,
-`crates/apex-lane/**` or `tools/**`, once a day, and on `workflow_dispatch`. A dispatch
+`vm.yml` runs once a day, on `workflow_dispatch`, and on a push to `main` that touches
+what the build or its gates read: `components.lock`, `Cargo.lock`, `Cargo.toml` (both
+feed the lane's tool id and every family's content key), `image/**` (its READMEs ship in
+the image, so they count), `crates/apex-lane/**`, `tools/components.sh`, qualify.sh,
+`qualify-allowed-failures.txt`, `image.sh` and `lib.sh` in `.github/scripts/`, and
+`build-image.sh`, `lane.sh`, `snapshot.sh`, `metrics.sh` and `lane-absorb-report.sh` in
+`tools/builder-vm/`. Each such push queues a run of about two hours on the laptop. A push
+that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
+vm-ci-install`), the other `tools/builder-vm` scripts or any `.md` under
+`tools/builder-vm/` queues nothing: the next run takes it. A dispatch
 with a `sha` input builds that commit of `main` instead of the head, and needs the
-`vm-dispatch` approval first.
+`vm-dispatch` approval first. A dispatch's `plan` input is `auto` (build-image.sh
+chooses: the full gate run, or a qualify-only run when its conditions hold), `gate` (the
+full gate run, with G4 due whatever its last pass) or `g4` (the qualify-only run, refused
+when its conditions fail). It goes to the VM as `ci-build <sha> gate` or `g4`, and
+`lane.sh promote` never runs for `g4`.
 
 The build step calls `ssh apex-builder ci-build <sha>`, with workflow commands stopped
 for the VM's log. In the VM, `ci-build` then:
@@ -306,8 +328,11 @@ for the VM's log. In the VM, `ci-build` then:
 2. checks the commit out in `~/apex-image`, with `git clean -ffdx` keeping only
    `_build/`;
 3. runs `tools/components.sh fetch` once the repository has it (the components hook);
-4. runs `build-image.sh`: the RPMs, libfprint, the rebuild lane, the image, G2 twice,
-   G4 when `qualify.sh g4-due` says it is due, and `_build/gates-passed.txt`;
+4. runs `build-image.sh`: the RPMs, libfprint, the rebuild lane, the image, G4 when
+   `qualify.sh g4-due` says it is due, G2 twice (both gates always run), and
+   `_build/gates-passed.txt`; after a G4 failure whose fix touches only the harness, it
+   reruns G4 alone on that image instead, advisory, and records nothing
+   (tools/builder-vm/README.md, Qualify-only);
 5. runs `lane.sh promote` when the gates passed and `rpms.lock.next` differs from
    `rpms.lock`;
 6. on the daily run only (`ci-build <sha> daily`), runs `lane-absorb-report.sh`
@@ -327,12 +352,21 @@ is labelled `degraded=` for each of them. On 45 a failure still holds or stops t
 as before. The job is report-only: it warns on a failure and never fails the run, and
 nothing it builds is promoted, pushed or published.
 
-The gates step writes the results to the job summary. It fails when there is no gates
-file. The artifact `vm-logs-<sha>` holds the logs the run returned, and is kept 14 days:
+The gates step writes the results to the job summary: ci-build's lines, a table of the
+stages (when each began and its minutes, from `stages.tsv`), the gates file, the lane
+lock's diff, G2's result, and G4's rows with its frontier, the last row it reached.
+Whether the run is green comes from what the installed ci-build reports, never from a
+file build-image.sh writes: `exit 0` and `promote passed` or `promote unchanged`, so a
+green run always means a gates record. A qualify-only run (`plan qualify-only` in
+ci-build.txt) is advisory: it records nothing and promotes nothing by design, so it ends
+non-green with a notice that says so. The artifact `vm-logs-<sha>` holds the logs the run
+returned, and is kept 14 days:
 
 | Directory | When | Size |
 |---|---|---|
-| `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all; `SKIPPED` names what was left out |
+| `qualify-logs/` | G4 ran | G4's screendumps, journals and serial logs: each file at most 20 MiB, 200 MiB in all with `g2-logs/` and `diag-logs/`; `SKIPPED` names what was left out |
+| `g2-logs/` | G2 ran | each run's `assert.txt` and its failing cases' logs, under the same caps |
+| `diag-logs/` | `qualify.sh local-diag` ran after a G4 failure | what it wrote, under the same caps |
 | `absorb/` | the daily run | the absorption report: `report.md`, `rows.tsv`, `warnings.tsv` and each SRPM's `logs/`, under the same caps |
 | `metrics/` | every run | `metrics.tsv` (this build), `history.tsv` (the last 30) and `warnings.tsv` |
 
@@ -353,8 +387,10 @@ only, so push builds stay fast.
 The absorption report also joins the summary, with a warning for each family whose
 updates-testing build does not take its series with `git apply`. The selftest runs
 vm.yml's Commit, build and gates steps, taken from the workflow itself, against a fake
-`ssh` and canned results: a green build, a red one, a busy VM (75), a refused commit
-(2), an empty tar and a daily run with warnings.
+`ssh` and canned results: a green build, a red one, run 16's layout, qualify-only runs,
+a busy VM (75), a refused commit (2), an empty tar and a daily run with warnings. It
+also matches files against the push paths: a `tools/runner`-only push queues nothing,
+a qualify.sh-only push queues a run.
 
 The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and

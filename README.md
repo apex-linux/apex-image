@@ -36,7 +36,7 @@ The image builds only in the builder VM; the development host needs a Rust toolc
 just check          # apex-lane: fmt, clippy -D warnings and the tests, as CI runs them
 just image-test     # the image checks' tests (with the components fetched)
 just vm-create      # once: the builder VM
-just vm-image       # the components, the RPMs, the lane, the image, G2 twice, G4 when due
+just vm-image       # the components, the RPMs, the lane, the image, G4 when due, G2 twice
 ```
 
 A change across repositories builds from a sibling checkout instead of the pinned commit:
