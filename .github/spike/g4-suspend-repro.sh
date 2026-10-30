@@ -397,6 +397,7 @@ GUEST_INSTRUMENT=$(
 set -u
 mode=$1 times=$2
 mkdir -p /run/repro
+rm -f /run/repro/stuck-dumped
 for u in repro-jtap repro-hb repro-ev; do
     systemctl stop "$u.service" 2>/dev/null
     systemctl reset-failed "$u.service" 2>/dev/null
@@ -424,6 +425,15 @@ while :; do
     printf 'HB real=%s up=%s ip=%s nm=%s sshd=%s load=%s\n' "$(date +%s)" "$(cut -d' ' -f1 /proc/uptime)" \
         "${ip4:-none}" "$(nmcli -t -f STATE general 2>/dev/null || echo na)" "$(systemctl is-active sshd 2>/dev/null)" \
         "$(cut -d' ' -f1 /proc/loadavg)"
+    # A systemd-sleep alive 30 s is stuck in the kernel: its stack and sysrq-w, once.
+    for p in $(pgrep -x systemd-sleep); do
+        age=$(($(cut -d. -f1 /proc/uptime) - $(awk '{print int($22 / 100)}' "/proc/$p/stat")))
+        [ "$age" -gt 30 ] && [ ! -e /run/repro/stuck-dumped ] || continue
+        touch /run/repro/stuck-dumped
+        echo "SS systemd-sleep $p ${age}s in $(cat "/proc/$p/wchan")"
+        sed 's/^/SS /' "/proc/$p/stack"
+        echo w > /proc/sysrq-trigger
+    done
     sleep 5
 done > /dev/ttyS0
 EOS
@@ -757,6 +767,11 @@ post_ok() {
         fi
     fi
     if shell_answers "$SESSION_UID"; then META[shell]=answers; else META[shell]=silent; fi
+    # shellcheck disable=SC2016 # the guest's shell expands these
+    [[ ${META[shell]} == answers ]] || vm_ssh 'for t in /proc/$(pgrep -o -x gnome-shell)/task/*; do
+            echo "== $(cat $t/comm) $(cat $t/wchan) $(cut -d" " -f3 $t/stat)"; cat $t/stack; done
+        echo w > /proc/sysrq-trigger; sleep 1; dmesg | tail -n 300 | grep -vE "PM: (calling|.*returned)"' \
+        >"$TDIR/shell-silent.txt" 2>&1 || true
     display_power 0 || true
     screendump "$TRIAL_ID-unlocked"
     [[ ${META[shell]} == answers && ${META[unlock]:-} != failed ]] || VM_DIRTY=1
@@ -873,7 +888,7 @@ run_trial() {
     if ! ensure_mode "$mode"; then
         mark "mode $mode not reached"
         vm_ssh 'loginctl list-sessions; systemctl --no-pager status gdm.service; dmesg | grep -iE "drm|bochs|virtio_gpu"
-            journalctl -b --no-pager -o short-monotonic -u gdm.service _COMM=gnome-shell _COMM=gdm-session-wor _COMM=gnome-session-b
+            journalctl -b --no-pager -o short-monotonic _SYSTEMD_UNIT=gdm.service + _COMM=gnome-shell + _COMM=gdm-session-wor + _COMM=gnome-session-b
             echo "== journalctl -b -p warning"; journalctl -b --no-pager -o short-monotonic -p warning' \
             >"$TDIR/mode-failed.txt" 2>&1 || true
         finish_trial MODE-FAILED
@@ -1097,7 +1112,7 @@ publish() {
         "Verdicts: PASS; PASS-SLOW (H4); RESUSPENDED (A, H1a); POWERED-OFF (C, H1, R0: see KEY_POWER and 'Power key pressed'); COLD-BOOT (D);" \
         "STUCK-FIRMWARE[-EARLY] (H1b in OVMF); STUCK-EARLY-KERNEL (H1b, waking vector to 'Low-level resume complete');" \
         "STUCK-DEVICE-RESUME (H2, E: 'open' names the callback); STUCK-POST-SUSPEND (tasks thawed, no 'PM: suspend exit': sysrq-w.txt);" \
-        "RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED; USERSPACE-STUCK (heartbeats, no resume line); SKIP-NO-FW; SHELL-SILENT-AFTER-RESUME (the shell answers no D-Bus, so 'unlocked' is unknown);" \
+        "RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED; USERSPACE-STUCK (heartbeats, no resume line); SKIP-NO-FW; SHELL-SILENT-AFTER-RESUME (the shell answers no D-Bus, so 'unlocked' is unknown: shell-silent.txt);" \
         "SESSION-BROKEN (H-virtio-gpu-no-restore, H5); UNLOCKED-AFTER-RESUME; MODE-FAILED (mode-failed.txt); UNREACHABLE-BARE (no console instrumentation); NO-SUSPEND." \
         "Logs: artifact g4-suspend-repro-logs (trials/<id>/: meta.tsv, verdict.json, serial-{pre,post,recovery}.txt, ovmf-post.txt, regs-*.txt, journal.txt; qmp-events.jsonl; *.png)."
 }
