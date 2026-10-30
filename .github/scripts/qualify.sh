@@ -1306,7 +1306,7 @@ assert_apex_login() {
 lock_row() { LOCK_ROW=$1 LOCK_ROW_SINCE=$2; }
 
 lock_failure_detail() {
-    local test=$1 detail=$2 first
+    local test=$1 detail=$2 first kernel
     LOCK_ROW=
     if nudge_pointer >/dev/null 2>&1; then
         sleep "$QUALIFY_POLL"
@@ -1322,6 +1322,10 @@ lock_failure_detail() {
             detail+="; no JS ERROR since the row began"
         fi
     fi
+    # A device not back after resume blocks mutter: the failure then looks like the lock's.
+    kernel=$(vm_ssh "journalctl -k -b --since @$((LOCK_ROW_SINCE - 1)) -o cat --no-pager" 2>/dev/null |
+        grep -Em 1 'virtio|drm|PM: .*(fail|error)' | cut -c1-200) || true
+    [[ -z $kernel ]] || detail+="; first kernel line on virtio, DRM or a PM failure since the row began: $kernel"
     printf '%s' "$detail"
 }
 
@@ -1515,6 +1519,10 @@ matrix_suspend() {
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the VM did not suspend (QMP query-status)" vm_suspended
     qmp '{"execute":"system_wakeup"}' || fail "$test" "QEMU took no system_wakeup"
     wait_ssh
+    # The guest's first S3: its PM lines and the virtio devices' resume, kept whatever follows.
+    vm_ssh "journalctl -k -b --since @$((since - 1)) -o short-monotonic --no-pager" >"$QUALIFY_OUT/logs/$test.kernel.txt" 2>&1 ||
+        warn "$test: cannot save the kernel journal since the row began"
+    screendump "$test-resumed"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the session is not locked after resume" still_locked
     type_password_after_enter "$test" "the lock screen after resume" "$base"
     assert_unlocked "$test" "$pid" "$since" "suspend (QMP: suspended) and system_wakeup while locked, still locked after resume, then the password"

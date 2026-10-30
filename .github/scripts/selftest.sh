@@ -1206,6 +1206,7 @@ vm_ssh() {
             if [[ -e $STATE/apex-lock ]]; then start_asking; fi ;;
         "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
+        "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
         "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
@@ -1608,6 +1609,18 @@ check_true "naming that line" \
     grep -q "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen on, prompt rebuilt' after the screen woke" "$GUEST_DIR/out/results.md"
 lock_matrix_fails no-suspend local-lock-suspend
 lock_matrix_fails resume-unlocks local-lock-suspend
+apex_locked_in
+printf '%s\n' 'PM: suspend entry (deep)' 'ACPI: PM: Waking up from system sleep state S3' 'PM: suspend exit' >"$GUEST_DIR/state/kernel"
+check "suspend: the matrix passes with the kernel's resume lines" 0 "$(guest lock_matrix local 1000)"
+check_true "and keeps them in the row's kernel log" grep -qx 'PM: suspend exit' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt"
+check_true "with a screendump of the resumed screen" grep -qF 'local-lock-suspend-resumed.png' "$GUEST_DIR/state/qmp"
+apex_locked_in
+: >"$GUEST_DIR/state/resume-unlocks"
+printf '%s\n' 'PM: suspend exit' 'virtio_gpu virtio0: [drm] *ERROR* timed out waiting for the control queue' >"$GUEST_DIR/state/kernel"
+check "suspend: a resume that fails" 1 "$(guest lock_matrix local 1000)"
+check_true "quotes the first virtio, DRM or PM failure line of the kernel" grep -qF \
+    '; first kernel line on virtio, DRM or a PM failure since the row began: virtio_gpu virtio0: [drm] *ERROR* timed out' \
+    "$GUEST_DIR/out/results.md"
 lock_matrix_fails motion-js-error local-lock-reduce-motion
 logged_in
 check "the pin lists lock, but the session never enabled it: the matrix fails" 1 "$(guest lock_matrix local 1000)"
