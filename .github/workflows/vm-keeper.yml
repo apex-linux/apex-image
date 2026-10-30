@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: vm-keeper
+
+# Re-dispatches vm.yml after a run with no verdict, and keeps the "VM status" issue
+# (.github/scripts/vm-keeper.sh). Off until the repository variable APEX_VM_KEEPER is "on".
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: vm-keeper
+  cancel-in-progress: false
+
+jobs:
+  keep:
+    name: replay a vm.yml run that gave no verdict
+    if: github.repository == 'apex-linux/apex-image' && vars.APEX_VM_KEEPER == 'on'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Decide, dispatch, and update the VM status issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APEX_VM_KEEPER: ${{ vars.APEX_VM_KEEPER }}
+        run: .github/scripts/vm-keeper.sh run
