@@ -17,8 +17,10 @@ apex-runner.service keeps one runner waiting. No sudo, and no root on the host.
                        other port of this host's loopback is reachable
   runner.sh install    install and start apex-runner.service
   runner.sh once       one JIT runner for one job (what the service runs), once the
-                       builder VM's sshd answers
-  runner.sh status     the service, the waiting container and the group's runners
+                       builder VM's sshd answers; while the job runs, it holds logind's
+                       sleep, idle and lid-switch inhibitor locks that polkit grants
+  runner.sh status     the service, the waiting container, the group's runners and the
+                       inhibitor locks held
   runner.sh uninstall  stop and remove the service (keeps the key, the token and the image)
 
 Files, in ~/.config/apex/runner/:
@@ -43,6 +45,9 @@ readonly GROUP=apex-kvm
 readonly LABEL=apex-kvm
 readonly UNIT=apex-runner.service
 BUILDER_POLL=30 BUILDER_LOG_EVERY=600
+# Taken one by one: polkit may grant idle and refuse sleep or the lid to a service.
+readonly INHIBIT_WHO=apex-runner INHIBIT_WHAT=(sleep idle handle-lid-switch)
+INHIBIT_WAIT=5
 
 ORG=${APEX_RUNNER_ORG:-apex-linux}
 REPO=${APEX_RUNNER_REPO:-apex-image}
@@ -250,6 +255,62 @@ wait_for_builder() {
     done
 }
 
+inhibitors_held() {
+    systemd-inhibit --list --no-pager 2>/dev/null |
+        awk -v who="$INHIBIT_WHO" '$1 == who { print $6 }' | sort -u | paste -sd' ' -
+}
+
+# PID: 0 once systemd-inhibit holds WHAT, 1 if it exited (refused), 2 if neither in time.
+inhibitor_taken() {
+    local what=$1 pid=$2 deadline=$((SECONDS + INHIBIT_WAIT))
+    while ((SECONDS <= deadline)); do
+        [[ " $(inhibitors_held) " != *" $what "* ]] || return 0
+        kill -0 "$pid" 2>/dev/null || return 1
+        sleep 0.2
+    done
+    return 2
+}
+
+# Each lock's holder exits with the watcher, so the locks end with the job however it ends.
+inhibit_sleep() {
+    local why=$1 watcher=$BASHPID what pid err held=() refused=()
+    if ! command -v systemd-inhibit >/dev/null 2>&1; then
+        log "sleep inhibitor: refused (no systemd-inhibit on this host); keep the laptop awake for this job"
+        return 0
+    fi
+    err=$(mktemp)
+    for what in "${INHIBIT_WHAT[@]}"; do
+        systemd-inhibit --no-ask-password --what="$what" --who="$INHIBIT_WHO" --why="$why" --mode=block \
+            tail --pid="$watcher" -f /dev/null 2>"$err" &
+        pid=$!
+        case $(inhibitor_taken "$what" "$pid" && echo 0 || echo $?) in
+            0) held+=("$what") ;;
+            1) refused+=("$what: $(tr -s '\n' ' ' <"$err" | sed 's/ $//')") ;;
+            *) refused+=("$what: not listed by systemd-inhibit --list after ${INHIBIT_WAIT}s") ;;
+        esac
+    done
+    rm -f -- "$err"
+    ((${#held[@]} == 0)) || log "sleep inhibitor: held (${held[*]}) for $why, until the job ends"
+    if ((${#refused[@]})); then
+        local IFS=';'
+        log "sleep inhibitor: refused (${refused[*]}); keep the laptop awake for this job"
+    fi
+}
+
+# The runner's output, unchanged; the locks are taken at its "Running job" line, not before.
+watch_job() {
+    local line taken=
+    while IFS= read -r line; do
+        printf '%s\n' "$line"
+        if [[ -z $taken && $line == *'Running job: '* ]]; then
+            taken=1
+            inhibit_sleep "VM job: ${line#*Running job: }"
+        fi
+    done
+}
+
+attach_job() { podman start --attach "$1" | watch_job; }
+
 cmd_once() {
     require_tools podman curl jq
     require_ready
@@ -271,7 +332,7 @@ cmd_once() {
     podman create "${args[@]}" --env-file "$env_file" "$IMAGE" >/dev/null
     rm -f -- "$env_file"
     log "runner $name (id $runner_id) waits for one job"
-    podman start --attach "$name"
+    attach_job "$name"
 }
 
 cmd_install() {
@@ -299,7 +360,9 @@ TimeoutStopSec=90
 WantedBy=default.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now "$UNIT"
+    systemctl --user enable "$UNIT"
+    # A waiting runner.sh keeps the copy it started from, so the next job gets the new one.
+    systemctl --user restart "$UNIT"
     log "started $UNIT"
     [[ $(loginctl show-user "$(id -un)" -P Linger 2>/dev/null) == yes ]] ||
         log "to keep it running without a login, run yourself: sudo loginctl enable-linger $(id -un)"
@@ -309,9 +372,20 @@ cmd_status() {
     local id
     systemctl --user --no-pager status "$UNIT" || true
     podman ps --filter "name=^$LABEL-" --format '{{.Names}} {{.Status}}' || true
+    inhibitor_status
     id=$(group_id) && [[ -n $id ]] &&
         api GET "/orgs/$ORG/actions/runner-groups/$id/runners?per_page=100" |
         jq -r '.runners[] | "\(.name) \(.status) busy=\(.busy)"'
+}
+
+inhibitor_status() {
+    local held
+    held=$(inhibitors_held)
+    if [[ -n $held ]]; then
+        echo "sleep inhibitor: held ($held)"
+    else
+        echo "sleep inhibitor: none held (no job runs, or polkit refused the locks: see the job's log)"
+    fi
 }
 
 cmd_uninstall() {
