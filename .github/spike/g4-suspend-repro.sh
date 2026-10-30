@@ -804,8 +804,7 @@ finish_trial() {
     VERDICT[${META[name]}]=$(jq -r '.verdict // "?"' "$TDIR/verdict.json" 2>/dev/null || echo '?')
 }
 
-# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc (no PWRBTN_STS) or
-# s2idle (mem_sleep=s2idle, serio0 a wakeup source, QMP send-key);
+# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc or s2idle (send-key);
 # OPT nothing (gsd's power-button-action), stdvga (VGA, not virtio-vga), bare, rN (a repeat).
 run_trial() {
     local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need
