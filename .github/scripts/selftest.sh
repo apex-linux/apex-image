@@ -567,6 +567,8 @@ check_true "a case named before its subject is found too" grep -qx 'case default
 check_false "a failing case without a log prints nothing" grep -q '== G2 dock-pin' "$BUILD_DIR/out"
 check_false "nor does a passing line" grep -q '^== G2 PASS' "$BUILD_DIR/out"
 rm -rf "$G2_RUN1" "$BUILD_DIR/g2-rc"
+check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" break-glass \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f6)"
 check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
     "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
@@ -732,7 +734,8 @@ t2_state FAIL gate pinned h2
 printf 'image-id beef\n' >"$T2W/_build/g2/latest/result.txt"
 check "T3: an image G2 last ran on, or the last gate run's, only" "0|1|image cafe is neither G2's last nor the last gate run's" \
     "$(t2_rc)|$(t2_plan_of "printf 'x\tbeef\th1\tFAIL\tt\tgate\tpinned\n' >>_build/qualify/verdicts.tsv")"
-for row in "PASS gate pinned" "NOT-DUE gate pinned" "FAIL image-only pinned" "FAIL gate dev-override" "FAIL gate unknown"; do
+for row in "PASS gate pinned" "NOT-DUE gate pinned" "FAIL image-only pinned" "FAIL break-glass pinned" "FAIL gate dev-override" \
+    "FAIL gate unknown"; do
     # shellcheck disable=SC2086 # the row's three words
     t2_state $row h2
     check "T3: the image's last G4 row is $row" "1|image cafe's last G4 verdict is ${row%% *} ($(cut -d' ' -f2 <<<"$row"), ${row##* }), not a pinned gate or t2 FAIL" \
@@ -750,6 +753,14 @@ t2_git checkout -q --detach "$T2_HEAD"
 check "T3: an image whose revision is not on origin/main" "1|its revision $T2_REV is not on origin/main" "$(t2_plan_of)"
 t2_head .github/scripts/qualify.sh
 t2_state FAIL gate pinned h2
+echo '# synced, not committed' >>"$T2W/image/Containerfile"
+check "T3: a modified tracked file the diff of commits cannot see (a local vm-image's sync)" \
+    "1|the working tree has changes no commit holds:  M image/Containerfile" "$(t2_plan_of)"
+t2_git checkout -q -- image/Containerfile
+echo new >"$T2W/image/untracked.repo"
+check "T3: an untracked file too" "1|the working tree has changes no commit holds: ?? image/untracked.repo" "$(t2_plan_of)"
+rm "$T2W/image/untracked.repo"
+check "and a clean tree is qualify-only again" 0 "$(t2_rc)"
 
 # The fail-safe: every helper of the detection fails, and the run is the full gate run.
 T2_BROKEN='image_id() { return 1; }; image_revision() { return 1; }; image_created() { return 1; }
