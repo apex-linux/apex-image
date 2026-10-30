@@ -1,0 +1,18 @@
+gnome-shell[1935]: Apex: feature lock enabled
+gnome-shell[1935]: Apex: feature quick-settings enabled
+gnome-shell[1935]: Apex: feature end-session enabled
+gnome-shell[1935]: Apex: feature indicators enabled
+gnome-shell[1935]: Apex: feature polkit enabled
+gnome-shell[1935]: Apex: feature notifications enabled
+gnome-shell[1935]: GNOME Shell started at Wed Oct 28 2026 07:47:50 GMT+0000 (Coordinated Universal Time)
+gnome-shell[1935]: Registering display with GDM
+gnome-shell[1935]: Type GITypeInfo of property AccountsService.User::password-mode does not match return type GITypeInfo of getter get_password_mode. Falling back to slow path
+gnome-shell[1935]: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.Failed: Set global engine failed: Operation was cancelled
+gnome-shell[1935]: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.Failed: Set global engine failed: Operation was cancelled
+gnome-shell[1935]: Failed to get PolKit permission: Polkit.Error: GDBus.Error:org.freedesktop.PolicyKit1.Error.Failed: Action org.freedesktop.bolt.enroll is not registered
+gnome-shell[1935]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.
+gnome-shell[1935]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.
+gnome-shell[1935]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.
+gnome-shell[1935]: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.Failed: Set global engine failed: Operation was cancelled
+gnome-shell[1935]: Apex: lock: screen on, prompt rebuilt
+gnome-shell[1935]: JS ERROR: TypeError: can't convert undefined to object

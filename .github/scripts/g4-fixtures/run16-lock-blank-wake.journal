@@ -1,0 +1,37 @@
+gnome-shell[1943]: Running GNOME Shell (using mutter 51.0) as a Wayland display server
+gnome-shell[1943]: Thread 'KMS thread' will be using high priority scheduling
+gnome-shell[1943]: Added device '/dev/dri/card1' (virtio_gpu) using atomic mode setting.
+gnome-shell[1943]: Failed to initialize accelerated iGPU/dGPU framebuffer sharing: Not hardware accelerated
+gnome-shell[1943]: Created gbm renderer for '/dev/dri/card1'
+gnome-shell[1943]: Boot VGA GPU /dev/dri/card1 selected as primary
+gnome-shell[1943]: Using public X11 display :0, (using unix:/tmp/.X11-unix/X1 for managed services)
+gnome-shell[1943]: Using Wayland display name 'wayland-0'
+gnome-shell[1943]: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.
+gnome-shell[1943]: Registering session with GDM
+gnome-shell[1943]: Will monitor session 23
+gnome-shell[1943]: Apex: feature motion enabled
+gnome-shell[1943]: Apex: feature shadows enabled
+gnome-shell[1943]: Apex: feature spotlight enabled
+gnome-shell[1943]: Apex: feature panel enabled
+gnome-shell[1943]: Apex: feature glass enabled
+gnome-shell[1943]: St.ButtonMask.ONE is deprecated, use St.ButtonMask.PRIMARY instead.
+gnome-shell[1943]: St.ButtonMask.THREE is deprecated, use St.ButtonMask.SECONDARY instead.
+gnome-shell[1943]: Apex: feature dock enabled
+gnome-shell[1943]: Apex: feature overview enabled
+gnome-shell[1943]: Apex: feature lock enabled
+gnome-shell[1943]: Apex: feature quick-settings enabled
+gnome-shell[1943]: Apex: feature end-session enabled
+gnome-shell[1943]: Apex: feature indicators enabled
+gnome-shell[1943]: Apex: feature polkit enabled
+gnome-shell[1943]: Apex: feature notifications enabled
+gnome-shell[1943]: Error looking up permission: GDBus.Error:org.freedesktop.portal.Error.NotFound: No entry for geolocation
+gnome-shell[1943]: Error connecting to the screencast service
+gnome-shell[1943]: GNOME Shell started at Fri Oct 30 2026 14:10:42 GMT+0000 (Coordinated Universal Time)
+gnome-shell[1943]: Registering display with GDM
+gnome-shell[1943]: Type GITypeInfo of property AccountsService.User::password-mode does not match return type GITypeInfo of getter get_password_mode. Falling back to slow path
+gnome-shell[1943]: Gio.DBusError: GDBus.Error:org.freedesktop.DBus.Error.Failed: Set global engine failed: Operation was cancelled
+gnome-shell[1943]: Failed to get PolKit permission: Polkit.Error: GDBus.Error:org.freedesktop.PolicyKit1.Error.Failed: Action org.freedesktop.bolt.enroll is not registered
+gnome-shell[1943]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.
+gnome-shell[1943]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.
+gnome-shell[1943]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.
+gnome-shell[1943]: Can't update stage views actor apexDockBox [StWidget] is on because it needs an allocation.

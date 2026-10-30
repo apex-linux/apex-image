@@ -1,0 +1,22 @@
+INFO assessing this boot (at most 305 s)
+INFO session c1 (greeter) is up after 0 s
+WARN bootc timed out; killing its process group timeout_s=30
+INFO check session: pass
+INFO check core-units-active: pass
+INFO check apex-updated-ping: pass
+INFO check failed-units: pass
+INFO check grub-cfg-marker: pass
+WARN check audio-init-verbs: fail: /usr/lib/firmware/apex/alc294-m7400qc.fw is not installed (the image ships audio degraded)
+WARN check charge-threshold: fail: cannot read /sys/class/power_supply/BAT0/charge_control_end_threshold: No such file or directory (os error 2)
+WARN check dgpu-runtime-pm: fail: dGPU 0000:01:00.0 is not present
+INFO check nvidia-driver: pass
+WARN check fingerprint-device: fail: no USB device 04f3:0c6e
+INFO check grub-cfg-current: pass
+WARN check image-source: fail: bootc status failed: `bootc status` timed out after 30 s
+WARN bootc status failed (`bootc status` timed out after 30 s); asking apex-updated
+INFO entry 0 at the next boot: unknown
+INFO qualification hook /var/lib/apex/force-red names "sha256:a235a24350ec9cf69c554210aeced0ea20a389f480712bf7a532ff7083fb5467", not this boot; ignored
+INFO decision: red-armed-no-session (report red sha256:a235a24350ec9cf69c554210aeced0ea20a389f480712bf7a532ff7083fb5467); grubenv: set apex_ok=0; failed: booted-digest
+INFO step 0 (grubenv: set apex_ok=0): done
+INFO step 1 (record health failure of sha256:a235a24350ec9cf69c554210aeced0ea20a389f480712bf7a532ff7083fb5467): done
+INFO step 2 (ReportBoot(red, sha256:a235a24350ec9cf69c554210aeced0ea20a389f480712bf7a532ff7083fb5467)): done
