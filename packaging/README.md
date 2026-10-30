@@ -9,7 +9,7 @@ single depsolve of the compose through a local repository (`createrepo_c`, prior
 |---|---|---|---|
 | `apex` (`apexctl`, `apex-updated`, `apex-boot-assess`) | apex-system (`APEX_SYSTEM_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/apex/` |
 | `apex-desktop` (the Apex GSettings schema and the shell's crash guard) | apex-desktop (`APEX_DESKTOP_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/desktop/` |
-| libfprint with the ELAN `04f3:0c6e` patches | apex-kernel (`APEX_KERNEL_SRC`) | its `.github/scripts/libfprint.sh build`, given this image's `GA_REACHED` and updates-testing allowlist | `_build/libfprint/`, or "degraded" |
+| libfprint with the ELAN `04f3:0c6e` patches | apex-kernel (`APEX_KERNEL_SRC`) | its `.github/scripts/libfprint.sh build`, against `fedora` and `updates` | `_build/libfprint/`, or "degraded" |
 | gnome-shell with the Apex layer, and later the kernel pair | the recipes in `packaging/pkgs/` of apex-gnome and apex-kernel (`APEX_LANE_RECIPES`) | `apex-lane build` ([below](#the-rebuild-lane)) | `~/apex-store/`, `rpms.lock.next` |
 
 `tools/components.sh fetch` clones each component at its commit in `components.lock`
@@ -74,14 +74,9 @@ commits a dirty host tree as a throwaway snapshot, as `just vm-image` does.
 
 1. **Parses** `pkg.env`, `series` and `spec-edit` with strict parsers, archives Source1
    and checks its members, all before any network access (exit 2 on an error).
-2. **Repositories.** The compose's set: `fedora`, `updates`, and before GA
-   `updates-testing` limited to the allowlist (`lib.sh dnf_repo_args`). Before GA the
-   buildroot also admits every binary subpackage of the builds the allowlist admits,
-   found by source RPM. The runtime allowlist leaves out `-devel` packages, so without
-   this `mutter-devel` resolves to `51~rc-2` and `mutter-devel >= 51.0` cannot be met.
-   It adds no build, only more subpackages of reviewed ones, and only for the lane's own
-   dnf calls; it goes away with `GA_REACHED=1`. dnf's metadata cache is a podman volume
-   (`apex-lane-dnf-cache`), refreshed at the start of every run.
+2. **Repositories.** The compose's set, `fedora` and `updates` (`lib.sh dnf_repo_args`),
+   never updates-testing. dnf's metadata cache is a podman volume (`apex-lane-dnf-cache`),
+   refreshed at the start of every run.
 3. **Resolves** the stock build (the binary named `srpm=`, whose source RPM must be its
    own NVR) and the pin (the newest `<pin>-devel`), then the content key. A key already
    in the store is **unchanged**: nothing is built, and `rpms.lock.next` takes it.
@@ -447,9 +442,8 @@ stock on its own (ADR 0014).
   locked name). `[apex]` has `gpgcheck=1` with the Apex RPM key and Fedora's
   ([Signing](#signing)). `includepkgs` of `[apex]` is `image/packages/apex.txt` plus the
   locked names; `excludepkgs` of `[fedora]` and `[updates]` is the locked names plus
-  libfprint when rpms/ carries the Apex libfprint, in one line each; `[apex-gnome51]`
-  gets the same line after its own check. A stock or degraded family adds nothing, so
-  Fedora's build is installed.
+  libfprint when rpms/ carries the Apex libfprint, in one line each. A stock or degraded
+  family adds nothing, so Fedora's build is installed.
 - The final stage installs the lock as `/usr/share/apex/rpms.lock`, records held
   families in the manifest's `held` field and a stock or degraded gnome-shell family as
   `degraded=shell` (docs/specs/M1-IMPLEMENTATION.md section 3); `image.sh` copies both

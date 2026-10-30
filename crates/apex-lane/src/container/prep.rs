@@ -234,7 +234,6 @@ mod tests {
                 n: 0,
                 tool: String::new(),
                 repos_base: String::new(),
-                ga_reached: 0,
                 source1: None,
                 source1_tree: None,
                 locked_evr: None,

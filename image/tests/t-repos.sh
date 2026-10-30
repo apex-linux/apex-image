@@ -43,25 +43,6 @@ fi
 # The sandbox cannot add directories under the host's /usr, so Fedora's key sits at its root.
 sed -i -e 's|/usr/share/pki/rpm-gpg/|/pki/|g' "$T/run.sh"
 
-list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }
-
-# The committed allowlist is empty once Fedora's stable repositories carry its builds.
-pins() {
-    printf '%s\n' adwaita-icon-theme-51.0-1.fc45 epiphany-51.0-2.fc45 gdm-51.0-1.fc45 \
-        glib2-2.90.0-1.fc45 gtk4-4.24.0-1.fc45 mutter-51.0-1.fc45 tecla-51.0-1.fc45
-}
-PINS=$(pins | wc -l)
-
-# nvr_rows ALLOWLIST [RELEASE]: fake dnf5 rows "name epoch version release arch" of its
-# entries, with Fedora's epochs.
-nvr_rows() {
-    list "$1" | while read -r s; do
-        n=${s%-*-*} vr=${s#"${s%-*-*}"-}
-        v=${vr%-*} r=${2:-${vr##*-}} e=0
-        case $n in gdm | epiphany | epiphany-runtime) e=1 ;; esac
-        printf '%s %s %s %s x86_64\n' "$n" "$e" "$v" "$r"
-    done
-}
 
 # setup NAME: the repo files, rpms/, packages/ and fake dnf5 data of a fresh scenario.
 setup() {
@@ -69,7 +50,6 @@ setup() {
     mkdir -p "$S/etc/yum.repos.d" "$S/etc/alternatives" "$S/apex" "$S/dnf" "$S/packages" \
         "$S/pki"
     cp "$IMAGE_DIR"/packages/*.txt "$S/packages/"
-    pins >"$S/packages/updates-testing-allowlist.txt"
     cp "$IMAGE_DIR/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" "$S/apex/"
     printf 'Fedora 45 key\n' >"$S/pki/RPM-GPG-KEY-fedora-45-primary"
     # shellcheck disable=SC2016 # $releasever and $basearch are dnf's, written literally
@@ -97,13 +77,7 @@ setup() {
         : >"$S/apex/$f.rpm"
     done
     lane_lock built >"$S/apex/rpms.lock"
-    nvr_rows "$S/packages/updates-testing-allowlist.txt" >"$S/dnf/testing.txt"
-    # Unrelated updates-testing content and an i686 build, none of it admitted.
-    printf 'systemd 0 262 1.fc45 x86_64\ngnome-maps 0 51.0 1.fc45 x86_64\nglib2 0 2.90.0 1.fc45 i686\n' \
-        >>"$S/dnf/testing.txt"
-    # The stable repositories still carry the 51~rc builds.
-    nvr_rows "$S/packages/updates-testing-allowlist.txt" |
-        awk '{ $3 = ($1 == "gtk4" ? "4.23.4" : $1 == "glib2" ? "2.89.2" : "51~rc"); $4 = "2.fc45"; print }' >"$S/dnf/stable.txt"
+    printf 'gtk4 0 4.24.0 1.fc45 x86_64\nmutter 0 51.0 1.fc45 x86_64\ngdm 1 51.0 1.fc45 x86_64\n' >"$S/dnf/stable.txt"
 }
 
 # lane_lock STATE: prints an rpms.lock whose gnome-shell family is in STATE; built and
@@ -141,8 +115,7 @@ stage() {
         --ro-bind "$FAKE" /fake --bind "$S/dnf" /fakednf \
         --tmpfs /tmp --dir /var/cache --proc /proc --dev /dev \
         --clearenv --setenv PATH /fake:/usr/bin --setenv LC_ALL C \
-        --setenv FAKE_DNF_DIR /fakednf --setenv FEDORA 45 --setenv GA_REACHED 0 \
-        --setenv FEDORA_GA_DATE 2099-01-01 --setenv ALLOWLIST_GRACE_DAYS 7 \
+        --setenv FAKE_DNF_DIR /fakednf --setenv FEDORA 45 \
         "$(command -v env)" "$@" "$(command -v "$SH")" -c "$(cat "$T/run.sh")"
 }
 
@@ -150,12 +123,14 @@ REPOS=etc/yum.repos.d
 
 setup a
 stage a
-expect_rc "A: pinned builds that only updates-testing carries build" 0
-expect_out "A: every pinned build is admitted" "^apex-gnome51 admits $PINS pinned build\\(s\\) from updates-testing; fedora/updates lack $PINS of them\$"
-expect_file "A: includepkgs pins name-version-release" '^includepkgs=adwaita-icon-theme-51\.0-1\.fc45,.*,gdm-51\.0-1\.fc45,' "$T/a/$REPOS/apex-gnome51.repo"
-expect_file "A: the stanza never skips a failed download" '^skip_if_unavailable=False$' "$T/a/$REPOS/apex-gnome51.repo"
-if grep -c '^skip_if_unavailable' "$T/a/$REPOS/apex-gnome51.repo" | grep -qx 1; then ok "A: skip_if_unavailable appears once"; else not_ok "A: skip_if_unavailable appears once"; fi
-expect_file "A: it keeps the updates-testing metalink" '^metalink=.*repo=updates-testing-f' "$T/a/$REPOS/apex-gnome51.repo"
+expect_rc "A: the repos stage builds" 0
+for f in "$T/a/$REPOS"/*; do printf '%s\n' "${f##*/}"; done | LC_ALL=C sort >"$T/a/repofiles"
+printf '%s\n' apex.repo fedora-fedora.repo fedora-updates-testing.repo fedora-updates.repo >"$T/a/repofiles.want"
+if cmp -s "$T/a/repofiles.want" "$T/a/repofiles"; then
+    ok "A: the only repository it adds is [apex]"
+else
+    not_ok "A: the only repository it adds is [apex]" && sed 's/^/#   /' "$T/a/repofiles"
+fi
 expect_file "A: updates-testing is disabled" '^enabled=0$' "$T/a/$REPOS/fedora-updates-testing.repo"
 if grep -q '^enabled=1' "$T/a/$REPOS/fedora-updates-testing.repo"; then not_ok "A: updates-testing-debuginfo is disabled too"; else ok "A: updates-testing-debuginfo is disabled too"; fi
 expect_file "A: [apex] admits only the names in apex.txt and rpms.lock" \
@@ -175,123 +150,20 @@ for p in fedora updates; do
         '^excludepkgs=gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/fedora-$p.repo"
     if [ "$(grep -c '^excludepkgs=' "$T/a/$REPOS/fedora-$p.repo")" = 1 ]; then ok "A: one excludepkgs line in $p"; else not_ok "A: one excludepkgs line in $p"; fi
 done
-expect_file "A: apex-gnome51 excludes them after its own check" \
-    '^excludepkgs=gnome-shell,gnome-shell-common,libfprint,mutter,mutter-common$' "$T/a/$REPOS/apex-gnome51.repo"
 expect_out "A: [apex] offers the locked builds" '^\[apex\] offers exactly the 4 locked build\(s\)$'
 expect_out "A: the lane's families are printed" '^  family gnome-shell built gnome-shell-51\.0-1\.fc45-s0123456789ab$'
 expect_out "A: libfprint-devel from rpms/ is reported as not admitted" '^NOTE: rpms/ also has packages that are not in apex.txt or rpms.lock; \[apex\] does not admit them: libfprint-devel$'
 
-setup b
-: >"$T/b/dnf/fail-testing"
-stage b
-expect_rc "B: a failed updates-testing query fails the build" 1
-expect_out "B: and says so" '^ERROR: cannot query apex-gnome51'
-if [ -e "$T/b/$REPOS/apex-gnome51.repo" ]; then ok "B: the stanza is not silently dropped"; else not_ok "B: the stanza is not silently dropped"; fi
-
-setup c
-: >"$T/c/dnf/testing.txt"
-stage c
-expect_rc "C: gone from testing, older in stable: fails" 1
-expect_out "C: names the downgrade" '^ERROR: pinned builds are not in updates-testing, and the stable repositories carry them older.*gtk4 \(4\.23\.4-2\.fc45 < 4\.24\.0-1\.fc45\)'
-expect_out "C: compares an epoch-1 package with its stable epoch" ' gdm \(51~rc-2\.fc45 < 51\.0-1\.fc45\)'
-
-setup d
-: >"$T/d/dnf/testing.txt"
-nvr_rows "$T/d/packages/updates-testing-allowlist.txt" >"$T/d/dnf/stable.txt"
-stage d
-expect_rc "D: went stable and left updates-testing: builds" 0
-expect_out "D: with a warning to drop the pins" '^WARNING: fedora/updates carry these pinned builds.*drop them from image/packages/updates-testing-allowlist.txt: adwaita-icon-theme-51\.0-1\.fc45 .* tecla-51\.0-1\.fc45$'
-expect_out "D: mutter, which the lane excludes from fedora and updates, is found there too" '^WARNING: .* mutter-51\.0-1\.fc45 '
-if [ -e "$T/d/$REPOS/apex-gnome51.repo" ]; then not_ok "D: the stanza is dropped"; else ok "D: the stanza is dropped"; fi
-
-setup d2
-nvr_rows "$T/d2/packages/updates-testing-allowlist.txt" >"$T/d2/dnf/stable.txt"
-stage d2
-expect_rc "D: went stable, still listed in updates-testing: builds" 0
-expect_out "D: with the same warning" '^WARNING: fedora/updates carry these pinned builds.* gtk4-4\.24\.0-1\.fc45 '
-if [ -e "$T/d2/$REPOS/apex-gnome51.repo" ]; then not_ok "D: and the stanza is dropped"; else ok "D: and the stanza is dropped"; fi
-
-setup d3
-printf 'gtk4 0 4.24.0 1.fc45 x86_64\n' >"$T/d3/dnf/testing.txt"
-nvr_rows "$T/d3/packages/updates-testing-allowlist.txt" | awk '$1 == "gtk4" { $3 = "4.23.4"; $4 = "2.fc45" } { print }' >"$T/d3/dnf/stable.txt"
-stage d3
-expect_rc "D: one pin only in updates-testing, the rest stable: builds" 0
-expect_out "D: the stanza stays for that one" '^apex-gnome51 admits 1 pinned build\(s\) from updates-testing; fedora/updates lack 1 of them$'
-expect_no_out "D: which the warning leaves out" '^WARNING: .* gtk4-'
-expect_out "D: and the warning names the others" '^WARNING: fedora/updates carry these pinned builds.* mutter-51\.0-1\.fc45 '
-
-setup e
-: >"$T/e/dnf/testing.txt"
-nvr_rows "$T/e/packages/updates-testing-allowlist.txt" 9.fc45 >"$T/e/dnf/stable.txt"
-stage e
-expect_rc "E: newer in stable: builds" 0
-
-setup f
-: >"$T/f/dnf/testing.txt"
-nvr_rows "$T/f/packages/updates-testing-allowlist.txt" |
-    awk '$1 == "mutter" { $3 = "51~rc"; $4 = "2.fc45" } $1 != "tecla" { print }' >"$T/f/dnf/stable.txt"
-stage f
-expect_rc "F: partly older in stable: fails" 1
-expect_out "F: names the older one" 'mutter \(51~rc-2\.fc45 < 51\.0-1\.fc45\)'
-expect_out "F: names the missing one" 'tecla \(not in fedora/updates\)'
-setup f2
-: >"$T/f2/dnf/testing.txt"
-: >"$T/f2/dnf/fail-stable"
-stage f2
-expect_rc "F: a failed stable query fails" 1
-expect_out "F: and says so" '^ERROR: cannot query the stable repositories'
-
-setup g
-sed -i 's/^mutter 0 51\.0 1\.fc45/mutter 0 51.0 2.fc45/' "$T/g/dnf/testing.txt"
-stage g
-expect_rc "G: a replaced build fails" 1
-expect_out "G: names the pinned package" '^ERROR: pinned builds are not in updates-testing.*: mutter \(51~rc-2\.fc45 < 51\.0-1\.fc45\)\. '
-
-setup g2
-nvr_rows "$T/g2/packages/updates-testing-allowlist.txt" | sed 's/^\(epiphany 1 51\.0\) 2\.fc45/\1 1.fc45/' >"$T/g2/dnf/stable.txt"
-cp "$T/g2/dnf/stable.txt" "$T/g2/dnf/testing.txt"
-stage g2
-expect_rc "G: a pin Fedora unpushed, with an older build stable: fails" 1
-expect_out "G: names it alone, by its stable epoch" '^ERROR: pinned builds are not in updates-testing.*: epiphany \(51\.0-1\.fc45 < 51\.0-2\.fc45\)\. '
-
-setup h
-: >"$T/h/dnf/ignore-includes"
-sed -i 's/ [0-9][0-9]*\.fc45 \([a-z0-9_]*\)$/ 7.fc45 \1/' "$T/h/dnf/testing.txt"
-stage h
-expect_rc "H: an unrestricted stanza fails" 1
-expect_out "H: and says so" '^ERROR: includepkgs did not restrict apex-gnome51'
-
-setup i
-printf 'glib2\n' >>"$T/i/packages/updates-testing-allowlist.txt"
-stage i
-expect_rc "I: a bare package name fails" 1
-expect_out "I: and says why" "^ERROR: updates-testing-allowlist.txt entry 'glib2' is not a pinned name-version-release"
-
-setup j
-stage j GA_REACHED=1
-expect_rc "J: GA_REACHED=1 builds" 0
-if [ -e "$T/j/$REPOS/apex-gnome51.repo" ]; then not_ok "J: no apex-gnome51"; else ok "J: no apex-gnome51"; fi
-
 setup k
-stage k FEDORA_GA_DATE=2026-01-01
-expect_rc "K: allowlist entries past GA + 7 days fail" 1
-setup k2
-printf '# no pins\n' >"$T/k2/packages/updates-testing-allowlist.txt"
-stage k2 FEDORA_GA_DATE=2026-01-01
-expect_rc "K: an empty allowlist builds, also past GA + 7 days" 0
-expect_out "K: and is reported" '^updates-testing allowlist: <empty>$'
-if [ -e "$T/k2/$REPOS/apex-gnome51.repo" ]; then not_ok "K: without apex-gnome51"; else ok "K: without apex-gnome51"; fi
-expect_file "K: with updates-testing disabled" '^enabled=0$' "$T/k2/$REPOS/fedora-updates-testing.repo"
-if grep 'repoquery' "$T/k2/dnf/log" | grep -qv 'apex-probe'; then
+stage k
+expect_rc "K: Fedora 45 after GA builds from fedora and updates" 0
+expect_file "K: with updates-testing disabled" '^enabled=0$' "$T/k/$REPOS/fedora-updates-testing.repo"
+if grep 'repoquery' "$T/k/dnf/log" | grep -qv 'apex-probe'; then
     not_ok "K: and no query of updates-testing or the stable repositories"
 else
     ok "K: and no query of updates-testing or the stable repositories"
 fi
-setup k3
-cp "$IMAGE_DIR/packages/updates-testing-allowlist.txt" "$T/k3/packages/"
-nvr_rows "$T/k3/packages/updates-testing-allowlist.txt" >"$T/k3/dnf/testing.txt"
-stage k3
-expect_rc "K: the committed allowlist builds while updates-testing carries its builds" 0
+if grep -q 'updates-testing' "$T/k/dnf/log"; then not_ok "K: no dnf5 call names updates-testing"; else ok "K: no dnf5 call names updates-testing"; fi
 
 setup l
 : >"$T/l/dnf/fail-repolist"
@@ -453,6 +325,12 @@ sed -i '/ kernel-[0-9.]*-200\.fc45\.src\.rpm$/d' "$T/v6/dnf/stable.txt"
 stage v6
 expect_rc "V: no Fedora kernel to exclude fails" 1
 expect_out "V: and says so" '^ERROR: fedora and updates offer no package of the kernel SRPM to exclude$'
+
+pair_setup v7
+: >"$T/v7/dnf/fail-stable"
+stage v7
+expect_rc "V: a failed query of Fedora's kernel fails" 1
+expect_out "V: and says so" "^ERROR: cannot query Fedora's kernel packages$"
 
 # The break-glass image (just image KERNEL=fedora): image.sh's own rewrite of a pair lock,
 # and none of the pair's RPMs in rpms/.

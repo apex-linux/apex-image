@@ -1,12 +1,9 @@
 #!/usr/bin/python3
 """The dnf5 calls of the Containerfile's repos stage, answered from FAKE_DNF_DIR:
 
-  testing.txt   updates-testing: "name epoch version release arch [sourcerpm]" lines
-  stable.txt    fedora + updates, same format
-  fail-testing, fail-stable, fail-repolist, fail-apexprobe
+  stable.txt    fedora + updates: "name epoch version release arch [sourcerpm]" lines
+  fail-stable, fail-repolist, fail-apexprobe
                 that query exits 1, as dnf5 does on a metadata error
-  ignore-includes
-                an includepkgs list is ignored, as libdnf does when it matches nothing
   ignore-excludes
                 fedora's and updates' excludepkgs lines are ignored
   log           every invocation, one line each
@@ -64,11 +61,6 @@ def fmt(qf, pkg):
     return qf
 
 
-def matches(spec, pkg):
-    nvr = "%s-%s-%s" % (pkg["name"], pkg["version"], pkg["release"])
-    return spec in (pkg["name"], nvr)
-
-
 def main(argv):
     log(argv)
     opts = [a for a in argv if a.startswith("-")]
@@ -78,7 +70,6 @@ def main(argv):
     if qf is None and "--queryformat" in argv:
         qf = argv[argv.index("--queryformat") + 1]
         words.remove(qf)
-    arches = next((a.split("=", 1)[1].split(",") for a in opts if a.startswith("--arch=")), None)
 
     if words[:1] == ["install"] or words[:2] == ["clean", "all"]:
         return 0
@@ -108,34 +99,19 @@ def main(argv):
                                           release=release, arch=arch)))
         return 0
 
-    if repos == ["apex-gnome51"]:
-        if flag("fail-testing"):
-            print("Failed to download metadata (metalink) for repository 'apex-gnome51'",
-                  file=sys.stderr)
-            return 1
-        pkgs = packages("testing.txt")
-        cfg = repo_sections()
-        include = cfg.get("apex-gnome51", "includepkgs", fallback="")
-        specs = [s for s in re.split(r"[,\s]+", include) if s]
-        if specs:
-            chosen = [p for p in pkgs if any(matches(s, p) for s in specs)]
-            if chosen or not flag("ignore-includes"):
-                pkgs = chosen
-    elif sorted(repos) == ["fedora", "updates"]:
+    if sorted(repos) == ["fedora", "updates"]:
         if flag("fail-stable"):
             print("Failed to download metadata for repository 'fedora'", file=sys.stderr)
             return 1
         cfg = repo_sections()
         excluded = set()
         for repo in repos:
-            if "--setopt=%s.excludepkgs=" % repo not in opts and not flag("ignore-excludes"):
+            if not flag("ignore-excludes"):
                 excluded.update(s for s in re.split(r"[,\s]+", cfg.get(repo, "excludepkgs", fallback="")) if s)
         pkgs = [p for p in packages("stable.txt") if p["name"] not in excluded]
     else:
         sys.exit("fake dnf5: unsupported repositories %r" % repos)
 
-    if arches:
-        pkgs = [p for p in pkgs if p["arch"] in arches]
     if names:
         pkgs = [p for p in pkgs if any(fnmatch.fnmatchcase(p["name"], n) for n in names)]
     for p in pkgs:

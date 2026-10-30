@@ -168,7 +168,7 @@ fn checkout(env: &str) -> tempfile::TempDir {
     let r = dir.path();
     write(
         &r.join("image/Containerfile"),
-        format!("FROM x\nARG REPOS_BASE={}\nARG GA_REACHED=0\n", base()),
+        format!("FROM x\nARG REPOS_BASE={}\n", base()),
     );
     write(&r.join("packaging/pkgs/demo/pkg.env"), env);
     write(&r.join("packaging/pkgs/demo/series"), "0001-a.patch\n");
@@ -232,7 +232,6 @@ fn settings(store: &Path, signing: &Path) -> Settings {
     Settings {
         store: store.to_path_buf(),
         fedora: "45".into(),
-        ga_override: None,
         keep_work: false,
         signing_env: signing.to_path_buf(),
         exe: PathBuf::from("/opt/apex-lane"),
@@ -463,8 +462,6 @@ fn vm_build_stores_and_records_the_set() {
         "demo",
         "--repos-base",
         &base(),
-        "--ga-reached",
-        "0",
         "--n",
         "1",
         "--tool",
@@ -1085,7 +1082,6 @@ impl ContainerTest {
                 n: 3,
                 tool: "t".repeat(64),
                 repos_base: base(),
-                ga_reached: 0,
                 source1: Some(self.archive.clone()),
                 source1_tree: Some(self.tree.clone()),
                 locked_evr: None,
@@ -1313,7 +1309,7 @@ fn container_build_writes_the_stored_set() {
             concat!(
                 "# apex-lane manifest 1: kind nevra sha256 file\n",
                 "# pkg=demo family=demo key={key} release=1.fc45.apex3 n=3 stock=demo-1.0-1.fc45 ",
-                "pin=mutter-51.0-1.fc45 fedora=45 ga_reached=0 base={}\n",
+                "pin=mutter-51.0-1.fc45 fedora=45 base={}\n",
                 "fedora-srpm demo-0:1.0-1.fc45.src {} demo-1.0-1.fc45.src.rpm\n",
                 "source1 {} {archive_sha} {}\n",
                 "patch 0001-a {} 0001-a.patch\n",

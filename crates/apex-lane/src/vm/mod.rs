@@ -29,7 +29,6 @@ pub struct Settings {
     pub store: PathBuf,
     /// `APEX_FEDORA`: 45, or a next release with its image/fedora/N.env.
     pub fedora: String,
-    pub ga_override: Option<String>,
     pub keep_work: bool,
     pub signing_env: PathBuf,
     pub exe: PathBuf,

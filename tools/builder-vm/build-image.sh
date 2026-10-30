@@ -104,7 +104,6 @@ build_inputs() {
 
     echo "== 2/4 libfprint (apex-kernel)"
     local rc=0
-    COMPONENT_ENV=(-e "GA_REACHED=$(lib ga_reached)" -e "TESTING_INCLUDEPKGS=$(lib testing_includepkgs)")
     # apex-kernel's libfprint build knows only 45's key; a next release names its own.
     [[ $BUILD == _build ]] || COMPONENT_ENV+=(-e "FEDORA_KEY_FPR=$(lib release_arg FEDORA_KEY_FPR)")
     in_component "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh build /build/libfprint || rc=$?

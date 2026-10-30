@@ -55,14 +55,19 @@ fi
 # F45 has no passwd package: shadow-utils ships /usr/bin/passwd.
 if grep -Fxq passwd "$T/install"; then not_ok "no nonexistent passwd package"; else ok "no nonexistent passwd package"; fi
 
-list "$P/updates-testing-allowlist.txt" >"$T/allow"
-if grep -Evq '^[A-Za-z0-9._+]+(-[A-Za-z0-9._+]+)*-[0-9][A-Za-z0-9._+~^]*-[0-9][A-Za-z0-9._+~^]*\.fc[0-9]+[A-Za-z0-9._+~^]*$' "$T/allow"; then
-    not_ok "updates-testing allowlist: every entry is name-version-release"
+for f in "$P"/*; do printf '%s\n' "${f##*/}"; done | LC_ALL=C sort >"$T/lists"
+printf '%s\n' apex.txt base.txt exclude.txt gnome.txt >"$T/lists.want"
+if cmp -s "$T/lists.want" "$T/lists"; then
+    ok "image/packages holds exactly the four lists the compose reads"
 else
-    ok "updates-testing allowlist: every entry is name-version-release"
+    not_ok "image/packages holds exactly the four lists the compose reads: $(comm -3 "$T/lists.want" "$T/lists" | paste -sd ' ' -)"
 fi
-sed 's/-[^-]*-[^-]*$//' "$T/allow" | sort | uniq -d >"$T/dupnames"
-if [ -s "$T/dupnames" ]; then not_ok "allowlist: one build per package"; else ok "allowlist: one build per package"; fi
+grep -o '/run/apex-packages/[A-Za-z0-9._-]*\.txt' "$IMAGE_DIR/Containerfile" | sed 's|.*/||' | LC_ALL=C sort -u >"$T/read"
+if cmp -s "$T/lists.want" "$T/read"; then
+    ok "the Containerfile reads exactly those four lists"
+else
+    not_ok "the Containerfile reads exactly those four lists: $(comm -3 "$T/lists.want" "$T/read" | paste -sd ' ' -)"
+fi
 
 # gdm is enabled by Fedora's preset and by the Containerfile, not by 80-apex.preset.
 PRESET=$IMAGE_DIR/system_files/usr/lib/systemd/system-preset/80-apex.preset

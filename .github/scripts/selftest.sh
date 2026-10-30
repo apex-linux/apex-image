@@ -57,7 +57,7 @@ check_false "uppercase digest" is_digest "sha256:$(printf 'A%.0s' {1..64})"
 cat >"$TMP/Containerfile" <<'EOF'
 ARG FEDORA=45
 ARG BASE=registry.fedoraproject.org/fedora-bootc@sha256:5225b8afb65136bcf6131eb2b02ef7923a64e37264e5e0fdda47dfeef51851c1
-ARG GA_REACHED="0"
+ARG RELEASE_BUILD="0"
 ARG EMPTY=
 ARG COMPOSE=build-rootfs
 FROM registry.fedoraproject.org/fedora:${FEDORA} AS repos
@@ -70,7 +70,7 @@ FROM ${UNKNOWN}
 EOF
 check "ARG with default" "registry.fedoraproject.org/fedora-bootc@sha256:5225b8afb65136bcf6131eb2b02ef7923a64e37264e5e0fdda47dfeef51851c1" \
     "$(containerfile_arg BASE "$TMP/Containerfile")"
-check "ARG quotes removed" 0 "$(containerfile_arg GA_REACHED "$TMP/Containerfile")"
+check "ARG quotes removed" 0 "$(containerfile_arg RELEASE_BUILD "$TMP/Containerfile")"
 check "ARG empty" "" "$(containerfile_arg EMPTY "$TMP/Containerfile")"
 check "ARG missing" "" "$(containerfile_arg NOPE "$TMP/Containerfile")"
 check "FROM images (stages, scratch and unresolved ARGs skipped)" \
@@ -81,10 +81,8 @@ check "FROM images with build-arg overrides" "example.org/base:1
 registry.fedoraproject.org/fedora:46" \
     "$(containerfile_from_images "$TMP/Containerfile" BASE=example.org/base:1 FEDORA=46 COMPOSE=dnf)"
 
-is_empty_or_csv_list() { [[ $1 =~ ^([A-Za-z0-9._+-]+(,[A-Za-z0-9._+-]+)*)?$ ]]; }
-if [[ -f $APEX_TESTING_ALLOWLIST ]]; then
-    check_true "includepkgs has no comments or blanks" is_empty_or_csv_list "$(testing_includepkgs)"
-fi
+check "the Containerfile writes no repository file but [apex]'s" ">/etc/yum.repos.d/apex.repo" \
+    "$(grep -o '>/etc/yum\.repos\.d/[^ ;]*' "$APEX_CONTAINERFILE" | sort -u | paste -sd' ')"
 
 # --- policy transforms -----------------------------------------------------------------
 policy='{"default":[{"type":"reject"}],"transports":{"docker":{
@@ -427,10 +425,9 @@ check "a missing key too" 1 "$(g4_due "$G4_DIR/absent.key")"
 # --- build-image.sh: G2 twice, G4 when due, and the gates record ---------------------------
 BUILD_DIR="$TMP/build-image"
 mkdir -p "$BUILD_DIR/work/tests/shots" "$BUILD_DIR/work/.github/scripts" "$BUILD_DIR/work/_build/image" \
-    "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image/packages" "$BUILD_DIR/store"
+    "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image" "$BUILD_DIR/store"
 cp "$APEX_ROOT/.github/scripts/lib.sh" "$BUILD_DIR/work/.github/scripts/"
 cp "$APEX_CONTAINERFILE" "$BUILD_DIR/work/image/"
-cp "$APEX_TESTING_ALLOWLIST" "$BUILD_DIR/work/image/packages/"
 printf 'lock\n' >"$BUILD_DIR/store/rpms.lock.next"
 LANE_LOCK_SHA=$(sha256sum <"$BUILD_DIR/store/rpms.lock.next" | cut -d' ' -f1)
 cat >"$BUILD_DIR/work/tests/shots/run.sh" <<'EOF'
@@ -855,10 +852,9 @@ check "APEX_GNOME_SRC is apex-gnome, whose recipes the lane takes" \
 # --- build-image.sh: each RPM from its pinned component, after components.sh fetch and env ---
 BI="$TMP/build-image-components"
 BIW=$BI/home/apex-image
-mkdir -p "$BIW/tools/builder-vm" "$BIW/.github/scripts" "$BIW/image/packages"
+mkdir -p "$BIW/tools/builder-vm" "$BIW/.github/scripts" "$BIW/image"
 cp "$APEX_ROOT/.github/scripts/lib.sh" "$BIW/.github/scripts/"
 cp "$APEX_CONTAINERFILE" "$BIW/image/"
-cp "$APEX_TESTING_ALLOWLIST" "$BIW/image/packages/"
 cat >"$BIW/tools/components.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "$1" >>"$FAKE/components.log"
@@ -906,10 +902,9 @@ check "apex-desktop: apex-desktop's rpms.sh" " registry.fedoraproject.org/fedora
     "$(bi_podman /pinned/desktop)"
 check "libfprint: apex-kernel's libfprint.sh" " registry.fedoraproject.org/fedora:45 .github/scripts/libfprint.sh build /build/libfprint" \
     "$(bi_podman /pinned/kernel)"
-check "libfprint gets this image's GA_REACHED and updates-testing allowlist" \
-    "-e GA_REACHED=$(ga_reached) -e TESTING_INCLUDEPKGS=$(testing_includepkgs)" \
-    "$(grep -o -- '-e GA_REACHED=.* registry' "$BI/steps.log" | sed 's/ registry$//')"
-check "only libfprint gets them" 1 "$(grep -c -- '-e GA_REACHED=' "$BI/steps.log")"
+check "libfprint gets no environment on 45: apex-kernel's libfprint.sh builds against Fedora 45 as released" "" \
+    "$(grep "^podman run .* -v /pinned/kernel:/component:z " "$BI/steps.log" | grep -o -- ' -e [^ ]*')"
+check "and no component build gets one" 0 "$(grep -c -- ' -e ' "$BI/steps.log")"
 check "every RPM is signed, then the lane builds" "sign _build/rpms/apex/x.rpm|sign _build/rpms/desktop/x.rpm|sign _build/libfprint/x.rpm|build all" \
     "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"
 
@@ -1883,16 +1878,10 @@ check "errexit: failures the script tolerates print nothing" "done" \
     "$(errexit_of 'x=$(false; echo y) || true; if ! false; then :; fi; false || true; set +e; false; set -e; v=$(grep -q z /dev/null || true); echo done >&2')"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
-repo_args_with() {
-    local ga_reached=$1 allowlist=$2
-    APEX_GA_REACHED=$ga_reached bash -c '. "$1"; fake_allowlist=$2; testing_includepkgs() { printf "%s\n" "$fake_allowlist"; }; dnf_repo_args | paste -sd" " -' \
-        _ "$APEX_ROOT/.github/scripts/lib.sh" "$allowlist"
-}
-check "pre-GA with an allowlist: only those builds from updates-testing" \
-    "--repo=fedora --repo=updates --repo=updates-testing --setopt=updates-testing.includepkgs=gtk4-4.24.0-1.fc45,glib2-2.90.0-1.fc45" \
-    "$(repo_args_with 0 gtk4-4.24.0-1.fc45,glib2-2.90.0-1.fc45)"
-check "pre-GA with an empty allowlist: no updates-testing" "--repo=fedora --repo=updates" "$(repo_args_with 0 '')"
-check "after GA: no updates-testing" "--repo=fedora --repo=updates" "$(repo_args_with 1 gtk4-4.24.0-1.fc45)"
+check "the compose's repositories: fedora and updates, exactly" "--repo=fedora --repo=updates" \
+    "$(bash -c '. "$1"; dnf_repo_args | paste -sd" " -' _ "$APEX_ROOT/.github/scripts/lib.sh")"
+check "a leftover APEX_GA_REACHED=0 changes nothing" "--repo=fedora --repo=updates" \
+    "$(APEX_GA_REACHED=0 bash -c '. "$1"; dnf_repo_args | paste -sd" " -' _ "$APEX_ROOT/.github/scripts/lib.sh")"
 
 # --- contracts.sh: the image against a hardware profile (the CI job runs the pinned one) ----
 CT=$TMP/contracts
@@ -2262,8 +2251,7 @@ check "a 45 build and rechunk take main's arguments, tag and labels" \
     "build --pull=missing --layers=false --cap-add=SYS_ADMIN,NET_ADMIN --device /dev/fuse \
 --security-opt seccomp=unconfined --security-opt label=disable --build-arg BASE=$ib_base \
 --build-arg REPOS_BASE=$(containerfile_arg REPOS_BASE) --build-arg APEX_VERSION=$ib_v \
---build-arg APEX_REVISION=$(printf '%040d' 7) --build-arg GA_REACHED=$(containerfile_arg GA_REACHED) \
---build-arg RELEASE_BUILD=0 --label org.opencontainers.image.version=$ib_v \
+--build-arg APEX_REVISION=$(printf '%040d' 7) --build-arg RELEASE_BUILD=0 --label org.opencontainers.image.version=$ib_v \
 -f $IB/tree/image/Containerfile -t localhost/apex:build $IB/tree
 run --rm --privileged --pull=never --security-opt label=disable \
 --mount type=image,source=localhost/apex:build,target=/apex-rootfs -v $IB/work/oci:/out:z \
@@ -2282,8 +2270,8 @@ ib46=$(ib_steps APEX_FEDORA=46) || ib46="image.sh failed: $ib46"
 check "a 46 build takes 46.env's BASE and REPOS_BASE, never 45's" \
     "--build-arg BASE=$(ib_next_env BASE) --build-arg REPOS_BASE=$(ib_next_env REPOS_BASE) " \
     "$(grep -o -- '--build-arg BASE=[^ ]* --build-arg REPOS_BASE=[^ ]* ' <<<"$ib46")"
-check "with its FEDORA and GA date, tagged localhost/apex:46" \
-    "--build-arg FEDORA=46 --build-arg FEDORA_GA_DATE=$(ib_next_env FEDORA_GA_DATE) \
+check "with its FEDORA alone, tagged localhost/apex:46" \
+    "--build-arg FEDORA=46 \
 -f $IB/tree/image/Containerfile -t localhost/apex:46 " \
     "$(grep -o -- '--build-arg FEDORA=.* -t [^ ]* ' <<<"$ib46")"
 check "its version is 46.<date>.<run>" "46.$(date -u +%Y%m%d).0" "$(sed -n 's/^APEX_VERSION=//p' "$IB/work/build.env")"

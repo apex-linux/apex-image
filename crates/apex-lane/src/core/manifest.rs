@@ -60,13 +60,12 @@ pub struct Header {
     pub stock: String,
     pub pin_nvr: Option<String>,
     pub fedora: String,
-    pub ga_reached: u8,
     pub base: String,
 }
 
 pub fn render_header(h: &Header) -> String {
     format!(
-        "{FORMAT_LINE}\n# pkg={} family={} key={} release={} n={} stock={} pin={} fedora={} ga_reached={} base={}\n",
+        "{FORMAT_LINE}\n# pkg={} family={} key={} release={} n={} stock={} pin={} fedora={} base={}\n",
         h.pkg,
         h.family,
         h.key,
@@ -75,7 +74,6 @@ pub fn render_header(h: &Header) -> String {
         h.stock,
         h.pin_nvr.as_deref().unwrap_or("-"),
         h.fedora,
-        h.ga_reached,
         if h.base.is_empty() { "?" } else { &h.base },
     )
 }

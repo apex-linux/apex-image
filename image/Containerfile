@@ -9,9 +9,6 @@ ARG BASE=registry.fedoraproject.org/fedora-bootc@sha256:5225b8afb65136bcf6131eb2
 ARG REPOS_BASE=registry.fedoraproject.org/fedora@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb
 ARG APEX_VERSION=
 ARG APEX_REVISION=
-ARG GA_REACHED=0
-ARG FEDORA_GA_DATE=2026-11-03
-ARG ALLOWLIST_GRACE_DAYS=7
 ARG RELEASE_BUILD=0
 ARG COMPOSE=build-rootfs
 ARG LOCK=
@@ -20,33 +17,18 @@ ARG LOCK=
 # it but not baseurl=, so [apex] names its path inside the builder: /repos.
 FROM ${REPOS_BASE} AS repos
 ARG FEDORA
-ARG GA_REACHED
-ARG FEDORA_GA_DATE
-ARG ALLOWLIST_GRACE_DAYS
 COPY rpms/ /apex/
 # libdnf reads a local repository's gpgkey= by file name from the repository itself.
 COPY image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex /apex/RPM-GPG-KEY-apex
-# libdnf keeps only a repository's last excludepkgs line, and admits all of it when its
-# includepkgs matches nothing: apex-gnome51 must offer exactly the pinned builds.
 RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     set -eu; \
     rel=$(rpm -E %fedora); \
     if [ "$rel" != "${FEDORA}" ]; then echo "ERROR: REPOS_BASE is Fedora $rel, not ${FEDORA}" >&2; exit 1; fi; \
-    arch=$(rpm -E %_arch); \
     apexkey=/apex/RPM-GPG-KEY-apex; fedorakey=/usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-$rel-primary; \
     for k in "$apexkey" "$fedorakey"; do if [ ! -s "$k" ]; then echo "ERROR: $k is missing: [apex] verifies its packages with it" >&2; exit 1; fi; done; \
     cp "$fedorakey" /apex/; \
     reposfiles() { for f in /etc/yum.repos.d/*.repo /usr/share/dnf5/repos.d/*.repo; do if [ -f "$f" ]; then printf '%s\n' "$f"; fi; done; }; \
     list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }; \
-    list /run/apex-packages/updates-testing-allowlist.txt >/tmp/ut-list; \
-    allow=$(paste -sd, /tmp/ut-list); \
-    echo "updates-testing allowlist: ${allow:-<empty>}"; \
-    now=$(date -u +%s); \
-    deadline=$(( $(date -u -d "${FEDORA_GA_DATE}" +%s) + ALLOWLIST_GRACE_DAYS * 86400 )); \
-    if [ -n "$allow" ] && [ "$now" -gt "$deadline" ]; then \
-        echo "ERROR: Fedora ${FEDORA} GA (${FEDORA_GA_DATE}) + ${ALLOWLIST_GRACE_DAYS} days has passed but image/packages/updates-testing-allowlist.txt still has entries. Empty it and build with GA_REACHED=1 (or move FEDORA_GA_DATE if GA slipped)." >&2; \
-        exit 1; \
-    fi; \
     for f in $(reposfiles); do \
         sed -i -e '/^\[/h' -e '/^enabled[[:space:]]*=/{' -e 'x' -e '/^\[updates-testing/{' -e 'x' -e 's/.*/enabled=0/' -e 'b' -e '}' -e 'x' -e '}' "$f"; \
     done; \
@@ -106,61 +88,6 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
         gpgkeys="$gpgkeys file:///repos/apex/pair/negativo17.gpg"; \
     fi; \
     printf '%s\n' '[apex]' 'name=Apex packages built by this pipeline (build context rpms/)' 'baseurl=file:///repos/apex' 'enabled=1' 'priority=1' "includepkgs=$apexnames" 'gpgcheck=1' "gpgkey=$gpgkeys" 'repo_gpgcheck=0' 'skip_if_unavailable=False' >/etc/yum.repos.d/apex.repo; \
-    if [ "${GA_REACHED}" != 1 ] && [ -n "$allow" ]; then \
-        vercmp() { rpm -E "%{lua: print(rpm.vercmp('$1', '$2'))}"; }; \
-        if [ "$(vercmp 1:51~rc-2.fc45 1:51.0-1.fc45)" != -1 ] || [ "$(vercmp 51.0.1-1.fc45 51.0-1.fc45)" != 1 ]; then echo "ERROR: rpm.vercmp does not order versions as expected" >&2; exit 1; fi; \
-        : >/tmp/ut-specs; \
-        for s in $(printf '%s' "$allow" | tr ',' ' '); do \
-            if ! printf '%s\n' "$s" | grep -Eqx "[A-Za-z0-9._+]+(-[A-Za-z0-9._+]+)*-[0-9][A-Za-z0-9._+~^]*-[0-9][A-Za-z0-9._+~^]*\.fc${FEDORA}[A-Za-z0-9._+~^]*"; then \
-                echo "ERROR: updates-testing-allowlist.txt entry '$s' is not a pinned name-version-release (for example gtk4-4.24.0-1.fc${FEDORA})" >&2; exit 1; \
-            fi; \
-            printf '%s\n' "$s" >>/tmp/ut-specs; \
-        done; \
-        sort -u -o /tmp/ut-specs /tmp/ut-specs; \
-        src=$(grep -l '^\[updates-testing\]$' $(reposfiles) | head -n 1); \
-        if [ -z "$src" ]; then echo "ERROR: no [updates-testing] definition to derive apex-gnome51 from" >&2; exit 1; fi; \
-        { printf '%s\n' '[apex-gnome51]' 'name=Fedora $releasever updates-testing, restricted to the pinned builds' 'enabled=1' 'skip_if_unavailable=False' "includepkgs=$allow"; \
-          sed -n '/^\[updates-testing\]$/,/^\[/p' "$src" | sed -e '/^\[/d' -e '/^[[:space:]]*\(name\|enabled\|countme\|includepkgs\|excludepkgs\|skip_if_unavailable\)[[:space:]]*=/d'; \
-        } >/etc/yum.repos.d/apex-gnome51.repo; \
-        if ! dnf5 -q --repo=apex-gnome51 repoquery --available --arch="$arch,noarch" --queryformat '%{name} %{name}-%{version}-%{release}\n' >/tmp/ut-raw; then \
-            echo "ERROR: cannot query apex-gnome51 (updates-testing); not guessing whether the pinned builds are still there" >&2; exit 1; \
-        fi; \
-        sort -u /tmp/ut-raw >/tmp/ut-avail; \
-        extra=$(while read -r n nvr; do grep -Fxq "$nvr" /tmp/ut-specs || printf ' %s' "$nvr"; done </tmp/ut-avail); \
-        if [ -n "$extra" ]; then echo "ERROR: includepkgs did not restrict apex-gnome51; it would admit:$extra" >&2; exit 1; fi; \
-        cut -d' ' -f2 /tmp/ut-avail >/tmp/ut-known; \
-        if ! dnf5 -q --repo=fedora --repo=updates --setopt=fedora.skip_if_unavailable=False --setopt=updates.skip_if_unavailable=False --setopt=fedora.excludepkgs= --setopt=updates.excludepkgs= repoquery --available --latest-limit=1 --arch="$arch,noarch" --queryformat '%{name} %{evr}\n' $(sed 's/-[^-]*-[^-]*$//' /tmp/ut-specs) >/tmp/ut-stable; then \
-            echo "ERROR: cannot query the stable repositories (fedora, updates)" >&2; exit 1; \
-        fi; \
-        behind=""; instable=""; fromtesting=0; \
-        while read -r s; do \
-            n=${s%-*-*}; vr=${s#"$n"-}; \
-            awk -v n="$n" '$1 == n { print $2 }' /tmp/ut-stable >/tmp/ut-one; \
-            older=""; \
-            if [ ! -s /tmp/ut-one ]; then older="not in fedora/updates"; fi; \
-            while read -r evr; do \
-                case $evr in *:*) e=${evr%%:*}; svr=${evr#*:} ;; *) e=0; svr=$evr ;; esac; \
-                if ! printf '%s\n' "$e:$svr" | grep -Eqx '[0-9]+:[A-Za-z0-9._+~^]+-[A-Za-z0-9._+~^]+'; then echo "ERROR: unexpected version '$evr' of $n in the stable repodata" >&2; exit 1; fi; \
-                c=$(vercmp "$e:$svr" "$e:$vr"); \
-                case $c in 0 | 1) ;; -1) older="$svr < $vr" ;; *) echo "ERROR: rpm.vercmp printed '$c'" >&2; exit 1 ;; esac; \
-            done </tmp/ut-one; \
-            if [ -z "$older" ]; then instable="$instable $s"; \
-            elif grep -Fxq "$s" /tmp/ut-known; then fromtesting=$((fromtesting + 1)); \
-            else behind="$behind $n ($older)"; fi; \
-        done </tmp/ut-specs; \
-        if [ -n "$behind" ]; then \
-            echo "ERROR: pinned builds are not in updates-testing, and the stable repositories carry them older or not at all:$behind. Fedora unpushed or replaced them, or they went stable and the stable repodata has not caught up; composing now would install the older builds. Retry later, or review image/packages/updates-testing-allowlist.txt." >&2; \
-            exit 1; \
-        fi; \
-        if [ -n "$instable" ]; then echo "WARNING: fedora/updates carry these pinned builds at the same or newer versions; drop them from image/packages/updates-testing-allowlist.txt:$instable" >&2; fi; \
-        if [ "$fromtesting" -gt 0 ]; then \
-            echo "apex-gnome51 admits $(wc -l </tmp/ut-avail) pinned build(s) from updates-testing; fedora/updates lack $fromtesting of them"; \
-            if [ -n "$excludes" ]; then printf '%s\n' "excludepkgs=$excludes" >>/etc/yum.repos.d/apex-gnome51.repo; echo "apex-gnome51 excludes: $excludes"; fi; \
-        else \
-            echo "fedora/updates carry every pinned build; dropping apex-gnome51"; \
-            rm -f /etc/yum.repos.d/apex-gnome51.repo; \
-        fi; \
-    fi; \
     if [ "$pair" != none ]; then \
         if ! dnf5 -q --repo=fedora --repo=updates repoquery --available --queryformat '%{name} %{sourcerpm}\n' 'kernel*' >/tmp/fedora-kernel.raw; then echo "ERROR: cannot query Fedora's kernel packages" >&2; exit 1; fi; \
         left=$(awk '$2 ~ /^kernel-[0-9]/ { printf " %s", $1 }' /tmp/fedora-kernel.raw); \
@@ -171,7 +98,7 @@ RUN --mount=type=bind,source=image/packages,target=/run/apex-packages \
     if grep -Eq '^updates-testing' /tmp/repos-enabled; then echo "ERROR: updates-testing is still enabled" >&2; exit 1; fi; \
     echo "Enabled repositories:"; dnf5 repo list --enabled; \
     dnf5 clean all; \
-    rm -rf /tmp/apex-pkgs /tmp/apex-names /tmp/apex-names.raw /tmp/apex-nevras /tmp/lock-rpms /tmp/lock-rpms.raw /tmp/lock-names /tmp/lock-offered /tmp/lock-diff /tmp/fedora-excludes /tmp/ut-list /tmp/ut-raw /tmp/ut-avail /tmp/ut-specs /tmp/ut-known /tmp/ut-stable /tmp/ut-one /tmp/repos-enabled /tmp/fedora-kernel /tmp/fedora-kernel.raw /var/cache/libdnf5
+    rm -rf /tmp/apex-pkgs /tmp/apex-names /tmp/apex-names.raw /tmp/apex-nevras /tmp/lock-rpms /tmp/lock-rpms.raw /tmp/lock-names /tmp/lock-offered /tmp/lock-diff /tmp/fedora-excludes /tmp/repos-enabled /tmp/fedora-kernel /tmp/fedora-kernel.raw /var/cache/libdnf5
 
 # No --no-docs: the recovery runbook relies on the man pages.
 FROM ${BASE} AS builder
@@ -196,7 +123,6 @@ RUN --mount=type=bind,from=repos,src=/,dst=/repos,rw \
         *) echo "ERROR: /repos/apex/pair-mode says '$pair'" >&2; exit 1 ;; \
     esac; \
     set -- "$@" --repo fedora --repo updates --repo apex; \
-    if [ -f /repos/etc/yum.repos.d/apex-gnome51.repo ]; then set -- "$@" --repo apex-gnome51; fi; \
     /usr/libexec/bootc-base-imagectl build-rootfs --manifest=minimal "$@" /repos /target-rootfs
 
 FROM scratch AS rootfs-build-rootfs
@@ -210,7 +136,6 @@ RUN --mount=type=bind,from=repos,src=/,dst=/repos \
     set -eu; \
     list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@"; }; \
     repos="--setopt=reposdir=/repos/etc/yum.repos.d,/repos/usr/share/dnf5/repos.d --repo=fedora --repo=updates --repo=apex"; \
-    if [ -f /repos/etc/yum.repos.d/apex-gnome51.repo ]; then repos="$repos --repo=apex-gnome51"; fi; \
     guards="--setopt=install_weak_deps=False --setopt=excludepkgs=$(list /run/apex-packages/exclude.txt | paste -sd, -)"; \
     present=$(rpm -q --queryformat '%{NAME}\n' $(list /run/apex-packages/exclude.txt) | grep -v ' ' || true); \
     pairnames=$(awk '$1 == "rpm" && $2 == "kernel-cachyos" { print $4 }' /repos/apex/rpms.lock); \
