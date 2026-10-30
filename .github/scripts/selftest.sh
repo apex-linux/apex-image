@@ -564,9 +564,218 @@ check_true "a case named before its subject is found too" grep -qx 'case default
 check_false "a failing case without a log prints nothing" grep -q '== G2 dock-pin' "$BUILD_DIR/out"
 check_false "nor does a passing line" grep -q '^== G2 PASS' "$BUILD_DIR/out"
 rm -rf "$G2_RUN1" "$BUILD_DIR/g2-rc"
+check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" break-glass \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f6)"
 check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
     "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
+
+# --- build-image.sh: qualify-only (T2) after a harness fix; the full gate run otherwise ------
+T2="$TMP/t2"
+T2W=$T2/home/apex-image
+mkdir -p "$T2W/.github/scripts" "$T2W/tools/builder-vm" "$T2W/tools/runner" "$T2W/image" "$T2W/tests/shots"
+cp "$APEX_ROOT/.github/scripts/lib.sh" "$T2W/.github/scripts/"
+cat >"$T2W/.github/scripts/qualify.sh" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+    g4-harness) cat "$FAKE/harness" ;;
+    g4-key) echo "package gdm-1:51.0-1.fc45.x86_64" ;;
+    g4-due) exit 0 ;;
+    local)
+        echo local >>"$FAKE/steps"
+        printf 'record\n' >"$QUALIFY_G4_RECORD"
+        cat "$FAKE/g4-rows" >"$PWD/_build/qualify/results.md"
+        exit "$(cat "$FAKE/g4-rc")" ;;
+    local-diag) echo diag >>"$FAKE/steps" ;;
+esac
+EOF
+cat >"$T2W/tools/components.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "components $1" >>"$FAKE/steps"
+[[ $1 != env ]] || echo 'export APEX_COMPONENTS=pinned'
+EOF
+# shellcheck disable=SC2016 # the fakes' own expansions
+for fake in tools/builder-vm/lane.sh tools/builder-vm/snapshot.sh .github/scripts/image.sh tests/shots/run.sh; do
+    printf '#!/usr/bin/env bash\necho "%s $*" >>"$FAKE/steps"\n' "${fake##*/}" >"$T2W/$fake"
+done
+printf 'x\n' | tee "$T2W/components.lock" "$T2W/Cargo.lock" "$T2W/image/Containerfile" "$T2W/tools/runner/runner.sh" >/dev/null
+printf '# on\n' >"$T2W/tools/builder-vm/t2-enabled"
+printf '_build/\n' >"$T2W/.gitignore"
+chmod +x "$T2W/.github/scripts/"*.sh "$T2W/tools/"*.sh "$T2W/tools/builder-vm/"*.sh "$T2W/tests/shots/run.sh"
+t2_git() { git -C "$T2W" -c user.name=t -c user.email=t@example.invalid -c init.defaultBranch=main "$@"; }
+t2_git init -q
+t2_git add -A
+t2_git commit -q -m image
+T2_REV=$(t2_git rev-parse HEAD)
+t2_head() { # PATH...: HEAD is the image's revision and one commit that changes each PATH, and main
+    t2_git checkout -q --detach "$T2_REV"
+    local path
+    for path; do
+        mkdir -p "$T2W/$(dirname "$path")"
+        echo "# change $path" >>"$T2W/$path"
+    done
+    t2_git add -A
+    t2_git commit -q -m change
+    t2_git update-ref refs/remotes/origin/main HEAD
+}
+t2_state() { # VERDICT MODE COMPONENTS HARNESS: the image cafe, its last G4 row, and HEAD's harness
+    mkdir -p "$T2W/_build/qualify" "$T2W/_build/g2/latest"
+    printf '%s\tcafe\th1\t%s\t2026-10-30T10:00:00Z\t%s\t%s\n' "$T2_REV" "$1" "$2" "$3" >"$T2W/_build/qualify/verdicts.tsv"
+    echo "$4" >"$T2/harness"
+    printf 'image-id cafe\nlock-sha256 x\n' >"$T2W/_build/g2/latest/result.txt"
+    printf '{"revision":"%s"}\n' "$T2_REV" >"$T2/manifest.json"
+    echo cafe >"$T2/image-id"
+    echo "$(($(date +%s) - 3600))" >"$T2/created"
+}
+# shellcheck disable=SC2016 # expanded by the inner bash
+T2_STUBS='sudo() {
+    case "$*" in
+        "podman image inspect --format {{.Id}} localhost/apex:build") cat "$FAKE/image-id" 2>/dev/null ;;
+        "podman image inspect --format {{.Created.Unix}} localhost/apex:build") cat "$FAKE/created" ;;
+        "podman run --rm --net=none --entrypoint /usr/bin/cat localhost/apex:build /usr/share/apex/manifest.json")
+            cat "$FAKE/manifest.json" ;;
+        "podman run"*) echo in_component >>"$FAKE/steps" ;;
+    esac
+}'
+t2_plan_of() { # [SCRIPT]: t2_plan's exit and its reason, after SCRIPT
+    local rc=0 why
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    why=$(cd "$T2W" && env HOME="$T2" FAKE="$T2" bash -c '. "$1"; eval "$2"; eval "$3"; t2_plan' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$T2_STUBS" "${1:-}" 2>&1) || rc=$?
+    printf '%s|%s' "$rc" "$why"
+}
+t2_rc() { local out; out=$(t2_plan_of "$@"); printf '%s' "${out%%|*}"; }
+t2_main() { # [SCRIPT [ARG...]]: build-image.sh's main ARGs, after SCRIPT; prints its exit
+    local rc=0 script=${1:-}
+    shift || true
+    rm -f "$T2/steps"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$T2W" && env HOME="$T2/home" FAKE="$T2" APEX_GNOME_SRC="$T2W" bash -c '. "$1"; eval "$2"; eval "$3"; shift 3; main "$@"' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$T2_STUBS" "$script" "$@") >"$T2/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+t2_steps() { paste -sd' ' "$T2/steps" 2>/dev/null; }
+printf '| local-install | PASS | green | - |\n| local-lock | FAIL | no lock | lock |\n' >"$T2/g4-rows"
+echo 1 >"$T2/g4-rc"
+
+t2_head .github/scripts/qualify.sh
+t2_state FAIL gate pinned h2
+check "T2: a qualify.sh fix after a G4 FAIL of this image is qualify-only" "0|" "$(t2_plan_of)"
+printf 'lock-sha256 x\n' >"$T2W/_build/gates-passed.txt"
+printf 'old record\n' >"$T2W/_build/g4-passed.txt"
+check "T2: G4 alone, then local-diag: no in_component, lane, image.sh, snapshot or G2" \
+    "1|components fetch components env local diag" "$(t2_main)|$(t2_steps)"
+check "T2: the live log starts with the plan" "== plan: qualify-only (advisory)" "$(head -n 1 "$T2/out")"
+check "T2: plan.txt says so, for metrics.sh" qualify-only "$(cat "$T2W/_build/plan.txt")"
+check_false "T2: a stale gates-passed.txt is gone" test -e "$T2W/_build/gates-passed.txt"
+check "T2: so ci-build promotes nothing" "skipped: no gates record" \
+    "$(cd "$T2W" && bash -c '. "$1"; stage_promote' _ "$APEX_ROOT/tools/builder-vm/ci-build.sh")"
+check "T2: the real G4 record is untouched, and its key is not kept" "old record|none" \
+    "$(cat "$T2W/_build/g4-passed.txt")|$(find "$T2W/_build/qualify-only" -type f | wc -l | sed 's/^0$/none/')"
+check "T2: its verdict row: commit, image, harness, FAIL, mode t2, pinned" \
+    "$(t2_git rev-parse HEAD) cafe h2 FAIL t2 pinned" "$(tail -n 1 "$T2W/_build/qualify/verdicts.tsv" | cut -f1-4,6,7 | tr '\t' ' ')"
+check "T2: another fix to the same failing harness is not qualify-only" \
+    "1|the harness is the one that failed on image cafe" "$(t2_plan_of)"
+echo h3 >"$T2/harness"
+check "T2: a new harness after a t2 FAIL is" 0 "$(t2_rc)"
+echo 0 >"$T2/g4-rc"
+printf '| local-install | PASS | green | - |\n' >"$T2/g4-rows"
+check "T2: a pass exits 0, and records nothing but its row" "0|PASS t2|no record" \
+    "$(t2_main)|$(tail -n 1 "$T2W/_build/qualify/verdicts.tsv" | cut -f4,6 | tr '\t' ' ')|$([[ -e $T2W/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+check "T2: after a t2 PASS the next run is a full gate run" \
+    "1|image cafe's last G4 verdict is PASS (t2, pinned), not a pinned gate or t2 FAIL" "$(t2_plan_of)"
+echo 1 >"$T2/g4-rc"
+
+for path in components.lock image/Containerfile image/system_files/usr/share/apex/README.md Cargo.lock Cargo.toml \
+    crates/apex-lane/README.md tools/components.sh tools/builder-vm/lane.sh tools/builder-vm/build-image.sh \
+    tools/builder-vm/cosign.env .github/scripts/lib.sh .github/scripts/image.sh; do
+    t2_head .github/scripts/qualify.sh "$path"
+    t2_state FAIL gate pinned h2
+    check "T3: a diff that touches $path" "1|$path changed since the image's revision" "$(t2_plan_of)"
+done
+for path in .github/scripts/qualify-allowed-failures.txt .github/scripts/selftest.sh .github/scripts/contracts.sh \
+    .github/workflows/vm.yml tools/runner/runner.sh docs/vm.md tools/builder-vm/README.md tools/builder-vm/ci-build.sh \
+    tools/builder-vm/desktop-vm.sh tools/builder-vm/rehearsal/x.sh tools/builder-vm/t2-enabled; do
+    t2_head "$path"
+    t2_state FAIL gate pinned h2
+    check "T2: a harness diff of $path alone" 0 "$(t2_rc)"
+done
+t2_git checkout -q --detach "$T2_REV"
+t2_git mv image/Containerfile docs-Containerfile.md
+t2_git commit -q -m rename
+t2_git update-ref refs/remotes/origin/main HEAD
+check "T3: a rename out of image/ counts its old path" "1|image/Containerfile changed since the image's revision" "$(t2_plan_of)"
+
+t2_head .github/scripts/qualify.sh
+t2_state FAIL gate pinned h2
+for case in \
+    ": >\"\$FAKE/manifest.json\"|1|localhost/apex:build has no manifest revision" \
+    "echo '{\"revision\":\"x\"}' >\"\$FAKE/manifest.json\"|1|localhost/apex:build has no manifest revision" \
+    "rm -f \"\$FAKE/image-id\"|1|no localhost/apex:build" \
+    "echo \$((\$(date +%s) - 73 * 3600)) >\"\$FAKE/created\"|1|image cafe is 72 hours old or more" \
+    ": >\"\$FAKE/created\"|1|no creation time for localhost/apex:build" \
+    "echo h1 >\"\$FAKE/harness\"|1|the harness is the one that failed on image cafe" \
+    ": >\"\$FAKE/harness\"|1|no harness digest (qualify.sh g4-harness)" \
+    "echo beef >\"\$FAKE/image-id\"|1|image beef has no G4 verdict in _build/qualify/verdicts.tsv" \
+    "rm _build/qualify/verdicts.tsv|1|image cafe has no G4 verdict in _build/qualify/verdicts.tsv" \
+    "rm _build/g2/latest/result.txt|0|" \
+    "rm tools/builder-vm/t2-enabled|1|qualify-only is off: no tools/builder-vm/t2-enabled" \
+    "export APEX_SRC_SYSTEM=/dev|1|a dev-override component (APEX_SRC_*)" \
+    "APEX_KERNEL=fedora|1|only the 45 image with its kernel pair"; do
+    setup=${case%%|*}
+    t2_state FAIL gate pinned h2
+    check "T2 conditions: after $setup" "${case#*|}" "$(t2_plan_of "$setup")"
+    t2_git checkout -q -- tools/builder-vm/t2-enabled
+done
+t2_state FAIL gate pinned h2
+printf 'image-id beef\n' >"$T2W/_build/g2/latest/result.txt"
+check "T3: an image G2 last ran on, or the last gate run's, only" "0|1|image cafe is neither G2's last nor the last gate run's" \
+    "$(t2_rc)|$(t2_plan_of "printf 'x\tbeef\th1\tFAIL\tt\tgate\tpinned\n' >>_build/qualify/verdicts.tsv")"
+for row in "PASS gate pinned" "NOT-DUE gate pinned" "FAIL image-only pinned" "FAIL break-glass pinned" "FAIL gate dev-override" \
+    "FAIL gate unknown"; do
+    # shellcheck disable=SC2086 # the row's three words
+    t2_state $row h2
+    check "T3: the image's last G4 row is $row" "1|image cafe's last G4 verdict is ${row%% *} ($(cut -d' ' -f2 <<<"$row"), ${row##* }), not a pinned gate or t2 FAIL" \
+        "$(t2_plan_of)"
+done
+t2_state FAIL gate pinned h2
+t2_git checkout -q --detach "$T2_REV"
+check "T3: HEAD is the image's revision" "1|HEAD is the image's revision: nothing to qualify again" "$(t2_plan_of)"
+t2_head .github/scripts/qualify.sh
+T2_HEAD=$(t2_git rev-parse HEAD)
+t2_git checkout -q --orphan elsewhere
+t2_git commit -q -m elsewhere
+t2_git update-ref refs/remotes/origin/main HEAD
+t2_git checkout -q --detach "$T2_HEAD"
+check "T3: an image whose revision is not on origin/main" "1|its revision $T2_REV is not on origin/main" "$(t2_plan_of)"
+t2_head .github/scripts/qualify.sh
+t2_state FAIL gate pinned h2
+echo '# synced, not committed' >>"$T2W/image/Containerfile"
+check "T3: a modified tracked file the diff of commits cannot see (a local vm-image's sync)" \
+    "1|the working tree has changes no commit holds:  M image/Containerfile" "$(t2_plan_of)"
+t2_git checkout -q -- image/Containerfile
+echo new >"$T2W/image/untracked.repo"
+check "T3: an untracked file too" "1|the working tree has changes no commit holds: ?? image/untracked.repo" "$(t2_plan_of)"
+rm "$T2W/image/untracked.repo"
+check "and a clean tree is qualify-only again" 0 "$(t2_rc)"
+
+# The fail-safe: every helper of the detection fails, and the run is the full gate run.
+T2_BROKEN='image_id() { return 1; }; image_revision() { return 1; }; image_created() { return 1; }
+    git_() { return 1; }; qualify() { return 1; }; last_verdict() { return 1; }; last_gate_image() { return 1; }
+    harness_only_diff() { return 1; }; harness_path() { return 1; }; compgen() { return 1; }'
+check "fail-safe: every detection helper fails: the full gate run" 1 "$(t2_rc "$T2_BROKEN")"
+for helper in image_id image_revision image_created git_ qualify last_verdict harness_only_diff; do
+    check "fail-safe: $helper alone fails: the full gate run" 1 "$(t2_rc "$helper() { return 1; }")"
+done
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: an unset variable in the detection is the full gate run too" 1 "$(t2_rc 'image_revision() { echo "$UNSET_X"; }')"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: main with every helper broken runs the full gate, and says why" \
+    "0|== plan: gate (G4 first)|build_inputs build_image gates" \
+    "$(t2_main "$T2_BROKEN"'; build_inputs() { echo build_inputs >>"$FAKE/steps"; }
+        build_image() { echo build_image >>"$FAKE/steps"; }; gates() { echo gates >>"$FAKE/steps"; }')|$(head -n 1 "$T2/out")|$(grep -oE '^(build_inputs|build_image|gates)$' "$T2/steps" | paste -sd' ')"
+check "and plan.txt says gate" gate "$(cat "$T2W/_build/plan.txt")"
+check "--image-only is never qualify-only" "1|== plan: gate (G4 first)" "$(t2_main '' --image-only)|$(head -n 1 "$T2/out")"
 
 # --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
 # fw_fn SCRIPT [ARG]: SCRIPT runs in a shell that sourced firmware.sh; ARG is its $2.
@@ -3904,6 +4113,23 @@ check "metrics: a red build has no size, no rechunk and no boot values" "no - - 
 check "metrics: the history keeps every build" 5 "$(($(wc -l <"$M/store/metrics.tsv") - 1))"
 for _ in $(seq 30); do m_run >/dev/null; done
 check "metrics: and only the last 30 of them" "31 31" "$(wc -l <"$M/store/metrics.tsv") $(wc -l <"$M/out/history.tsv")"
+m_t2() { # PLAN: one run whose _build/plan.txt says PLAN; prints metrics.sh's exit
+    local rc=0
+    : >"$M/stamp"
+    sleep 0.01
+    echo "$1" >"$M/co/_build/plan.txt"
+    printf 'kernel 1.0\nuserspace 30.0\ngreeter 40.0\ndesktop 3.0\n' >"$M/co/_build/qualify/boot.tsv"
+    rm -rf "$M/out"
+    env PATH="$M/bin:$PATH" FAKE_M="$M" APEX_STORE="$M/store" APEX_METRICS_IMAGE_SH="$M/bin/image.sh" GITHUB_ACTIONS='' \
+        bash "$M/co/tools/builder-vm/metrics.sh" "$M/out" "$M/stamp" "$CI_SHA" "$M/lock.diff" 2>/dev/null || rc=$?
+    printf '%s' "$rc"
+}
+M_LAST=$(tail -n 1 "$M/store/metrics.tsv")
+check "metrics: a qualify-only run adds no row to the history, and exits 0" "0|no new row|no metrics" \
+    "$(m_t2 qualify-only)|$([[ $(tail -n 1 "$M/store/metrics.tsv") == "$M_LAST" ]] && echo 'no new row')|$([[ -e $M/out/metrics.tsv ]] && echo metrics || echo 'no metrics')"
+check "metrics: a gate run's does, with its boot values" "0|30.0|metrics" \
+    "$(m_t2 gate)|$(tail -n 1 "$M/store/metrics.tsv" | cut -f15)|$([[ -e $M/out/metrics.tsv ]] && echo metrics || echo 'no metrics')"
+rm -f "$M/co/_build/plan.txt"
 check "metrics: OUT that cannot be written is the one error" 1 \
     "$(env PATH="$M/bin:$PATH" APEX_STORE="$M/store" bash "$M/co/tools/builder-vm/metrics.sh" /proc/x "$M/stamp" "$CI_SHA" "$M/lock.diff" >/dev/null 2>&1; echo $?)"
 

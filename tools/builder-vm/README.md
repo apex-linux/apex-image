@@ -62,6 +62,36 @@ After a G4 failure, `qualify.sh local-diag` runs every G4 unit on its own, in
 `_build/qualify/diag`, so one build shows every failing row; it records nothing and
 never changes the verdict.
 
+Every G4 verdict, in every mode, adds a row to `_build/qualify/verdicts.tsv`: the commit,
+the image ID, the harness digest (`qualify.sh g4-harness`), the verdict, the UTC time,
+the mode (`gate`, `image-only`, `break-glass` or `t2`) and `APEX_COMPONENTS`. A
+break-glass image has the same tag, so its rows say so and never count for qualify-only.
+
+**Qualify-only (T2, advisory).** After a G4 failure whose fix is in the harness alone,
+the next build reruns G4 on the image already built, without the RPMs, the lane, the
+image or G2, and then `local-diag` when it fails. It writes no gates record and no G4
+key (it keeps `_build/qualify-only/`), so nothing it does promotes; `vm.yml` never shows
+it green, and `metrics.sh` keeps it out of S4's history. The live log starts with
+`== plan: qualify-only (advisory)`, or `== plan: gate (G4 first)` and why not. It runs
+only when every one of these holds, and the full gate run does otherwise (any check that
+cannot be made counts as failed):
+
+- `tools/builder-vm/t2-enabled` is committed (delete it to turn qualify-only off);
+- the build is the 45 image with its kernel pair, not `--image-only`, no
+  `APEX_SRC_<NAME>` is set, and `git status` shows a clean working tree (a local `just
+  vm-image` may sync uncommitted files, which the diff below cannot see);
+- the revision in the image's own `/usr/share/apex/manifest.json` is on `origin/main`,
+  and `git diff --no-renames` from it to `HEAD` touches only qualify.sh, its allowlist,
+  selftest.sh, contracts.sh, `.github/workflows/`, `tools/runner/`, `.md` files outside
+  `image/` and `crates/`, or the builder-VM scripts that build nothing (`ci-build.sh`,
+  `builder-vm.sh`, `desktop-*.sh`, `shell-dev*.sh`, `provision.sh`, `publish-image.sh`,
+  `install-cosign.sh`, `firmware.sh`, `lane-rehearsal.sh`, `rehearsal/`). `lib.sh` means
+  the full gate: `image.sh` sources it too;
+- the image's last `verdicts.tsv` row is a FAIL of a `gate` or `t2` run with pinned
+  components, and its harness digest differs from `HEAD`'s;
+- the image is the one in `_build/g2/latest/result.txt` or the last `gate` row's;
+- the image is less than 72 hours old.
+
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
 image ID`, or `not due: its key passed on DATE for image ID`) and `components pinned`, or
