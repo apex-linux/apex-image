@@ -1917,11 +1917,11 @@ ct_features() { # LIST: apex-gnome's layer.js with FEATURES_IN_ENABLE_ORDER = [L
 ct_choices motion spotlight
 ct_features "'motion', 'spotlight'"
 ct_user_units() { # SYSTEM DESKTOP: the user units the components' specs ship and enable, as main's
-    mkdir -p "$1/packaging" "$1/crates/apex-session-agent/data" "$2/packaging" "$2/desktop/systemd/user"
+    mkdir -p "$1/packaging" "$1/data" "$2/packaging" "$2/desktop/systemd/user"
     printf '%s\n' '%files' '%{_userunitdir}/apex-session-agent.service' '%{_userpresetdir}/80-apex.preset' >"$1/packaging/apex.spec"
-    printf 'enable apex-session-agent.service\n' >"$1/crates/apex-session-agent/data/80-apex.preset"
+    printf 'enable apex-session-agent.service\n' >"$1/data/80-apex.preset"
     printf '[Unit]\nConditionEnvironment=XDG_SESSION_CLASS=user\n[Service]\nExecStart=/a\nRestart=on-failure\n[Install]\nWantedBy=graphical-session.target\n' \
-        >"$1/crates/apex-session-agent/data/apex-session-agent.service"
+        >"$1/data/apex-session-agent.service"
     printf '%s\n' '%files' '%{_userunitdir}/apex-shell-safe.service' '%{_userunitdir}/apex-folder-icons.service' \
         '%{_userunitdir}/graphical-session.target.wants/apex-folder-icons.service' >"$2/packaging/apex-desktop.spec"
     printf '[Unit]\nConditionEnvironment=XDG_SESSION_CLASS=user\n[Service]\nType=oneshot\nExecStart=/b\n' \
@@ -1941,9 +1941,9 @@ check "and names them" "long-running: apex-session-agent.service; oneshot: apex-
 sed '/^apex_units_settled() {$/,/^}$/d' "$APEX_ROOT/.github/scripts/qualify.sh" >"$G4U/qualify-0380e70.sh"
 check "g4 user units: a login contract that expects no Apex user unit (0380e70, run 11) fails" 1 "$(g4u "$G4U/qualify-0380e70.sh")"
 check_true "and names the agent it would not expect" grep -q "expects the long-running Apex user units 'none', but the components enable 'apex-session-agent.service'" "$G4U/err"
-echo "echo enable apex-extra.service >>system/crates/apex-session-agent/data/80-apex.preset" >"$G4U/edit"
+echo "echo enable apex-extra.service >>system/data/80-apex.preset" >"$G4U/edit"
 check "g4 user units: a preset enabling a unit no spec installs fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
-echo "sed -i 's/^Restart=.*/Type=oneshot/' system/crates/apex-session-agent/data/apex-session-agent.service" >"$G4U/edit"
+echo "sed -i 's/^Restart=.*/Type=oneshot/' system/data/apex-session-agent.service" >"$G4U/edit"
 check "g4 user units: an agent that became a oneshot fails" 1 "$(g4u "$APEX_ROOT/.github/scripts/qualify.sh")"
 check_true "and says G4 expects it running" grep -q "expects the long-running Apex user units 'apex-session-agent.service', but the components enable 'none'" "$G4U/err"
 echo "sed -i '/^ConditionEnvironment=/d' desktop/desktop/systemd/user/apex-folder-icons.service" >"$G4U/edit"
