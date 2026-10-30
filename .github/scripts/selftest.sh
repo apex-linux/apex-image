@@ -2207,6 +2207,54 @@ check_true "and counts them" grep -q 'qualify-two.sh: 2 QEMU -machine options, e
 { cat "${QP_REAL[0]}"; printf '    # -machine pc -cpu max: a comment\n'; } >"$QP/qualify-comment.sh"
 check "qemu parity: a comment naming flags is not a QEMU line" 0 "$(qp_rc "$QP/qualify-comment.sh" "${QP_REAL[1]}")"
 
+# --- markers.sh: G4's journal markers against an inventory of their source context ---------
+QM=$TMP/qualify-markers
+mkdir -p "$QM/src/upstream/tree/src" "$QM/src/apex-gnome/tree"
+echo upstream-1.0-1.fc45 >"$QM/src/upstream/nvr"
+echo apex-gnome@0 >"$QM/src/apex-gnome/nvr"
+printf '%s\n' 'static int log_it(int done) {' '        if (done)' '                log("Reached the end of %s.");' '}' >"$QM/src/upstream/tree/src/end.c"
+printf "console.warn('Apex: up');\n" >"$QM/src/apex-gnome/tree/up.js"
+qm_sha() { sed -n "$2,$3p" "$1" | sha256sum | cut -d' ' -f1; }
+cat >"$QM/qualify.sh" <<'EOF'
+readonly DONE_MARKS=('Reached the end of' 'Apex: up')
+x=$(vm_ssh "journalctl -b -o cat | grep -m 1 'kernel noise'")
+EOF
+qm_inventory() {
+    printf '%s\n' '# inventory' '' 'marker: Reached the end of' 'kind: upstream' \
+        "source: upstream src/end.c 2-3 $(qm_sha "$QM/src/upstream/tree/src/end.c" 2 3)" \
+        'reviewed: upstream-1.0-1.fc45' 'guard: only when done' '' \
+        'marker: Apex: up' 'kind: apex' "source: apex-gnome up.js 1-1 $(qm_sha "$QM/src/apex-gnome/tree/up.js" 1 1)" \
+        'reviewed: apex-gnome@0' 'guard: always' '' 'marker: kernel noise' 'kind: other' 'guard: diagnostic only'
+}
+qm_inventory >"$QM/inventory.txt"
+qm_rc() { (set +e; qualify_markers "$QM/qualify.sh" "$1" "$QM/src" >"$QM/out" 2>"$QM/err"; echo $?); }
+check "markers: every marker has an entry whose context is unchanged" 0 "$(qm_rc "$QM/inventory.txt")"
+check "and the summary counts them" "3 markers, 2 with their source context, unchanged in apex-gnome@0 upstream-1.0-1.fc45" "$(cat "$QM/out")"
+echo "grep -q 'Reached a new line' \"\$log\"" >>"$QM/qualify.sh"
+check "markers: a marker G4 waits for without an entry fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names it" grep -q "G4 waits for 'Reached a new line' .*has no entry for it" "$QM/err"
+sed -i '$d' "$QM/qualify.sh"
+sed -i "/^x=/d" "$QM/qualify.sh"
+check "markers: an entry no G4 row waits for fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names it" grep -q "has an entry for 'kernel noise', which no G4 row waits for any more" "$QM/err"
+printf '%s\n' "x=\$(vm_ssh \"journalctl -b -o cat | grep -m 1 'kernel noise'\")" >>"$QM/qualify.sh"
+sed -i 's/if (done)/if (done \&\& !quiet)/' "$QM/src/upstream/tree/src/end.c"
+check "markers: a guard that changed in the current build fails" 1 "$(qm_rc "$QM/inventory.txt")"
+check_true "and names the build and the lines" grep -q "the context of upstream src/end.c:2-3, reviewed at upstream-1.0-1.fc45, changed in upstream-1.0-1.fc45" "$QM/err"
+sed -i 's/if (done \&\& !quiet)/if (done)/; 1i /* a new first line */' "$QM/src/upstream/tree/src/end.c"
+check "markers: the same context on other lines passes" 0 "$(qm_rc "$QM/inventory.txt")"
+check_true "and says where it moved" grep -q "is unchanged in upstream-1.0-1.fc45, at line 3" "$QM/err"
+rm "$QM/src/apex-gnome/tree/up.js"
+check "markers: a source file the build no longer has fails" 1 "$(qm_rc "$QM/inventory.txt")"
+printf "console.warn('Apex: up');\n" >"$QM/src/apex-gnome/tree/up.js"
+qm_inventory | sed '/^guard: always$/d' >"$QM/inventory-noguard.txt"
+check "markers: an entry without its guard fails" 1 "$(qm_rc "$QM/inventory-noguard.txt")"
+mkdir -p "$QM/none"
+(set +e; qualify_markers "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/qualify-markers.txt" "$QM/none" \
+    >/dev/null 2>"$QM/err-main") || true
+check "markers: every journal line main's qualify.sh waits for has an entry, and every entry a marker" 0 \
+    "$(grep -c -e 'has no entry for it' -e 'no G4 row waits for' -e 'needs kind: upstream or apex' -e 'no guard: line' "$QM/err-main")"
+
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }
 IL="$TMP/image-lane"
