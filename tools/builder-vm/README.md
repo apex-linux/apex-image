@@ -64,7 +64,8 @@ never changes the verdict.
 
 Every G4 verdict, in every mode, adds a row to `_build/qualify/verdicts.tsv`: the commit,
 the image ID, the harness digest (`qualify.sh g4-harness`), the verdict, the UTC time,
-the mode (`gate`, `image-only` or `t2`) and `APEX_COMPONENTS`.
+the mode (`gate`, `image-only`, `break-glass` or `t2`) and `APEX_COMPONENTS`. A
+break-glass image has the same tag, so its rows say so and never count for qualify-only.
 
 **Qualify-only (T2, advisory).** After a G4 failure whose fix is in the harness alone,
 the next build reruns G4 on the image already built, without the RPMs, the lane, the
@@ -76,8 +77,9 @@ only when every one of these holds, and the full gate run does otherwise (any ch
 cannot be made counts as failed):
 
 - `tools/builder-vm/t2-enabled` is committed (delete it to turn qualify-only off);
-- the build is the 45 image with its kernel pair, not `--image-only`, and no
-  `APEX_SRC_<NAME>` is set;
+- the build is the 45 image with its kernel pair, not `--image-only`, no
+  `APEX_SRC_<NAME>` is set, and `git status` shows a clean working tree (a local `just
+  vm-image` may sync uncommitted files, which the diff below cannot see);
 - the revision in the image's own `/usr/share/apex/manifest.json` is on `origin/main`,
   and `git diff --no-renames` from it to `HEAD` touches only qualify.sh, its allowlist,
   selftest.sh, contracts.sh, `.github/workflows/`, `tools/runner/`, `.md` files outside

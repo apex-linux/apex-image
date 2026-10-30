@@ -24,12 +24,13 @@ gates ran.
 
 Every G4 verdict, in every mode, adds a row to _build/qualify/verdicts.tsv: the commit,
 the image ID, qualify.sh g4-harness's digest, the verdict, the UTC time, the mode (gate,
-image-only or t2) and APEX_COMPONENTS.
+image-only, break-glass or t2) and APEX_COMPONENTS.
 
 A qualify-only run (T2, advisory) reruns G4 alone on the built image after a fix to the
 harness only, and records and promotes nothing: no gates record, no G4 key (it goes to
 _build/qualify-only/). It runs, with tools/builder-vm/t2-enabled committed, only when
-all of these hold, and otherwise the full gate run does: the image's own manifest
+all of these hold, and otherwise the full gate run does: the working tree is clean
+(git status), the image's own manifest
 revision is on origin/main and `git diff` from it to HEAD touches only the harness, CI,
 the runner, docs or the dev tools (lib.sh, image/, components.lock, Cargo.*, a build
 script: the full gate); the last verdicts.tsv row of the image is a FAIL of a gate or t2
@@ -232,6 +233,8 @@ gate_g2() {
 gate_g4() {
     local image_only=$1 rc=0 last_pass id mode=gate
     ((!image_only)) || mode=image-only
+    # Same tag, other kernel: a break-glass row never stands for the pair image's verdict.
+    [[ ${APEX_KERNEL:-} != fedora ]] || mode=break-glass
     echo "== G4, when qualify.sh g4-due says it is due"
     qualify g4-key "$IMAGE" >"$G4_KEY" || return
     last_pass=$(QUALIFY_G4_RECORD=$PWD/$G4_RECORD qualify g4-due "$G4_KEY") || rc=$?
@@ -239,15 +242,15 @@ gate_g4() {
         0)
             if ((image_only)); then
                 g4_verdict due
-                add_verdict DUE image-only
+                add_verdict DUE "$mode"
                 echo "G4 is due but not run with --image-only: just vm-qualify, then just vm-image-only, before just pkg-promote"
             elif run_g4 && g4_rows_passed; then
                 id=$(image_id)
                 g4_verdict "passed for image $id"
-                add_verdict PASS gate
+                add_verdict PASS "$mode"
             else
                 g4_verdict failed
-                add_verdict FAIL gate
+                add_verdict FAIL "$mode"
                 echo "G4 failed (_build/qualify/results.md): $IMAGE is built, but its lock must not be promoted" >&2
                 return 1
             fi ;;
@@ -352,10 +355,13 @@ last_gate_image() { awk -F'\t' '$6 == "gate" { id = $2 } END { print id }' "$VER
 # Every condition of a qualify-only run: a condition not met, or any helper that fails,
 # means the full gate run. It prints why not.
 t2_plan() {
-    local id rev row blob verdict mode components harness created
+    local id rev row blob verdict mode components harness created dirty
     [[ -f $T2_ENABLED ]] || { echo "qualify-only is off: no $T2_ENABLED"; return 1; }
     [[ $BUILD == _build && -z ${APEX_KERNEL:-} ]] || { echo "only the 45 image with its kernel pair"; return 1; }
     [[ -z $(compgen -v APEX_SRC_) ]] || { echo "a dev-override component (APEX_SRC_*)"; return 1; }
+    # git diff below sees commits only, and snapshot.sh runs on the full gate's path alone.
+    dirty=$(git_ status --porcelain) || { echo "git status failed"; return 1; }
+    [[ -z $dirty ]] || { echo "the working tree has changes no commit holds: $(head -n 1 <<<"$dirty")"; return 1; }
     id=$(image_id) && [[ -n $id ]] || { echo "no $IMAGE"; return 1; }
     rev=$(image_revision) && [[ $rev =~ ^[0-9a-f]{40}$ ]] || { echo "$IMAGE has no manifest revision"; return 1; }
     git_ merge-base --is-ancestor "$rev" origin/main || { echo "its revision $rev is not on origin/main"; return 1; }
