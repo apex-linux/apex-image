@@ -8,13 +8,19 @@ usage: build-image.sh [--image-only] [--kernel fedora]
 
 Guest-side image build for `builder-vm.sh image`, run in ~/apex-image inside the
 builder VM. The Apex RPM key signs every RPM; nothing is pushed, the image is not
-signed, and nothing promotes the lane's lock. G1 runs in the build, G2 (apex-gnome's
-tests/shots/run.sh, twice) after it, and G4 (qualify.sh local) when qualify.sh g4-due
-says it is due: the image's G4 key differs from the last pass, or that pass is a week
-old. When G2 passed and G4 passed or was not due, _build/gates-passed.txt names the lane
-lock the image carries, the image, G4's verdict, and whether the components were pinned
-or a dev-override; `lane.sh promote` requires it, and pinned components. The record is
-not written when the lane lock moved while the gates ran.
+signed, and nothing promotes the lane's lock. G1 runs in the build; after it G4
+(qualify.sh local) runs when qualify.sh g4-due says it is due (the image's G4 key differs
+from the last pass, or that pass is a week old), then G2 (apex-gnome's tests/shots/run.sh,
+twice). Both gates always run, so one run shows both verdicts; the exit status is the
+first gate's that failed. G4 fails on any row of _build/qualify/results.md that is not
+PASS; after a failure, qualify.sh local-diag runs each G4 unit on its own in
+_build/qualify/diag, which records nothing and never changes the verdict. G4's key
+goes to _build/qualify/g4-pending.txt, and only the gates record moves it to
+_build/g4-passed.txt. When G2 passed and G4 passed or was not due,
+_build/gates-passed.txt names the lane lock the image carries, the image, G4's verdict,
+and whether the components were pinned or a dev-override; `lane.sh promote` requires it,
+and pinned components. Neither record is written when the lane lock moved while the
+gates ran.
 
 tools/components.sh fetch and env run before the first build step: each RPM is built
 from its pinned component (the apex RPM from apex-system, apex-desktop from
@@ -55,6 +61,10 @@ readonly G2_RESULT=_build/g2/latest/result.txt
 readonly G2_FIRST_RUN=_build/g2/latest/run-1
 readonly G2_EXCERPT_LINES=80 G2_EXCERPT_WIDTH=400
 readonly G4_KEY=_build/image/g4-key.txt
+readonly G4_RECORD=_build/g4-passed.txt
+readonly G4_PENDING=_build/qualify/g4-pending.txt
+readonly G4_VERDICT_FILE=_build/image/g4-verdict.txt
+readonly G4_DIAG=_build/qualify/diag
 readonly G2_RUNS_PER_BUILD=2
 readonly G4_NOT_DUE=3
 
@@ -93,7 +103,15 @@ run_g2() {
     G2_RUNS=$G2_RUNS_PER_BUILD G2_IMAGE_DIR=$PWD/image G2_REPOS_BASE=$(lib release_arg REPOS_BASE) \
         G2_OUT_DIR=$PWD/_build/g2 "$APEX_GNOME_SRC/tests/shots/run.sh" "$IMAGE"
 }
-run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 qualify local "$IMAGE"; }
+run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_G4_RECORD=$PWD/$G4_PENDING qualify local "$IMAGE"; }
+# record_g4_pass refuses SKIP and WARN rows; the gate refuses the same.
+g4_rows_passed() {
+    [[ -s _build/qualify/results.md ]] || return 1
+    ! awk -F'|' '{ gsub(/ /, "", $3) } $3 != "PASS" { found = 1 } END { exit !found }' _build/qualify/results.md
+}
+run_diag() { QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_OUT=$PWD/$G4_DIAG qualify local-diag "$IMAGE"; }
+# Written to a file: gate_g4 runs in a subshell of its own, for errexit.
+g4_verdict() { printf '%s\n' "$1" >"$G4_VERDICT_FILE"; }
 
 build_inputs() {
     echo "== 1/4 the apex RPM (apex-system) and apex-desktop (apex-desktop)"
@@ -155,8 +173,8 @@ g2_failure_excerpts() {
     while read -r case; do
         [[ -f $G2_FIRST_RUN/$case.log ]] || continue
         echo "== G2 $case: $(grep -h "^$case exit=" "$G2_FIRST_RUN"/results-*.txt 2>/dev/null | tail -n 1)"
-        grep -nE 'JS ERROR|CRITICAL|crashed with signal|Segmentation fault|== Stack trace|^#[0-9]+ ' \
-            "$G2_FIRST_RUN/$case.log" | head -n 40 | cut -c1-"$G2_EXCERPT_WIDTH"
+        { grep -nE 'JS ERROR|CRITICAL|crashed with signal|Segmentation fault|== Stack trace|^#[0-9]+ ' \
+            "$G2_FIRST_RUN/$case.log" || true; } | head -n 40 | cut -c1-"$G2_EXCERPT_WIDTH"
         echo "-- $case.log, its last $G2_EXCERPT_LINES lines"
         tail -n "$G2_EXCERPT_LINES" "$G2_FIRST_RUN/$case.log" | cut -c1-"$G2_EXCERPT_WIDTH"
     done < <(awk '$1 == "FAIL" { sub(/:$/, "", $2); print $2 }' "$G2_FIRST_RUN/assert.txt" | sort -u)
@@ -176,23 +194,25 @@ gate_g2() {
 }
 
 gate_g4() {
-    local image_only=$1 rc=0 last_pass
+    local image_only=$1 rc=0 last_pass id
     echo "== G4, when qualify.sh g4-due says it is due"
     qualify g4-key "$IMAGE" >"$G4_KEY" || return
-    last_pass=$(qualify g4-due "$G4_KEY") || rc=$?
+    last_pass=$(QUALIFY_G4_RECORD=$PWD/$G4_RECORD qualify g4-due "$G4_KEY") || rc=$?
     case $rc in
         0)
             if ((image_only)); then
-                G4_VERDICT=due
+                g4_verdict due
                 echo "G4 is due but not run with --image-only: just vm-qualify, then just vm-image-only, before just pkg-promote"
-            elif run_g4; then
-                G4_VERDICT="passed for image $(image_id)"
+            elif run_g4 && g4_rows_passed; then
+                id=$(image_id)
+                g4_verdict "passed for image $id"
             else
+                g4_verdict failed
                 echo "G4 failed (_build/qualify/results.md): $IMAGE is built, but its lock must not be promoted" >&2
                 return 1
             fi ;;
         "$G4_NOT_DUE")
-            G4_VERDICT="not due: its key passed on $(sed -n 's/^passed-at //p' <<<"$last_pass") for image $(sed -n 's/^image-id //p' <<<"$last_pass")" ;;
+            g4_verdict "not due: its key passed on $(sed -n 's/^passed-at //p' <<<"$last_pass") for image $(sed -n 's/^image-id //p' <<<"$last_pass")" ;;
         *) return "$rc" ;;
     esac
 }
@@ -210,10 +230,53 @@ record_gates() {
         echo "the lane lock moved while the gates ran: $IMAGE carries ${image_lock:-no lock}, $LANE_LOCK is now $lane_lock; nothing is recorded (just vm-image again)" >&2
         return 1
     fi
+    if [[ -s $G4_PENDING ]]; then mv -f -- "$G4_PENDING" "$G4_RECORD"; fi
     printf 'lock-sha256 %s\nimage-id %s\ng2 passed\ng4 %s\ncomponents %s\n' "$image_lock" "$id" "$G4_VERDICT" \
         "${APEX_COMPONENTS:-unknown}" >"$GATES_PASSED"
     echo "G1 and G2 passed for $IMAGE (image $id); G4 $G4_VERDICT"
     echo "just pkg-promote makes the lane lock it carries rpms.lock"
+}
+
+# Each unit of G4 on its own after a G4 failure, so one run shows every failing row. It
+# records nothing, and never changes the gates' verdict.
+diagnose_g4() {
+    echo "== G4 diagnosis (qualify.sh local-diag, records nothing)"
+    if run_diag; then
+        echo "local-diag: every unit passed ($G4_DIAG/diag.md)"
+    else
+        echo "local-diag: exit $? ($G4_DIAG/diag.md); the gates' verdict stands" >&2
+    fi
+}
+
+# G4 first: it fails far more often than G2. Both always run, each in its own errexit
+# subshell, which || around gates would switch off: call it bare.
+gates() {
+    local image_only=$1 g4=0 g2=0 rec=0 rc
+    mkdir -p _build/qualify
+    rm -rf -- "$G4_PENDING" "$G4_VERDICT_FILE" "$G4_DIAG"
+    set +e
+    (set -e; gate_g4 "$image_only")
+    g4=$?
+    (set -e; gate_g2)
+    g2=$?
+    set -e
+    G4_VERDICT=
+    if [[ -s $G4_VERDICT_FILE ]]; then G4_VERDICT=$(cat -- "$G4_VERDICT_FILE"); fi
+    if ((g4 == 0)) && [[ -z $G4_VERDICT || $G4_VERDICT == failed ]]; then
+        echo "gate_g4 returned 0 with the verdict '$G4_VERDICT'" >&2
+        g4=1
+    fi
+    [[ $G4_VERDICT != failed ]] || diagnose_g4
+    if ((g4 == 0 && g2 == 0)) && [[ $G4_VERDICT != due ]]; then
+        set +e
+        (set -e; record_gates)
+        rec=$?
+        set -e
+    fi
+    rm -f -- "$G4_PENDING"
+    for rc in "$g4" "$g2" "$rec"; do
+        ((rc == 0)) || return "$rc"
+    done
 }
 
 main() {
@@ -236,6 +299,8 @@ main() {
     if [[ ${APEX_FEDORA:-45} != 45 ]]; then
         FEDORA=$(lib release_arg REPOS_BASE) || exit 2
         echo "== the next lane: Fedora $APEX_FEDORA, $IMAGE, $LANE_LOCK; nothing promotes or pushes"
+    else
+        echo "== plan: gate (G4 first)"
     fi
     rm -f "$GATES_PASSED"
     # Every full run starts from empty outputs: the containers write them as root, and a
@@ -268,9 +333,7 @@ main() {
         echo "build-image: the next lane gates on G1 only and records nothing; state in ~/apex-image/_build/next"
         return 0
     fi
-    gate_g2 || exit
-    gate_g4 "$image_only" || exit
-    [[ $G4_VERDICT == due ]] || record_gates || exit
+    gates "$image_only"
     echo "build-image: done; state in ~/apex-image/_build/image"
 }
 

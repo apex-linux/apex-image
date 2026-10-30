@@ -424,7 +424,7 @@ check "due when the last pass records no time" 0 "$(g4_due "$G4_DIR/base.key")"
 check "an empty key is an error, not a verdict" 1 "$(g4_due "$G4_DIR/empty.key")"
 check "a missing key too" 1 "$(g4_due "$G4_DIR/absent.key")"
 
-# --- build-image.sh: G2 twice, G4 when due, and the gates record ---------------------------
+# --- build-image.sh: G4 when due, G2 twice, both always, and the gates record --------------
 BUILD_DIR="$TMP/build-image"
 mkdir -p "$BUILD_DIR/work/tests/shots" "$BUILD_DIR/work/.github/scripts" "$BUILD_DIR/work/_build/image" \
     "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image/packages" "$BUILD_DIR/store"
@@ -435,6 +435,7 @@ printf 'lock\n' >"$BUILD_DIR/store/rpms.lock.next"
 LANE_LOCK_SHA=$(sha256sum <"$BUILD_DIR/store/rpms.lock.next" | cut -d' ' -f1)
 cat >"$BUILD_DIR/work/tests/shots/run.sh" <<'EOF'
 #!/usr/bin/env bash
+echo g2 >>"$FAKE/order"
 echo "$G2_RUNS" >"$FAKE/g2-runs"
 printf '%s|%s|%s\n' "$G2_IMAGE_DIR" "$G2_REPOS_BASE" "$G2_OUT_DIR" >"$FAKE/g2-env"
 exit "$(cat "$FAKE/g2-rc" 2>/dev/null || echo 0)"
@@ -444,20 +445,36 @@ cat >"$BUILD_DIR/work/.github/scripts/qualify.sh" <<'EOF'
 case $1 in
     g4-key) echo "package gdm-1:51.0-1.fc45.x86_64" ;;
     g4-due) cat "$FAKE/g4-due-stdout" 2>/dev/null; exit "$(cat "$FAKE/g4-due-rc")" ;;
-    local) echo local >>"$FAKE/g4-ran"; exit "$(cat "$FAKE/g4-rc" 2>/dev/null || echo 0)" ;;
+    local)
+        echo local >>"$FAKE/g4-ran"
+        echo g4 >>"$FAKE/order"
+        printf 'image-id cafe\n' >"$QUALIFY_G4_RECORD"
+        cat "$FAKE/g4-rows" >"$PWD/_build/qualify/results.md"
+        exit "$(cat "$FAKE/g4-rc" 2>/dev/null || echo 0)" ;;
+    local-diag)
+        echo diag >>"$FAKE/order"
+        printf '%s %s\n' "$QUALIFY_OUT" "$2" >"$FAKE/diag-args"
+        exit "$(cat "$FAKE/diag-rc" 2>/dev/null || echo 0)" ;;
 esac
 EOF
+printf '| local-install | PASS | green | - |\n| local-g4 | PASS | recorded | - |\n' >"$BUILD_DIR/g4-rows"
 chmod +x "$BUILD_DIR/work/tests/shots/run.sh" "$BUILD_DIR/work/.github/scripts/qualify.sh"
+# build_gates [IMAGE_ONLY] [SCRIPT]: build-image.sh's gates, as main runs them, after SCRIPT.
 build_gates() {
     local image_only=${1:-0} rc=0
-    rm -f "$BUILD_DIR/work/_build/gates-passed.txt" "$BUILD_DIR/g4-ran"
+    rm -f "$BUILD_DIR/work/_build/gates-passed.txt" "$BUILD_DIR/g4-ran" "$BUILD_DIR/order"
     (cd "$BUILD_DIR/work" && FAKE=$BUILD_DIR APEX_STORE=$BUILD_DIR/store APEX_GNOME_SRC=$BUILD_DIR/work APEX_COMPONENTS=${APEX_COMPONENTS:-pinned} bash -c '
+        set -euo pipefail
         . "$1"
         image_id() { echo cafe; }
-        gate_g2 && gate_g4 "$2" && { [[ $G4_VERDICT == due ]] || record_gates; }' \
-        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$image_only") >"$BUILD_DIR/out" 2>&1 || rc=$?
+        eval "$3"
+        gates "$2"' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$image_only" "${2:-}") >"$BUILD_DIR/out" 2>&1 || rc=$?
     printf '%s\n' "$rc"
 }
+g4_record_is() { [[ $(cat "$BUILD_DIR/work/_build/g4-passed.txt" 2>/dev/null) == "$1" ]]; }
+no_pending() { [[ ! -e $BUILD_DIR/work/_build/qualify/g4-pending.txt ]]; }
+records() { if [[ -e $BUILD_DIR/work/_build/gates-passed.txt ]]; then echo record; else echo 'no record'; fi; }
 g2_result() {
     local image_id=$1 lock_sha256=$2
     printf 'image-id %s\nruns 2\nlock-sha256 %s\nstatus passed\n' "$image_id" "$lock_sha256" \
@@ -465,7 +482,9 @@ g2_result() {
 }
 g2_result cafe "$LANE_LOCK_SHA"
 echo 0 >"$BUILD_DIR/g4-due-rc"
-check "G2, then G4 when due, then the record" 0 "$(G2_RUNS=1 build_gates)"
+check "G4 when due, then G2, then the record" "0|g4 g2" "$(G2_RUNS=1 build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
+check_true "the record moves G4's key to g4-passed.txt" g4_record_is 'image-id cafe'
+check_true "and leaves nothing pending" no_pending
 check "G2 runs twice, whatever G2_RUNS says" 2 "$(cat "$BUILD_DIR/g2-runs")"
 check "G2 is apex-gnome's run.sh, given this image/, its REPOS_BASE and this _build/g2" \
     "$BUILD_DIR/work/image|$(containerfile_arg REPOS_BASE)|$BUILD_DIR/work/_build/g2" "$(cat "$BUILD_DIR/g2-env")"
@@ -475,24 +494,53 @@ check "the record names the lane lock the image carries, the image and G4's pass
     "$(paste -sd'|' "$BUILD_DIR/work/_build/gates-passed.txt")"
 check "a build from a dev-override component says so in its record" "components dev-override" \
     "$(APEX_COMPONENTS=dev-override build_gates >/dev/null; grep '^components ' "$BUILD_DIR/work/_build/gates-passed.txt")"
+printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
+echo 1 >"$BUILD_DIR/g4-rc"
+check "a G4 failure still runs G2, then local-diag, fails, and records nothing" "1|g4 g2 diag|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+check_true "nor moves its key" g4_record_is 'old record'
+check_true "and leaves nothing pending" no_pending
+check "local-diag runs on the image in its own QUALIFY_OUT" "$BUILD_DIR/work/_build/qualify/diag localhost/apex:build" \
+    "$(cat "$BUILD_DIR/diag-args")"
+echo 1 >"$BUILD_DIR/diag-rc"
+check "a failing local-diag changes no verdict" "1|g4 g2 diag|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+rm -f "$BUILD_DIR/g4-rc" "$BUILD_DIR/diag-rc"
+printf '| local-install | PASS | green | - |\n| local-lock | WARN | slow | - |\n' >"$BUILD_DIR/g4-rows"
+check "qualify.sh's exit 0 with a row that is not PASS fails G4, as record_g4_pass would" "1|no record" \
+    "$(build_gates)|$(records)"
+check_true "and moves no key" g4_record_is 'old record'
+printf '| local-install | PASS | green | - |\n| local-g4 | PASS | recorded | - |\n' >"$BUILD_DIR/g4-rows"
+echo 1 >"$BUILD_DIR/g2-rc"
+check "G4 passed, G2 failed: exit 1, no record, no diagnosis" "1|g4 g2|no record" \
+    "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")|$(records)"
+check_true "and g4-passed.txt is unchanged" g4_record_is 'old record'
+check_true "with nothing left pending" no_pending
+rm -f "$BUILD_DIR/g2-rc"
+# shellcheck disable=SC2016 # build_gates evaluates it in build-image.sh's shell
+check "a silent errexit inside gate_g4 fails the gates" "1|no record" \
+    "$(build_gates 0 'g4_verdict() { false; printf "%s\n" "$1" >"$G4_VERDICT_FILE"; }')|$(records)"
+check_true "with g4-passed.txt unchanged" g4_record_is 'old record'
+check_true "though G2 still ran" grep -qx g2 "$BUILD_DIR/order"
 echo 3 >"$BUILD_DIR/g4-due-rc"
 printf 'passed-at 2026-09-29T17:10:00Z\nimage-id beef\n' >"$BUILD_DIR/g4-due-stdout"
-check "G4 not due: the record" 0 "$(build_gates)"
+printf '| local-lock | FAIL | an older run | - |\n' >"$BUILD_DIR/work/_build/qualify/results.md"
+check "G4 not due: G2 runs, then the record, no diagnosis" "0|g2" "$(build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
 check_false "without running G4" test -e "$BUILD_DIR/g4-ran"
+check_true "or reading an older run's results.md" grep -q 'an older run' "$BUILD_DIR/work/_build/qualify/results.md"
 check "names the pass G4 was not due for, not this image" "g4 not due: its key passed on 2026-09-29T17:10:00Z for image beef" \
     "$(grep '^g4 ' "$BUILD_DIR/work/_build/gates-passed.txt")"
 check_false "and claims no G4 pass for this image" grep -q 'G4 passed\|and G4 passed' "$BUILD_DIR/out"
 echo 0 >"$BUILD_DIR/g4-due-rc"
 check "--image-only with G4 due records nothing" "0:no record" \
     "$(build_gates 1):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
-echo 1 >"$BUILD_DIR/g4-rc"
-check "a G4 failure records nothing" "1:no record" \
-    "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
-rm -f "$BUILD_DIR/g4-rc"
+printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
 g2_result cafe "$(printf 'older lock\n' | sha256sum | cut -d' ' -f1)"
 check "a lane lock that moved during the gates records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'the lane lock moved while the gates ran' "$BUILD_DIR/out"
+check_true "nor moves G4's key" g4_record_is 'old record'
+check_true "nor leaves it pending" no_pending
 g2_result beef "$LANE_LOCK_SHA"
 check "a G2 result of another image records nothing" "1:no record" \
     "$(build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
@@ -878,8 +926,8 @@ bi_main() {
         build_inputs() { printf "%s|%s\n" "${APEX_SYSTEM_SRC:-unset}" "${APEX_KERNEL_SRC:-unset}" >"$FAKE/first-step"; }
         build_image() { :; }
         gate_g2() { :; }
-        gate_g4() { G4_VERDICT=due; }
-        main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >/dev/null 2>&1
+        gate_g4() { g4_verdict due; }
+        main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >"$BI/main-out" 2>&1
 }
 rm -f "$BIW/components.lock"
 check "no components.lock: the build stops before its first step" "1|no step" \
@@ -888,6 +936,7 @@ echo "apex-kernel /x $CO_KERNEL" >"$BIW/components.lock"
 (unset APEX_SYSTEM_SRC APEX_KERNEL_SRC; bi_main)
 check "fetch, then env, in effect at the first build step" "fetch env|/pinned/system|/pinned/kernel" \
     "$(paste -sd' ' "$BI/components.log")|$(cat "$BI/first-step")"
+check "the live log starts with the plan" "== plan: gate (G4 first)" "$(head -n 1 "$BI/main-out")"
 (cd "$BIW" && rm -rf _build && FAKE=$BI APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
     APEX_KERNEL_SRC=/pinned/kernel bash -c '
     . "$1"
