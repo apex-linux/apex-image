@@ -14,8 +14,9 @@ from the last pass, or that pass is a week old), then G2 (apex-gnome's tests/sho
 twice). Both gates always run, so one run shows both verdicts; the exit status is the
 first gate's that failed. G4 fails on any row of _build/qualify/results.md that is not
 PASS; after a failure, qualify.sh local-diag runs each G4 unit on its own in
-_build/qualify/diag, which records nothing and never changes the verdict. Its key goes to _build/qualify/g4-pending.txt, and only the gates record moves it
-to _build/g4-passed.txt. When G2 passed and G4 passed or was not due,
+_build/qualify/diag, which records nothing and never changes the verdict. G4's key
+goes to _build/qualify/g4-pending.txt, and only the gates record moves it to
+_build/g4-passed.txt. When G2 passed and G4 passed or was not due,
 _build/gates-passed.txt names the lane lock the image carries, the image, G4's verdict,
 and whether the components were pinned or a dev-override; `lane.sh promote` requires it,
 and pinned components. Neither record is written when the lane lock moved while the
