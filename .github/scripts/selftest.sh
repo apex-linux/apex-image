@@ -1001,6 +1001,8 @@ check "qmp: commands over the socket" 0 "$(qmp_run none '{"execute":"send-key","
 check "qmp: capabilities first, then each command in order" "qmp_capabilities send-key screendump" \
     "$(jq -r .execute "$QMP_DIR/received" | paste -sd' ')"
 check "qmp: an error reply fails" 1 "$(qmp_run screendump '{"execute":"screendump"}')"
+check_true "qemu: vmport is off, so the guest's mouse takes QMP's relative pointer moves" \
+    grep -q -- '-machine q35,accel=kvm,vmport=off ' "$APEX_ROOT/.github/scripts/qualify.sh"
 
 # --- qualify.sh: the guest-side session and GDM scripts, with a fake logind ---------------
 LOGIND_DIR="$TMP/logind"
@@ -1091,7 +1093,7 @@ pkexec_typed() {
         return 0
     fi
     [[ -e $STATE/no-polkit-log ]] ||
-        echo 'Operator of unix-session:4 FAILED to authenticate to gain authorization for action org.freedesktop.policykit.exec' >>"$STATE/polkit-log"
+        echo 'pam_unix(polkit-1:auth): authentication failure; logname= uid=1000 euid=0 tty= ruser=apexqa rhost=  user=apexqa' >>"$STATE/polkit-pam"
     if [[ -e $STATE/wrong-ends-pkexec ]]; then echo 127 >"$STATE/pkexec.rc"; rm -f "$STATE/pkexec-running"; fi
     if [[ -e $STATE/no-retry ]]; then echo 0 >"$STATE/polkit"; fi
 }
@@ -1136,6 +1138,8 @@ qmp() {
                 if [[ -e $STATE/pkexec-running ]]; then
                     [[ -e $STATE/esc-ignored ]] && continue
                     if [[ -e $STATE/cancel-127 ]]; then echo 127 >"$STATE/pkexec.rc"; else echo 126 >"$STATE/pkexec.rc"; fi
+                    [[ -e $STATE/no-polkitd-log ]] ||
+                        echo 'Operator of unix-session:4 FAILED to authenticate to gain authorization for action org.freedesktop.policykit.exec for unix-process:4321:1 [pkexec /usr/bin/id -u] (owned by unix-user:apexqa)' >>"$STATE/polkit-log"
                     [[ -e $STATE/cancel-keeps-helper ]] || echo 0 >"$STATE/polkit"
                     rm -f "$STATE/pkexec-running"
                 else
@@ -1202,11 +1206,17 @@ vm_ssh() {
             if [[ -e $STATE/apex-lock ]]; then start_asking; fi ;;
         "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
+        "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
+        "journalctl -b _UID=1000 --after-cursor="*)
+            c=${cmd#*--after-cursor=\'}
+            from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
         *"PowerSaveMode i 3")
-            [[ -e $STATE/keeps-asking-blank ]] || { stop_asking; echo 'Apex: lock: screen blank, prompt torn down' >>"$STATE/journal"; } ;;
+            [[ -e $STATE/keeps-asking-blank ]] || stop_asking
+            [[ -e $STATE/keeps-asking-blank || -e $STATE/blank-unlogged ]] ||
+                echo 'Apex: lock: screen blank, prompt torn down' >>"$STATE/journal" ;;
         *"PowerSaveMode i 0")
-            echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
+            [[ -e $STATE/wake-unlogged ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
             start_asking ;;
         "systemd-run --quiet --on-active=2 systemctl suspend") [[ -e $STATE/no-suspend ]] || : >"$STATE/suspended" ;;
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
@@ -1239,7 +1249,9 @@ vm_ssh() {
         "pgrep -c -f 'polkit-agent-helpe[r]'") n=$(from polkit); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "cat /run/user/1000/$PKEXEC_UNIT.rc") from pkexec.rc | grep . ;;
         "cat /run/user/1000/$PKEXEC_UNIT.out") from pkexec.out ;;
-        "journalctl -b --since @999 -o cat --no-pager --grep 'FAILED to authenticate'") from polkit-log | grep . ;;
+        "journalctl -b --since @999 -o cat --no-pager --grep 'pam_unix\(polkit-1:auth\): authentication failure'") from polkit-pam | grep . ;;
+        "journalctl -b --since @999 -o cat --no-pager --grep 'FAILED to authenticate to gain authorization for action org.freedesktop.policykit.exec'")
+            from polkit-log | grep . ;;
         "cat $POLKIT_ACTIONS") from policies | grep . ;;
         "pkaction --action-id "*" --verbose")
             id=${cmd#pkaction --action-id }
@@ -1577,6 +1589,23 @@ lock_matrix_fails no-pam-log local-lock-wrong-password
 check_true "naming PAM" grep -q '^| local-lock-wrong-password | FAIL | PAM logged no authentication failure' "$GUEST_DIR/out/results.md"
 lock_matrix_fails esc-ignored local-lock-esc
 lock_matrix_fails keeps-asking-blank local-lock-blank-wake
+# The lock's blank and the nudge's wake log both lines before the test blanks the screen.
+lock_logged_both() {
+    apex_locked_in
+    printf '%s\n' 'Apex: lock: screen blank, prompt torn down' 'Apex: lock: screen on, prompt rebuilt' >>"$GUEST_DIR/state/journal"
+}
+lock_logged_both
+check "blank and wake pass past the lock's own lines" 0 "$(guest lock_matrix local 1000)"
+lock_logged_both
+: >"$GUEST_DIR/state/blank-unlogged"
+check "a blank the lock never logs fails, though the lock logged one earlier" 1 "$(guest lock_matrix local 1000)"
+check_true "at blank and wake, naming the line" \
+    grep -q "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen blank, prompt torn down' after the screen blanked" "$GUEST_DIR/out/results.md"
+lock_logged_both
+: >"$GUEST_DIR/state/wake-unlogged"
+check "a wake the lock never logs fails, though the nudge logged one earlier" 1 "$(guest lock_matrix local 1000)"
+check_true "naming that line" \
+    grep -q "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen on, prompt rebuilt' after the screen woke" "$GUEST_DIR/out/results.md"
 lock_matrix_fails no-suspend local-lock-suspend
 lock_matrix_fails resume-unlocks local-lock-suspend
 lock_matrix_fails motion-js-error local-lock-reduce-motion
@@ -1653,6 +1682,9 @@ polkit_fails() { # FLAG ROW: with FLAG set, the case stops with ROW failed
 polkit_fails no-agent local-polkit-wrong-password
 check_true "naming the missing dialog" grep -q '^| local-polkit-wrong-password | FAIL | pkexec opened no authentication dialog' "$GUEST_DIR/out/results.md"
 polkit_fails no-polkit-log local-polkit-wrong-password
+check_true "naming PAM's line" grep -qF '| local-polkit-wrong-password | FAIL | PAM logged no pam_unix(polkit-1:auth) authentication failure' "$GUEST_DIR/out/results.md"
+polkit_fails no-polkitd-log local-polkit-cancel
+check_true "naming polkitd's verdict" grep -qF '| local-polkit-cancel | FAIL | polkitd logged no FAILED to authenticate for org.freedesktop.policykit.exec after Esc' "$GUEST_DIR/out/results.md"
 polkit_fails wrong-ends-pkexec local-polkit-wrong-password
 polkit_fails no-retry local-polkit-wrong-password
 polkit_fails esc-ignored local-polkit-cancel

@@ -443,7 +443,8 @@ start_vm() {
     install -d -m 0700 "$QUALIFY_OUT/qmp"
     QMP_SOCKET=$QUALIFY_OUT/qmp/$name.sock
     rm -f "$QUALIFY_OUT/$name.pid" "$QMP_SOCKET"
-    qemu-system-x86_64 -name "apex-$name" -machine q35,accel=kvm -cpu host \
+    # vmport=off: the guest's vmmouse would take only absolute events, and drop a 'rel' move.
+    qemu-system-x86_64 -name "apex-$name" -machine q35,accel=kvm,vmport=off -cpu host \
         -m "$QUALIFY_MEM" -smp "$QUALIFY_SMP" \
         -drive "if=pflash,format=$OVMF_FORMAT,unit=0,readonly=on,file=$OVMF_CODE" \
         -drive "if=pflash,format=$OVMF_FORMAT,unit=1,file=$vars" \
@@ -1082,6 +1083,8 @@ fingerprint_conversations() { vm_ssh "pgrep -c -f 'pam/gdm-fingerprin[t]'" || tr
 press_enter_until_asked() {
     local test=$1 where=$2 before=$3 deadline=$((SECONDS + QUALIFY_LOGIN_TIMEOUT))
     nudge_pointer || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET (a pointer move)"
+    # The woken prompt may start PAM itself; a Return that lands as it asks is an empty answer.
+    sleep "$QUALIFY_POLL"
     until (($(password_conversations) > before)); do
         if ((SECONDS >= deadline)); then
             screendump "$test"
@@ -1390,6 +1393,17 @@ user_journal_has() {
     grep -qF -- "$line" <<<"$log"
 }
 
+# The user journal's position now: only lines logged after it match user_journal_after.
+user_journal_cursor() {
+    vm_ssh "journalctl -b _UID=$SESSION_UID -n 1 -o cat --no-pager --show-cursor" | sed -n 's/^-- cursor: //p' | tail -n 1
+}
+
+user_journal_after() {
+    local cursor=$1 line=$2 log
+    log=$(vm_ssh "journalctl -b _UID=$SESSION_UID --after-cursor='$cursor' -o cat --no-pager") || return 1
+    grep -qF -- "$line" <<<"$log"
+}
+
 display_power() {
     local mode=$1
     user_run "$SESSION_UID" busctl --user set-property org.gnome.Mutter.DisplayConfig \
@@ -1461,24 +1475,29 @@ matrix_esc() {
 }
 
 matrix_blank_wake() {
-    local test=$1-lock-blank-wake pid=$2 base=$3 since
+    local test=$1-lock-blank-wake pid=$2 base=$3 since cursor
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_row "$test" "$since"
     lock_session "$test"
     nudge_pointer || fail "$test" "QEMU took no pointer move"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the Apex lock started no password conversation with the screen on" \
         conversations_above "$base"
+    # The lock's own blank and the nudge's wake log both lines before this step: grep past them.
+    cursor=$(user_journal_cursor) || true
+    [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
     display_power 3 || fail "$test" "cannot set Mutter's PowerSaveMode to 3 (off)"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no '$APEX_LOCK_TORN_DOWN' after the screen blanked" \
-        user_journal_has "$since" "$APEX_LOCK_TORN_DOWN"
+        user_journal_after "$cursor" "$APEX_LOCK_TORN_DOWN"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a password conversation still runs with the screen off" conversations_at "$base"
     no_fingerprint_conversation "$test"
     sleep "$QUALIFY_POLL"
     conversations_at "$base" || fail "$test" "a password conversation started while the screen was off"
     still_locked || fail "$test" "the session unlocked while the screen was off"
+    cursor=$(user_journal_cursor) || true
+    [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
     display_power 0 || fail "$test" "cannot set Mutter's PowerSaveMode to 0 (on)"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no '$APEX_LOCK_REBUILT' after the screen woke" \
-        user_journal_has "$since" "$APEX_LOCK_REBUILT"
+        user_journal_after "$cursor" "$APEX_LOCK_REBUILT"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no password conversation after the screen woke" conversations_above "$base"
     no_fingerprint_conversation "$test"
     type_password_after_enter "$test" "the lock screen after waking" "$base"
@@ -1614,8 +1633,14 @@ polkit_asking() { (($(polkit_conversations) > 0)); }
 polkit_quiet() { (($(polkit_conversations) == 0)); }
 pkexec_rc() { vm_ssh "cat /run/user/$SESSION_UID/$PKEXEC_UNIT.rc" 2>/dev/null || true; }
 pkexec_done() { [[ -n $(pkexec_rc) ]]; }
-polkit_failed() {
-    vm_ssh "journalctl -b --since @$(($1 - 1)) -o cat --no-pager --grep 'FAILED to authenticate'" 2>/dev/null | grep -q .
+# polkitd logs FAILED only when a request ends; the dialog retries a wrong password within one.
+pam_refused_polkit() {
+    vm_ssh "journalctl -b --since @$(($1 - 1)) -o cat --no-pager --grep 'pam_unix\(polkit-1:auth\): authentication failure'" 2>/dev/null |
+        grep -q .
+}
+polkitd_refused_exec() {
+    vm_ssh "journalctl -b --since @$(($1 - 1)) -o cat --no-pager --grep 'FAILED to authenticate to gain authorization for action org.freedesktop.policykit.exec'" 2>/dev/null |
+        grep -q .
 }
 
 # In the user's manager, outside any logind session: polkit asks the display session's
@@ -1660,19 +1685,22 @@ polkit_agent() {
         since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
         open_polkit_dialog "$test"
         type_into_dialog "$test" "$WRONG_PASSWORD"
-        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "polkitd logged no failed authentication for the wrong password" \
-            polkit_failed "$since"
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "PAM logged no pam_unix(polkit-1:auth) authentication failure for the wrong password" \
+            pam_refused_polkit "$since"
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the dialog did not ask again after the wrong password" polkit_asking
         ! pkexec_done || fail "$test" "pkexec ended (exit $(pkexec_rc)) on a wrong password"
         screendump "$test"
-        result "$test" PASS "the shell's dialog refused the wrong password (polkitd: FAILED to authenticate) and asked again; pkexec kept waiting (logs/$test.png)$note"
+        result "$test" PASS "the shell's dialog refused the wrong password (PAM: pam_unix(polkit-1:auth) authentication failure) and asked again; pkexec kept waiting (logs/$test.png)$note"
         test=$name-polkit-cancel
+        since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
         qmp "$(key_press esc)" || fail "$test" "QEMU took no key on its QMP socket $QMP_SOCKET"
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "pkexec did not end after Esc on the dialog" pkexec_done
         rc=$(pkexec_rc)
         [[ $rc == 126 ]] || fail "$test" "pkexec exited $rc after Esc, not 126 (a dismissed dialog, pkexec(1))"
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after Esc" polkit_quiet
-        result "$test" PASS "Esc dismissed the dialog: pkexec exited 126, as pkexec(1) documents$note"
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "polkitd logged no FAILED to authenticate for org.freedesktop.policykit.exec after Esc" \
+            polkitd_refused_exec "$since"
+        result "$test" PASS "Esc dismissed the dialog: pkexec exited 126, as pkexec(1) documents, and polkitd logged the request FAILED to authenticate$note"
     fi
     test=$name-polkit
     open_polkit_dialog "$test"
