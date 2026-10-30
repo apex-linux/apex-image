@@ -1857,6 +1857,7 @@ check_true "and say local-diag is diagnostic only" grep -qF 'local-diag is diagn
 
 check "nor one with a FAIL, BLOCKED or NOT-RUN row" "1:no record|1:no record|1:no record" \
     "$(for status in FAIL BLOCKED NOT-RUN; do
+        rm -f "$GUEST_DIR/record"
         printf '%s:%s\n' "$(record_g4_pass_after_rows "| local-lock-esc | $status | x |")" \
             "$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
     done | paste -sd'|')"
