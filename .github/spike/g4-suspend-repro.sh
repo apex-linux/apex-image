@@ -496,7 +496,9 @@ build_images() {
 ARG BASE
 FROM ${BASE}
 ARG EDK2_RPM
+# bootc's /mnt points at a var/mnt it lacks: the runner's /mnt work directory is bound here.
 RUN set -eux; \
+    if [ -L /mnt ]; then rm /mnt; mkdir /mnt; fi; \
     dnf -y install qemu-kvm-core qemu-device-display-virtio-vga "$EDK2_RPM"; \
     dnf clean all; \
     rpm -q qemu-kvm-core qemu-system-x86-core qemu-device-display-virtio-vga edk2-ovmf
