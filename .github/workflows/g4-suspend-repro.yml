@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: g4-suspend-repro
+
+# W17b, a draft PR that is never merged: run 17's local-lock-suspend replayed under hosted KVM.
+# Verdicts are in the step summary; the job fails only on setup.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/g4-suspend-repro.yml
+      - .github/spike/g4-suspend-repro.sh
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: "Trials in order. G = locked GNOME session, H = no session; sw = QMP system_wakeup (G4), rtc = RTC alarm, s2idle = keyboard; options -nothing, -stdvga, -bare, -rN; empty = each job's own (virtio-vga, std VGA)"
+        default: ""
+      extras:
+        description: "auto adds follow-ups chosen from the first verdicts; none adds nothing"
+        type: choice
+        options: [auto, none]
+        default: auto
+      kernel:
+        description: "Guest kernel VERSION-RELEASE from Koji (run 17: 7.2.11-300.fc45), or base for the base image's"
+        default: 7.2.11-300.fc45
+      qemu:
+        description: "fedora = Fedora 45 qemu-kvm-core (the builder VM's) in a container; native = Ubuntu's"
+        type: choice
+        options: [fedora, native]
+        default: fedora
+      guest_image:
+        description: "A pullable bootc image with gdm to test instead of fedora-bootc + GNOME (e.g. an apex-testing digest)"
+        default: ""
+      wake_window:
+        description: "Seconds to wait for SSH after the wake (G4 waits 900)"
+        default: "90"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g4-suspend-repro-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  replay:
+    name: local-lock-suspend under KVM (${{ matrix.set }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # A pull_request run splits the default trials by GPU, one runner each, inside the 25 minutes.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - set: virtio-vga
+            trials: G-sw H-sw G-rtc H-rtc G-s2idle H-s2idle
+            extras: auto
+          - set: std VGA
+            trials: G-sw-stdvga H-sw-stdvga G-s2idle-stdvga H-s2idle-stdvga G-rtc-stdvga
+            extras: none
+    env:
+      REPRO_TRIALS: ${{ inputs.trials || matrix.trials }}
+      REPRO_EXTRAS: ${{ inputs.extras || matrix.extras }}
+      REPRO_KERNEL: ${{ inputs.kernel || '7.2.11-300.fc45' }}
+      REPRO_EDK2: 20260812-9.fc45
+      REPRO_QEMU: ${{ inputs.qemu || 'fedora' }}
+      REPRO_GUEST_IMAGE: ${{ inputs.guest_image || '' }}
+      REPRO_WAKE_WINDOW: ${{ inputs.wake_window || '90' }}
+    steps:
+      # The driver starts no trial it cannot finish by then, so the logs still upload.
+      - name: Deadline, 25 minutes from the job's start
+        run: echo "REPRO_DEADLINE=$(($(date +%s) + 25 * 60))" >>"$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # /mnt is the runner's second disk: the 40G sparse guest disk and its loop device go there.
+      - name: KVM, rootful podman's sqlite store, the work directory
+        run: |
+          .github/scripts/ci-host.sh kvm
+          .github/scripts/ci-host.sh podman-conf
+          out=/mnt/g4-suspend-repro
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$out" || out=$RUNNER_TEMP/g4-suspend-repro
+          echo "QUALIFY_OUT=$out" >>"$GITHUB_ENV"
+          df -h / /mnt "$RUNNER_TEMP" || true
+
+      - name: Ubuntu's QEMU (qemu=native only)
+        if: env.REPRO_QEMU == 'native'
+        run: .github/scripts/qualify.sh host-setup
+
+      - name: Replay local-lock-suspend
+        timeout-minutes: 27
+        run: .github/spike/g4-suspend-repro.sh
+
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: g4-suspend-repro-logs-${{ matrix.set == 'std VGA' && 'stdvga' || 'virtio' }}
+          path: ${{ env.QUALIFY_OUT }}/logs
+          retention-days: 14
+          if-no-files-found: ignore
