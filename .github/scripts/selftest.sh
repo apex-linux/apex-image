@@ -775,6 +775,9 @@ for helper in image_id image_revision image_created git_ qualify last_verdict ha
     check "fail-safe: $helper alone fails: the full gate run" 1 "$(t2_rc "$helper() { return 1; }")"
 done
 # shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: git status alone fails, diff and merge-base work: the full gate run" "1|git status failed" \
+    "$(t2_plan_of 'git_() { [[ $1 != status ]] || return 1; git -c safe.directory="$PWD" "$@"; }')"
+# shellcheck disable=SC2016 # expanded by the inner bash
 check "fail-safe: an unset variable in the detection is the full gate run too" 1 "$(t2_rc 'image_revision() { echo "$UNSET_X"; }')"
 # shellcheck disable=SC2016 # expanded by the inner bash
 check "fail-safe: main with every helper broken runs the full gate, and says why" \
@@ -855,6 +858,7 @@ esac
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
+: >"$FAKE/build-ran"
 echo "== plan: gate (G4 first)" >&2
 echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
 mkdir -p _build
@@ -1021,10 +1025,10 @@ check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "c
 rm "$CI_DIR/no-plan"
 cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
 sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
-rm -f "$CI_DIR/ci-mode"
+rm -f "$CI_DIR/ci-mode" "$CI_DIR/build-ran"
 check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
-    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build" \
-    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/home/apex-image/_build/plan.txt && $CI_DIR/home/apex-image/_build/plan.txt -nt $CI_DIR/build-image-d.sh ]] && echo build || echo 'no build')"
+    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build|no build-image line" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -q '^build-image ' && echo 'build-image line' || echo 'no build-image line')"
 mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
