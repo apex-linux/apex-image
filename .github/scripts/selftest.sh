@@ -1150,6 +1150,24 @@ qmp() {
     done
 }
 login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-login" 1000; }
+# cmd_local and local-diag with their install, boots and counted rollback as PASS rows: from
+# the login through the greeter on, what they run is the real code against this guest.
+local_flow_stubs() {
+    ensure_key() { :; }
+    install_disk() { :; }
+    start_vm() { :; }
+    stop_vm() { :; }
+    drop_disk() { :; }
+    save_journal() { :; }
+    save_bootc_status_fixture() { :; }
+    assert_bootloader_updated() { :; }
+    as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
+    assert_green() { result "$1" PASS "green on sha256:feed"; }
+    stage_local_candidate() { LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
+    counted_rollback() { result "$1-fallback" PASS "back on $2"; }
+    create_test_user() { result "$1-user" PASS made; }
+    set_test_password() { result "$1-password" PASS set; }
+}
 # journalctl -b -o short-monotonic -g 'PATTERN' [_UID=N] over $STATE/mono's "SECONDS UID MESSAGE"
 # lines; like journalctl, no match exits 1.
 mono_journal() {
@@ -1179,6 +1197,8 @@ vm_ssh() {
         "bash -s -- greeter"*) from greeter | grep . ;;
         "systemctl is-active --quiet gdm.service") [[ ! -e $STATE/gdm-down ]] ;;
         "pgrep -u 60578 -x gnome-shell") from greeter-pid | grep . ;;
+        true) ;;
+        "command -v apexctl") echo /usr/bin/apexctl ;;
         "journalctl -b _UID=60578 _COMM=systemd -o short-monotonic --no-pager") from greeter-manager ;;
         "rm -rf $GUEST_TMP/candidate && mkdir -p $GUEST_TMP/candidate") ;;
         "cat > $GUEST_TMP/candidate/manifest.json && chmod 0644 $GUEST_TMP/candidate/manifest.json") cat >"$STATE/built-manifest" ;;
@@ -1197,6 +1217,7 @@ vm_ssh() {
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
         "$(user_cmd "gsettings get $APEX_SCHEMA layer-enabled")") if [[ -e $STATE/tripped ]]; then echo false; else echo true; fi ;;
         "$(user_cmd "systemctl --user list-units --state=active --plain --no-legend --no-pager 'apex*'")") from agents ;;
+        "$(user_cmd 'systemctl --user stop apex-qualify-pkexec.service')") rm -f "$STATE/pkexec-running"; echo 0 >"$STATE/polkit" ;;
         "$(user_cmd "systemctl --user list-units --state=failed --plain --no-legend --no-pager 'apex*'")") from apex-failed ;;
         "$(user_cmd 'systemctl --user show -p ActiveState,SubState,NRestarts --no-pager apex-session-agent.service')") from agent-props ;;
         "$(user_cmd 'systemctl --user show -p ActiveState,Result,ExecMainCode,ExecMainStatus --no-pager apex-folder-icons.service')") from icons-props ;;
@@ -1793,8 +1814,8 @@ logged_in
 rm -f "$GUEST_DIR/record"
 printf '%s\n' "package gdm-1:51.0-1.fc45.x86_64" "file bbbb /usr/bin/apexctl" >"$GUEST_DIR/state/key"
 check "a full pass records the guest's G4 key" 0 "$(guest record_g4_pass local localhost/apex:build)"
-check "sorted, as g4-due reads it, then the time and the image" \
-    "file bbbb /usr/bin/apexctl|package gdm-1:51.0-1.fc45.x86_64|passed-at|image-id cafe" \
+check "sorted, as g4-due reads it, with the harness, then the time and the image" \
+    "file bbbb /usr/bin/apexctl|harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64|passed-at|image-id cafe" \
     "$(sed 's/^passed-at .*/passed-at/' "$GUEST_DIR/record" | paste -sd'|')"
 check "so G4 is no longer due" 3 "$(g4_due "$GUEST_DIR/record" "$GUEST_DIR/record")"
 rm -f "$GUEST_DIR/record"
@@ -1812,6 +1833,90 @@ check "nor one with a WARN row" "1:no record" \
     "$(record_g4_pass_after_rows '| local-login | WARN | 2 JS ERROR |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
 check "nor a to-disk run, which skipped the counted rollback" "1:no record" \
     "$(LAYOUT=to-disk record_g4_pass_after_rows '| local-install | PASS | x |'):$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+
+check "nor one with a FAIL, BLOCKED or NOT-RUN row" "1:no record|1:no record|1:no record" \
+    "$(for status in FAIL BLOCKED NOT-RUN; do
+        printf '%s:%s\n' "$(record_g4_pass_after_rows "| local-lock-esc | $status | x |")" \
+            "$([[ -e $GUEST_DIR/record ]] && echo record || echo 'no record')"
+    done | paste -sd'|')"
+
+# --- G4's harness: qualify.sh, lib.sh and the allowed failures are in the key ---------------
+H="$TMP/harness"
+mkdir -p "$H/.github/scripts"
+cp "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/lib.sh" \
+    "$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt" "$H/.github/scripts/"
+h_key() { # the g4-key of an image whose guest key is one package, by the harness in $H
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    bash -c '. "$1"; g4_key_of_image() { echo "package gdm-1:51.0-1.fc45.x86_64"; }; cmd_g4_key localhost/apex:build' \
+        _ "$H/.github/scripts/qualify.sh"
+}
+h_base=$(h_key)
+check "g4-key: the image's key and one harness line" \
+    "harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64" \
+    "$(paste -sd'|' <<<"$h_base")"
+for h_file in qualify.sh lib.sh qualify-allowed-failures.txt; do
+    cp "$H/.github/scripts/$h_file" "$H/$h_file.orig"
+    echo '# a changed row' >>"$H/.github/scripts/$h_file"
+    check_false "g4-key: a changed $h_file changes the key" test "$(h_key)" = "$h_base"
+    cp "$H/$h_file.orig" "$H/.github/scripts/$h_file"
+done
+check "and the same three files give the same key" "$h_base" "$(h_key)"
+key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-a.key"
+echo 'harness aaaa' >>"$G4_DIR/harness-a.key"
+record_pass "$G4_DIR/harness-a.key" "$(date -u -d '-1 day' +%FT%TZ)"
+key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-b.key"
+echo 'harness bbbb' >>"$G4_DIR/harness-b.key"
+check "g4-due: due when only the harness changed" 0 "$(g4_due "$G4_DIR/harness-b.key")"
+check_true "and names the new harness" grep -qF 'harness bbbb' "$G4_DIR/out"
+
+# --- cmd_local and local-diag on the fake guest, from the login through the greeter on ---------
+local_ready() { # logged in once, so that the guest has its user's files; cmd_local reboots it to the greeter
+    logged_in
+    echo 4321 >"$GUEST_DIR/state/greeter-pid"
+    printf '%s\n' '[    9.701] guest systemd[811]: Started org.gnome.Shell@gdm.service - GNOME Shell on Wayland.' \
+        '[    9.710] guest systemd[811]: Reached target graphical-session.target - Current graphical user session.' \
+        >"$GUEST_DIR/state/greeter-manager"
+    : >"$GUEST_DIR/state/esc-ignored"
+    rm -f "$GUEST_DIR/record"
+}
+rows_of() { awk -F' [|] ' '{ sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/results.md" | paste -sd'|'; }
+local_ready
+check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:build')"
+check "in cmd_local's row order, with no row after the first FAIL" \
+    "local-install PASS|local-stage PASS|local-fallback PASS|local-password PASS|local-login-boot PASS|local-greeter-login PASS|local-boot-metrics SKIP|local-login PASS|local-lock PASS|local-unlock PASS|local-unlock-signal PASS|local-user-units PASS|local-lock-wrong-password PASS|local-lock-esc FAIL" \
+    "$(rows_of)"
+check_false "and no G4 pass is recorded" test -e "$GUEST_DIR/record"
+
+local_ready
+check "local-diag: a FAIL at Esc fails local-diag" 1 "$(guest eval 'local_flow_stubs; cmd_local_diag localhost/apex:build')"
+diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/diag.md" | paste -sd'|'; }
+# On this guest blank-wake lacks the pin's lock line, Esc also leaves polkit's dialog open,
+# and no policy file exists: three more FAILs, each the unit's own.
+check "but every unit after it still runs, each with its own verdict" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake FAIL|lock-suspend PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS" \
+    "$(diag_units)"
+check_true "and the reset closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
+    grep -q '^| crash-guard | PASS | local-crash-guard PASS' "$GUEST_DIR/out/diag.md"
+check_true "the Esc unit quotes its first failure" \
+    grep -q '^| lock-esc | FAIL | Esc did not end the password conversation' "$GUEST_DIR/out/diag.md"
+check_true "blank and wake ran: its row is in results.md" grep -q '^| local-lock-blank-wake | ' "$GUEST_DIR/out/results.md"
+check_false "and no G4 pass is recorded" test -e "$GUEST_DIR/record"
+check "nor any g4-passed.txt" "" "$(find "$GUEST_DIR" -name g4-passed.txt)"
+
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "local-diag: a bare errexit in a unit fails local-diag" 1 \
+    "$(guest eval 'trap_errexit; local_flow_stubs; polkit_actions() { local n; n=$(echo 2); false; echo "$n"; }; cmd_local_diag polkit-actions localhost/apex:build')"
+check "as that unit's FAIL, not a silent pass" "polkit-actions FAIL" "$(diag_units)"
+check_true "naming the command errexit stopped at" \
+    grep -qE '^\| polkit-actions \| FAIL \| exited 1 without a FAIL row: line [0-9]+: false exited 1 \|$' "$GUEST_DIR/out/diag.md"
+
+check "local-diag: an unknown unit is refused" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag lock-nothing localhost/apex:build')"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "local-diag refuses G4's QUALIFY_OUT" 1 \
+    "$(rc_of bash -c '. "$1"; QUALIFY_OUT=$APEX_ROOT/_build/qualify; diag_refuse_g4_out' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
 
 # boot_metrics is warning-only: whatever the journal lacks, G4 goes on to the login steps.
 boot_then_login() { # MONO_LINES...: boot_metrics, then login_lock_unlock, as the local flow runs them

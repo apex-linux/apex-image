@@ -62,6 +62,22 @@ the digest that will be published.
                                      due, after printing the pass's passed-at and
                                      image-id lines on stdout
 
+  qualify.sh local-diag [UNIT...] IMAGE
+                                     diagnostic only, never a G4 pass: install IMAGE
+                                     (separate-boot), make the test user, reboot, set
+                                     its password, reboot and log in through the
+                                     greeter, then run each UNIT on its own, in this
+                                     order, whatever an earlier one did: boot-metrics
+                                     login-lock-unlock lock-wrong-password lock-esc
+                                     lock-blank-wake lock-suspend lock-reduce-motion
+                                     polkit-agent polkit-actions crash-guard
+                                     safe-karg-lock (all when none is named). Needs its
+                                     own QUALIFY_OUT; writes diag.md there, one row per
+                                     unit, and exits 1 when one did not pass
+  qualify.sh g4-harness              print the digest of qualify.sh, lib.sh and
+                                     qualify-allowed-failures.txt: the G4 key's
+                                     harness line
+
 CANDIDATE and FROM are REPO@sha256:... references (a bare sha256:... means
 ghcr.io/apex-linux/apex-testing@sha256:...). It needs nested KVM, and sudo for
 podman, losetup and mount. `red` works with any two different Apex images whose updater
@@ -169,6 +185,12 @@ FEATURE_NOTE=
 SAFE_LOGIN_SINCE=
 LOCK_ROW=
 LOCK_ROW_SINCE=
+DIAG=
+DIAG_LOGIN_SINCE=
+DIAG_RC=0
+QUALIFY_ERRLOG=
+readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-suspend
+    lock-reduce-motion polkit-agent polkit-actions crash-guard safe-karg-lock)
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -190,6 +212,7 @@ publish_results() {
     [[ -f $QUALIFY_OUT/results.md ]] || return 0
     summary "### Qualification (${QUALIFY_LAYOUT})" "" "| Test | Result | Detail | Layer feature |" "|---|---|---|---|" \
         "$(cat "$QUALIFY_OUT/results.md")"
+    [[ ! -s $QUALIFY_OUT/diag.md ]] || summary "### local-diag" "" "$(cat "$QUALIFY_OUT/diag.md")"
 }
 
 find_ovmf() {
@@ -1542,6 +1565,15 @@ matrix_reduce_motion() {
         fail "$test" "cannot reset reduced-motion"
 }
 
+matrix_blank_wake_gated() {
+    local name=$1 pid=$2 base=$3 login_since=$4
+    if feature_gate "$name-lock-blank-wake" lock "$login_since"; then
+        matrix_blank_wake "$name" "$pid" "$base"
+    else
+        result "$name-lock-blank-wake" PASS "$FEATURE_NOTE: no Apex prompt to tear down"
+    fi
+}
+
 # S3b's matrix; the right password and loginctl unlock-session are login_lock_unlock's rows.
 lock_matrix() {
     local name=$1 pid base login_since=$2
@@ -1550,11 +1582,7 @@ lock_matrix() {
     base=$(password_conversations)
     matrix_wrong_password "$name" "$pid" "$base"
     matrix_esc "$name" "$pid" "$base"
-    if feature_gate "$name-lock-blank-wake" lock "$login_since"; then
-        matrix_blank_wake "$name" "$pid" "$base"
-    else
-        result "$name-lock-blank-wake" PASS "$FEATURE_NOTE: no Apex prompt to tear down"
-    fi
+    matrix_blank_wake_gated "$name" "$pid" "$base" "$login_since"
     matrix_suspend "$name" "$pid" "$base"
     matrix_reduce_motion "$name" "$pid" "$base" "$login_since"
 }
@@ -1839,18 +1867,31 @@ g4_key_of_guest() { vm_ssh sh -s < <(g4_key_script) | LC_ALL=C sort -u; }
 
 g4_key_lines() {
     local file=$1
-    grep -E '^(package|file) ' "$file" | LC_ALL=C sort -u
+    grep -E '^(package|file|harness) ' "$file" | LC_ALL=C sort -u
+}
+
+# What runs the rows: a changed or added row makes G4 due again. vm.yml's verdicts name it too.
+g4_harness() {
+    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh qualify-allowed-failures.txt) | sha256sum | cut -d' ' -f1
+}
+
+g4_key_with_harness() {
+    local key=$1 harness
+    harness=$(g4_harness) || return 1
+    printf '%s\nharness %s\n' "$key" "$harness" | LC_ALL=C sort -u
 }
 
 record_g4_pass() {
     local test=$1-g4 image=$2 partial key image_id
+    [[ -z $DIAG ]] || fail "$test" "local-diag is diagnostic only: no G4 pass is recorded"
     [[ $QUALIFY_LAYOUT == separate-boot ]] ||
         fail "$test" "QUALIFY_LAYOUT=$QUALIFY_LAYOUT skipped the counted rollback: no G4 pass is recorded"
-    partial=$(awk -F' [|] ' '$2 == "SKIP" || $2 == "WARN" { sub(/^[|] /, "", $1); print $1 }' \
+    partial=$(awk -F' [|] ' '$2 ~ /^(SKIP|WARN|FAIL|BLOCKED|NOT-RUN)$/ { sub(/^[|] /, "", $1); print $1 }' \
         "$QUALIFY_OUT/results.md" | paste -sd' ' -)
-    [[ -z $partial ]] || fail "$test" "SKIP or WARN rows ($partial): no G4 pass is recorded"
+    [[ -z $partial ]] || fail "$test" "SKIP, WARN, FAIL, BLOCKED or NOT-RUN rows ($partial): no G4 pass is recorded"
     key=$(g4_key_of_guest) || fail "$test" "cannot compute the G4 key in the guest"
     [[ -n $key ]] || fail "$test" "the guest's G4 key is empty"
+    key=$(g4_key_with_harness "$key") || fail "$test" "cannot hash the G4 harness"
     image_id=$(as_root podman image inspect --format '{{.Id}}' "$image") || fail "$test" "cannot read the ID of $image"
     mkdir -p "$(dirname "$QUALIFY_G4_RECORD")"
     {
@@ -2002,12 +2043,201 @@ cmd_local() {
     drop_disk local
 }
 
+diag_refuse_g4_out() {
+    [[ $QUALIFY_OUT != "$APEX_ROOT/_build/qualify" && ! $QUALIFY_OUT -ef $APEX_ROOT/_build/qualify ]] ||
+        die "local-diag needs its own QUALIFY_OUT, not G4's $APEX_ROOT/_build/qualify"
+}
+
+diag_save_state() {
+    printf '%s=%s\n' SESSION_ID "$SESSION_ID" SESSION_UID "$SESSION_UID" SESSION_TYPE "$SESSION_TYPE" \
+        DIAG_LOGIN_SINCE "$DIAG_LOGIN_SINCE" >"$QUALIFY_OUT/diag.state"
+}
+
+# A unit runs in a subshell: what the next one needs comes back through this file, and
+# whoever reads a value checks it is there.
+diag_load_state() {
+    local key value
+    [[ -f $QUALIFY_OUT/diag.state ]] || return 0
+    while IFS='=' read -r key value; do
+        case $key in
+            SESSION_ID | SESSION_UID | SESSION_TYPE | DIAG_LOGIN_SINCE) printf -v "$key" '%s' "$value" ;;
+        esac
+    done <"$QUALIFY_OUT/diag.state"
+}
+
+diag_need_login() {
+    [[ -n $DIAG_LOGIN_SINCE ]] || fail "$1" "local-diag's state has no login time: an earlier unit lost the session"
+}
+
+diag_matrix_row() {
+    local row=$1 test=local-lock-$1 pid base
+    diag_need_login "$test"
+    wait_session "$test" user "$TEST_USER"
+    pid=$(shell_pid "$SESSION_UID") || fail "$test" "no gnome-shell runs as $TEST_USER"
+    base=$(password_conversations)
+    case $row in
+        wrong-password) matrix_wrong_password local "$pid" "$base" ;;
+        esc) matrix_esc local "$pid" "$base" ;;
+        blank-wake) matrix_blank_wake_gated local "$pid" "$base" "$DIAG_LOGIN_SINCE" ;;
+        suspend) matrix_suspend local "$pid" "$base" ;;
+        reduce-motion) matrix_reduce_motion local "$pid" "$base" "$DIAG_LOGIN_SINCE" ;;
+    esac
+}
+
+diag_unit() {
+    case $1 in
+        boot-metrics) boot_metrics local ;;
+        login-lock-unlock) login_lock_unlock local ;;
+        lock-*) diag_matrix_row "${1#lock-}" ;;
+        polkit-agent)
+            diag_need_login local-polkit
+            polkit_agent local "$DIAG_LOGIN_SINCE"
+            ;;
+        polkit-actions) polkit_actions local ;;
+        crash-guard)
+            crash_guard_logins local
+            DIAG_LOGIN_SINCE=$SAFE_LOGIN_SINCE
+            polkit_agent local-safe "$SAFE_LOGIN_SINCE" stock
+            ;;
+        safe-karg-lock) safe_karg_lock local ;;
+    esac
+}
+
+# Between units: the guest answers, the test user has a session, unlocked, and no pkexec
+# dialog a failed unit left open takes the next unit's keys.
+diag_reset() {
+    local test=local-diag-reset found
+    vm_ssh true || fail "$test" "the guest does not answer ssh"
+    if found=$(active_session user "$TEST_USER"); then
+        read -r SESSION_ID SESSION_UID SESSION_TYPE <<<"$found"
+        user_run "$SESSION_UID" systemctl --user stop "$PKEXEC_UNIT.service" >/dev/null 2>&1 || true
+        vm_ssh "loginctl unlock-session $SESSION_ID" || fail "$test" "loginctl unlock-session $SESSION_ID failed"
+    else
+        DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
+        greeter_login "$test"
+    fi
+}
+
+# A unit's own subshell: its fail() or a bare errexit ends the unit, not local-diag. Never
+# call it as a condition: bash would then ignore the subshell's set -e.
+diag_run() {
+    : >"$QUALIFY_ERRLOG"
+    set +e
+    (
+        set -e
+        trap diag_save_state EXIT
+        "$@"
+    )
+    DIAG_RC=$?
+    set -e
+    diag_load_state
+}
+
+# NAME RC FROM: the unit's verdict from the rows it wrote after line FROM of results.md.
+diag_verdict() {
+    local unit=$1 rc=$2 from=$3 rows failed
+    rows=$(tail -n "+$((from + 1))" "$QUALIFY_OUT/results.md")
+    failed=$(awk -F' [|] ' '$2 == "FAIL" { print $3; exit }' <<<"$rows")
+    if ((rc == 0)) && [[ -z $failed ]]; then
+        DIAG_STATUS[$unit]=PASS
+        DIAG_DETAIL[$unit]=$(awk -F' [|] ' '{ sub(/^[|] /, "", $1); printf "%s%s %s", sep, $1, $2; sep = ", " }' <<<"$rows")
+    else
+        DIAG_STATUS[$unit]=FAIL
+        if [[ -z $failed ]]; then
+            failed="exited $rc without a FAIL row"
+            [[ ! -s $QUALIFY_ERRLOG ]] || failed+=": $(head -n 1 "$QUALIFY_ERRLOG")"
+        fi
+        DIAG_DETAIL[$unit]=$failed
+    fi
+}
+
+diag_table() {
+    local unit
+    {
+        printf '| Unit | Result | Detail |\n|---|---|---|\n'
+        for unit in "${DIAG_RUN[@]}"; do
+            printf '| %s | %s | %s |\n' "$unit" "${DIAG_STATUS[$unit]}" "${DIAG_DETAIL[$unit]//|/\\|}"
+        done
+    } >"$QUALIFY_OUT/diag.md"
+}
+
+cmd_local_diag() {
+    (($# >= 1)) || die "usage: qualify.sh local-diag [UNIT...] localhost/NAME:TAG"
+    local image=${*: -1} digest unit wanted from first=1 failed=0
+    local -a asked=("${@:1:$#-1}")
+    [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
+        die "expected a local image reference localhost/NAME[:TAG], got '$image'"
+    diag_refuse_g4_out
+    [[ $QUALIFY_LAYOUT == separate-boot ]] || die "local-diag runs on the separate-boot layout only"
+    for unit in "${asked[@]}"; do
+        [[ " ${DIAG_UNITS[*]} " == *" $unit "* ]] || die "no local-diag unit '$unit' (${DIAG_UNITS[*]})"
+    done
+    DIAG=1
+    QUALIFY_ERRLOG=$QUALIFY_OUT/diag-errexit.txt
+    declare -gA DIAG_STATUS=() DIAG_DETAIL=()
+    declare -ga DIAG_RUN=()
+    for unit in "${DIAG_UNITS[@]}"; do
+        wanted=$((${#asked[@]} == 0))
+        [[ " ${asked[*]} " != *" $unit "* ]] || wanted=1
+        ((wanted)) || continue
+        DIAG_RUN+=("$unit")
+        DIAG_STATUS[$unit]=NOT-RUN
+        DIAG_DETAIL[$unit]="local-diag did not reach the login"
+    done
+    rm -f "$QUALIFY_OUT/diag.state"
+    diag_table
+
+    digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
+        die "$image is not in local container storage (build it with image.sh build)"
+    ensure_key
+    install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
+    start_vm local
+    wait_ssh
+    assert_green local-install "$digest"
+    create_test_user local
+    vm_reboot
+    assert_green local-rebooted "$digest"
+    assert_greeter local
+    set_test_password local
+    vm_reboot
+    assert_green local-login-boot "$digest"
+    DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
+    greeter_login local
+
+    for unit in "${DIAG_RUN[@]}"; do
+        if ((first)); then
+            first=0
+        else
+            from=$(wc -l <"$QUALIFY_OUT/results.md")
+            diag_run diag_reset
+            if ((DIAG_RC != 0)); then
+                diag_verdict "$unit" "$DIAG_RC" "$from"
+                DIAG_STATUS[$unit]=BLOCKED
+                DIAG_DETAIL[$unit]="the reset before it failed: ${DIAG_DETAIL[$unit]}"
+                diag_table
+                continue
+            fi
+        fi
+        from=$(wc -l <"$QUALIFY_OUT/results.md")
+        diag_run diag_unit "$unit"
+        diag_verdict "$unit" "$DIAG_RC" "$from"
+        diag_table
+        log "local-diag: $unit ${DIAG_STATUS[$unit]}"
+    done
+    save_journal final
+    stop_vm
+    drop_disk local
+    for unit in "${DIAG_RUN[@]}"; do [[ ${DIAG_STATUS[$unit]} == PASS ]] || failed=$((failed + 1)); done
+    ((failed == 0)) || die "local-diag: $failed of ${#DIAG_RUN[@]} unit(s) did not pass ($QUALIFY_OUT/diag.md)"
+    log "local-diag: all ${#DIAG_RUN[@]} unit(s) passed ($QUALIFY_OUT/diag.md)"
+}
+
 cmd_g4_key() {
     (($# == 1)) || die "usage: qualify.sh g4-key localhost/NAME:TAG"
     local image=$1 key
     key=$(g4_key_of_image "$image") || die "cannot compute the G4 key of $image"
     [[ -n $key ]] || die "the G4 key of $image is empty"
-    printf '%s\n' "$key"
+    g4_key_with_harness "$key" || die "cannot hash the G4 harness"
 }
 
 cmd_g4_due() {
@@ -2087,6 +2317,7 @@ trap_errexit() {
 qualify_errexit() {
     [[ $- == *e* ]] || return 0
     printf 'qualify.sh: line %s: %s exited %s\n' "$2" "$3" "$1" >&2
+    [[ -z $QUALIFY_ERRLOG ]] || printf 'line %s: %s exited %s\n' "$2" "$3" "$1" >>"$QUALIFY_ERRLOG"
 }
 
 cleanup() {
@@ -2109,7 +2340,9 @@ main() {
         host-setup) cmd_host_setup; return ;;
         g4-key) cmd_g4_key "$@"; return ;;
         g4-due) cmd_g4_due "$@"; return ;;
+        g4-harness) g4_harness; return ;;
         fresh | upgrade | red | all | local) ;;
+        local-diag) cmd=local_diag; diag_refuse_g4_out ;;
         *) usage ;;
     esac
     require qemu-system-x86_64 ssh ssh-keygen jq openssl skopeo podman truncate sfdisk \
