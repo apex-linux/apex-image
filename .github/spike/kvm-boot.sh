@@ -6,7 +6,8 @@ set -euo pipefail
 
 readonly IMAGE=quay.io/fedora/fedora-bootc:45 BOOTS=${1:-3}
 SPIKE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-export QUALIFY_OUT=${RUNNER_TEMP:-/tmp}/kvm-spike QUALIFY_MEM=3G QUALIFY_SMP=4
+# Stock fedora-bootc also installs BIOS GRUB, which separate-boot's table has no partition for.
+export QUALIFY_OUT=${RUNNER_TEMP:-/tmp}/kvm-spike QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_LAYOUT=to-disk
 # shellcheck source=SCRIPTDIR/../scripts/qualify.sh
 . "$SPIKE_ROOT/.github/scripts/qualify.sh"
 
@@ -29,7 +30,7 @@ sample_df &
 sampler=$!
 kvm=no
 [[ -w /dev/kvm ]] && kvm=yes
-summary "### W17: hosted KVM spike ($IMAGE, ${QUALIFY_MEM}, ${QUALIFY_SMP} vCPUs, accel=kvm, vmport=off, -cpu host)" "" \
+summary "### W17: hosted KVM spike ($IMAGE, $QUALIFY_LAYOUT, ${QUALIFY_MEM}, ${QUALIFY_SMP} vCPUs, accel=kvm, vmport=off, -cpu host)" "" \
     "/dev/kvm writable: $kvm; df / used at start: ${df_start} MiB" "" \
     "| Boot | Install min | Boot to ssh min | Kernel | is-system-running | Result |" "|---|---|---|---|---|---|"
 ensure_key
