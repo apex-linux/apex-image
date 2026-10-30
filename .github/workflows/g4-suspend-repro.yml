@@ -55,10 +55,10 @@ jobs:
       matrix:
         include:
           - set: virtio-vga
-            trials: G-s2idle H-s2idle G-s2idle-r2 H-s2idle-r2 H-sw-fw1 H-sw-fw2
+            trials: H-sw-fw1 H-sw-fw2 H-sw G-s2idle H-s2idle
             extras: auto
           - set: std VGA
-            trials: G-s2idle-stdvga H-s2idle-stdvga G-s2idle-stdvga-r2 H-s2idle-stdvga-r2
+            trials: G-s2idle-stdvga G-s2idle-stdvga-r2 H-s2idle-stdvga
             extras: none
     env:
       REPRO_TRIALS: ${{ inputs.trials || matrix.trials }}

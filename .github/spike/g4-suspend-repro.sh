@@ -397,7 +397,7 @@ GUEST_INSTRUMENT=$(
 set -u
 mode=$1 times=$2
 mkdir -p /run/repro
-rm -f /run/repro/stuck-dumped
+rm -f /run/repro/stuck-dumped /run/repro/seen-*
 for u in repro-jtap repro-hb repro-ev; do
     systemctl stop "$u.service" 2>/dev/null
     systemctl reset-failed "$u.service" 2>/dev/null
@@ -425,9 +425,12 @@ while :; do
     printf 'HB real=%s up=%s ip=%s nm=%s sshd=%s load=%s\n' "$(date +%s)" "$(cut -d' ' -f1 /proc/uptime)" \
         "${ip4:-none}" "$(nmcli -t -f STATE general 2>/dev/null || echo na)" "$(systemctl is-active sshd 2>/dev/null)" \
         "$(cut -d' ' -f1 /proc/loadavg)"
-    # A systemd-sleep alive 30 s is stuck in the kernel: its stack and sysrq-w, once.
-    for p in $(pgrep -x systemd-sleep); do
-        age=$(($(cut -d. -f1 /proc/uptime) - $(awk '{print int($22 / 100)}' "/proc/$p/stat")))
+    # A systemd-sleep seen for 30 s is stuck in the kernel: its stack and sysrq-w, once. Only comm
+    # is read: the pgrep and stat version stopped the heartbeats in run 41135272197.
+    now=$(cut -d. -f1 /proc/uptime)
+    for p in $(grep -lx systemd-sleep /proc/[0-9]*/comm 2>/dev/null | cut -d/ -f3); do
+        [ -e "/run/repro/seen-$p" ] || echo "$now" >"/run/repro/seen-$p"
+        age=$((now - $(cat "/run/repro/seen-$p")))
         [ "$age" -gt 30 ] && [ ! -e /run/repro/stuck-dumped ] || continue
         touch /run/repro/stuck-dumped
         echo "SS systemd-sleep $p ${age}s in $(cat "/proc/$p/wchan")"
@@ -694,7 +697,7 @@ headless_ready() {
 }
 
 ensure_mode() {
-    local want=$1 deadline restarted=
+    local want=$1 deadline restarted='' typed=''
     if [[ $want == gnome ]]; then
         gnome_ready && return 0
         vm_ssh 'systemctl is-active -q gdm.service || systemctl isolate graphical.target' || true
@@ -705,6 +708,12 @@ ensure_mode() {
             if [[ -z $restarted ]] && ((deadline - SECONDS < 180)); then
                 vm_ssh 'systemctl restart gdm.service' || true
                 restarted=1
+            fi
+            # GDM autologs in once per boot, so a display it rebuilds on a later DRM device gets the greeter.
+            if [[ -z $typed ]] && ((deadline - SECONDS < 120)) && active_session greeter >/dev/null; then
+                (type_password_after_enter "$TRIAL_ID-greeter-login" "GDM's greeter" 0) >>"$TDIR/greeter-login.txt" 2>&1 || true
+                META[login]=greeter
+                typed=1
             fi
             sleep "$QUALIFY_POLL"
         done
