@@ -1647,6 +1647,9 @@ vm_ssh() {
             c=${cmd#*--after-cursor=\'}
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
+        *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
+        "$DRM_OUTPUTS") if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; else echo 'Virtual-1 On'; fi ;;
+        "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
         *"PowerSaveMode i 3")
             echo 3 >"$STATE/power-save"
             : >"$STATE/display-off"
@@ -1662,9 +1665,6 @@ vm_ssh() {
             rm -f "$STATE/display-off"
             [[ -e $STATE/wake-unlogged ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
             start_asking ;;
-        *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
-        "$DRM_OUTPUTS") if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; else echo 'Virtual-1 On'; fi ;;
-        "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
         "systemd-run --quiet --on-active=2 systemctl suspend") [[ -e $STATE/no-suspend ]] || : >"$STATE/suspended" ;;
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
             if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
