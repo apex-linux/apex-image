@@ -3821,16 +3821,20 @@ vm_results "ci-build.txt=$(printf 'sha %s\nstarted 2026-10-30T12:30:02Z\nbuild-i
     "lock.diff=no change" "g2-result.txt=$(printf 'image-id cafe\nruns 2\nstatus passed')" \
     "g4-results.md=$(printf '| local-install | PASS | green | - |\n| local-stage | PASS | staged | - |\n| local-red | PASS | rolled back | - |\n| local-login | PASS | 12 s | - |\n| local-lock-suspend | FAIL | no resumed screendump | lock |')" \
     "qualify-logs/local-lock-suspend.png=png" "metrics/history.tsv=$(printf 'finished\tsha\n')"
-check "gates: run 16's tar fails on ci-build's exit" "1|::error::ci-build exited 1: no gates record" "$(vm_gates)|$(cat "$V/log")"
+check "gates: run 16's tar fails on ci-build's exit" "1|::error::ci-build exited 1: no gates record" \
+    "$(vm_gates)|$(grep -v '^::notice title=G4 frontier::' "$V/log")"
 check "gates: and shows G4's frontier, the furthest row it reached" "Frontier: row 5, local-lock-suspend FAIL" \
     "$(grep '^Frontier: ' "$V/summary")"
+check "gates: and as a notice, which the API keeps after the artifact expires" \
+    "::notice title=G4 frontier::row 5, local-lock-suspend FAIL" "$(grep '^::notice title=G4 frontier' "$V/log")"
 # A qualify-only run (T2): advisory, so never a green run, whatever it says.
 for t2 in "build-image 0|promote skipped: no gates record|exit 0" "build-image 1|exit 1" "build-image 0|promote passed|exit 0"; do
     vm_reset
     vm_results "ci-build.txt=$(printf 'sha %s\nplan qualify-only (advisory)\n%s' "$CI_SHA" "${t2//|/$'\n'}")" \
         "g4-results.md=| local-install | PASS | green | - |"
     check "gates: a qualify-only run ($t2) ends non-green, with its notice" \
-        "1|::notice title=qualify-only::advisory: records nothing, promotes nothing by design" "$(vm_gates)|$(cat "$V/log")"
+        "1|::notice title=qualify-only::advisory: records nothing, promotes nothing by design" \
+        "$(vm_gates)|$(grep -v '^::notice title=G4 frontier::' "$V/log")"
     check_true "gates: and still writes its summary" grep -qx '### G4 (results.md)' "$V/summary"
 done
 vm_reset

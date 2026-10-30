@@ -200,6 +200,10 @@ jobs:
               echo "::warning title=absorb $(esc_prop "$family")::$(esc "$srpm") (updates-testing): $(esc "$result") $(esc "$detail")"
             done <"$out/absorb/warnings.tsv"
           fi
+          if [[ -s $out/g4-results.md ]]; then
+            frontier=$(grep '^|' "$out/g4-results.md" | tail -n 1 | awk -F'|' '{ gsub(/^ +| +$/, "", $2); gsub(/ /, "", $3); print $2 " " $3 }')
+            echo "::notice title=G4 frontier::row $(grep -c '^|' "$out/g4-results.md"), $(esc "$frontier")"
+          fi
           # The installed ci-build's own lines decide; a qualify-only run is never green.
           if [[ $plan == qualify-only* ]]; then
             echo "::notice title=qualify-only::advisory: records nothing, promotes nothing by design"
