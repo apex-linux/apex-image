@@ -318,6 +318,7 @@ from GNOME, from the Machine menu, or with `just desktop-stop`.
 | `just desktop-ssh ['CMD']` | A root shell in the guest, or `CMD` run by the guest's shell. |
 | `just desktop-update [IMAGE]` | Stages the last `just vm-image` build in the running guest, keeping `/var/home` and `/etc` (below). |
 | `just shell-dev`, `just shell-c` | The shell's dev loop in this VM, from the apex-gnome checkout `APEX_GNOME_SRC` (default `../apex-gnome`; [desktop/README.md](https://github.com/apex-linux/apex-gnome/blob/main/desktop/README.md#the-dev-loop)). |
+| `just app-dev PKG fetch\|push\|build\|run` | An Apex app's C in this VM, for `PKG` gnome-control-center, nautilus or ptyxis: the Apex SRPM of the build the VM runs, `rpmbuild -rc` once and then incremental `ninja` in an F45 toolbox, installed over `bootc usroverlay` as `just shell-c` does, and the app started. A round takes about 5 s (ptyxis) to 50 s (gnome-control-center) to build. |
 
 The shell uses a key made for this VM. sshd is forwarded on `127.0.0.1:2223` only. A
 running VM is reached on the port it was started with, which `desktop-vm.sh` records in
