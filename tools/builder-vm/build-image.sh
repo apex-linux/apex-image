@@ -38,6 +38,10 @@ run with pinned components, and its harness digest is not HEAD's; the image is t
 G2 last ran on, or the last gate row's; it is under 72 hours old. _build/plan.txt names
 the plan. After a failure it runs qualify.sh local-diag too.
 
+APEX_CI_MODE (ci-build's mode) overrides the choice: daily and gate run the full gate,
+gate with G4 due whatever its last pass (g4-due reads an empty record, /dev/null); g4
+runs qualify-only and exits 2 when its conditions fail. Empty is the choice above.
+
 tools/components.sh fetch and env run before the first build step: each RPM is built
 from its pinned component (the apex RPM from apex-system, apex-desktop from
 apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECIPES).
@@ -231,13 +235,17 @@ gate_g2() {
 }
 
 gate_g4() {
-    local image_only=$1 rc=0 last_pass id mode=gate
+    local image_only=$1 rc=0 last_pass id mode=gate record=$PWD/$G4_RECORD
     ((!image_only)) || mode=image-only
     # Same tag, other kernel: a break-glass row never stands for the pair image's verdict.
     [[ ${APEX_KERNEL:-} != fedora ]] || mode=break-glass
     echo "== G4, when qualify.sh g4-due says it is due"
+    if [[ ${APEX_CI_MODE:-} == gate ]]; then
+        record=/dev/null
+        echo "G4 is due: ci-build gate asks for it, whatever its last pass"
+    fi
     qualify g4-key "$IMAGE" >"$G4_KEY" || return
-    last_pass=$(QUALIFY_G4_RECORD=$PWD/$G4_RECORD qualify g4-due "$G4_KEY") || rc=$?
+    last_pass=$(QUALIFY_G4_RECORD=$record qualify g4-due "$G4_KEY") || rc=$?
     case $rc in
         0)
             if ((image_only)); then
@@ -403,7 +411,7 @@ qualify_only() {
 }
 
 main() {
-    local image_only=0 why
+    local image_only=0 why=
     APEX_KERNEL=
     while (($#)); do
         case $1 in
@@ -426,11 +434,20 @@ main() {
     rm -f -- "$GATES_PASSED" "$PLAN_FILE"
     if [[ $BUILD == _build ]]; then
         mkdir -p _build
-        if ((!image_only)) && why=$(t2_plan 2>&1); then
+        case ${APEX_CI_MODE:-} in
+            '' | g4) ;;
+            daily | gate) why="ci-build $APEX_CI_MODE: the full gate run" ;;
+            *) echo "APEX_CI_MODE=$APEX_CI_MODE: not daily, gate or g4" >&2; exit 2 ;;
+        esac
+        if [[ -z $why ]] && ((!image_only)) && why=$(t2_plan 2>&1); then
             echo "== plan: qualify-only (advisory)"
             echo qualify-only >"$PLAN_FILE"
             qualify_only
             return
+        fi
+        if [[ ${APEX_CI_MODE:-} == g4 ]]; then
+            echo "ci-build g4: qualify-only refused: ${why:---image-only}" >&2
+            exit 2
         fi
         echo "== plan: gate (G4 first)"
         echo "plan: ${why:-a full run}"

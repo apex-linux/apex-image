@@ -444,7 +444,7 @@ cat >"$BUILD_DIR/work/.github/scripts/qualify.sh" <<'EOF'
 #!/usr/bin/env bash
 case $1 in
     g4-key) echo "package gdm-1:51.0-1.fc45.x86_64" ;;
-    g4-due) cat "$FAKE/g4-due-stdout" 2>/dev/null; exit "$(cat "$FAKE/g4-due-rc")" ;;
+    g4-due) echo "$QUALIFY_G4_RECORD" >"$FAKE/g4-due-record"; cat "$FAKE/g4-due-stdout" 2>/dev/null; exit "$(cat "$FAKE/g4-due-rc")" ;;
     local)
         echo local >>"$FAKE/g4-ran"
         echo g4 >>"$FAKE/order"
@@ -484,6 +484,9 @@ g2_result cafe "$LANE_LOCK_SHA"
 echo 0 >"$BUILD_DIR/g4-due-rc"
 check "G4 when due, then G2, then the record" "0|g4 g2" "$(G2_RUNS=1 build_gates)|$(paste -sd' ' "$BUILD_DIR/order")"
 check_true "the record moves G4's key to g4-passed.txt" g4_record_is 'image-id cafe'
+check "g4-due reads the last pass's record" "$BUILD_DIR/work/_build/g4-passed.txt" "$(cat "$BUILD_DIR/g4-due-record")"
+check "ci-build gate makes G4 due: g4-due reads an empty record" "0|/dev/null" \
+    "$(APEX_CI_MODE=gate build_gates)|$(cat "$BUILD_DIR/g4-due-record")"
 check_true "and leaves nothing pending" no_pending
 check "G2 runs twice, whatever G2_RUNS says" 2 "$(cat "$BUILD_DIR/g2-runs")"
 check "G2 is apex-gnome's run.sh, given this image/, its REPOS_BASE and this _build/g2" \
@@ -775,6 +778,21 @@ check "fail-safe: main with every helper broken runs the full gate, and says why
     "$(t2_main "$T2_BROKEN"'; build_inputs() { echo build_inputs >>"$FAKE/steps"; }
         build_image() { echo build_image >>"$FAKE/steps"; }; gates() { echo gates >>"$FAKE/steps"; }')|$(head -n 1 "$T2/out")|$(grep -oE '^(build_inputs|build_image|gates)$' "$T2/steps" | paste -sd' ')"
 check "and plan.txt says gate" gate "$(cat "$T2W/_build/plan.txt")"
+# shellcheck disable=SC2016 # expanded by the inner bash
+T2_STOP_BUILD='build_inputs() { echo build_inputs >>"$FAKE/steps"; }; build_image() { :; }; gates() { :; }'
+for mode in gate daily; do
+    check "APEX_CI_MODE=$mode: the full gate run, though qualify-only's conditions hold" \
+        "0|== plan: gate (G4 first)|plan: ci-build $mode: the full gate run|build_inputs" \
+        "$(APEX_CI_MODE=$mode t2_main "$T2_STOP_BUILD")|$(sed -n 1,2p "$T2/out" | paste -sd'|')|$(grep -x build_inputs "$T2/steps")"
+done
+check "APEX_CI_MODE=g4: qualify-only" "1|== plan: qualify-only (advisory)|local" \
+    "$(APEX_CI_MODE=g4 t2_main)|$(head -n 1 "$T2/out")|$(grep -x local "$T2/steps")"
+check "APEX_CI_MODE=g4 whose conditions fail: refused, exit 2, nothing runs" \
+    "2|ci-build g4: qualify-only refused: the harness is the one that failed on image cafe|" \
+    "$(APEX_CI_MODE=g4 t2_main)|$(cat "$T2/out")|$(t2_steps)"
+check "APEX_CI_MODE=g4 with --image-only: refused" "2|ci-build g4: qualify-only refused: --image-only" \
+    "$(APEX_CI_MODE=g4 t2_main '' --image-only)|$(cat "$T2/out")"
+check "APEX_CI_MODE of another word: exit 2" "2|APEX_CI_MODE=G4: not daily, gate or g4" "$(APEX_CI_MODE=G4 t2_main)|$(cat "$T2/out")"
 check "--image-only is never qualify-only" "1|== plan: gate (G4 first)" "$(t2_main '' --image-only)|$(head -n 1 "$T2/out")"
 
 # --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
@@ -834,7 +852,10 @@ EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "== plan: gate (G4 first)" >&2
+echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
 mkdir -p _build
+if [[ ${APEX_CI_MODE:-} == g4 && ! -e $FAKE/ignore-mode ]]; then echo qualify-only; else echo gate; fi >_build/plan.txt
+[[ ! -e $FAKE/no-plan ]] || rm _build/plan.txt
 echo "lock-sha256 x" >_build/gates-passed.txt
 echo "== G4, when qualify.sh g4-due says it is due"
 if [[ -e $FAKE/with-logs ]]; then
@@ -976,9 +997,35 @@ check "without daily no report runs" "0:no report" \
     "$(ci_request "ci-build $CI_SHA"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
 check "metrics run on every build, the image's size only on the daily one" "metrics size|metrics no-size" \
     "$(paste -sd'|' "$CI_DIR/metrics.log")"
+check "build-image.sh gets an empty APEX_CI_MODE: it chooses" "0|" "$(ci_request "ci-build $CI_SHA")|$(cat "$CI_DIR/ci-mode")"
+rm -f "$CI_DIR/metrics.log"
+check "gate: the full gate run, promoted, no report, no size" "0|gate|promote|no report|metrics no-size" \
+    "$(ci_request "ci-build $CI_SHA gate")|$(cat "$CI_DIR/ci-mode")|$(cat "$CI_DIR/lane.log")|$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')|$(cat "$CI_DIR/metrics.log")"
+rm -f "$CI_DIR/metrics.log"
+check "g4: qualify-only, and the installed ci-build never promotes it" "0|g4|no promotion|promote skipped: g4 is qualify-only" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(cat "$CI_DIR/ci-mode")|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^promote ')"
+: >"$CI_DIR/ignore-mode"
+check "g4 whose build-image.sh ran the full gate instead: exit 2, its gates record removed, nothing promoted" \
+    "2|plan refused: build-image.sh ran gate, not g4; no gates record|no record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$(tar -tf "$CI_DIR/out.tar" | grep -q gates-passed && echo record || echo 'no record')|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+check_false "and none is left in _build" test -e "$CI_DIR/home/apex-image/_build/gates-passed.txt"
+rm "$CI_DIR/ignore-mode"
+: >"$CI_DIR/no-plan"
+check "gate whose build-image.sh names no plan: exit 2, nothing promoted" "2|plan refused: build-image.sh ran nothing, not gate; no gates record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA gate")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "ci-build $CI_SHA")|$(cat "$CI_DIR/lane.log")"
+rm "$CI_DIR/no-plan"
+cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
+sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/ci-mode"
+check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
+    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build" \
+    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/home/apex-image/_build/plan.txt && $CI_DIR/home/apex-image/_build/plan.txt -nt $CI_DIR/build-image-d.sh ]] && echo build || echo 'no build')"
+mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
     "$(ci_request "ci-build $CI_SHA daily"):$([[ -e $CI_DIR/absorb.log ]] && echo report || echo 'no report')"
+check "daily: build-image.sh gets APEX_CI_MODE=daily" daily "$(cat "$CI_DIR/ci-mode")"
 echo 0 >"$CI_DIR/build-rc"
 rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/builder-vm/lane-absorb-report.sh" \
     "$CI_DIR/home/apex-image/tools/builder-vm/metrics.sh"
@@ -986,11 +1033,13 @@ rm -rf "$CI_DIR/home/apex-image/_build/absorb" "$CI_DIR/home/apex-image/tools/bu
 # ci-build <sha> next: the next release only, report-only, never a promotion.
 CIW=$CI_DIR/home/apex-image
 for request in "ci-build $CI_SHA next " "ci-build $CI_SHA NEXT" "ci-build $CI_SHA next daily" "ci-build next $CI_SHA" \
-    "ci-build $CI_SHA daily next" "ci-build modes " "ci-build modes $CI_SHA"; do
+    "ci-build $CI_SHA daily next" "ci-build modes " "ci-build modes $CI_SHA" "ci-build $CI_SHA g4 daily" \
+    "ci-build $CI_SHA G4" "ci-build $CI_SHA g4 " "ci-build $CI_SHA gate g4" "ci-build $CI_SHA plan=g4" \
+    "ci-build $CI_SHA GATE" "ci-build $CI_SHA t2" "ci-build g4 $CI_SHA" "ci-build g4"; do
     check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
         "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 done
-check "ci-build modes names daily and next, before any git or lock" "0|daily next|no git" \
+check "ci-build modes names daily, next, gate and g4, before any git or lock" "0|daily next gate g4|no git" \
     "$(ci_request "ci-build modes")|$(cat "$CI_DIR/out.tar")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 mv "$CIW/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-45.sh"
 cat >"$CIW/tools/builder-vm/build-image.sh" <<'EOF'
@@ -3591,8 +3640,8 @@ case $1 in
     running) [[ ${FAKE_VM:-up} == up ]] ;;
     ssh)
         if [[ $2 == *"ci-build modes"* ]]; then
-            [[ ${FAKE_MODES:-new} == new ]] || { echo "ci-build: refused" >&2; exit 2; }
-            echo "daily next"
+            [[ ${FAKE_MODES:-new} != old ]] || { echo "ci-build: refused" >&2; exit 2; }
+            if [[ ${FAKE_MODES:-new} == next ]]; then echo "daily next"; else echo "daily next gate g4"; fi
             exit 0
         fi
         if [[ $2 == *cosign* ]]; then
@@ -3664,10 +3713,11 @@ check "before runner.sh key the key rows skip, and the host still passes" "rc=0 
     "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
 check "a stopped builder VM skips the binding and cosign" "rc=0 SKIP SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build) $(pf_row vm-cosign)"
-check "a forced command on the current grammar passes, naming its modes" "PASS|daily next" \
-    "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 1), $NF }' "$PF/out")"
-check_true "an old one's row says how to upgrade" grep -q 'old grammar (no next): just vm-ci-install' \
+check "a forced command on the current grammar passes, naming its modes" "PASS|next gate g4" \
+    "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 2), $(NF - 1), $NF }' "$PF/out")"
+check_true "an old one's row says how to upgrade" grep -q 'an old grammar (no next, gate or g4): just vm-ci-install' \
     <<<"$(pf FAKE_MODES=old >/dev/null; cat "$PF/out")"
+check "one that takes next but not gate and g4 fails the row too" FAIL "$(pf FAKE_MODES=next >/dev/null; pf_row ci-build-modes)"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
 # --- install-cosign.sh: the pinned release only, checked before it is installed ----------
 IC="$TMP/install-cosign"
@@ -3893,6 +3943,11 @@ vm_step() { # NAME: the run: script of vm.yml's step NAME, as GitHub hands it to
 }
 cat >"$V/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
+if [[ $* == "apex-builder ci-build modes" ]]; then
+    [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
+    echo "daily next gate g4"
+    exit 0
+fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
 echo "::error::a line of the VM's log" >&2
 [[ ! -s $FAKE_VM/results.tar ]] || cat "$FAKE_VM/results.tar"
@@ -3965,6 +4020,17 @@ check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
 vm_reset
 check "Commit: a short sha is an error" "1|::error::not a full commit sha: abc123" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA=abc123)|$(cat "$V/log")"
+for plan in gate g4; do
+    vm_reset
+    check "Commit: a dispatch with plan $plan sends it" "0|sha=$CI_SHA extra=$plan" \
+        "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=$plan)|$(paste -sd' ' "$V/output")"
+done
+vm_reset
+check "Commit: plan auto sends nothing" "0|sha=$CI_SHA" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=auto)|$(cat "$V/output")"
+vm_reset
+check "Commit: another plan is an error" "1|::error::not a plan: daily (auto, gate or g4)" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=daily)|$(cat "$V/log")"
 
 for case in "0:" "1:::error::the build in the builder VM failed (exit 1)" "2:::error::ci-build refused $CI_SHA" \
     "75:::error::another build holds the builder VM" \
@@ -3988,6 +4054,25 @@ vm_run "$BUILD" SHA="$CI_SHA" EXTRA= >/dev/null
 check "build: a push asks for the build alone" "apex-builder ci-build $CI_SHA" "$(cat "$V/ssh.args")"
 vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily >/dev/null
 check "build: the daily run adds daily" "apex-builder ci-build $CI_SHA daily" "$(cat "$V/ssh.args")"
+vm_run "$BUILD" SHA="$CI_SHA" EXTRA=g4 >/dev/null
+check "build: a g4 plan adds g4" "apex-builder ci-build $CI_SHA g4" "$(cat "$V/ssh.args")"
+vm_reset
+echo 2 >"$V/ssh.rc"
+check_true "build: a refused g4 says where to look" grep -qF \
+    "::error::ci-build refused $CI_SHA g4 (the log says why; ci-build.txt has any plan refused line)" \
+    <(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=g4 >/dev/null; cat "$V/log")
+echo 0 >"$V/ssh.rc"
+: >"$V/old-host"
+for extra in daily gate g4; do
+    vm_reset
+    check "build: an installed ci-build before gate and g4 fails $extra at once, building nothing" \
+        "2|::error::the builder VM's ci-build predates gate and g4, so it cannot run $extra as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+        "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=$extra)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+done
+vm_reset
+check "build: a push still runs on it: build-image.sh chooses" "0|apex-builder ci-build $CI_SHA" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=)|$(cat "$V/ssh.args")"
+rm "$V/old-host"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"

@@ -32,6 +32,11 @@ on:
         type: string
         required: false
         default: ""
+      plan:
+        description: "auto: build-image.sh chooses; gate: the full gate run, G4 due; g4: qualify-only (advisory)"
+        type: choice
+        options: [auto, gate, g4]
+        default: auto
 
 permissions: {}
 
@@ -77,12 +82,18 @@ jobs:
         id: commit
         env:
           INPUT_SHA: ${{ inputs.sha }}
+          INPUT_PLAN: ${{ inputs.plan }}
         run: |
           sha=${INPUT_SHA:-$GITHUB_SHA}
           [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a full commit sha: $sha"; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
           # The daily run also asks for the absorption report and the image's size metrics.
           if [[ $GITHUB_EVENT_NAME == schedule ]]; then echo "extra=daily" >>"$GITHUB_OUTPUT"; fi
+          case ${INPUT_PLAN:-auto} in
+            auto) ;;
+            gate | g4) echo "extra=$INPUT_PLAN" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::not a plan: $INPUT_PLAN (auto, gate or g4)"; exit 1 ;;
+          esac
 
       # ci-build (tools/builder-vm/ci-build.sh) runs every stage in the VM, starting with the
       # components hook for tools/components.sh fetch; the RPM key and ~/apex-store stay there.
@@ -91,6 +102,19 @@ jobs:
           SHA: ${{ steps.commit.outputs.sha }}
           EXTRA: ${{ steps.commit.outputs.extra }}
         run: |
+          # A ci-build before gate and g4 sends no APEX_CI_MODE: daily could go qualify-only.
+          if [[ -n $EXTRA ]]; then
+            mrc=0
+            modes=$(ssh apex-builder ci-build modes 2>/dev/null) || mrc=$?
+            if ((mrc == 255)); then
+              echo "::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)"
+              exit 255
+            fi
+            if [[ " $modes " != *" gate "* ]]; then
+              echo "::error::the builder VM's ci-build predates gate and g4, so it cannot run $EXTRA as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
+              exit 2
+            fi
+          fi
           # The VM's build log is not trusted to issue workflow commands.
           token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
           echo "::stop-commands::$token"
@@ -100,7 +124,7 @@ jobs:
           echo "::$token::"
           case $rc in
             0) ;;
-            2) echo "::error::ci-build refused $SHA" ;;
+            2) echo "::error::ci-build refused $SHA${EXTRA:+ $EXTRA (the log says why; ci-build.txt has any plan refused line)}" ;;
             75) echo "::error::another build holds the builder VM" ;;
             255) echo "::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)" ;;
             *) echo "::error::the build in the builder VM failed (exit $rc)" ;;

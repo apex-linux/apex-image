@@ -220,6 +220,16 @@ lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.m
 
 Owner steps that a change on `main` needs on the host, newest first.
 
+- **`ci-build` takes `gate` and `g4` (train r18).** The forced command's grammar is now
+  `ci-build <sha> [daily | next | gate | g4]`; an older copy refuses `gate` and `g4` with
+  exit 2. With the builder VM running (`just vm-start`), from a checkout of current
+  `main`: `just vm-ci-install`. Then `tools/runner/preflight.sh` shows
+  `PASS ci-build-modes ... daily next gate g4`. Until then, `vm.yml`'s scheduled run and
+  the dispatch plans `gate` and `g4` fail at once, before the VM builds anything, with
+  "run just vm-ci-install": an older copy passes no `APEX_CI_MODE`, so with
+  `t2-enabled` committed the daily run could go qualify-only. A push and plan `auto`
+  still run (build-image.sh chooses, as designed).
+
 - **The runner holds a sleep inhibitor during a job.** Run `just runner install` from a
   checkout of current `main`, while no VM run is in progress: it installs the new copy and
   restarts the service. A restart during a job would end that job. The next job's log
@@ -281,7 +291,11 @@ that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
 vm-ci-install`), the other `tools/builder-vm` scripts or any `.md` under
 `tools/builder-vm/` queues nothing: the next run takes it. A dispatch
 with a `sha` input builds that commit of `main` instead of the head, and needs the
-`vm-dispatch` approval first.
+`vm-dispatch` approval first. A dispatch's `plan` input is `auto` (build-image.sh
+chooses: the full gate run, or a qualify-only run when its conditions hold), `gate` (the
+full gate run, with G4 due whatever its last pass) or `g4` (the qualify-only run, refused
+when its conditions fail). It goes to the VM as `ci-build <sha> gate` or `g4`, and
+`lane.sh promote` never runs for `g4`.
 
 The build step calls `ssh apex-builder ci-build <sha>`, with workflow commands stopped
 for the VM's log. In the VM, `ci-build` then:
