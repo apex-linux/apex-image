@@ -166,9 +166,10 @@ dispatched run that runs G4, check in `_build/qualify/` that:
 - [ ] **The password conversations count as expected.** While the lock asks, there is one
   `pam/gdm-password` worker more than with the session unlocked. There is none more while
   the screen is off (`local-lock-blank-wake`). Esc ends the extra one (`local-lock-esc`).
-- [ ] **OVMF resumes from S3.** With `-global ICH9-LPC.disable_s3=0`, `systemctl suspend`
-  reaches QMP's `suspended`, and `system_wakeup` brings the guest back
-  (`local-lock-suspend`).
+- [ ] **The guest resumes from s2idle on the keyboard.** `PM: suspend entry (s2idle)` reaches
+  the console, QMP's wake key brings the guest back, and `pm_wakeup_irq` is IRQ 1, i8042
+  (`local-lock-suspend`). Deep S3 is local-diag's `lock-suspend-s3` only: OVMF
+  20260812-9 asserts on S3 resume (`MemoryServices.c(203)`, hosted repro #127).
 - [ ] **`rpm-ostree kargs --append=apex.safe=1` works on the bootc image.** The next
   boot has `apex.safe=1` in `/proc/cmdline` (`local-lock-safe`).
 - [ ] **pkexec from the user's manager reaches the shell's agent.** polkit takes the

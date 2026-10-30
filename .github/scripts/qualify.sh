@@ -72,8 +72,11 @@ the digest that will be published.
                                      lock-blank-wake lock-reduce-motion polkit-agent
                                      polkit-actions crash-guard safe-karg-lock
                                      lock-suspend lock-suspend-s3 (all when none is
-                                     named; lock-suspend-s3 is deep sleep woken by
-                                     QMP, never a G4 row). Needs its
+                                     named). lock-suspend-s3 is deep sleep woken by
+                                     QMP, never a G4 row: OVMF 20260812-9 asserts on
+                                     S3 resume (MemoryServices.c(203), hosted repro
+                                     #127) and the guest cold-boots; it stays out of
+                                     G4 until a firmware fix. Needs its
                                      own QUALIFY_OUT; writes diag.md there, one row per
                                      unit, and exits 1 when one did not pass
   qualify.sh g4-harness              print the digest of qualify.sh, lib.sh and
