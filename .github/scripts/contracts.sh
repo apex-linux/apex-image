@@ -232,3 +232,7 @@ sys.exit(1 if problems else 0)
 EOF
     die "contracts: $gnome's G2 settings: see above"
 log "contracts: G2's shells set $desktop's weekday and input-source keys as the image does"
+
+units=$(g4_user_units "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_SYSTEM_SRC" "$APEX_DESKTOP_SRC") ||
+    die "contracts: G4's login contract and the components' user units disagree"
+log "contracts: G4 expects exactly the Apex user units the components enable ($units)"

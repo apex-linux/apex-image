@@ -321,6 +321,86 @@ dnf_repo_args() {
     fi
 }
 
+# g4_user_units QUALIFY_SH COMPONENT_SRC...: G4's login contract (apex_units_settled) expects
+# exactly the user units the components' specs ship and enable for a graphical session.
+g4_user_units() {
+    python3 - "$@" <<'EOF'
+import configparser
+import fnmatch
+import os
+import re
+import sys
+
+qualify, components = sys.argv[1], sys.argv[2:]
+text = open(qualify, encoding="utf-8").read()
+values = dict(re.findall(r"^readonly ([A-Z_]+)=(\S+)$", text, re.M))
+body = re.search(r"^apex_units_settled\(\) \{\n(.*?)^\}", text, re.M | re.S)
+expected = {"long-running": set(), "oneshot": set()}
+for var, props in re.findall(r'user_unit_state "\$uid" "\$([A-Z_]+)" (\S+)', body.group(1) if body else ""):
+    kind = "long-running" if "SubState" in props else "oneshot"
+    expected[kind].add(values.get(var, "$" + var))
+
+
+def files_named(root, name):
+    found = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in (".git", "_build", "target")]
+        found += [os.path.join(d, name)] if name in files else []
+    return found
+
+
+shipped, wants, enables, problems = {}, set(), [], []
+for src in components:
+    specs = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(src, "packaging")) for f in fs if f.endswith(".spec")]
+    for spec in specs:
+        spec_text = open(spec, encoding="utf-8").read()
+        for path in set(re.findall(r"%\{_userunitdir\}/(\S+?)'?$", spec_text, re.M)):
+            target, _, unit = path.rpartition("/")
+            if target.endswith(".target.wants"):
+                wants.add(unit)
+            elif not target and unit.endswith(".service"):
+                where = [f for f in files_named(src, unit) if "/user/" in f or "/data/" in f]
+                if len(where) != 1:
+                    problems.append(f"{spec}: {unit} is installed from {len(where)} files, expected 1")
+                    continue
+                shipped[unit] = where[0]
+        for preset in set(re.findall(r"%\{_userpresetdir\}/(\S+)$", spec_text, re.M)):
+            for f in files_named(src, preset):
+                enables += [w[1] for w in map(str.split, open(f, encoding="utf-8")) if w[:1] == ["enable"]]
+
+for pattern in enables:
+    matches = [u for u in shipped if fnmatch.fnmatch(u, pattern)]
+    wants.update(matches or [pattern])
+
+found = {"long-running": set(), "oneshot": set()}
+for unit in sorted(wants):
+    if unit not in shipped:
+        problems.append(f"{unit} is enabled for every user, but no spec of {' '.join(components)} installs it")
+        continue
+    unit_file = configparser.ConfigParser(strict=False, interpolation=None)
+    unit_file.optionxform = str
+    unit_file.read(shipped[unit], encoding="utf-8")
+    service = unit_file["Service"] if unit_file.has_section("Service") else {}
+    oneshot = service.get("Type") == "oneshot" and service.get("RemainAfterExit", "no") not in ("yes", "true", "1")
+    found["oneshot" if oneshot else "long-running"].add(unit)
+    conditions = unit_file.get("Unit", "ConditionEnvironment", fallback="")
+    if "greeter_apex_units" in text and "XDG_SESSION_CLASS=user" not in conditions:
+        problems.append(f"{shipped[unit]}: no ConditionEnvironment=XDG_SESSION_CLASS=user, so it starts in GDM's greeter, where G4 allows no Apex user unit")
+
+for kind in ("long-running", "oneshot"):
+    if found[kind] != expected[kind]:
+        problems.append(
+            f"G4's login contract ({qualify}, apex_units_settled) expects the {kind} Apex user units "
+            f"'{' '.join(sorted(expected[kind])) or 'none'}', but the components enable "
+            f"'{' '.join(sorted(found[kind])) or 'none'}'")
+for p in problems:
+    print(f"error: {p}", file=sys.stderr)
+if problems:
+    sys.exit(1)
+print(f"long-running: {' '.join(sorted(found['long-running'])) or 'none'}; oneshot: {' '.join(sorted(found['oneshot'])) or 'none'}")
+EOF
+}
+
 # Only registry.fedoraproject.org keeps old Fedora digests: quay.io/fedora forgets one
 # within a day of the tag moving, before Renovate's daily PR can merge.
 is_fedora_pin() {
