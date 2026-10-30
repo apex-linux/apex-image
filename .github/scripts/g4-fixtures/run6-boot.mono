@@ -1,0 +1,411 @@
+7.127075 0 audit[670]: SYSCALL arch=c000003e syscall=321 success=yes exit=25 a0=5 a1=7ffd1b5b1ff0 a2=a8 a3=0 items=0 ppid=1 pid=670 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="NetworkManager" exe="/usr/bin/NetworkManager" subj=system_u:syst
+7.127075 0 audit: PROCTITLE proctitle=2F7573722F62696E2F4E6574776F726B4D616E61676572002D2D6E6F2D6461656D6F6E
+7.129649 0 NetworkManager[670]: <info>  [1793127830.1055] policy: set 'Wired connection 1' (enp0s1) as default for IPv4 routing and DNS
+7.131671 0 systemd-resolved[584]: enp0s1: Bus client set default route setting: yes
+7.132479 0 systemd-resolved[584]: enp0s1: Bus client set DNS server list to: 192.0.2.1
+7.132075 0 audit: BPF prog-id=70 op=UNLOAD
+7.145702 0 systemd-logind[680]: New session 'c1' of user 'gdm-greeter' with class 'greeter' and type 'wayland'.
+7.148769 0 NetworkManager[670]: <info>  [1793127830.1246] device (enp0s1): state change: ip-config -> ip-check (reason 'none', managed-type: 'full')
+7.150436 0 NetworkManager[670]: <info>  [1793127830.1263] device (enp0s1): state change: ip-check -> secondaries (reason 'none', managed-type: 'full')
+7.150943 0 NetworkManager[670]: <info>  [1793127830.1268] device (enp0s1): state change: secondaries -> activated (reason 'none', managed-type: 'full')
+7.151334 0 NetworkManager[670]: <info>  [1793127830.1272] manager: NetworkManager state is now CONNECTED_SITE
+7.152388 0 NetworkManager[670]: <info>  [1793127830.1282] device (enp0s1): Activation: successful, device activated.
+7.152671 0 NetworkManager[670]: <info>  [1793127830.1285] manager: NetworkManager state is now CONNECTED_GLOBAL
+7.152774 0 NetworkManager[670]: <info>  [1793127830.1286] manager: startup complete
+7.154075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=user-runtime-dir@60578 comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+7.155507 0 systemd[1]: Finished user-runtime-dir@60578.service - User Runtime Directory /run/user/60578.
+7.158790 0 systemd[1]: Starting user@60578.service - User Manager for UID 60578...
+7.184075 0 audit[802]: USER_ACCT pid=802 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='op=PAM:accounting grantors=pam_unix acct="gdm-greeter" exe="/usr/lib/systemd/systemd-executor" hostname=? addr=? terminal=? res=success'
+7.185075 0 audit[802]: CRED_ACQ pid=802 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='op=PAM:setcred grantors=? acct="gdm-greeter" exe="/usr/lib/systemd/systemd-executor" hostname=? addr=? terminal=? res=failed'
+7.187075 0 audit[802]: USER_ROLE_CHANGE pid=802 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='op=pam_selinux default-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 selected-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 exe="/usr/lib/systemd
+7.188075 0 audit[802]: SYSCALL arch=c000003e syscall=1 success=yes exit=5 a0=9 a1=7fffe56a4b50 a2=5 a3=0 items=0 ppid=1 pid=802 auid=60578 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=1 comm="(systemd)" exe="/usr/lib/systemd/systemd-executor" subj=system_u:system_r:init_t:s
+7.188074 0 audit: PROCTITLE proctitle="(systemd)"
+7.205520 0 systemd-logind[680]: New session '1' of user 'gdm-greeter' with class 'manager-early' and type 'unspecified'.
+7.207075 0 audit[802]: USER_START pid=802 uid=0 auid=60578 ses=1 subj=system_u:system_r:init_t:s0 msg='op=PAM:session_open grantors=pam_selinux,pam_selinux,pam_loginuid,pam_keyinit,pam_namespace,pam_systemd_home,pam_umask,pam_keyinit,pam_limits,pam_systemd,pam_unix acct="gdm-greeter" exe="/usr/lib/s
+7.208279 60578 (systemd)[802]: pam_unix(systemd-user:session): session opened for user gdm-greeter(uid=60578) by gdm-greeter(uid=0)
+7.344918 60578 systemd[802]: Queued start job for default target default.target.
+7.354763 60578 systemd[802]: Created slice app.slice - User Application Slice.
+7.354818 60578 systemd[802]: Started systemd-tmpfiles-clean.timer - Daily Cleanup of User's Temporary Directories.
+7.354839 60578 systemd[802]: Reached target paths.target - Paths.
+7.354957 60578 systemd[802]: Reached target timers.target - Timers.
+7.357252 60578 systemd[802]: Starting dbus.socket - D-Bus User Message Bus Socket...
+7.357866 60578 systemd[802]: Listening on pipewire-pulse.socket - PipeWire PulseAudio.
+7.358210 60578 systemd[802]: Listening on pipewire.socket - PipeWire Multimedia System Sockets.
+7.359949 60578 systemd[802]: Listening on systemd-ask-password.socket - Query the User Interactively for a Password.
+7.361642 60578 systemd[802]: Listening on systemd-journalctl.socket - Journal Log Access Socket.
+7.363151 60578 systemd[802]: Listening on systemd-storage-fs.socket - Simple File System Backed Storage Provider.
+7.364207 60578 systemd[802]: Starting systemd-tmpfiles-setup.service - Create User Files and Directories...
+7.368941 60578 systemd[802]: Listening on dbus.socket - D-Bus User Message Bus Socket.
+7.369128 60578 systemd[802]: Reached target sockets.target - Sockets.
+7.383512 60578 systemd[802]: Finished systemd-tmpfiles-setup.service - Create User Files and Directories.
+7.383761 60578 systemd[802]: Reached target basic.target - Basic System.
+7.384283 0 systemd[1]: Started user@60578.service - User Manager for UID 60578.
+7.383075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=user@60578 comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+7.386151 60578 systemd[802]: Started mpris-proxy.service - Bluetooth mpris proxy.
+7.386197 60578 systemd[802]: Reached target default.target - Main User Target.
+7.386243 60578 systemd[802]: Startup finished in 167ms.
+7.388305 0 systemd[1]: Started session-c1.scope - Session c1 of User gdm-greeter.
+7.391218 0 gdm-launch-environment][786]: pam_unix(gdm-launch-environment:session): session opened for user gdm-greeter(uid=60578) by (uid=0)
+7.395747 60578 systemd[802]: Created slice session.slice - User Core Session Slice.
+7.396859 60578 systemd[802]: Starting dbus-broker.service - D-Bus User Message Bus...
+7.410076 0 audit[786]: USER_START pid=786 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:xdm_t:s0-s0:c0.c1023 msg='op=PAM:session_open grantors=pam_keyinit,pam_keyinit,pam_limits,pam_systemd,pam_unix,pam_umask acct="gdm-greeter" exe="/usr/libexec/gdm-session-worker" hostname=apex addr=?
+7.428246 0 dbus-broker-launch[840]: Policy to allow eavesdropping in /usr/share/dbus-1/session.conf +31: Eavesdropping is deprecated and ignored
+7.428246 0 dbus-broker-launch[840]: Policy to allow eavesdropping in /usr/share/dbus-1/session.conf +33: Eavesdropping is deprecated and ignored
+7.429240 60578 systemd[802]: Started dbus-broker.service - D-Bus User Message Bus.
+7.436364 0 dbus-broker-launch[840]: Ready
+7.473847 0 gnome-session-i[846]: Starting GNOME session target: gnome-session@gnome-login.target
+7.501833 60578 systemd[802]: Created slice app-gnome\x2dsession\x2dmanager.slice - Slice /app/gnome-session-manager.
+7.501984 60578 systemd[802]: gnome-initial-setup-copy-worker.service - GNOME Initial Setup Copy Worker skipped, unmet condition check ConditionEnvironment=XDG_SESSION_CLASS=user
+7.503994 60578 systemd[802]: Starting gnome-session-monitor.service - Monitor Session leader for GNOME Session...
+7.505250 60578 systemd[802]: Starting xdg-user-dirs.service - User folders update...
+7.517993 60578 systemd[802]: Finished xdg-user-dirs.service - User folders update.
+7.518442 60578 systemd[802]: Started gnome-session-monitor.service - Monitor Session leader for GNOME Session.
+7.518871 60578 systemd[802]: Reached target graphical-session-pre.target - Session services which should run early before the graphical session is brought up.
+7.519326 60578 systemd[802]: Reached target gnome-session-pre.target - Tasks to be run before GNOME Session starts.
+7.520716 60578 systemd[802]: Starting gnome-session-manager@gnome-login.service - GNOME Session Manager (session: gnome-login)...
+7.541075 0 audit[680]: AVC avc:  denied  { getattr } for  pid=680 comm="systemd-logind" path="/boot/efi" dev="vda2" ino=13 scontext=system_u:system_r:systemd_logind_t:s0 tcontext=unconfined_u:object_r:unlabeled_t:s0 tclass=dir permissive=0
+7.541075 0 audit[680]: SYSCALL arch=c000003e syscall=332 success=no exit=-13 a0=1d a1=7fd67ae7536a a2=1000 a3=5109 items=0 ppid=1 pid=680 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="systemd-logind" exe="/usr/lib/systemd/systemd-logind" subj
+7.541074 0 audit: PROCTITLE proctitle="/usr/lib/systemd/systemd-logind"
+7.542895 0 systemd-logind[680]: Failed to open directory "/boot/efi": Permission denied
+7.551945 60578 systemd[802]: Started gnome-session-manager@gnome-login.service - GNOME Session Manager (session: gnome-login).
+7.552247 60578 systemd[802]: Reached target gnome-session-manager.target - GNOME Session Manager is ready.
+7.553387 60578 systemd[802]: Starting org.gnome.Shell@gdm.service - GNOME Shell...
+7.716847 0 accounts-daemon[671]: Unable to open /etc/tcb: No such file or directory
+7.718779 60578 gnome-shell[864]: Running GNOME Shell (using mutter 51.0) as a Wayland display server
+7.720217 0 systemd-logind[680]: Failed to open directory "/boot/efi": Permission denied
+7.719075 0 audit[680]: AVC avc:  denied  { getattr } for  pid=680 comm="systemd-logind" path="/boot/efi" dev="vda2" ino=13 scontext=system_u:system_r:systemd_logind_t:s0 tcontext=unconfined_u:object_r:unlabeled_t:s0 tclass=dir permissive=0
+7.719075 0 audit[680]: SYSCALL arch=c000003e syscall=332 success=no exit=-13 a0=1d a1=7fd67ae7536a a2=1000 a3=5109 items=0 ppid=1 pid=680 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="systemd-logind" exe="/usr/lib/systemd/systemd-logind" subj
+7.719075 0 audit: PROCTITLE proctitle="/usr/lib/systemd/systemd-logind"
+7.766076 0 audit[878]: CRYPTO_SESSION pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=start direction=from-server cipher=aes256-gcm@openssh.com ksize=256 mac=<implicit> pfs=mlkem768x25519-sha256 spid=879 suid=74 rport=53992 laddr=192.0.2.1 lp
+7.766075 0 audit[878]: CRYPTO_SESSION pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=start direction=from-client cipher=aes256-gcm@openssh.com ksize=256 mac=<implicit> pfs=mlkem768x25519-sha256 spid=879 suid=74 rport=53992 laddr=192.0.2.1 lp
+7.833121 0 systemd[1]: Starting rpm-ostreed.service - rpm-ostree System Management Daemon...
+7.856952 0 rtkit-daemon[677]: Successfully made thread 881 of process 864 owned by '60578' high priority at nice level -15.
+7.858342 60578 gnome-shell[864]: Thread 'KMS thread' will be using high priority scheduling
+7.864075 0 audit[878]: USER_AUTH pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=pubkey_auth grantors=auth-key acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=? res=success'
+7.864075 0 audit[878]: CRYPTO_KEY_USER pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=negotiate kind=auth-key fp=SHA256:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:20:40 exe="/usr/libexec/openssh
+7.875076 0 audit[878]: USER_ACCT pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:accounting grantors=pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+7.875074 0 audit[878]: CRYPTO_KEY_USER pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=session fp=? direction=both spid=879 suid=74 rport=53992 laddr=192.0.2.1 lport=22  exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192
+7.876773 0 sshd-session[878]: Accepted publickey for root from 192.0.2.1 port 53992 ssh2: ED25519 SHA256:PePPksMD5vsajWqajYajIji9y6iYepZM4NNCmlNhIEA
+7.875495 0 rpm-ostree[885]: Reading config file '/etc/rpm-ostreed.conf'
+7.877075 0 audit[878]: CRED_ACQ pid=878 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+7.877075 0 audit[878]: SYSCALL arch=c000003e syscall=1 success=yes exit=1 a0=6 a1=7ffddd6774a0 a2=1 a3=0 items=0 ppid=749 pid=878 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=2 comm="sshd-session" exe="/usr/libexec/openssh/sshd-session" subj=system_u:system_r:sshd_se
+7.877075 0 audit: PROCTITLE proctitle=737368642D73657373696F6E3A20726F6F74205B706F7374617574685D
+7.878075 0 audit[878]: USER_ROLE_CHANGE pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=pam_selinux default-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 selected-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 exe="/usr/libexec/o
+7.892322 0 rpm-ostree[885]: In idle state; will auto-exit in 63 seconds
+7.894852 0 systemd[1]: Created slice user-0.slice - User Slice of UID 0.
+7.897701 0 systemd[1]: Starting user-runtime-dir@0.service - User Runtime Directory /run/user/0...
+7.903055 0 systemd[1]: Started rpm-ostreed.service - rpm-ostree System Management Daemon.
+7.903075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=rpm-ostreed comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+7.908296 0 systemd-logind[680]: New session '2' of user 'root' with class 'user' and type 'tty'.
+7.917705 0 rpm-ostree[885]: client(id:cli dbus:1.27 unit:tuned.service uid:0) added; new total=1
+7.931897 0 systemd[1]: Finished user-runtime-dir@0.service - User Runtime Directory /run/user/0.
+7.931075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=user-runtime-dir@0 comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+7.935487 0 systemd[1]: Starting user@0.service - User Manager for UID 0...
+7.953076 0 audit[898]: USER_ACCT pid=898 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='op=PAM:accounting grantors=pam_unix acct="root" exe="/usr/lib/systemd/systemd-executor" hostname=? addr=? terminal=? res=success'
+7.953075 0 audit[898]: CRED_ACQ pid=898 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='op=PAM:setcred grantors=? acct="root" exe="/usr/lib/systemd/systemd-executor" hostname=? addr=? terminal=? res=failed'
+7.954075 0 audit[898]: USER_ROLE_CHANGE pid=898 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='op=pam_selinux default-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 selected-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 exe="/usr/lib/systemd
+7.954075 0 audit[898]: SYSCALL arch=c000003e syscall=1 success=yes exit=1 a0=7 a1=7ffe4ee7a9d0 a2=1 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="(systemd)" exe="/usr/lib/systemd/systemd-executor" subj=system_u:system_r:init_t:s0 ke
+7.954075 0 audit: PROCTITLE proctitle="(systemd)"
+7.959984 0 systemd-logind[680]: New session '3' of user 'root' with class 'manager-early' and type 'unspecified'.
+7.959075 0 audit[898]: USER_START pid=898 uid=0 auid=0 ses=3 subj=system_u:system_r:init_t:s0 msg='op=PAM:session_open grantors=pam_selinux,pam_selinux,pam_loginuid,pam_keyinit,pam_namespace,pam_systemd_home,pam_umask,pam_keyinit,pam_limits,pam_systemd,pam_unix acct="root" exe="/usr/lib/systemd/syst
+7.960953 0 (systemd)[898]: pam_unix(systemd-user:session): session opened for user root(uid=0) by root(uid=0)
+7.978194 0 rpm-ostree[885]: client(id:cli dbus:1.27 unit:tuned.service uid:0) vanished; remaining=0
+7.978214 0 rpm-ostree[885]: In idle state; will auto-exit in 63 seconds
+7.981076 0 audit: BPF prog-id=72 op=LOAD
+7.981075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=8 a0=5 a1=7ffdf6011b00 a2=a8 a3=14 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_
+7.981075 0 audit: PROCTITLE proctitle="(systemd)"
+7.982075 0 audit: BPF prog-id=72 op=UNLOAD
+7.982075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=8 a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+7.982074 0 audit: PROCTITLE proctitle="(systemd)"
+7.982075 0 audit: BPF prog-id=73 op=LOAD
+7.982075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=10 a0=5 a1=7ffdf6011750 a2=94 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+7.982075 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=73 op=UNLOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=a a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+7.983075 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=74 op=LOAD
+7.983074 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=10 a0=5 a1=7ffdf6011790 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+7.983075 0 audit: PROCTITLE proctitle="(systemd)"
+7.983074 0 audit: BPF prog-id=74 op=UNLOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=a a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+7.983075 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=75 op=LOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=11 a0=5 a1=7ffdf60114d0 a2=94 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+7.983075 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=75 op=UNLOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=b a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+7.983074 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=76 op=LOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=11 a0=5 a1=7ffdf6011600 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+7.983074 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=76 op=UNLOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=b a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+7.983075 0 audit: PROCTITLE proctitle="(systemd)"
+7.983075 0 audit: BPF prog-id=77 op=LOAD
+7.983075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=11 a0=5 a1=7ffdf6011940 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+7.983075 0 audit: PROCTITLE proctitle="(systemd)"
+8.044075 0 audit[917]: AVC avc:  denied  { mac_admin } for  pid=917 comm="chcon" capability=33  scontext=system_u:system_r:tuned_t:s0 tcontext=system_u:system_r:tuned_t:s0 tclass=capability2 permissive=0
+8.044074 0 audit: SELINUX_ERR op=setxattr invalid_context="system_u:object_r:invalid_bootcinstall_testlabel_t:s0"
+8.044075 0 audit[917]: SYSCALL arch=c000003e syscall=188 success=no exit=-22 a0=55864531d110 a1=7f9f6476136f a2=55864531ea00 a3=36 items=0 ppid=915 pid=917 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="chcon" exe="/usr/bin/chcon" subj=system_
+8.044075 0 audit: PROCTITLE proctitle=6368636F6E002D7400696E76616C69645F626F6F7463696E7374616C6C5F746573746C6162656C5F74002F746D702F2E746D70746E46516955
+8.029076 0 audit: BPF prog-id=78 op=LOAD
+8.029075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=12 a0=5 a1=7ffdf6011940 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.029075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074074 0 audit: BPF prog-id=77 op=UNLOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=b a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=78 op=UNLOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=c a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=79 op=LOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=10 a0=5 a1=7ffdf6011730 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=79 op=UNLOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=a a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=80 op=LOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=12 a0=5 a1=7ffdf60115e0 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=80 op=UNLOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=c a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=81 op=LOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=11 a0=5 a1=7ffdf60117a0 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=81 op=UNLOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=b a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.074075 0 audit: BPF prog-id=82 op=LOAD
+8.074075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=11 a0=5 a1=7ffdf60118e0 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.074075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075075 0 audit: BPF prog-id=83 op=LOAD
+8.075074 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=13 a0=5 a1=7ffdf6011790 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075075 0 audit: BPF prog-id=83 op=UNLOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=d a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075074 0 audit: BPF prog-id=84 op=LOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=12 a0=5 a1=7ffdf60118e0 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075075 0 audit: BPF prog-id=82 op=UNLOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=b a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075074 0 audit: BPF prog-id=84 op=UNLOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=c a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075075 0 audit: BPF prog-id=85 op=LOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=9 a0=5 a1=7ffdf6011820 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:u
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075074 0 audit: BPF prog-id=85 op=UNLOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=9 a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075075 0 audit: BPF prog-id=86 op=LOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=321 success=yes exit=10 a0=5 a1=7ffdf60119d0 a2=a8 a3=7f4ca71430c0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.075075 0 audit: BPF prog-id=86 op=UNLOAD
+8.075075 0 audit[898]: SYSCALL arch=c000003e syscall=3 success=yes exit=0 a0=a a1=0 a2=0 a3=0 items=0 ppid=1 pid=898 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=3 comm="systemd" exe="/usr/lib/systemd/systemd" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c102
+8.075075 0 audit: PROCTITLE proctitle="(systemd)"
+8.078156 60578 gnome-shell[864]: Added device '/dev/dri/card1' (virtio_gpu) using atomic mode setting.
+8.079248 60578 gnome-shell[864]: Failed to initialize accelerated iGPU/dGPU framebuffer sharing: Not hardware accelerated
+8.079269 60578 gnome-shell[864]: Created gbm renderer for '/dev/dri/card1'
+8.079274 60578 gnome-shell[864]: Boot VGA GPU /dev/dri/card1 selected as primary
+8.080076 0 audit[921]: AVC avc:  denied  { mac_admin } for  pid=921 comm="chcon" capability=33  scontext=system_u:system_r:tuned_t:s0 tcontext=system_u:system_r:tuned_t:s0 tclass=capability2 permissive=0
+8.080075 0 audit: SELINUX_ERR op=setxattr invalid_context="system_u:object_r:invalid_bootcinstall_testlabel_t:s0"
+8.080075 0 audit[921]: SYSCALL arch=c000003e syscall=188 success=no exit=-22 a0=559269aa6110 a1=7f3852bfc36f a2=559269aa7a00 a3=36 items=0 ppid=915 pid=921 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="chcon" exe="/usr/bin/chcon" subj=system_
+8.080075 0 audit: PROCTITLE proctitle=6368636F6E002D7400696E76616C69645F626F6F7463696E7374616C6C5F746573746C6162656C5F74002F746D702F2E746D707A314B565458
+8.148174 0 NetworkManager[670]: <info>  [1793127831.1239] policy: set 'Wired connection 1' (enp0s1) as default for IPv6 routing and DNS
+8.182912 0 systemd[898]: Queued start job for default target default.target.
+8.193532 0 systemd[898]: Created slice app.slice - User Application Slice.
+8.193634 0 systemd[898]: Started systemd-tmpfiles-clean.timer - Daily Cleanup of User's Temporary Directories.
+8.193666 0 systemd[898]: Reached target paths.target - Paths.
+8.193761 0 systemd[898]: Reached target timers.target - Timers.
+8.195834 0 systemd[898]: Starting dbus.socket - D-Bus User Message Bus Socket...
+8.195883 0 systemd[898]: pipewire-pulse.socket - PipeWire PulseAudio skipped, unmet condition check ConditionUser=!root
+8.195908 0 systemd[898]: pipewire.socket - PipeWire Multimedia System Sockets skipped, unmet condition check ConditionUser=!root
+8.197944 0 systemd[898]: Listening on systemd-ask-password.socket - Query the User Interactively for a Password.
+8.199448 0 systemd[898]: Listening on systemd-journalctl.socket - Journal Log Access Socket.
+8.201269 0 systemd[898]: Listening on systemd-storage-fs.socket - Simple File System Backed Storage Provider.
+8.202317 0 systemd[898]: Starting systemd-tmpfiles-setup.service - Create User Files and Directories...
+8.209197 0 systemd[898]: Listening on dbus.socket - D-Bus User Message Bus Socket.
+8.209297 0 systemd[898]: Reached target sockets.target - Sockets.
+8.215132 0 systemd[898]: Finished systemd-tmpfiles-setup.service - Create User Files and Directories.
+8.215295 0 systemd[898]: Reached target basic.target - Basic System.
+8.215667 0 systemd[1]: Started user@0.service - User Manager for UID 0.
+8.215760 0 systemd[898]: mpris-proxy.service - Bluetooth mpris proxy skipped, unmet condition check ConditionUser=!@system
+8.215781 0 systemd[898]: Reached target default.target - Main User Target.
+8.215823 0 systemd[898]: Startup finished in 246ms.
+8.215075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=user@0 comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+8.216761 60578 systemd[802]: Starting at-spi-dbus-bus.service - Accessibility services bus...
+8.223081 0 kernel: EXT4-fs (vda2): re-mounted 333f66d6-3eba-4e9d-90a5-1e0a6b8eb248 r/w.
+8.223388 0 systemd[1]: Started session-2.scope - Session 2 of User root.
+8.223633 0 bootc[915]: No changes needed for source 'tuned'
+8.226487 0 sshd-session[878]: pam_unix(sshd:session): session opened for user root(uid=0) by root(uid=0)
+8.234444 0 systemd[1]: Started tuned.service - Dynamic System Tuning Daemon.
+8.235762 60578 systemd[802]: Started at-spi-dbus-bus.service - Accessibility services bus.
+8.233076 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=tuned comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+8.236604 0 systemd[1]: Starting tuned-ppd.service - PPD-to-TuneD API Translation Daemon...
+8.244075 0 audit[878]: USER_START pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:session_open grantors=pam_selinux,pam_loginuid,pam_selinux,pam_namespace,pam_keyinit,pam_keyinit,pam_limits,pam_systemd,pam_unix,pam_umask,pam_lastlog2 acct="root" exe="/usr/
+8.245681 0 dbus-broker-launch[953]: Ready
+8.245075 0 audit[955]: CRYPTO_KEY_USER pid=955 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=server fp=SHA256:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:79:22 direction=? spid=955 suid=0  exe="/usr/libexec/
+8.245075 0 audit[955]: CRYPTO_KEY_USER pid=955 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=server fp=SHA256:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:a2:e8 direction=? spid=955 suid=0  exe="/usr/libexec/
+8.246075 0 audit[955]: CRED_ACQ pid=955 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.247075 0 audit[878]: USER_LOGIN pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=login id=0 exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=ssh res=success'
+8.247074 0 audit[878]: USER_START pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=login id=0 exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=ssh res=success'
+8.248075 0 audit[956]: CRED_ACQ pid=956 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.251391 60578 gnome-shell[864]: Using public X11 display :1024, (using unix:/tmp/.X11-unix/X1025 for managed services)
+8.251504 60578 gnome-shell[864]: Using Wayland display name 'wayland-0'
+8.254361 0 sshd-session[955]: Received disconnect from 192.0.2.1 port 53992:11: disconnected by user
+8.254075 0 audit[878]: CRYPTO_KEY_USER pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=session fp=? direction=both spid=955 suid=0 rport=53992 laddr=192.0.2.1 lport=22  exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=? r
+8.255447 0 sshd-session[955]: Disconnected from user root 192.0.2.1 port 53992
+8.257109 0 sshd-session[878]: pam_unix(sshd:session): session closed for user root
+8.256075 0 audit[878]: USER_END pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:session_close grantors=pam_selinux,pam_loginuid,pam_selinux,pam_namespace,pam_keyinit,pam_keyinit,pam_limits,pam_systemd,pam_unix,pam_umask,pam_lastlog2 acct="root" exe="/usr/l
+8.256075 0 audit[878]: CRED_DISP pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.257075 0 audit[878]: USER_END pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=login id=0 exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=ssh res=success'
+8.257075 0 audit[878]: USER_LOGOUT pid=878 uid=0 auid=0 ses=2 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=login id=0 exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=ssh res=success'
+8.259216 0 systemd[1]: session-2.scope: Deactivated successfully.
+8.261863 0 systemd-logind[680]: Session 2 logged out. Waiting for processes to exit.
+8.264450 0 systemd-logind[680]: Removed session 2.
+8.279075 0 audit[958]: CRYPTO_SESSION pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=start direction=from-server cipher=aes256-gcm@openssh.com ksize=256 mac=<implicit> pfs=mlkem768x25519-sha256 spid=959 suid=74 rport=53996 laddr=192.0.2.1 lp
+8.279075 0 audit[958]: CRYPTO_SESSION pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=start direction=from-client cipher=aes256-gcm@openssh.com ksize=256 mac=<implicit> pfs=mlkem768x25519-sha256 spid=959 suid=74 rport=53996 laddr=192.0.2.1 lp
+8.381259 60578 systemd[802]: Created slice app-dbus\x2d:1.11\x2dorg.a11y.atspi.Registry.slice - Slice /app/dbus-:1.11-org.a11y.atspi.Registry.
+8.382929 60578 systemd[802]: Started dbus-:1.11-org.a11y.atspi.Registry@0.service.
+8.382075 0 audit[958]: USER_AUTH pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=pubkey_auth grantors=auth-key acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=? res=success'
+8.382075 0 audit[958]: CRYPTO_KEY_USER pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=negotiate kind=auth-key fp=SHA256:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:20:40 exe="/usr/libexec/openssh
+8.392513 0 systemd[1]: Starting colord.service - Manage, Install and Generate Color Profiles...
+8.395075 0 audit[958]: USER_ACCT pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:accounting grantors=pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.399359 0 sshd-session[958]: Accepted publickey for root from 192.0.2.1 port 53996 ssh2: ED25519 SHA256:PePPksMD5vsajWqajYajIji9y6iYepZM4NNCmlNhIEA
+8.398075 0 audit[958]: CRYPTO_KEY_USER pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=session fp=? direction=both spid=959 suid=74 rport=53996 laddr=192.0.2.1 lport=22  exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192
+8.399075 0 audit[958]: CRED_ACQ pid=958 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.400075 0 audit[958]: SYSCALL arch=c000003e syscall=1 success=yes exit=1 a0=6 a1=7fff2e6a94f0 a2=1 a3=0 items=0 ppid=749 pid=958 auid=0 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4 comm="sshd-session" exe="/usr/libexec/openssh/sshd-session" subj=system_u:system_r:sshd_se
+8.400075 0 audit: PROCTITLE proctitle=737368642D73657373696F6E3A20726F6F74205B706F7374617574685D
+8.401075 0 audit[958]: USER_ROLE_CHANGE pid=958 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=pam_selinux default-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 selected-context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 exe="/usr/libexec/o
+8.403216 0 at-spi2-registryd[960]: SpiRegistry daemon is running with well-known name - org.a11y.atspi.Registry
+8.413224 0 systemd-logind[680]: New session '4' of user 'root' with class 'user' and type 'tty'.
+8.416291 0 systemd[1]: Started session-4.scope - Session 4 of User root.
+8.417620 0 sshd-session[958]: pam_unix(sshd:session): session opened for user root(uid=0) by root(uid=0)
+8.438075 0 audit[958]: USER_START pid=958 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:session_open grantors=pam_selinux,pam_loginuid,pam_selinux,pam_namespace,pam_keyinit,pam_keyinit,pam_limits,pam_systemd,pam_unix,pam_umask,pam_lastlog2 acct="root" exe="/usr/
+8.440075 0 audit[968]: CRYPTO_KEY_USER pid=968 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=server fp=SHA256:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:79:22 direction=? spid=968 suid=0  exe="/usr/libexec/
+8.440075 0 audit[968]: CRYPTO_KEY_USER pid=968 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=server fp=SHA256:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:02:00:00:00:00:00:a2:e8 direction=? spid=968 suid=0  exe="/usr/libexec/
+8.441075 0 audit[968]: CRED_ACQ pid=968 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.442075 0 audit[958]: USER_LOGIN pid=958 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=login id=0 exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=ssh res=success'
+8.442075 0 audit[958]: USER_START pid=958 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=login id=0 exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal=ssh res=success'
+8.443076 0 audit[969]: CRED_ACQ pid=969 uid=0 auid=0 ses=4 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="root" exe="/usr/libexec/openssh/sshd-session" hostname=192.0.2.1 addr=192.0.2.1 terminal=ssh res=success'
+8.461075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=colord comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+8.462557 0 systemd[1]: Started colord.service - Manage, Install and Generate Color Profiles.
+8.730075 0 audit[680]: AVC avc:  denied  { getattr } for  pid=680 comm="systemd-logind" path="/boot/efi" dev="vda2" ino=13 scontext=system_u:system_r:systemd_logind_t:s0 tcontext=unconfined_u:object_r:unlabeled_t:s0 tclass=dir permissive=0
+8.730075 0 audit[680]: SYSCALL arch=c000003e syscall=332 success=no exit=-13 a0=21 a1=7fd67ae7536a a2=1000 a3=5109 items=0 ppid=1 pid=680 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="systemd-logind" exe="/usr/lib/systemd/systemd-logind" subj
+8.730075 0 audit: PROCTITLE proctitle="/usr/lib/systemd/systemd-logind"
+8.731151 0 systemd-logind[680]: Failed to open directory "/boot/efi": Permission denied
+8.732244 60578 gnome-shell[864]: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.
+8.740075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=tuned-ppd comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+8.741613 0 systemd[1]: Started tuned-ppd.service - PPD-to-TuneD API Translation Daemon.
+8.743076 0 audit: BPF prog-id=87 op=LOAD
+8.743074 0 audit: BPF prog-id=88 op=LOAD
+8.743075 0 audit: BPF prog-id=89 op=LOAD
+8.746326 0 systemd[1]: Starting systemd-localed.service - Locale Service...
+8.767707 60578 systemd[802]: Created slice app-dbus\x2d:1.3\x2dorg.gnome.Shell.Screencast.slice - Slice /app/dbus-:1.3-org.gnome.Shell.Screencast.
+8.769892 60578 systemd[802]: Started dbus-:1.3-org.gnome.Shell.Screencast@0.service.
+8.818699 0 systemd[1]: Started systemd-localed.service - Locale Service.
+8.817075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=systemd-localed comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+8.939811 60578 systemd[802]: Starting xdg-permission-store.service - sandboxed app permission store...
+8.952799 60578 systemd[802]: Started xdg-permission-store.service - sandboxed app permission store.
+8.973060 60578 gnome-shell[864]: Registering session with GDM
+8.984275 60578 systemd[802]: Created slice app-dbus\x2d:1.3\x2dorg.gnome.Shell.Notifications.slice - Slice /app/dbus-:1.3-org.gnome.Shell.Notifications.
+8.988277 60578 systemd[802]: Started dbus-:1.3-org.gnome.Shell.Notifications@0.service.
+8.988595 60578 systemd[802]: Started org.gnome.Shell@gdm.service - GNOME Shell.
+8.990182 60578 systemd[802]: Reached target gnome-session-initialized.target - GNOME Session is initialized.
+8.990915 60578 systemd[802]: Reached target gnome-session-basic-services.target - GNOME basic session services.
+8.991088 60578 systemd[802]: Reached target gnome-session@gnome-login.target - GNOME Session (session: gnome-login).
+8.994605 60578 systemd[802]: Starting gnome-session-signal-init.service - Signal initialization done to GNOME Session Manager...
+8.999221 60578 systemd[802]: Starting org.freedesktop.IBus.session.GNOME.service - IBus Daemon for GNOME...
+9.001221 60578 systemd[802]: Starting org.gnome.SettingsDaemon.A11ySettings.service - GNOME accessibility service...
+9.003160 60578 systemd[802]: Starting org.gnome.SettingsDaemon.Keyboard.service - GNOME keyboard configuration service...
+9.005422 60578 systemd[802]: Starting org.gnome.SettingsDaemon.MediaKeys.service - GNOME keyboard shortcuts service...
+9.008103 60578 systemd[802]: Starting org.gnome.SettingsDaemon.Power.service - GNOME power management service...
+9.012292 60578 systemd[802]: Starting org.gnome.SettingsDaemon.Rfkill.service - GNOME RFKill support service...
+9.015790 60578 systemd[802]: Starting org.gnome.SettingsDaemon.Sharing.service - GNOME file sharing service...
+9.018379 60578 systemd[802]: Starting org.gnome.SettingsDaemon.Smartcard.service - GNOME smartcard service...
+9.020292 60578 systemd[802]: Starting org.gnome.SettingsDaemon.UsbProtection.service - GNOME USB protection service...
+9.049710 0 gnome-session-service[858]: Entering running state
+9.054054 60578 systemd[802]: Finished gnome-session-signal-init.service - Signal initialization done to GNOME Session Manager.
+9.055116 60578 systemd[802]: Started org.gnome.SettingsDaemon.Smartcard.service - GNOME smartcard service.
+9.055849 60578 systemd[802]: Started org.gnome.SettingsDaemon.Rfkill.service - GNOME RFKill support service.
+9.056268 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.Rfkill.target - GNOME RFKill support target.
+9.056486 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.Smartcard.target - GNOME smartcard target.
+9.063576 60578 systemd[802]: Started org.gnome.SettingsDaemon.Keyboard.service - GNOME keyboard configuration service.
+9.064081 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.Keyboard.target - GNOME keyboard configuration target.
+9.070818 60578 systemd[802]: Started org.gnome.SettingsDaemon.UsbProtection.service - GNOME USB protection service.
+9.071089 0 kernel: rfkill: input handler disabled
+9.071125 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.UsbProtection.target - GNOME USB protection target.
+9.077075 0 audit[680]: AVC avc:  denied  { getattr } for  pid=680 comm="systemd-logind" path="/boot/efi" dev="vda2" ino=13 scontext=system_u:system_r:systemd_logind_t:s0 tcontext=unconfined_u:object_r:unlabeled_t:s0 tclass=dir permissive=0
+9.077074 0 audit[680]: SYSCALL arch=c000003e syscall=332 success=no exit=-13 a0=29 a1=7fd67ae7536a a2=1000 a3=5109 items=0 ppid=1 pid=680 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="systemd-logind" exe="/usr/lib/systemd/systemd-logind" subj
+9.077075 0 audit: PROCTITLE proctitle="/usr/lib/systemd/systemd-logind"
+9.078351 0 systemd-logind[680]: Failed to open directory "/boot/efi": Permission denied
+9.082875 60578 systemd[802]: Started org.gnome.SettingsDaemon.Power.service - GNOME power management service.
+9.083132 60578 systemd[802]: Started org.gnome.SettingsDaemon.Sharing.service - GNOME file sharing service.
+9.083319 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.Power.target - GNOME power management target.
+9.083743 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.Sharing.target - GNOME file sharing target.
+9.086813 60578 systemd[802]: Started org.gnome.SettingsDaemon.A11ySettings.service - GNOME accessibility service.
+9.087285 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.A11ySettings.target - GNOME accessibility target.
+9.092075 0 audit[680]: AVC avc:  denied  { getattr } for  pid=680 comm="systemd-logind" path="/boot/efi" dev="vda2" ino=13 scontext=system_u:system_r:systemd_logind_t:s0 tcontext=unconfined_u:object_r:unlabeled_t:s0 tclass=dir permissive=0
+9.092075 0 audit[680]: SYSCALL arch=c000003e syscall=332 success=no exit=-13 a0=29 a1=7fd67ae7536a a2=1000 a3=5109 items=0 ppid=1 pid=680 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="systemd-logind" exe="/usr/lib/systemd/systemd-logind" subj
+9.092075 0 audit: PROCTITLE proctitle="/usr/lib/systemd/systemd-logind"
+9.094244 0 systemd-logind[680]: Failed to open directory "/boot/efi": Permission denied
+9.109249 60578 systemd[802]: Created slice app-dbus\x2d:1.3\x2dorg.gnome.ScreenSaver.slice - Slice /app/dbus-:1.3-org.gnome.ScreenSaver.
+9.111409 60578 systemd[802]: Started dbus-:1.3-org.gnome.ScreenSaver@0.service.
+9.117251 0 gsd-sharing[1012]: Failed to stop gnome-user-share-webdav.service: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit gnome-user-share-webdav.service not loaded.
+9.117694 0 gsd-sharing[1012]: Failed to stop rygel.service: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit rygel.service not loaded.
+9.158143 60578 systemd[802]: Started org.gnome.SettingsDaemon.MediaKeys.service - GNOME keyboard shortcuts service.
+9.158487 60578 systemd[802]: Reached target org.gnome.SettingsDaemon.MediaKeys.target - GNOME keyboard shortcuts target.
+9.183470 60578 systemd[802]: Started pipewire.service - PipeWire Multimedia Service.
+9.186334 60578 systemd[802]: Started wireplumber.service - Multimedia Service Session Manager.
+9.189859 60578 systemd[802]: Started pipewire-pulse.service - PipeWire PulseAudio.
+9.229240 60578 gnome-shell[864]: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.
+9.238893 60578 gnome-shell[864]: Registering display with GDM
+9.299787 0 systemd[1]: Finished plymouth-quit-wait.service - Hold until boot process finishes up.
+9.378075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=plymouth-quit-wait comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+9.392231 0 systemd[1]: Started serial-getty@ttyS0.service - Serial Getty on ttyS0.
+9.392772 0 systemd[1]: Reached target getty.target - Login Prompts.
+9.392896 0 systemd[1]: Reached target multi-user.target - Multi-User System.
+9.392075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=serial-getty@ttyS0 comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+9.400906 0 systemd[1]: Reached target graphical.target - Graphical Interface.
+9.405954 0 systemd[1]: Starting apex-boot-assess.service - Apex boot assessment...
+9.406642 0 rtkit-daemon[677]: Successfully made thread 1113 of process 1113 owned by '60578' high priority at nice level -11.
+9.593215 0 rtkit-daemon[677]: Successfully made thread 1142 of process 1113 owned by '60578' RT at priority 20.
+9.612902 0 rtkit-daemon[677]: Successfully made thread 1116 of process 1116 owned by '60578' high priority at nice level -11.
+9.620643 0 rtkit-daemon[677]: Successfully made thread 1144 of process 1116 owned by '60578' RT at priority 20.
+9.631364 0 rtkit-daemon[677]: Successfully made thread 1114 of process 1114 owned by '60578' high priority at nice level -11.
+9.645317 0 rtkit-daemon[677]: Successfully made thread 1247 of process 1114 owned by '60578' RT at priority 20.
+9.664205 0 gsd-usb-protection[1017]: Failed to fetch USBGuard parameters: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name is not activatable
+9.800912 60578 gnome-shell[864]: Will monitor session c1
+9.904789 0 gsd-media-keys[1006]: Failed to grab accelerator for keybinding settings:hibernate
+9.905937 0 gsd-media-keys[1006]: Failed to grab accelerator for keybinding settings:playback-repeat
+9.960479 60578 gnome-shell[864]: Error looking up permission: GDBus.Error:org.freedesktop.portal.Error.NotFound: No entry for geolocation
+9.960913 60578 gnome-shell[864]: Will monitor session c1
+9.963474 0 apex-boot-assess[1152]:  INFO assessing this boot (at most 305 s)
+10.108531 0 gsd-power[1007]: gsd_power_backlight_abs_to_percentage: assertion 'max > min' failed
+10.257076 0 audit: BPF prog-id=90 op=LOAD
+10.257075 0 audit: BPF prog-id=91 op=LOAD
+10.257075 0 audit: BPF prog-id=92 op=LOAD
+10.297850 0 systemd[1]: Starting malcontent-timerd.service - Parental Controls Timer Daemon...
+10.824482 0 NetworkManager[670]: <info>  [1793127833.8003] agent-manager: agent[508cbd128ee9fb13,:1.24/org.gnome.Shell.NetworkAgent/60578]: agent registered
+10.833899 0 rtkit-daemon[677]: Successfully made thread 1114 of process 1114 owned by '60578' high priority at nice level -11.
+10.915249 0 rtkit-daemon[677]: Successfully made thread 1383 of process 1114 owned by '60578' RT at priority 20.
+11.154136 0 kernel: clocksource: Watchdog remote CPU 1 read timed out
+11.154223 0 ModemManager[741]: <msg> [base-manager] couldn't check support for device '/sys/devices/pci0000:00/0000:00:01.0': not supported by any plugin
+11.525374 0 wireplumber[1114]: spa.bluez5: BlueZ system service is not available
+11.672087 0 wireplumber[1114]: wp-device: SPA handle 'api.libcamera.enum.manager' could not be loaded; is it installed?
+11.672104 0 wireplumber[1114]: s-monitors-libcamera: PipeWire's libcamera SPA plugin is missing or broken. Some camera types may not be supported.
+11.781075 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=malcontent-timerd comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+11.782712 0 systemd[1]: Started malcontent-timerd.service - Parental Controls Timer Daemon.
+11.784166 0 kernel: kauditd_printk_skb: 261 callbacks suppressed
+11.784225 0 kernel: audit: type=1130 audit(1793127834.757:185): pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=malcontent-timerd comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
+11.859868 60578 systemd[802]: Started org.freedesktop.IBus.session.GNOME.service - IBus Daemon for GNOME.
+11.860155 60578 systemd[802]: Reached target gnome-session.target - GNOME Session.
+11.860272 60578 systemd[802]: Reached target graphical-session.target - Current graphical user session.
+11.877158 60578 systemd[802]: Starting apex-folder-icons.service - Set the Apex icons of the Projects and Screenshots folders...
+11.889392 60578 systemd[802]: Started apex-session-agent.service - Apex session agent: window radius, terminal caret, the crash-guard offer, Updates Ready and the battery refresh rate.
+11.889489 60578 systemd[802]: gnome-initial-setup-first-login.service - GNOME Initial Setup skipped, unmet condition check ConditionEnvironment=XDG_SESSION_CLASS=user
+11.932443 60578 systemd[802]: Created slice app-dbus\x2d:1.3\x2dorg.freedesktop.portal.IBus.slice - Slice /app/dbus-:1.3-org.freedesktop.portal.IBus.
+11.944659 60578 systemd[802]: Started dbus-:1.3-org.freedesktop.portal.IBus@0.service.
+12.130936 60578 systemd[802]: Finished apex-folder-icons.service - Set the Apex icons of the Projects and Screenshots folders.
