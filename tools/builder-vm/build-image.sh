@@ -20,6 +20,15 @@ tools/components.sh fetch and env run before the first build step: each RPM is b
 from its pinned component (the apex RPM from apex-system, apex-desktop from
 apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECIPES).
 
+Signed RPMs are cached under _build/rpm-cache/COMPONENT/KEY, KEY being the component's
+own content key (rpms.sh key, libfprint.sh key, run in its container). A cached set is
+reused only after its SHA256SUMS and each RPM's signature by the committed
+RPM-GPG-KEY-apex (rpmkeys --checksig, in a scratch rpmdb) check out; anything else
+rebuilds. rpms.sh build gets the key and fails if it moved; libfprint's key is taken
+again after its build, and the RPMs are cached only when it held. A degraded libfprint
+(exit 3) is never cached. Before a set is stored, each component keeps its 3 newest
+keys, and the oldest go until _build has 30 GiB free; with less, nothing is stored.
+
 --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
 or image/ changes), and only says whether G4 is due.
 
@@ -50,6 +59,9 @@ if [[ ${APEX_FEDORA:-45} != 45 ]]; then
     BUILD=_build/next
 fi
 readonly LANE_LOCK=$STORE/rpms.lock.next IMAGE BUILD
+readonly RPM_CACHE=$BUILD/rpm-cache
+readonly APEX_RPM_KEY=image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex
+readonly CACHE_KEEP=3 CACHE_MIN_FREE_KIB=$((30 * 1024 * 1024))
 readonly GATES_PASSED=_build/gates-passed.txt
 readonly G2_RESULT=_build/g2/latest/result.txt
 readonly G2_FIRST_RUN=_build/g2/latest/run-1
@@ -86,6 +98,93 @@ sign_rpms() {
     (cd "$dir" && sha256sum -- *.rpm >SHA256SUMS)
 }
 
+# SRC SCRIPT: the component's content key, or nothing (an older component, or no answer).
+component_key() {
+    local key
+    key=$(in_component "$1" "$2" key | tail -n 1) || return 0
+    [[ ! $key =~ ^[A-Za-z0-9._-]{1,128}$ ]] || printf '%s\n' "$key"
+}
+
+free_kib() { df -Pk -- "$1" | awk 'NR == 2 { print $4 }'; }
+
+by_age() { # DIR DEPTH: its directories at DEPTH, newest first
+    find "$1" -mindepth "$2" -maxdepth "$2" -type d ! -name '*.tmp' -printf '%T@ %p\n' 2>/dev/null |
+        sort -rn | cut -d' ' -f2-
+}
+
+# COMPONENT: room for one more of its keys, and for the RPMs.
+prune_cache() {
+    local old
+    while IFS= read -r old; do
+        echo "rpm-cache: dropping ${old#"$RPM_CACHE"/}, beyond the $CACHE_KEEP newest"
+        rm -rf -- "$old"
+    done < <(by_age "$RPM_CACHE/$1" 1 | tail -n +"$CACHE_KEEP")
+    while (($(free_kib "$BUILD") < CACHE_MIN_FREE_KIB)); do
+        old=$(by_age "$RPM_CACHE" 2 | tail -n 1)
+        [[ -n $old ]] || break
+        echo "rpm-cache: under 30 GiB free; dropping ${old#"$RPM_CACHE"/}"
+        rm -rf -- "$old"
+    done
+}
+
+# DIR CACHE: a copy of the signed RPMs, when there is room for it.
+cache_rpms() {
+    local dir=$1 cache=$2
+    mkdir -p -- "$RPM_CACHE"
+    prune_cache "$(basename -- "$(dirname -- "$cache")")"
+    if (($(free_kib "$BUILD") < CACHE_MIN_FREE_KIB)); then
+        echo "rpm-cache: under 30 GiB free even with an empty cache; not stored"
+        return 0
+    fi
+    rm -rf -- "$cache.tmp"
+    mkdir -p -- "$cache.tmp"
+    cp -- "$dir"/*.rpm "$dir/SHA256SUMS" "$cache.tmp/"
+    rm -rf -- "$cache"
+    mv -- "$cache.tmp" "$cache"
+    echo "rpm-cache: stored ${cache#"$RPM_CACHE"/}"
+}
+
+# CACHE DIR: never trusted as stored: its sums, its list, then each signature by the
+# committed Apex key, which alone is in the scratch rpmdb.
+reuse_rpms() {
+    local cache=$1 dir=$2 db rpm out
+    [[ -s $cache/SHA256SUMS ]] || return 1
+    if ! (cd "$cache" && sha256sum --quiet --strict -c SHA256SUMS) ||
+        [[ $(find "$cache" -maxdepth 1 -name '*.rpm' -printf '%f\n' | sort) != "$(sed 's/^[0-9a-f]* [ *]//' "$cache/SHA256SUMS" | sort)" ]]; then
+        echo "rpm-cache: ${cache#"$RPM_CACHE"/} does not match its SHA256SUMS; rebuilding" >&2
+        return 1
+    fi
+    db=$(mktemp -d)
+    if ! rpm --dbpath "$db" --initdb || ! rpmkeys --dbpath "$db" --import "$APEX_RPM_KEY"; then
+        rm -rf -- "$db"
+        return 1
+    fi
+    for rpm in "$cache"/*.rpm; do
+        out=$(rpmkeys --dbpath "$db" --checksig -- "$rpm" 2>&1) && [[ $out == *": digests signatures OK" ]] || {
+            echo "rpm-cache: ${rpm#"$RPM_CACHE"/} is not signed by $APEX_RPM_KEY ($out); rebuilding" >&2
+            rm -rf -- "$db"
+            return 1
+        }
+    done
+    rm -rf -- "$db" "$dir"
+    mkdir -p -- "$dir"
+    cp -- "$cache"/*.rpm "$cache/SHA256SUMS" "$dir/"
+    touch -- "$cache"
+}
+
+# NAME SRC OUT: a component's signed RPMs, from the cache under its content key or built.
+component_rpms() {
+    local name=$1 src=$2 out=$3 key
+    key=$(component_key "$src" .github/scripts/rpms.sh)
+    if [[ -n $key ]] && reuse_rpms "$RPM_CACHE/$name/$key" "$BUILD/$out"; then
+        echo "$name: the signed RPMs of key $key, from the cache"
+        return 0
+    fi
+    in_component "$src" .github/scripts/rpms.sh build "/build/$out" ${key:+"$key"}
+    sign_rpms "$BUILD/$out"
+    [[ -z $key ]] || cache_rpms "$BUILD/$out" "$RPM_CACHE/$name/$key" || echo "rpm-cache: $name not stored" >&2
+}
+
 image_id() { sudo podman image inspect --format '{{.Id}}' "$IMAGE"; }
 sha256_of() { sha256sum <"$1" | cut -d' ' -f1; }
 qualify() { .github/scripts/qualify.sh "$@"; }
@@ -97,20 +196,34 @@ run_g4() { QUALIFY_MEM=3G QUALIFY_SMP=4 qualify local "$IMAGE"; }
 
 build_inputs() {
     echo "== 1/4 the apex RPM (apex-system) and apex-desktop (apex-desktop)"
-    in_component "$APEX_SYSTEM_SRC" .github/scripts/rpms.sh build /build/rpms/apex
-    sign_rpms "$BUILD/rpms/apex"
-    in_component "$APEX_DESKTOP_SRC" .github/scripts/rpms.sh build /build/rpms/desktop
-    sign_rpms "$BUILD/rpms/desktop"
+    component_rpms apex-system "$APEX_SYSTEM_SRC" rpms/apex
+    component_rpms apex-desktop "$APEX_DESKTOP_SRC" rpms/desktop
 
     echo "== 2/4 libfprint (apex-kernel)"
-    local rc=0
+    local rc=0 key after='' reused=0
     COMPONENT_ENV=(-e "GA_REACHED=$(lib ga_reached)" -e "TESTING_INCLUDEPKGS=$(lib testing_includepkgs)")
     # apex-kernel's libfprint build knows only 45's key; a next release names its own.
     [[ $BUILD == _build ]] || COMPONENT_ENV+=(-e "FEDORA_KEY_FPR=$(lib release_arg FEDORA_KEY_FPR)")
-    in_component "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh build /build/libfprint || rc=$?
+    key=$(component_key "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh)
+    if [[ -n $key ]] && reuse_rpms "$RPM_CACHE/libfprint/$key" "$BUILD/libfprint"; then
+        reused=1
+        echo "libfprint: the signed RPMs of key $key, from the cache"
+    else
+        in_component "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh build /build/libfprint || rc=$?
+        # The build takes no key: it is cached only when the key held across the build.
+        ((rc != 0 || ${#key} == 0)) || after=$(component_key "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh)
+    fi
     COMPONENT_ENV=()
     case $rc in
-        0) sign_rpms "$BUILD/libfprint" ;;
+        0)
+            if ((!reused)); then
+                sign_rpms "$BUILD/libfprint"
+                if [[ -n $key && $after == "$key" ]]; then
+                    cache_rpms "$BUILD/libfprint" "$RPM_CACHE/libfprint/$key" || echo "rpm-cache: libfprint not stored" >&2
+                elif [[ -n $key ]]; then
+                    echo "rpm-cache: libfprint's key moved during its build ($key to ${after:-none}); not stored"
+                fi
+            fi ;;
         3) echo "libfprint: patches do not apply; the image uses Fedora's libfprint (degraded=fingerprint)"
            libfprint_args=() ;;
         *) echo "libfprint: build failed (exit $rc)" >&2; exit "$rc" ;;

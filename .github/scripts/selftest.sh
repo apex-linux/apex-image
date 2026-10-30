@@ -922,7 +922,7 @@ check "fetch, then env, in effect at the first build step" "fetch env|/pinned/sy
         printf "%s\n" "$*" >>"$FAKE/steps.log"
     }
     build_inputs' _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >/dev/null 2>&1
-bi_podman() { grep "^podman run .* -v $1:/component:z " "$BI/steps.log" | grep -o ' registry.fedoraproject.org/fedora:45 .*'; }
+bi_podman() { grep "^podman run .* -v $1:/component:z " "$BI/steps.log" | grep -v ' key$' | grep -o ' registry.fedoraproject.org/fedora:45 .*'; }
 check "the apex RPM: apex-system's rpms.sh, in its checkout" " registry.fedoraproject.org/fedora:45 .github/scripts/rpms.sh build /build/rpms/apex" \
     "$(bi_podman /pinned/system)"
 check "apex-desktop: apex-desktop's rpms.sh" " registry.fedoraproject.org/fedora:45 .github/scripts/rpms.sh build /build/rpms/desktop" \
@@ -935,6 +935,112 @@ check "libfprint gets this image's GA_REACHED and updates-testing allowlist" \
 check "only libfprint gets them" 1 "$(grep -c -- '-e GA_REACHED=' "$BI/steps.log")"
 check "every RPM is signed, then the lane builds" "sign _build/rpms/apex/x.rpm|sign _build/rpms/desktop/x.rpm|sign _build/libfprint/x.rpm|build all" \
     "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"
+
+# The signed-RPM cache: by each component's own key, checked before every reuse.
+RC="$TMP/rpm-cache"
+mkdir -p "$RC/bin" "$RC/keys"
+cat >"$RC/bin/rpm" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == --dbpath && $3 == --initdb ]] && mkdir -p "$2"
+EOF
+cat >"$RC/bin/rpmkeys" <<'EOF'
+#!/usr/bin/env bash
+# --import KEY records KEY; --checksig says "signatures OK" only for an RPM whose text says signed.
+case $3 in
+    --import) echo "import $4" >>"$FAKE/rpmkeys.log" ;;
+    --checksig)
+        if grep -q signed "$5"; then echo "$5: digests signatures OK"; else echo "$5: digests OK"; fi ;;
+esac
+EOF
+cat >"$RC/bin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nx 1 1 %s 1%% /\n' "$(cat "$FAKE/avail")"
+EOF
+chmod +x "$RC/bin/"*
+echo $((100 * 1024 * 1024)) >"$RC/avail"
+bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints its exit
+    local rc=0
+    rm -f "$RC/steps.log" "$RC/rpmkeys.log" "$BI/steps.log"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
+        APEX_KERNEL_SRC=/pinned/kernel bash -c '
+        . "$1"
+        sudo() {
+            [[ $1 == podman ]] || return 0
+            local a out src
+            for a in "$@"; do
+                [[ $a != /build/* ]] || out=$a
+                [[ $a != *:/component:z ]] || src=${a%%:*}
+            done
+            printf "%s\n" "$*" >>"$FAKE/steps.log"
+            if [[ ${*: -1} == key ]]; then
+                cat "$FAKE/keys/${src##*/}" 2>/dev/null
+                [[ ! -e $FAKE/keys/${src##*/}.next ]] || mv "$FAKE/keys/${src##*/}.next" "$FAKE/keys/${src##*/}"
+                return 0
+            fi
+            mkdir -p "_build/${out#/build/}"
+            echo "signed ${src##*/}" >"_build/${out#/build/}/${src##*/}.rpm"
+            [[ ${src##*/} != kernel ]] || return "$(cat "$FAKE/libfprint-rc" 2>/dev/null || echo 0)"
+        }
+        eval "$2"
+        build_inputs' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "${1:-}") >"$RC/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+rc_builds() { grep -v ' key$' "$RC/steps.log" 2>/dev/null | grep -o '/pinned/[a-z]*:/component' | sed 's|/pinned/||; s|:/component||' | paste -sd' '; }
+rc_cached() { (cd "$BIW/_build/rpm-cache" 2>/dev/null && find . -name '*.rpm' | sort | paste -sd' '); }
+rm -rf "$BIW/_build"
+printf '%s\n' ksys >"$RC/keys/system"
+printf '%s\n' kdesk >"$RC/keys/desktop"
+printf '%s\n' kfp >"$RC/keys/kernel"
+check "rpm-cache: the first build builds each component, rpms.sh with its key" "0|system desktop kernel" "$(bi_cache)|$(rc_builds)"
+check "libfprint's key is taken with this image's GA_REACHED, before and after its build" 2 \
+    "$(grep -c -- "-e GA_REACHED=$(ga_reached) .* .github/scripts/libfprint.sh key$" "$RC/steps.log")"
+check_true "and apex-system's build is held to the key it resolved" grep -q '.github/scripts/rpms.sh build /build/rpms/apex ksys$' "$RC/steps.log"
+check "and stores each component's signed RPMs under its own key" \
+    "./apex-desktop/kdesk/desktop.rpm ./apex-system/ksys/system.rpm ./libfprint/kfp/kernel.rpm" "$(rc_cached)"
+check "rpm-cache: the next build with the same keys builds nothing" "0|" "$(bi_cache)|$(rc_builds)"
+check "and checks each signature against the committed key in a scratch rpmdb" \
+    "import image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" "$(sort -u "$RC/rpmkeys.log")"
+check "and the image takes the cached RPMs" "signed system|signed kernel" \
+    "$(cat "$BIW/_build/rpms/apex/system.rpm")|$(cat "$BIW/_build/libfprint/kernel.rpm")"
+check_true "with their SHA256SUMS" test -s "$BIW/_build/rpms/apex/SHA256SUMS"
+echo kdesk2 >"$RC/keys/desktop"
+check "rpm-cache: a component whose key moved is built again, alone" "0|desktop" "$(bi_cache)|$(rc_builds)"
+echo 'signed but edited' >"$BIW/_build/rpm-cache/apex-system/ksys/system.rpm"
+check "rpm-cache: an RPM that no longer matches its SHA256SUMS is built again" "0|system|yes" \
+    "$(bi_cache)|$(rc_builds)|$(grep -q 'does not match its SHA256SUMS; rebuilding' "$RC/out" && echo yes)"
+(cd "$BIW/_build/rpm-cache/apex-system/ksys" && echo 'no signature' >system.rpm && sha256sum -- *.rpm >SHA256SUMS)
+check "rpm-cache: an RPM the Apex key did not sign is built again, though its sums match" "0|system|yes" \
+    "$(bi_cache)|$(rc_builds)|$(grep -q 'is not signed by image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex' "$RC/out" && echo yes)"
+echo signed >"$BIW/_build/rpm-cache/apex-system/ksys/extra.rpm"
+check "rpm-cache: an RPM that SHA256SUMS does not list is built again" "0|system" "$(bi_cache)|$(rc_builds)"
+echo kfp2 >"$RC/keys/kernel"
+echo kfp3 >"$RC/keys/kernel.next"
+check "rpm-cache: libfprint whose key moved during its build is used, and not stored" "0|kernel|no kfp2|yes" \
+    "$(bi_cache)|$(rc_builds)|$([[ -d $BIW/_build/rpm-cache/libfprint/kfp2 ]] && echo kfp2 || echo 'no kfp2')|$(grep -q "libfprint's key moved during its build (kfp2 to kfp3); not stored" "$RC/out" && echo yes)"
+echo kfp4 >"$RC/keys/kernel"
+echo 3 >"$RC/libfprint-rc"
+check "rpm-cache: a degraded libfprint (exit 3) is never stored" "0|no kfp4" \
+    "$(bi_cache)|$([[ -d $BIW/_build/rpm-cache/libfprint/kfp4 ]] && echo kfp4 || echo 'no kfp4')"
+rm "$RC/libfprint-rc"
+echo kfp >"$RC/keys/kernel"
+rm "$RC/keys/system"
+check "rpm-cache: a component that prints no key builds as before, without one, and stores nothing" "0|system|yes" \
+    "$(bi_cache)|$(rc_builds)|$(grep -q '.github/scripts/rpms.sh build /build/rpms/apex$' "$RC/steps.log" && echo yes)"
+echo ksys >"$RC/keys/system"
+for k in kdesk3 kdesk4 kdesk5; do
+    echo "$k" >"$RC/keys/desktop"
+    sleep 0.02
+    bi_cache >/dev/null
+done
+check "rpm-cache: each component keeps its 3 newest keys" "kdesk3 kdesk4 kdesk5" \
+    "$(cd "$BIW/_build/rpm-cache/apex-desktop" && find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ')"
+echo $((10 * 1024 * 1024)) >"$RC/avail"
+echo kdesk6 >"$RC/keys/desktop"
+check "rpm-cache: under 30 GiB free, the oldest go, and with none left nothing is stored" "0|no kdesk6|yes|yes" \
+    "$(bi_cache)|$([[ -d $BIW/_build/rpm-cache/apex-desktop/kdesk6 ]] && echo kdesk6 || echo 'no kdesk6')|$(grep -q 'rpm-cache: under 30 GiB free; dropping' "$RC/out" && echo yes)|$(grep -q 'under 30 GiB free even with an empty cache; not stored' "$RC/out" && echo yes)"
+echo $((100 * 1024 * 1024)) >"$RC/avail"
+rm -rf "$BIW/_build"
 
 bi_sources() {
     rm -f "$BI/steps.log"

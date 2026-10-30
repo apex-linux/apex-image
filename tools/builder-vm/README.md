@@ -55,6 +55,17 @@ order:
   the build says which image passed it and when. `just vm-image-only` only says whether
   G4 is due.
 
+The signed RPMs of apex-system, apex-desktop and libfprint are cached in
+`_build/rpm-cache/COMPONENT/KEY`, KEY being the component's own content key (`rpms.sh
+key`, `libfprint.sh key`, run in its container), so a build that changes none of them
+skips their builds. A cached set is reused only after its `SHA256SUMS`, its file list and
+each RPM's signature by the committed `RPM-GPG-KEY-apex` (`rpmkeys --checksig` in a
+scratch rpmdb) check out; any mismatch rebuilds. `rpms.sh build` gets the key and fails
+if it moved; libfprint's key is taken again after its build, and the RPMs are stored
+only when it held. A degraded libfprint is never stored. Each component keeps its 3
+newest keys, and the oldest entries go until `_build` has 30 GiB free (the VM's disk is
+a 120G qcow2); with less, nothing is stored. Delete `_build/rpm-cache` to start over.
+
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
 image ID`, or `not due: its key passed on DATE for image ID`) and `components pinned`, or
