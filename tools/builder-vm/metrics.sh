@@ -24,7 +24,8 @@ kept in APEX_STORE's metrics.tsv) and warnings.tsv ("metric<TAB>message"):
   size       the size grew more than 15 % and LOCK_DIFF changes no family
   userspace, greeter
              more than 20 % above the last build that passed its gates and has the value
-A value it cannot get is "-". The exit is 0 unless OUT cannot be written.
+A value it cannot get is "-". A qualify-only run (_build/plan.txt) adds no row. The exit
+is 0 unless OUT cannot be written.
 EOF
     exit 2
 }
@@ -111,6 +112,10 @@ main() {
     local out=$1 stamp=$2 sha=$3 lock_diff=$4 want_size=${5:-} store=${APEX_STORE:-$HOME/apex-store} version=- gates=no
     local size_cols boot=$checkout/_build/qualify/boot.tsv row phase history header
     mkdir -p -- "$out" || exit 1
+    if newer "$checkout/_build/plan.txt" "$stamp" && [[ $(<"$checkout/_build/plan.txt") == qualify-only ]]; then
+        echo "metrics: a qualify-only run builds nothing to measure; the history keeps gate runs only" >&2
+        return 0
+    fi
     [[ -s $checkout/_build/image/build.env ]] &&
         version=$(bash -c '. "$1" && printf "%s" "${APEX_VERSION:--}"' _ "$checkout/_build/image/build.env")
     newer "$checkout/_build/gates-passed.txt" "$stamp" && gates=yes
