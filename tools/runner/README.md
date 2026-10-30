@@ -23,7 +23,7 @@ GitHub ── JIT config ──▶ runner.sh once (systemd user service)
 | The RPM key and the store stay in the VM | `ci-build` returns only a tar of the result files: `ci-build.txt`, `gates-passed.txt`, `g2-result.txt`, `g4-results.md`, `g4-passed.txt`, `lock.diff`, G4's logs and, on the daily run, `absorb/`. `~/.local/share/apex/rpm-gnupg` and `~/apex-store` never leave the VM. |
 | Nothing is published | No registry push, no image signing: that waits for the cosign keys (S1d). The workflow token has no permissions (`permissions: {}`), and the job uses no actions. |
 | The container reaches only the VM's sshd on the host | Its network is pasta with only `127.0.0.1:2222` forwarded to the host's loopback, and `--no-map-gw`. `runner.sh check` tests this. |
-| The laptop stays awake through a job, where polkit allows | From the runner's `Running job` line until the job ends, `runner.sh once` holds logind's `sleep`, `idle` and `handle-lid-switch` inhibitor locks (`--who=apex-runner --mode=block`), each taken on its own. A `tail --pid` of the process that watches the job holds each lock, so the locks end with the job, on success, failure or a signal. None is held while the runner waits for a job. The job's log names each lock held or refused (Troubleshooting). |
+| The laptop stays awake through a job, where polkit allows | From the runner's `Running job` line until the job ends, `runner.sh once` holds logind's `sleep`, `idle`, `handle-lid-switch` and `shutdown` inhibitor locks (`--who=apex-runner --mode=block`), each taken on its own. With `shutdown` held, a power-off or reboot fails and names the job (GNOME asks first) unless it is forced. No job is taken on battery: `runner.sh once` waits until a supply in `/sys/class/power_supply/*/online` says 1 (a host with none, a desktop, counts as on AC). A `tail --pid` of the process that watches the job holds each lock, so the locks end with the job, on success, failure or a signal. None is held while the runner waits for a job. The job's log names each lock held or refused (Troubleshooting). |
 | Builds never overlap | `ci-build`, `builder-vm.sh sync`, `run` and `image` all take `~/.apex-build.lock` in the VM. A CI build waits up to 30 minutes for the lock, then exits 75. `just vm-sync` refuses while a CI build runs. |
 
 ## The token
@@ -130,9 +130,33 @@ just runner-preflight
    ```
 
 `just runner status` shows the service, the waiting container, the inhibitor locks
-held (below) and the group's runners.
-`just runner uninstall` stops and removes the service and keeps the token, the key and
-the image.
+held (below), whether the host is on AC power, each `vm.yml` run waiting (`queued`: for
+a runner; `pending`: behind the `vm` concurrency group) and how long, and the group's
+runners. The waiting runs need the token to read the repository's Actions; without
+that, the line says `unknown`.
+`just runner uninstall` stops and removes the services and keeps the token, the key,
+the image and the builder VM.
+
+### Autostart (opt-in)
+
+Without it, a job waits until you start the builder VM (`just vm-start`); while the VM
+is down, jobs sit queued. `just runner install --autostart` also writes and enables
+`apex-builder.service`, a user service that starts the builder VM with your session
+(`builder-vm.sh start`, `Type=forking` on its `qemu.pid`) and stops it with an ACPI
+shutdown (`builder-vm.sh stop`, up to 3 minutes). `apex-runner.service` then has
+`Wants=` and `After=` on it. It uses copies of `builder-vm.sh` and `firmware.sh` in
+`~/.local/share/apex/runner/builder-vm/`, so rerun the install after `main` changes
+them. With linger enabled (above), the VM starts at boot without a login.
+
+To turn it off, run `just runner install` without `--autostart`: it removes
+`apex-builder.service` and leaves a running VM as it is (`just vm-stop`).
+
+To wake a suspended laptop for builds in a window you choose, add a timer yourself. A
+`WakeSystem=true` timer needs the system manager, so it is a root unit outside the
+runner, for example `/etc/systemd/system/apex-wake.timer` with `OnCalendar=Mon..Fri
+02:00`, `WakeSystem=true` and `Unit=apex-wake.service`, where `apex-wake.service` runs
+`/bin/true` (waking is enough: the user services resume with the session). Keep the
+laptop on AC power, or no job is taken. Remove both units to turn it off.
 
 ### Confirm on the first G4
 

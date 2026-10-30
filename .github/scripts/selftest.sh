@@ -3834,6 +3834,81 @@ check_true "and says why, naming just vm-start" grep -qF \
 rb_stop
 check "runner: nothing listening does not answer" 1 "$(rc_of rb "$rb_port" builder_answers)"
 
+# --- runner.sh: jobs only on AC power, the builder VM's unit, and the runs waiting ----------
+RP="$TMP/runner-power"
+rp() { # SCRIPT: SCRIPT with runner.sh's functions and $RP/ps as /sys/class/power_supply
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    HOME=$RP/home timeout 4 bash -c '. "$1"; POWER_SUPPLY_DIR=$2/ps BUILDER_POLL=1 BUILDER_LOG_EVERY=1; eval "$3"' _ \
+        "$APEX_ROOT/tools/runner/runner.sh" "$RP" "$1"
+}
+rp_supply() { mkdir -p "$RP/ps/$1"; [[ -z ${2:-} ]] || echo "$2" >"$RP/ps/$1/online"; }
+mkdir -p "$RP/ps"
+check "runner: a host with no supply to read (a desktop) is on AC" 0 "$(rc_of rp on_ac_power)"
+rp_supply BAT0
+rp_supply AC 0
+rp_supply ucsi-source-psy-USBC000:001 0
+check "runner: a laptop whose AC and USB-C supplies are offline is on battery" 1 "$(rc_of rp on_ac_power)"
+rp_rc=0
+rp wait_for_ac 2>"$RP/wait.log" || rp_rc=$?
+check "runner: and takes no job, saying why" "124|yes" \
+    "$rp_rc|$(grep -q 'on battery: no job is taken until the host is on AC power' "$RP/wait.log" && echo yes)"
+rp_supply ucsi-source-psy-USBC000:001 1
+check "runner: USB-C power counts" 0 "$(rc_of rp on_ac_power)"
+rp_supply AC 1
+check "runner: and wait_for_ac returns at once" 0 "$(rc_of rp wait_for_ac)"
+check "runner: once checks AC power, then the builder VM" "    wait_for_builder" \
+    "$(grep -A1 -xF '    wait_for_ac' "$APEX_ROOT/tools/runner/runner.sh" | tail -n 1)"
+rp_unit=$(APEX_VM_DIR=/vm APEX_VM_SSH_PORT=2299 APEX_VM_MEM=8G rp builder_unit)
+rp_bin=$RP/home/.local/share/apex/runner/builder-vm/builder-vm.sh
+for line in Type=forking PIDFile=/vm/qemu.pid 'Environment=APEX_VM_DIR=/vm APEX_VM_SSH_PORT=2299 APEX_VM_MEM=8G' \
+    "ExecStart=$rp_bin start" "ExecStop=$rp_bin stop" WantedBy=default.target; do
+    check_true "runner: apex-builder.service has $line" grep -qxF "$line" <<<"$rp_unit"
+done
+# shellcheck disable=SC2016 # the script's own text
+check_true "runner: builder-vm.sh start daemonizes, so Type=forking holds" grep -q -- '-pidfile "$PIDFILE" -daemonize' \
+    "$APEX_ROOT/tools/builder-vm/builder-vm.sh"
+mkdir -p "$RP/bin"
+cat >"$RP/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+echo "systemctl $*" >>"$FAKE_RP/systemctl.log"
+EOF
+for t in podman loginctl curl jq; do printf '#!/usr/bin/env bash\n' >"$RP/bin/$t"; done
+cat >"$RP/bin/id" <<'EOF'
+#!/usr/bin/env bash
+if [[ $* == -u ]]; then echo 1000; else exec /usr/bin/id "$@"; fi
+EOF
+chmod +x "$RP/bin/"*
+rp_install() { # [--autostart]: runner.sh install on fakes; prints its exit
+    local rc=0
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$RP/bin:$PATH" FAKE_RP="$RP" HOME="$RP/home" XDG_CONFIG_HOME="$RP/home/.config" bash -c '
+        . "$1"; shift; require_ready() { :; }; token() { echo t; }; main install "$@"' _ \
+        "$APEX_ROOT/tools/runner/runner.sh" "$@" >/dev/null 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+check "runner: install --autostart" 0 "$(rp_install --autostart)"
+check "runner: writes apex-builder.service, and installs builder-vm.sh with firmware.sh" "unit|script|firmware" \
+    "$([[ -s $RP/home/.config/systemd/user/apex-builder.service ]] && echo unit)|$([[ -x $RP/home/.local/share/apex/runner/builder-vm/builder-vm.sh ]] && echo script)|$([[ -s $RP/home/.local/share/apex/runner/builder-vm/firmware.sh ]] && echo firmware)"
+check "runner: apex-runner.service wants it and starts after it" \
+    "Wants=network-online.target apex-builder.service|After=network-online.target apex-builder.service" \
+    "$(grep -E '^(Wants|After)=' "$RP/home/.config/systemd/user/apex-runner.service" | paste -sd'|')"
+check_true "runner: and enables it" grep -qx 'systemctl --user enable apex-builder.service' "$RP/systemctl.log"
+check "runner: a plain install takes autostart away again" "0|no unit|Wants=network-online.target" \
+    "$(rp_install)|$([[ -e $RP/home/.config/systemd/user/apex-builder.service ]] && echo unit || echo 'no unit')|$(grep '^Wants=' "$RP/home/.config/systemd/user/apex-runner.service")"
+check "runner: any other argument is refused" 1 "$(rp_install --autostart extra)"
+check "runner: --autostart belongs to install only" 1 \
+    "$(PATH="$RP/bin:$PATH" HOME="$RP/home" rc_of "$APEX_ROOT/tools/runner/runner.sh" status --autostart)"
+rp_runs() { # QUEUED_JSON PENDING_JSON: waiting_runs with the API's answers
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    rp 'api() { case $2 in *status=queued*) printf "%s" "$Q" ;; *) [[ $P != fail ]] || return 22; printf "%s" "$P" ;; esac; }
+        date() { echo 1793376000; }; waiting_runs' 2>/dev/null
+}
+check "runner: status names each vm.yml run waiting for a runner, and its wait" \
+    "vm.yml run 7 queued (push, 0123456789ab) since 2026-10-30T15:00:00Z: 60 min|vm.yml runs pending: unknown (the token cannot read apex-image's Actions)" \
+    "$(Q='{"total_count":1,"workflow_runs":[{"id":7,"event":"push","head_sha":"0123456789abcdef","created_at":"2026-10-30T15:00:00Z"}]}' P=fail rp_runs | paste -sd'|')"
+check "runner: and says when none waits" "vm.yml runs queued: none|vm.yml runs pending: none" \
+    "$(Q='{"total_count":0,"workflow_runs":[]}' P='{"total_count":0,"workflow_runs":[]}' rp_runs | paste -sd'|')"
+
 # --- runner.sh once: logind's inhibitor locks are held while the job runs, and only then ------
 FI="$TMP/runner-inhibit"
 mkdir -p "$FI/bin"
@@ -3885,28 +3960,29 @@ ri_released() { # the locks end with the job: tail --pid sees the watcher gone w
     return 1
 }
 ri_rc=0
-ri 0 'handle-lid-switch idle sleep' || ri_rc=$?
+ri 0 'handle-lid-switch idle shutdown sleep' || ri_rc=$?
 check "runner: a job that succeeds exits 0 through the watcher" 0 "$ri_rc"
 check "runner: no lock while the runner waits for a job" "" "$(cat "$FI/before-job")"
-check "runner: sleep, idle and the lid switch are held while the job runs" \
-    'handle-lid-switch idle sleep' "$(cat "$FI/during-job")"
+check "runner: sleep, idle, the lid switch and shutdown are held while the job runs" \
+    'handle-lid-switch idle shutdown sleep' "$(cat "$FI/during-job")"
 check_true "and the job's log says so" grep -qF \
-    'sleep inhibitor: held (sleep idle handle-lid-switch) for VM job: vm, until the job ends' "$FI/err"
+    'sleep inhibitor: held (sleep idle handle-lid-switch shutdown) for VM job: vm, until the job ends' "$FI/err"
 check_true "the runner's own output passes unchanged" grep -qx '2026-10-30 12:26:00Z: Running job: vm' "$FI/out"
 check "runner: the locks end with the job" 0 "$(rc_of ri_released)"
 ri_rc=0
-ri 1 'handle-lid-switch idle sleep' || ri_rc=$?
+ri 1 'handle-lid-switch idle shutdown sleep' || ri_rc=$?
 check "runner: a job that fails keeps its exit status" 1 "$ri_rc"
 check "runner: and its locks end too" 0 "$(rc_of ri_released)"
 : >"$FI/refuse-sleep"
 : >"$FI/refuse-handle-lid-switch"
-ri 0 idle
-check "runner: polkit's refusal of sleep and the lid leaves idle held" idle "$(cat "$FI/during-job")"
+ri 0 'idle shutdown'
+check "runner: polkit's refusal of sleep and the lid leaves idle and shutdown held" 'idle shutdown' "$(cat "$FI/during-job")"
 check_true "and the job's log names each refusal and asks to keep the laptop awake" grep -qF \
     'sleep inhibitor: refused (sleep: Failed to inhibit: Access denied;handle-lid-switch: Failed to inhibit: Access denied); keep the laptop awake for this job' \
     "$FI/err"
 rm "$FI/refuse-sleep" "$FI/refuse-handle-lid-switch"
-echo 'handle-lid-switch idle sleep' >"$FI/expect"
+check_true "a shutdown lock is in block mode, so a power-off warns and fails" grep -q ' shutdown VM job: vm block$' "$FI/locks"
+echo 'handle-lid-switch idle shutdown sleep' >"$FI/expect"
 echo 0 >"$FI/rc"
 : >"$FI/locks"
 : >"$FI/hold"
@@ -3914,7 +3990,7 @@ echo 0 >"$FI/rc"
 PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" setsid bash -c '. "$1"; attach_job apex-kvm-x' _ \
     "$APEX_ROOT/tools/runner/runner.sh" >/dev/null 2>&1 &
 ri_pid=$!
-for _ in $(seq 50); do [[ $(ri_held) == 'handle-lid-switch idle sleep' ]] && break; sleep 0.1; done
+for _ in $(seq 50); do [[ $(ri_held) == 'handle-lid-switch idle shutdown sleep' ]] && break; sleep 0.1; done
 kill -TERM -- "-$ri_pid" 2>/dev/null || true
 wait "$ri_pid" 2>/dev/null || true
 check "runner: a job stopped by a signal (systemctl stop) leaves no lock" 0 "$(rc_of ri_released)"
