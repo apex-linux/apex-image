@@ -1440,6 +1440,37 @@ display_power() {
         /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig PowerSaveMode i "$mode"
 }
 
+# shellcheck disable=SC2016 # expanded by the guest's shell
+readonly DRM_OUTPUTS='for c in /sys/class/drm/card*-*; do [ "$(cat "$c/status")" = connected ] && echo "${c#*/card*-} $(cat "$c/dpms")"; done; true'
+
+# Mutter's PowerSaveMode and the DPMS state of each connected DRM connector, on one line.
+display_state() {
+    local mode outputs
+    mode=$(user_run "$SESSION_UID" busctl --user get-property org.gnome.Mutter.DisplayConfig \
+        /org/gnome/Mutter/DisplayConfig org.gnome.Mutter.DisplayConfig PowerSaveMode) || mode=unknown
+    outputs=$(vm_ssh "$DRM_OUTPUTS" | paste -sd, -) || outputs=
+    printf 'PowerSaveMode %s; outputs %s\n' "${mode#i }" "${outputs:-none}"
+}
+
+display_on() {
+    DISPLAY_STATE=$(display_state)
+    [[ $DISPLAY_STATE =~ ^PowerSaveMode\ 0\;\ outputs\ [^\ ]+\ On(,|$) && ! $DISPLAY_STATE =~ \ (Off|Standby|Suspend)(,|$) ]]
+}
+
+# A display that stays off is the GPU's failure, not the lock's: name it before the lock's checks.
+wait_display_on() {
+    local test=$1 since=$2 deadline=$((SECONDS + QUALIFY_LOCK_TIMEOUT)) log errors
+    until display_on; do
+        if ((SECONDS >= deadline)); then
+            log=$(vm_ssh "journalctl -b --since @$((since - 1)) -o cat --no-pager" 2>/dev/null) || log=
+            errors=$(grep -iE 'drm|atomic' <<<"$log" | head -n 3 | paste -sd';' -) || errors=
+            save_journal "$test"
+            fail "$test" "the display did not come back on after PowerSaveMode 0 ($DISPLAY_STATE; DRM and atomic errors since the blank: ${errors:-none})"
+        fi
+        sleep "$QUALIFY_POLL"
+    done
+}
+
 no_fingerprint_conversation() {
     local test=$1 n
     n=$(fingerprint_conversations)
@@ -1505,7 +1536,7 @@ matrix_esc() {
 }
 
 matrix_blank_wake() {
-    local test=$1-lock-blank-wake pid=$2 base=$3 since cursor
+    local test=$1-lock-blank-wake pid=$2 base=$3 since cursor blank_since
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_row "$test" "$since"
     lock_session "$test"
@@ -1515,6 +1546,7 @@ matrix_blank_wake() {
     # The lock's own blank and the nudge's wake log both lines before this step: grep past them.
     cursor=$(user_journal_cursor) || true
     [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
+    blank_since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     display_power 3 || fail "$test" "cannot set Mutter's PowerSaveMode to 3 (off)"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no '$APEX_LOCK_TORN_DOWN' after the screen blanked" \
         user_journal_after "$cursor" "$APEX_LOCK_TORN_DOWN"
@@ -1526,6 +1558,7 @@ matrix_blank_wake() {
     cursor=$(user_journal_cursor) || true
     [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
     display_power 0 || fail "$test" "cannot set Mutter's PowerSaveMode to 0 (on)"
+    wait_display_on "$test" "$blank_since"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no '$APEX_LOCK_REBUILT' after the screen woke" \
         user_journal_after "$cursor" "$APEX_LOCK_REBUILT"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no password conversation after the screen woke" conversations_above "$base"

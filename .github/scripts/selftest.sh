@@ -1648,12 +1648,23 @@ vm_ssh() {
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
         *"PowerSaveMode i 3")
+            echo 3 >"$STATE/power-save"
+            : >"$STATE/display-off"
             [[ -e $STATE/keeps-asking-blank ]] || stop_asking
             [[ -e $STATE/keeps-asking-blank || -e $STATE/blank-unlogged ]] ||
                 echo 'Apex: lock: screen blank, prompt torn down' >>"$STATE/journal" ;;
         *"PowerSaveMode i 0")
+            echo 0 >"$STATE/power-save"
+            if [[ -e $STATE/display-stays-off ]]; then
+                echo 'gnome-shell[1234]: Cursor update failed: drmModeAtomicCommit: Invalid argument' >>"$STATE/drm-errors"
+                return 0
+            fi
+            rm -f "$STATE/display-off"
             [[ -e $STATE/wake-unlogged ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
             start_asking ;;
+        *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
+        "$DRM_OUTPUTS") if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; else echo 'Virtual-1 On'; fi ;;
+        "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
         "systemd-run --quiet --on-active=2 systemctl suspend") [[ -e $STATE/no-suspend ]] || : >"$STATE/suspended" ;;
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
             if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
@@ -2041,6 +2052,10 @@ lock_matrix_fails no-pam-log local-lock-wrong-password
 check_true "naming PAM" grep -q '^| local-lock-wrong-password | FAIL | PAM logged no authentication failure' "$GUEST_DIR/out/results.md"
 lock_matrix_fails esc-ignored local-lock-esc
 lock_matrix_fails keeps-asking-blank local-lock-blank-wake
+lock_matrix_fails display-stays-off local-lock-blank-wake
+check_true "naming the display, not the lock, with the atomic commit's error" grep -qF \
+    '| local-lock-blank-wake | FAIL | the display did not come back on after PowerSaveMode 0 (PowerSaveMode 0; outputs Virtual-1 Off; DRM and atomic errors since the blank: gnome-shell[1234]: Cursor update failed: drmModeAtomicCommit: Invalid argument)' \
+    "$GUEST_DIR/out/results.md"
 # The lock's blank and the nudge's wake log both lines before the test blanks the screen.
 lock_logged_both() {
     apex_locked_in
