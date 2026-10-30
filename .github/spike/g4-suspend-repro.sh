@@ -13,7 +13,7 @@ export QUALIFY_BOOT_TIMEOUT=${QUALIFY_BOOT_TIMEOUT:-420} QUALIFY_LOGIN_TIMEOUT=$
 # shellcheck source=SCRIPTDIR/../scripts/qualify.sh
 . "$REPRO_ROOT/.github/scripts/qualify.sh"
 
-: "${REPRO_TRIALS:=G-sw H-sw G-rtc H-rtc}"
+: "${REPRO_TRIALS:=G-sw H-sw G-rtc H-rtc G-s2idle H-s2idle G-s2idle-stdvga H-s2idle-stdvga}"
 : "${REPRO_EXTRAS:=auto}"
 : "${REPRO_KERNEL:=7.2.11-300.fc45}" # "base" keeps the base image's kernel
 : "${REPRO_EDK2:=20260812-9.fc45}"   # the guest's DMI line in run 17: BIOS edk2-20260812-9.fc45
@@ -227,7 +227,7 @@ try:
     s3 = (float(spost["boottime_s"]) - float(spre["boottime_s"])) - (int(spost["mono_ns"]) - int(spre["mono_ns"])) / 1e9
     m = re.match(r"\[\s*([\d.]+)\]", spost.get("last_kmsg", ""))
     pk = (float(m.group(1)) - int(spost["mono_ns"]) / 1e9) if m else None
-    clock = f"S3 {s3:.1f}s" + (f", printk-mono {pk:+.1f}s" if pk is not None else "")
+    clock = f"{'slept' if meta.get('wake') == 's2idle' else 'S3'} {s3:.1f}s" + (f", printk-mono {pk:+.1f}s" if pk is not None else "")
 except (KeyError, ValueError):
     pass
 woke_by = [k2[3:] for k2 in spost if k2.startswith("wk_") and spre.get(k2) != spost.get(k2)]
@@ -269,7 +269,10 @@ ssh = meta.get("ssh", "")
 gnome = meta.get("mode") == "gnome"
 bare = meta.get("inst") == "bare"
 resusp = q_resusp > 0 or final_state == "suspended" or k["entry"] > 0
+s2idle = meta.get("wake") == "s2idle"
 if not meta.get("t_suspended_seen"):
+    v = "NO-SUSPEND"
+elif ssh == "ok" and s2idle and "ss_success" not in ss:
     v = "NO-SUSPEND"
 elif ssh == "ok":
     if meta.get("boot_id_after") and meta.get("boot_id_after") != meta.get("boot_id_before"):
@@ -335,6 +338,8 @@ if woke_by:
     extra.append("wakeup sources " + ",".join(woke_by[:4]))
 if ss:
     extra.append("suspend_stats " + ",".join(f"{a}:{b[0]}->{b[1]}" for a, b in ss.items()))
+if spost.get("pm_wakeup_irq", "-") not in ("", "-"):
+    extra.append(f"pm_wakeup_irq {spost['pm_wakeup_irq']}")
 row = (f"| {meta.get('trial')} | b{meta.get('boot', '?')}/S3#{meta.get('s3_in_boot', '?')} | {meta.get('wake')}"
        + (" (rtc did not fire)" if meta.get("rtc_woke") == "no" else "")
        + f" | {f'{to_susp:.0f}s' if to_susp is not None else '-'} | {ssh_cell} | {cell(qmp_cell)} | {cell(fw_cell)}"
@@ -441,6 +446,8 @@ for f in /sys/power/suspend_stats/*; do printf 'ss_%s=%s\n' "${f##*/}" "$(tr '\n
 for w in /sys/class/wakeup/wakeup*; do
     printf 'wk_%s=%s/%s\n' "$(tr -c 'A-Za-z0-9_.:\n' _ < "$w/name")" "$(cat "$w/event_count")" "$(cat "$w/wakeup_count")"
 done
+printf 'pm_wakeup_irq=%s\n' "$(cat /sys/power/pm_wakeup_irq 2>/dev/null || echo -)"
+printf 'mem_sleep=%s\n' "$(cat /sys/power/mem_sleep)"
 printf 'printk=%s\n' "$(tr '\t' ' ' < /proc/sys/kernel/printk)"
 printf 'console_suspend=%s\n' "$(cat /sys/module/printk/parameters/console_suspend)"
 EOF
@@ -796,13 +803,14 @@ finish_trial() {
     VERDICT[${META[name]}]=$(jq -r '.verdict // "?"' "$TDIR/verdict.json" 2>/dev/null || echo '?')
 }
 
-# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup) or rtc (no PWRBTN_STS);
+# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc (no PWRBTN_STS) or
+# s2idle (mem_sleep=s2idle, serio0 a wakeup source, QMP send-key);
 # OPT nothing (gsd's power-button-action), stdvga (VGA, not virtio-vga), bare, rN (a repeat).
 run_trial() {
     local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need
     IFS=- read -r m wake opts <<<"$name"
     case $m in G) mode=gnome ;; H) mode=headless ;; *) warn "unknown trial $name"; return 0 ;; esac
-    [[ $wake == sw || $wake == rtc ]] || { warn "unknown wake in trial $name"; return 0; }
+    [[ $wake == sw || $wake == rtc || $wake == s2idle ]] || { warn "unknown wake in trial $name"; return 0; }
     [[ -$opts- != *-stdvga-* ]] || vga=std
     [[ -$opts- != *-bare-* ]] || inst=bare
     [[ -$opts- != *-nothing-* ]] || pba=nothing
@@ -845,6 +853,15 @@ run_trial() {
     if [[ $mode == gnome ]]; then
         lock_and_blank || { mark "the session did not lock"; META[lock]=failed; }
     fi
+    # shellcheck disable=SC2016 # expanded in the guest; mem_sleep stays as the last trial left it
+    if [[ $wake == s2idle ]]; then
+        vm_ssh 'echo s2idle > /sys/power/mem_sleep; w=/sys/bus/serio/devices/serio0/power/wakeup;
+            [ -e $w ] && echo enabled > $w; echo "mem_sleep $(cat /sys/power/mem_sleep); serio0 $(cat $w 2>/dev/null || echo none)"' \
+            >"$TDIR/mem_sleep.txt" 2>&1 || META[mem_sleep]=failed
+    else
+        vm_ssh 'echo deep > /sys/power/mem_sleep; echo "mem_sleep $(cat /sys/power/mem_sleep)"' >"$TDIR/mem_sleep.txt" 2>&1 ||
+            META[mem_sleep]=failed
+    fi
     if [[ $wake == rtc ]]; then
         vm_ssh "echo enabled > /sys/class/rtc/rtc0/device/power/wakeup; echo 0 > /sys/class/rtc/rtc0/wakealarm;
             echo +$REPRO_RTC_SECS > /sys/class/rtc/rtc0/wakealarm; cat /sys/class/rtc/rtc0/wakealarm" >"$TDIR/rtc.txt" 2>&1 ||
@@ -855,20 +872,35 @@ run_trial() {
     mark "systemd-run --on-active=2 systemctl suspend (S3 #$S3_IN_BOOT of boot $BOOTN)"
     vm_ssh 'systemd-run --quiet --on-active=2 systemctl suspend' || META[suspend_req]=failed
     # qualify.sh's wait: query-status every QUALIFY_POLL until 'suspended', QUALIFY_LOCK_TIMEOUT at most.
+    # s2idle never leaves QEMU's 'running': the console's entry line, then 5 s for the freeze.
+    local entered=''
     deadline=$((SECONDS + QUALIFY_LOCK_TIMEOUT))
-    until [[ $(vm_run_state 2>/dev/null) == suspended ]]; do
-        if ((SECONDS >= deadline)) || ! vm_alive; then break; fi
-        sleep "$QUALIFY_POLL"
-    done
+    if [[ $wake == s2idle ]]; then
+        until tail -c +$((ser_off + 1)) "$VM_SERIAL" 2>/dev/null | grep -q 'PM: suspend entry (s2idle)'; do
+            if ((SECONDS >= deadline)) || ! vm_alive; then break; fi
+            sleep 1
+        done
+        if tail -c +$((ser_off + 1)) "$VM_SERIAL" 2>/dev/null | grep -q 'PM: suspend entry (s2idle)'; then entered=1; sleep 5; fi
+    else
+        until [[ $(vm_run_state 2>/dev/null) == suspended ]]; do
+            if ((SECONDS >= deadline)) || ! vm_alive; then break; fi
+            sleep "$QUALIFY_POLL"
+        done
+        [[ $(vm_run_state 2>/dev/null) != suspended ]] || entered=1
+    fi
     wake_ser=$(fsize "$VM_SERIAL")
     wake_ovmf=$(fsize "$OVMF_LOG")
-    if [[ $(vm_run_state 2>/dev/null) == suspended ]]; then
+    if [[ -n $entered ]]; then
         META[t_suspended_seen]=$(now)
         screendump "$TRIAL_ID-suspended"
         if [[ $wake == sw ]]; then
             META[t_wake_sent]=$(now)
             mark "QMP system_wakeup"
             qmp '{"execute":"system_wakeup"}' || META[wake_cmd]=error
+        elif [[ $wake == s2idle ]]; then
+            META[t_wake_sent]=$(now)
+            mark "QMP send-key shift (the i8042 keyboard, serio0)"
+            qmp "$(key_press shift)" || META[wake_cmd]=error
         else
             mark "waiting up to $((REPRO_RTC_SECS + 30))s for the RTC alarm"
             deadline=$((SECONDS + REPRO_RTC_SECS + 30))
@@ -892,7 +924,7 @@ run_trial() {
             sleep 3
         done
     else
-        mark "never 'suspended' within ${QUALIFY_LOCK_TIMEOUT}s"
+        mark "never suspended (${wake}) within ${QUALIFY_LOCK_TIMEOUT}s"
         bid=$(probe_until 30) && ok=1
     fi
     META[t_window_end]=$(now)

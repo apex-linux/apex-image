@@ -11,8 +11,8 @@ on:
   workflow_dispatch:
     inputs:
       trials:
-        description: "Trials in order. G = locked GNOME session, H = no session; sw = QMP system_wakeup (G4), rtc = RTC alarm; options -nothing, -stdvga, -bare, -rN"
-        default: G-sw H-sw G-rtc H-rtc
+        description: "Trials in order. G = locked GNOME session, H = no session; sw = QMP system_wakeup (G4), rtc = RTC alarm, s2idle = keyboard; options -nothing, -stdvga, -bare, -rN"
+        default: G-sw H-sw G-rtc H-rtc G-s2idle H-s2idle G-s2idle-stdvga H-s2idle-stdvga
       extras:
         description: "auto adds follow-ups chosen from the first verdicts; none adds nothing"
         type: choice
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      REPRO_TRIALS: ${{ inputs.trials || 'G-sw H-sw G-rtc H-rtc' }}
+      REPRO_TRIALS: ${{ inputs.trials || 'G-sw H-sw G-rtc H-rtc G-s2idle H-s2idle G-s2idle-stdvga H-s2idle-stdvga' }}
       REPRO_EXTRAS: ${{ inputs.extras || 'auto' }}
       REPRO_KERNEL: ${{ inputs.kernel || '7.2.11-300.fc45' }}
       REPRO_EDK2: 20260812-9.fc45
