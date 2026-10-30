@@ -1507,6 +1507,8 @@ pkexec_typed() {
 }
 qmp_query() { if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi; }
 wait_ssh() { :; }
+vm_alive() { [[ ! -e $STATE/vm-dead ]]; }
+vm_answers() { [[ ! -e $STATE/no-resume && ! -e $STATE/unreachable ]]; }
 vm_reboot() {
     : >"$STATE/journal"
     : >"$STATE/syslog"
@@ -1524,7 +1526,12 @@ qmp() {
     for cmd in "$@"; do
         printf '%s\n' "$cmd" >>"$STATE/qmp"
         if [[ $cmd == *system_wakeup* ]]; then
-            rm -f "$STATE/suspended"
+            [[ -e $STATE/resuspends ]] || rm -f "$STATE/suspended"
+            [[ ! -e $STATE/dies-on-wake ]] || : >"$STATE/vm-dead"
+            [[ -e $STATE/no-logind-finish ]] || echo "Operation 'suspend' finished." >>"$STATE/journal-systemd-logind"
+            [[ -e $STATE/no-nm-wake ]] || echo 'manager: sleep: wake requested (sleeping: yes  enabled: yes)' >>"$STATE/journal-NetworkManager"
+            [[ ! -e $STATE/power-key ]] || echo 'Power key pressed short.' >>"$STATE/journal-systemd-logind"
+            [[ -e $STATE/no-rebuild ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
             if [[ -e $STATE/resume-unlocks ]]; then echo no >"$STATE/locked"; echo false >"$STATE/active"; fi
         fi
         keys=$(jq -r 'select(.execute == "send-key") | [.arguments.keys[].data] | join("+")' <<<"$cmd")
@@ -1684,6 +1691,16 @@ vm_ssh() {
             conversations 0 ;;
         "systemctl -q is-active user@1000.service") [[ -e $STATE/manager-active ]] ;;
         "id -u $TEST_USER") echo 1000 ;;
+        "cat /proc/sys/kernel/random/boot_id") echo boot-1 ;;
+        "uname -r") echo 7.2.11-200.fc45.x86_64 ;;
+        "cat /sys/power/mem_sleep") echo 's2idle [deep]' ;;
+        "echo N >/sys/module/printk/parameters/console_suspend;"*) : >"$STATE/pm-debug" ;;
+        "systemd-run --quiet --unit=apex-qualify-"*) echo "${cmd#*--unit=}" | cut -d' ' -f1 >>"$STATE/taps" ;;
+        "systemctl stop apex-qualify-tap.service apex-qualify-heartbeat.service") : >"$STATE/taps-stopped" ;;
+        "journalctl -b _COMM="*" --since @999 -o cat --no-pager --grep '"*)
+            c=${cmd#*_COMM=}
+            p=${cmd#*--grep \'}
+            grep -E -- "${p%\'}" "$STATE/journal-${c%% *}" 2>/dev/null ;;
         "runuser -u $TEST_USER -- sh -c 'mkdir -p ~$TEST_USER/.config/environment.d && echo APEX_SHELL_TEST_FAULT=abort-after-enable >~$TEST_USER/$TEST_FAULT_FILE'")
             : >"$STATE/fault-file" ;;
         "test -e ~$TEST_USER/$CRASH_GUARD_TRIPPED") [[ -e $STATE/tripped ]] ;;
@@ -1723,7 +1740,7 @@ EOF
 guest() {
     local rc=0
     : >"$GUEST_DIR/out/results.md"
-    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 \
+    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 QUALIFY_RESUME_TIMEOUT=2 \
         QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' APEX_GNOME_SRC="$GUEST_DIR/gnome" \
         bash "$TMP/qualify-fake-guest.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$GUEST_DIR/state" "$@" \
         >"$GUEST_DIR/stderr" 2>&1 || rc=$?
@@ -2060,6 +2077,34 @@ check_true "naming that line" \
     grep -q "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen on, prompt rebuilt' after the screen woke" "$GUEST_DIR/out/results.md"
 lock_matrix_fails no-suspend local-lock-suspend
 lock_matrix_fails resume-unlocks local-lock-suspend
+apex_locked_in
+check "suspend: the matrix passes on a resume that finished, woke the network and pressed no key" 0 \
+    "$(guest lock_matrix local 1000)"
+check_true "the row names what it saw" grep -q \
+    '^| local-lock-suspend | PASS | .*logind finished the suspend, NetworkManager woke, no power key; still locked, prompt rebuilt' \
+    "$GUEST_DIR/out/results.md"
+for dump in local-lock-suspend-locked local-lock-suspend-woken local-lock-suspend-resumed; do
+    check_true "with the screendump $dump.png" grep -qF "$dump.png" "$GUEST_DIR/state/qmp"
+done
+check_true "the PM debug messages went to the console before the suspend" test -e "$GUEST_DIR/state/pm-debug"
+check "the journal tap and the heartbeat ran on ttyS0, and stopped after the row" "apex-qualify-tap apex-qualify-heartbeat:stopped" \
+    "$(paste -sd' ' "$GUEST_DIR/state/taps"):$([[ -e $GUEST_DIR/state/taps-stopped ]] && echo stopped)"
+check_true "and the environment line names the guest's kernel and sleep state" \
+    grep -q 'guest kernel 7.2.11-200.fc45.x86_64; .*guest mem_sleep s2idle \[deep\]' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+suspend_fails() { # FLAG DETAIL: with FLAG set, the suspend row fails saying DETAIL
+    lock_matrix_fails "$1" local-lock-suspend
+    check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2" "$GUEST_DIR/out/results.md"
+}
+suspend_fails resuspends 'the guest suspended again after system_wakeup'
+suspend_fails dies-on-wake 'the VM exited after system_wakeup (QEMU run states: '
+suspend_fails no-resume 'no ssh 2s after system_wakeup (QEMU run state running; seen: running; logs/local-lock-suspend.resume-timeout.txt)'
+check_true "and the timeout keeps QEMU's view of the guest" grep -q '^## info usernet, an ssh probe in flight' \
+    "$GUEST_DIR/out/logs/local-lock-suspend.resume-timeout.txt"
+check "with no second wake or other key sent to recover it" 1 "$(grep -c system_wakeup "$GUEST_DIR/state/qmp")"
+suspend_fails no-logind-finish "logind logged no \"Operation 'suspend' finished.\" after the wake"
+suspend_fails no-nm-wake 'NetworkManager logged no wake after the suspend'
+suspend_fails power-key 'logind logged a power key press: the wake reached the guest as a power button'
+suspend_fails no-rebuild "no 'Apex: lock: screen on, prompt rebuilt' after the resume"
 apex_locked_in
 printf '%s\n' 'PM: suspend entry (deep)' 'ACPI: PM: Waking up from system sleep state S3' 'PM: suspend exit' >"$GUEST_DIR/state/kernel"
 check "suspend: the matrix passes with the kernel's resume lines" 0 "$(guest lock_matrix local 1000)"
@@ -4238,6 +4283,82 @@ printf 'apex-runner 1000 owner %s tail %s VM job: vm block\n' "$!" sleep "$!" id
 check "runner: and which locks are held" 'sleep inhibitor: held (idle sleep)' \
     "$(PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; inhibitor_status' _ "$APEX_ROOT/tools/runner/runner.sh")"
 kill "$!"
+
+# --- qualify.sh's QEMU: the event log, OVMF's console, a stop without ssh, a failed run's journal ---
+QV="$TMP/qemu-side"
+mkdir -p "$QV/bin" "$QV/out/logs" "$QV/out/qmp"
+cat >"$QV/bin/qemu-system-x86_64" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$QEMU_ARGS"
+while (($#)); do [[ $1 != -pidfile ]] || echo $$ >"$2"; shift; done
+EOF
+chmod +x "$QV/bin/qemu-system-x86_64"
+: >"$QV/code.fd"
+: >"$QV/vars.fd"
+# shellcheck disable=SC2016 # expanded by the inner bash
+PATH="$QV/bin:$PATH" QEMU_ARGS="$QV/args" QUALIFY_OUT="$QV/out" OVMF_CODE="$QV/code.fd" OVMF_VARS="$QV/vars.fd" \
+    bash -c '. "$1"; require_kvm() { :; }; start_vm t' _ "$APEX_ROOT/.github/scripts/qualify.sh" >/dev/null 2>&1
+check_true "start_vm: a second QMP socket for the event reader" grep -qx "unix:$QV/out/qmp/t.events.sock,server=on,wait=off" "$QV/args"
+check_true "OVMF's debug console in the row's logs" grep -qx "file:$QV/out/logs/t.ovmf.log" "$QV/args"
+check_true "at OVMF's debug port" grep -qx 'isa-debugcon.iobase=0x402' "$QV/args"
+python3 - "$QV/events.sock" >/dev/null 2>&1 <<'EOF' &
+import json, os, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1] + ".tmp")
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+s.listen()
+c, _ = s.accept()
+f = c.makefile("rw")
+f.write('{"QMP": {}}\n'); f.flush()
+f.readline()
+f.write('{"return": {}}\n')
+for e in ["STOP", "SUSPEND", "RTC_CHANGE", "WAKEUP", "RESUME", "SHUTDOWN"]:
+    f.write(json.dumps({"event": e, "data": {"guest": True}, "timestamp": {"seconds": 1, "microseconds": 0}}) + "\n")
+f.flush()
+c.close()
+EOF
+qv_pid=$!
+until [[ -S $QV/events.sock ]]; do sleep 0.05; done
+# shellcheck disable=SC2016 # expanded by the inner bash
+timeout 10 bash -c '. "$1"; python3 -c "$QMP_EVENTS" "$2" "$3"' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$QV/events.sock" "$QV/events.log"
+wait "$qv_pid" || true
+check "the QMP event reader keeps the run-state events, each with the host's time" "STOP SUSPEND WAKEUP RESUME SHUTDOWN" \
+    "$(awk '{print $2}' "$QV/events.log" | paste -sd' ')"
+check_true "as ISO times" grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+\+00:00 SUSPEND \{"guest": true\}$' "$QV/events.log"
+(sleep 300 >/dev/null 2>&1 & echo $! >"$QV/out/v.pid")
+qv_vm=$(cat "$QV/out/v.pid")
+qv_start=$SECONDS
+# shellcheck disable=SC2016 # expanded by the inner bash
+QUALIFY_OUT="$QV/out" bash -c '. "$1"; VM_NAME=v; vm_answers() { return 1; }; stop_vm' _ "$APEX_ROOT/.github/scripts/qualify.sh" >/dev/null 2>&1
+check_false "stop_vm: a guest without ssh is not waited on for a poweroff it never got" kill -0 "$qv_vm"
+check_true "but stopped in seconds" test $((SECONDS - qv_start)) -lt 20
+qv_cleanup() { # RC: cleanup after a run that exits RC, its guest unreachable, with QEMU, QMP and root as stubs
+    rm -f "$QV/calls" "$QV/quit" "$QV/out/logs/v.disk-journal.txt"
+    : >"$QV/out/v.raw"
+    : >"$QV/out/results.md"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    QUALIFY_OUT="$QV/out" QUALIFY_KEEP_DISKS=1 GITHUB_ACTIONS='' bash -c '. "$1"; QV=$3; VM_NAME=v
+        vm_alive() { [[ ! -e $QV/quit ]]; }
+        vm_answers() { return 1; }
+        qmp() { echo "qmp $*" >>"$QV/calls"; : >"$QV/quit"; }
+        as_root() {
+            echo "$*" >>"$QV/calls"
+            case $1 in
+                losetup) [[ $2 == --detach ]] || echo /dev/loop9 ;;
+                sh) echo "$QV/out/mnt-v-journal/ostree/deploy/default/var/log/journal" ;;
+                journalctl) echo "the guest journal, off its disk" ;;
+            esac
+        }
+        trap cleanup EXIT
+        exit "$2"' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1" "$QV" >/dev/null 2>&1 || true
+}
+qv_cleanup 3
+check_true "cleanup after a failure: QEMU quits over QMP" grep -qF 'qmp {"execute":"quit"}' "$QV/calls"
+check_true "the disk is mapped read-only" grep -qx "losetup --find --show --partscan --read-only $QV/out/v.raw" "$QV/calls"
+check "and its own journal is kept, though ssh never answered" "the guest journal, off its disk" \
+    "$(cat "$QV/out/logs/v.disk-journal.txt")"
+qv_cleanup 0
+check_false "a run that passed maps no disk" grep -q losetup "$QV/calls"
 
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
