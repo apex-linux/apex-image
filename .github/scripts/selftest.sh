@@ -813,6 +813,29 @@ co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-desktop $CO/apex-desktop
 check "a new pin moves the clone and cleans it" "0:$CO_SYS:clean" \
     "$(components fetch):$(git -C "$CO/work/_build/components/apex-system" rev-parse HEAD):$([[ -e $CO/work/_build/components/apex-system/stray ]] && echo stray || echo clean)"
 
+mkdir -p "$CO/bin"
+cat >"$CO/bin/find" <<'FIND'
+#!/bin/bash
+[[ -n ${CO_FOREIGN:-} && " $* " == *" -user "* ]] && { echo "$1/target/rpm/BUILD"; exit 0; }
+exec /usr/bin/find "$@"
+FIND
+cat >"$CO/bin/sudo" <<'SUDO'
+#!/bin/bash
+echo "$*" >>"$CO_SUDO_LOG"
+[[ -z ${CO_NO_SUDO:-} ]] || exit 1
+shift
+exec "$@"
+SUDO
+chmod +x "$CO/bin/find" "$CO/bin/sudo"
+co_sudo() { (cd "$CO/work" && PATH="$CO/bin:$PATH" CO_SUDO_LOG="$CO/sudo.log" rc_of env "$@" tools/components.sh fetch); }
+: >"$CO/sudo.log"
+check "a clean checkout needs no sudo" "0:" "$(co_sudo):$(cat "$CO/sudo.log")"
+check "files a killed root build left are taken back before the clean" \
+    "0:-n chown -R $(id -u):$(id -g) -- $CO/work/_build/components/apex-system" \
+    "$(co_sudo CO_FOREIGN=1):$(head -n 1 "$CO/sudo.log")"
+check "without sudo -n the fetch fails rather than build from an unclean checkout" 1 \
+    "$(co_sudo CO_FOREIGN=1 CO_NO_SUDO=1)"
+
 rm -rf "$CO/work/_build/components/apex-system"
 git clone -q --depth 1 "file://$CO/apex-system.git" "$CO/work/_build/components/apex-system"
 git -C "$CO/work/_build/components/apex-system" remote set-url origin "$CO/apex-system.git"
@@ -2103,6 +2126,29 @@ check "contracts: a free-form kill switch, no <choices>" 1 "$(ct_kill '' "'motio
 check_true "says it cannot be checked" grep -q '^error: disabled-features has no <choices>: it takes any name' "$CT/out"
 check_true "naming apex-desktop" grep -q '^error: contracts: apex-desktop (.*): see above' "$CT/out"
 ct_kill 'motion spotlight' "'motion', 'spotlight'" >/dev/null
+
+# --- contracts.sh: G4's QEMU and the desktop VM's, read from the scripts themselves ------
+QP=$TMP/qemu-parity
+mkdir -p "$QP"
+qp_rc() { (set +e; qemu_parity "$@" 2>"$QP/err"; echo $?); }
+QP_REAL=("$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/tools/builder-vm/desktop-vm.sh")
+check "qemu parity: main's qualify.sh and desktop-vm.sh agree" 0 "$(qp_rc "${QP_REAL[@]}")"
+check "qemu parity: each runs q35 with vmport=off on the host CPU" "machine q35,accel=kvm,vmport=off|cpu host" \
+    "$(qemu_flags "${QP_REAL[0]}" | paste -sd'|')"
+sed 's/,vmport=off -cpu host/ -cpu host/' "${QP_REAL[0]}" >"$QP/qualify-no-vmport.sh"
+check "qemu parity: a G4 VM without vmport=off (qualify.sh at 5197371) fails" 1 \
+    "$(qp_rc "$QP/qualify-no-vmport.sh" "${QP_REAL[1]}")"
+check_true "and says what vmport=off is for" grep -q 'qualify-no-vmport.sh: -machine q35,accel=kvm lacks vmport=off' "$QP/err"
+sed 's/ -cpu host / -cpu max /' "${QP_REAL[1]}" >"$QP/desktop-cpu.sh"
+check "qemu parity: another -cpu fails" 1 "$(qp_rc "${QP_REAL[0]}" "$QP/desktop-cpu.sh")"
+check_true "and names both" grep -q 'desktop-cpu.sh runs QEMU with machine q35,accel=kvm,vmport=off cpu max, but .*qualify.sh with machine q35,accel=kvm,vmport=off cpu host' "$QP/err"
+sed 's/-machine q35,accel=kvm,vmport=off/-machine pc,accel=kvm,vmport=off/' "${QP_REAL[1]}" >"$QP/desktop-pc.sh"
+check "qemu parity: another machine type fails" 1 "$(qp_rc "${QP_REAL[0]}" "$QP/desktop-pc.sh")"
+{ cat "${QP_REAL[0]}"; printf 'qemu-system-x86_64 -machine q35 -cpu host\n'; } >"$QP/qualify-two.sh"
+check "qemu parity: a second QEMU command line fails rather than going unread" 1 "$(qp_rc "$QP/qualify-two.sh" "${QP_REAL[1]}")"
+check_true "and counts them" grep -q 'qualify-two.sh: 2 QEMU -machine options, expected 1' "$QP/err"
+{ cat "${QP_REAL[0]}"; printf '    # -machine pc -cpu max: a comment\n'; } >"$QP/qualify-comment.sh"
+check "qemu parity: a comment naming flags is not a QEMU line" 0 "$(qp_rc "$QP/qualify-comment.sh" "${QP_REAL[1]}")"
 
 # --- image.sh: the rebuild lane's lock in the image context ------------------------------
 image_sh() { bash -c '. "$1"; shift; eval "$1"' _ "$APEX_ROOT/.github/scripts/image.sh" "$@"; }

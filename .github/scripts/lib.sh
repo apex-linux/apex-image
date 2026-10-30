@@ -321,6 +321,37 @@ dnf_repo_args() {
     fi
 }
 
+# qemu_flags FILE: "machine VALUE" and "cpu VALUE" of the one QEMU command line in FILE.
+qemu_flags() {
+    local opt
+    local -a values
+    for opt in machine cpu; do
+        mapfile -t values < <(grep -v '^[[:space:]]*#' "$1" |
+            grep -oE -- "(^|[[:space:](])-${opt}[[:space:]]+[^[:space:]\\)]+" | awk '{ print $2 }' | tr -d "\"'")
+        ((${#values[@]} == 1)) || { warn "$1: ${#values[@]} QEMU -$opt options, expected 1"; return 1; }
+        printf '%s %s\n' "$opt" "${values[0]}"
+    done
+}
+
+# qemu_parity FILE...: the files' guests get the same -machine and -cpu, and vmport=off.
+qemu_parity() {
+    local f flags first="" firstflags="" rc=0
+    for f in "$@"; do
+        flags=$(qemu_flags "$f") || { rc=1; continue; }
+        if [[ ,$(sed -n 's/^machine //p' <<<"$flags"), != *,vmport=off,* ]]; then
+            warn "$f: -machine $(sed -n 's/^machine //p' <<<"$flags") lacks vmport=off, so the guest's vmmouse drops relative pointer moves"
+            rc=1
+        fi
+        if [[ -z $first ]]; then
+            first=$f firstflags=$flags
+        elif [[ $flags != "$firstflags" ]]; then
+            warn "$f runs QEMU with $(paste -sd' ' <<<"$flags"), but $first with $(paste -sd' ' <<<"$firstflags")"
+            rc=1
+        fi
+    done
+    return "$rc"
+}
+
 # g4_user_units QUALIFY_SH COMPONENT_SRC...: G4's login contract (apex_units_settled) expects
 # exactly the user units the components' specs ship and enable for a graphical session.
 g4_user_units() {
