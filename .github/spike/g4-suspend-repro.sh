@@ -136,6 +136,7 @@ def lines(text, prefix=None):
             out.append(l[3:])
     return out
 kpost, jt, hb, ev = lines(post), lines(post, "JT "), lines(post, "HB "), lines(post, "EV ")
+kpost += [f for l in hb + ev for f in re.findall(r"\[ *\d+\.\d+\] .*", l)]
 def count(rx, ls):
     r = re.compile(rx)
     return sum(1 for l in ls if r.search(l))
@@ -179,6 +180,7 @@ to_susp = (t_susp - num("t_suspend_req")) if (t_susp and num("t_suspend_req")) e
 # The guest's console after the wake (kernel lines only: JT/HB/EV are the guest's taps).
 K = dict(llr=r"ACPI: PM: Low-level resume complete", waking=r"ACPI: PM: Waking up from system sleep state S3",
          finishing=r"PM: Finishing wakeup", exit=r"PM: suspend exit", entry=r"PM: suspend entry",
+         thawed=r"Restarting tasks: Done",
          err=r"(virtio|drm|PM:).*(error|fail|time(d )?out)|BUG|WARNING|blocked for more than|Call Trace|soft lockup|rcu.*stall|Oops|panic")
 k = {name: count(rx, kpost) for name, rx in K.items()}
 k_err = [l.strip()[:160] for l in kpost if re.search(K["err"], l) and not re.search(r": calling |returned -?\d+ after", l)][:3]
@@ -202,11 +204,10 @@ u = dict(power_key=count(r"Power key pressed", jt), gsd_vm=count(r"Virtual machi
          returned=count(r"System returned from sleep|Operation 'suspend' finished|finished\.$", jt),
          poweroff=count(r"System is powering down|Powering off|poweroff", jt),
          nm=[l.strip()[:140] for l in jt if re.search(r"NetworkManager.*(sleep|wake|asleep)", l)][-1:])
+# evtest and printk share ttyS0, so a key line can be split by a kernel line.
 def evkeys(code_name, code_num):
-    n = 0
+    n = len(re.findall(rf"code {code_num} \({code_name}\), value 1\b", re.sub(r"\[ *\d+\.\d+\] [^\n]*\n?", "", post)))
     for l in ev:
-        if code_name in l and "value 1" in l:
-            n += 1
         p = l.split()
         if len(p) == 12 and all(x.isdigit() for x in p) and p[8] == "1" and p[9] == str(code_num) and p[10] == "1":
             n += 1
@@ -277,6 +278,8 @@ elif ssh == "ok" and s2idle and "ss_success" not in ss:
 elif ssh == "ok":
     if meta.get("boot_id_after") and meta.get("boot_id_after") != meta.get("boot_id_before"):
         v = "COLD-BOOT"
+    elif gnome and meta.get("shell") == "silent":
+        v = "SHELL-SILENT-AFTER-RESUME"
     elif gnome and meta.get("locked_after") == "no":
         v = "UNLOCKED-AFTER-RESUME"
     elif gnome and (meta.get("unlock") != "password" or meta.get("shell") != "answers"):
@@ -295,6 +298,8 @@ elif bare:
     v = "UNREACHABLE-BARE"
 elif k["exit"]:
     v = ("RESUMED-NO-NET" if net_down else "RESUMED-NO-SSH") if hb else "USERSPACE-STALLED"
+elif k["thawed"]:
+    v = "STUCK-POST-SUSPEND"
 elif k["llr"] or k["waking"]:
     v = "STUCK-DEVICE-RESUME"
 elif fw["vector"]:
@@ -393,6 +398,7 @@ for u in repro-jtap repro-hb repro-ev; do
     systemctl stop "$u.service" 2>/dev/null
     systemctl reset-failed "$u.service" 2>/dev/null
 done
+sysctl -qw kernel.sysrq=1
 if [ "$mode" = bare ]; then
     echo Y > /sys/module/printk/parameters/console_suspend
     dmesg -n 4
@@ -746,7 +752,11 @@ diagnose() {
         printf '\n== info cpus\n%s\n' "$(hmp 'info cpus' 2>&1)"
         printf '\n== x/6i $pc (cpu 0)\n%s\n' "$(hmp 'x/6i $pc' 2>&1)"
     } >"$TDIR/hmp.txt"
-    local i
+    local i off
+    off=$(fsize "$VM_SERIAL")
+    qmp "$(key_press alt sysrq w)" || true
+    sleep 5
+    tail -c +$((off + 1)) "$VM_SERIAL" | tr -d '\r' >"$TDIR/sysrq-w.txt" 2>/dev/null || true
     for i in 1 2 3; do
         hmp 'info registers -a' >"$TDIR/regs-$i.txt" 2>&1 || true
         sleep 1
@@ -835,7 +845,15 @@ run_trial() {
         boot_vm "$vga" || { finish_trial BOOT-FAILED; VM_DIRTY=1; return 0; }
         VM_DIRTY=0
     fi
-    ensure_mode "$mode" || { mark "mode $mode not reached"; finish_trial MODE-FAILED; VM_DIRTY=1; return 0; }
+    if ! ensure_mode "$mode"; then
+        mark "mode $mode not reached"
+        vm_ssh 'loginctl list-sessions; systemctl --no-pager status gdm.service; dmesg | grep -iE "drm|bochs|virtio_gpu"
+            journalctl -b --no-pager -o short-monotonic -u gdm.service _COMM=gnome-shell _COMM=gdm-session-wor _COMM=gnome-session-b' \
+            >"$TDIR/mode-failed.txt" 2>&1 || true
+        finish_trial MODE-FAILED
+        VM_DIRTY=1
+        return 0
+    fi
     S3_IN_BOOT=$((S3_IN_BOOT + 1))
     META[boot]=$BOOTN META[s3_in_boot]=$S3_IN_BOOT META[kallsyms]=$KALLSYMS META[boot_id_before]=$BOOT_ID
     local since base=0 ser_off wake_ser wake_ovmf win_ser deadline bid ok=
@@ -1051,8 +1069,9 @@ publish() {
         "$(cat "$ROWS")" "" \
         "Verdicts: PASS; PASS-SLOW (H4); RESUSPENDED (A, H1a); POWERED-OFF (C, H1, R0: see KEY_POWER and 'Power key pressed'); COLD-BOOT (D);" \
         "STUCK-FIRMWARE[-EARLY] (H1b in OVMF); STUCK-EARLY-KERNEL (H1b, waking vector to 'Low-level resume complete');" \
-        "STUCK-DEVICE-RESUME (H2, E: 'open' names the callback); RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED;" \
-        "SESSION-BROKEN (H-virtio-gpu-no-restore, H5); UNLOCKED-AFTER-RESUME; UNREACHABLE-BARE (no console instrumentation); NO-SUSPEND." \
+        "STUCK-DEVICE-RESUME (H2, E: 'open' names the callback); STUCK-POST-SUSPEND (tasks thawed, no 'PM: suspend exit': sysrq-w.txt);" \
+        "RESUMED-NO-NET, RESUMED-NO-SSH (H3, E); USERSPACE-STALLED; SHELL-SILENT-AFTER-RESUME (the shell answers no D-Bus, so 'unlocked' is unknown);" \
+        "SESSION-BROKEN (H-virtio-gpu-no-restore, H5); UNLOCKED-AFTER-RESUME; MODE-FAILED (mode-failed.txt); UNREACHABLE-BARE (no console instrumentation); NO-SUSPEND." \
         "Logs: artifact g4-suspend-repro-logs (trials/<id>/: meta.tsv, verdict.json, serial-{pre,post,recovery}.txt, ovmf-post.txt, regs-*.txt, journal.txt; qmp-events.jsonl; *.png)."
 }
 
