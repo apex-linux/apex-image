@@ -1287,6 +1287,9 @@ vm_ssh() {
         "systemd-analyze") from analyze | grep . ;;
         "systemd-analyze blame --no-pager | head -n 10") from blame ;;
         "journalctl -b -q --no-pager -o short-monotonic "*) mono_journal "$cmd" ;;
+        "journalctl -b -"[0-9]*" -u $ASSESS_UNIT -o cat --no-pager -q | grep -q -- $FORCED_RED_CHECK")
+            local assess_boot=${cmd#journalctl -b -}
+            from "assess.-${assess_boot%% *}" | grep -q -- "$FORCED_RED_CHECK" ;;
         *) printf 'unexpected vm_ssh: %s\n' "$cmd" >&2; return 99 ;;
     esac
 }
@@ -1904,6 +1907,60 @@ check "errexit: a failed assignment names itself" "qualify.sh: line 1: v=\$(prin
 # shellcheck disable=SC2016 # each script runs in the inner bash
 check "errexit: failures the script tolerates print nothing" "done" \
     "$(errexit_of 'x=$(false; echo y) || true; if ! false; then :; fi; false || true; set +e; false; set -e; v=$(grep -q z /dev/null || true); echo done >&2')"
+
+# --- G4 against real guest journals: runs 6, 7, 8, 11, 13 and 16 (g4-fixtures/README.md) ---------
+G4F=$APEX_ROOT/.github/scripts/g4-fixtures
+G4F_USER=$(sed -n 's/^readonly TEST_USER=//p' "$APEX_ROOT/.github/scripts/qualify.sh")
+g4f() { sed "s/@TEST_USER@/$G4F_USER/g" "$G4F/$1"; }
+g4f_boot() { # FIXTURE: boot_metrics and the login steps on that real boot journal
+    local -a lines
+    mapfile -t lines < <(g4f "$1")
+    boot_then_login "${lines[@]}"
+}
+check "run 6's boot (43094ed, no user shell yet): boot metrics never end G4" 0 "$(g4f_boot run6-boot.mono)"
+check "and the boot row passes, the greeter timed at systemd's start of its shell" 1 "$(row local-boot-metrics PASS)"
+check "greeter 8.989, as run 6 logged it" "greeter 8.989" "$(grep '^greeter ' "$GUEST_DIR/out/boot.tsv" | paste -sd' ')"
+check_true "the desktop untimed, by name" grep -q "desktop: no 'gdm-password:session.: session opened for user $G4F_USER'" <<<"$(boot_row)"
+logged_in
+g4f run13-analyze.txt >"$GUEST_DIR/state/analyze"
+g4f run13-boot.mono >"$GUEST_DIR/state/mono"
+check "run 13's boot, greeter to the user's shell: boot metrics" 0 "$(guest boot_metrics local)"
+check "times each phase from its real lines" "kernel 0.942 initrd 2.660 userspace 24.437 greeter 9.020 desktop 1.146" \
+    "$(paste -sd' ' "$GUEST_DIR/out/boot.tsv")"
+green_boot
+printf '%s\n' ' -3 a' ' -2 b' ' -1 c' '  0 d' >"$GUEST_DIR/state/boots"
+g4f run7-red-boot.assess >"$GUEST_DIR/state/assess.-3"
+g4f run8-red-boot.assess >"$GUEST_DIR/state/assess.-2"
+g4f run16-forced-red-boot.assess >"$GUEST_DIR/state/assess.-1"
+# shellcheck disable=SC2016 # QUALIFY_OUT expands in the fake guest
+check "runs 7, 8 and 16's red boots: only the boot the hook forced red counts" "0|1" \
+    "$(guest eval 'forced_red_boots 3 >"$QUALIFY_OUT/forced"')|$(cat "$GUEST_DIR/out/forced")"
+rm -rf "$GUEST_DIR/state"
+mkdir -p "$GUEST_DIR/state"
+echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
+echo 865 >"$GUEST_DIR/state/greeter-pid"
+g4f run16-greeter.manager >"$GUEST_DIR/state/greeter-manager"
+check "run 16's greeter manager: no Apex user unit starts in the greeter" 0 "$(guest assert_greeter local-settled)"
+check "and the greeter row passes" 1 "$(row local-settled-greeter PASS)"
+logged_in
+g4f run11-login.journal >"$GUEST_DIR/state/journal"
+check "run 11's login journal (0380e70), on today's contract: the login passes" 0 "$(guest login_only local)"
+check_true "with no JS ERROR and no Apex failure in its real lines" grep -q '^| local-login | PASS | .*; 0 JS ERROR line(s) since login' "$GUEST_DIR/out/results.md"
+apex_locked_in
+rm "$GUEST_DIR/state/takes-keys"
+g4f run13-lock-esc.journal >>"$GUEST_DIR/state/journal"
+check "run 13's lock, from its prompt to its JS ERROR, starting no conversation: fails" 1 "$(guest lock_matrix local 1000)"
+check_true "and the first lock row quotes run 13's JS ERROR" grep -q "^| local-lock-wrong-password | FAIL | .*gnome-shell\[1935\]: JS ERROR: TypeError: can't convert undefined to object" \
+    "$GUEST_DIR/out/results.md"
+apex_locked_in
+g4f run16-lock-blank-wake.journal >>"$GUEST_DIR/state/journal"
+: >"$GUEST_DIR/state/blank-unlogged"
+: >"$GUEST_DIR/state/wake-unlogged"
+check "run 16's blank and wake (5197371), whose shell logged neither line: fails" 1 "$(guest lock_matrix local 1000)"
+check_true "naming the blank line, with no JS ERROR in its real lines" grep -q \
+    "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen blank, prompt torn down' after the screen blanked.*no JS ERROR since the row began" \
+    "$GUEST_DIR/out/results.md"
+rm -rf "$GUEST_DIR/state"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
