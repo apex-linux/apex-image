@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# W17b, a throwaway diagnostic in a draft PR, never merged. VM run 17 lost its guest at
-# local-lock-suspend: systemctl suspend, QMP 'suspended', system_wakeup accepted, then no SSH
-# for 900 s and a silent console. This replays that row with qualify.sh's own start_vm (the
-# same QEMU flags), Fedora 45's QEMU and edk2-ovmf 20260812-9.fc45 (the builder VM's), on
-# Fedora 45 bootc with the run's kernel, with and without a locked GNOME session, and an RTC
-# wake beside system_wakeup. It records what tells the hypotheses apart. It never fails the job
-# on a verdict: the step summary and the logs artifact are the result.
+# W17b, a draft PR that is never merged: run 17's local-lock-suspend replayed with qualify.sh's
+# start_vm, Fedora 45's QEMU and OVMF; a verdict never fails the job, setup does (PR #131).
 set -euo pipefail
 
 REPRO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -381,9 +376,8 @@ EOF
 )
 readonly GUEST_PREP
 
-# full: the console stays on through suspend at loglevel 8 with the PM core's debug lines, and
-# three taps write to ttyS0 (prefixed JT, HB, EV) so that userspace is visible after a thaw
-# even with no network. bare: qualify.sh's state (quiet's loglevel 4, console suspended).
+# full keeps the console on through suspend with PM debug lines and taps (JT, HB, EV) on ttyS0,
+# so userspace shows after a thaw with no network; bare is qualify.sh's quiet, suspended console.
 GUEST_INSTRUMENT=$(
     cat <<'EOF'
 set -u
@@ -553,9 +547,8 @@ EOF
     export OVMF_CODE=$QUALIFY_OUT/fw/OVMF_CODE.fd OVMF_VARS=$QUALIFY_OUT/fw/OVMF_VARS.fd OVMF_FORMAT=raw
 }
 
-# qualify.sh's start_vm runs qemu-system-x86_64 -daemonize; this one runs Fedora's in the host's
-# PID and network namespaces under the runner's uid, so the pidfile, kill -0, the hostfwd port,
-# the QMP sockets and every file path work as they do with a native QEMU.
+# Fedora's QEMU in the host's PID and network namespaces as the runner's uid, so the pidfile,
+# kill -0, hostfwd, the QMP sockets and every path behave as qualify.sh's -daemonize expects.
 install_qemu_shim() {
     mkdir -p "$QUALIFY_OUT/shim"
     cat >"$QUALIFY_OUT/shim/qemu-system-x86_64" <<'EOF'
@@ -803,10 +796,8 @@ finish_trial() {
     VERDICT[${META[name]}]=$(jq -r '.verdict // "?"' "$TDIR/verdict.json" 2>/dev/null || echo '?')
 }
 
-# NAME is MODE-WAKE[-OPT...]: MODE G (locked GNOME session) or H (no session); WAKE sw (QMP
-# system_wakeup, as G4) or rtc (the RTC alarm: no PWRBTN_STS); OPT nothing (gsd's
-# power-button-action), stdvga (std VGA for virtio-vga), bare (no in-guest instrumentation),
-# rN (a repeat).
+# MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup) or rtc (no PWRBTN_STS);
+# OPT nothing (gsd's power-button-action), stdvga (VGA, not virtio-vga), bare, rN (a repeat).
 run_trial() {
     local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need
     IFS=- read -r m wake opts <<<"$name"

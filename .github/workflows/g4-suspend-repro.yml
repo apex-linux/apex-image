@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 name: g4-suspend-repro
 
-# W17b, a draft PR that is never merged: VM run 17's local-lock-suspend replayed on a hosted
-# runner with qualify.sh's QEMU flags, Fedora 45's QEMU and OVMF, and instrumentation that tells
-# the hypotheses apart. The verdicts are in the step summary; the job fails only on setup.
+# W17b, a draft PR that is never merged: run 17's local-lock-suspend replayed under hosted KVM.
+# Verdicts are in the step summary; the job fails only on setup.
 on:
   pull_request:
     paths:
