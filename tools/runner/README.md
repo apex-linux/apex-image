@@ -23,6 +23,7 @@ GitHub ── JIT config ──▶ runner.sh once (systemd user service)
 | The RPM key and the store stay in the VM | `ci-build` returns only a tar of the result files: `ci-build.txt`, `gates-passed.txt`, `g2-result.txt`, `g4-results.md`, `g4-passed.txt`, `lock.diff`, G4's logs and, on the daily run, `absorb/`. `~/.local/share/apex/rpm-gnupg` and `~/apex-store` never leave the VM. |
 | Nothing is published | No registry push, no image signing: that waits for the cosign keys (S1d). The workflow token has no permissions (`permissions: {}`), and the job uses no actions. |
 | The container reaches only the VM's sshd on the host | Its network is pasta with only `127.0.0.1:2222` forwarded to the host's loopback, and `--no-map-gw`. `runner.sh check` tests this. |
+| The laptop stays awake through a job, where polkit allows | From the runner's `Running job` line until the job ends, `runner.sh once` holds logind's `sleep`, `idle` and `handle-lid-switch` inhibitor locks (`--who=apex-runner --mode=block`), each taken on its own. A `tail --pid` of the process that watches the job holds each lock, so the locks end with the job, on success, failure or a signal. None is held while the runner waits for a job. The job's log names each lock held or refused (Troubleshooting). |
 | Builds never overlap | `ci-build`, `builder-vm.sh sync`, `run` and `image` all take `~/.apex-build.lock` in the VM. A CI build waits up to 30 minutes for the lock, then exits 75. `just vm-sync` refuses while a CI build runs. |
 
 ## The token
@@ -128,7 +129,8 @@ just runner-preflight
    sudo loginctl enable-linger "$USER"   # only if install says so: keeps it running without a login
    ```
 
-`just runner status` shows the service, the waiting container and the group's runners.
+`just runner status` shows the service, the waiting container, the inhibitor locks
+held (below) and the group's runners.
 `just runner uninstall` stops and removes the service and keeps the token, the key and
 the image.
 
@@ -218,6 +220,11 @@ lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.m
 
 Owner steps that a change on `main` needs on the host, newest first.
 
+- **The runner holds a sleep inhibitor during a job.** Run `just runner install` from a
+  checkout of current `main`, while no VM run is in progress: it installs the new copy and
+  restarts the service. A restart during a job would end that job. The next job's log
+  (`journalctl --user -u apex-runner`), or `just runner status` while it runs, then shows
+  `sleep inhibitor: held (...)` and names any lock polkit refused.
 - **`ci-build` takes `next` (the next lane, ROADMAP S6).** The forced command's grammar
   is now `ci-build <sha> [daily | next]`, plus `ci-build modes`. An older copy refuses
   both. Run `just vm-ci-install` with the VM running, from a checkout of current `main`.
@@ -230,6 +237,24 @@ Owner steps that a change on `main` needs on the host, newest first.
 
 ## Troubleshooting
 
+- **Jobs die with "The self-hosted runner lost communication with the server" after
+  20–40 minutes**, while nobody is at the laptop. The laptop slept: idle suspend or a
+  closed lid stops the runner's container and the builder VM with it. While a job runs,
+  `runner.sh once` holds logind's `sleep`, `idle` and `handle-lid-switch` inhibitor locks,
+  each where polkit allows it. The job's log says which: `sleep inhibitor: held (...)`,
+  and for the others `sleep inhibitor: refused (...); keep the laptop awake for this
+  job`.
+  - **Who gets which lock.** systemd's polkit defaults let any process take `idle`
+    (`org.freedesktop.login1.inhibit-block-idle`). `sleep` and `handle-lid-switch`
+    (`inhibit-block-sleep`, `inhibit-handle-lid-switch`) are refused outside an active
+    session. The runner is a user service outside any session. Whether polkit counts it
+    in your logged-in session decides those two, so read the job's log rather than assume.
+  - **What each lock covers.** `sleep` refuses suspend requests, GNOME's automatic
+    suspend among them. A closed lid is acted on by logind regardless of `sleep`
+    (`LidSwitchIgnoreInhibited=yes` by default); only the `handle-lid-switch` lock stops
+    it.
+  - **When a lock is refused, keep the laptop awake yourself.** In GNOME Settings, Power,
+    turn Automatic Suspend off for "Plugged In", and keep the lid open while a run is due.
 - **Every job fails in seconds with `Connection reset by 127.0.0.1 port 2222`** (exit 255).
   The builder VM is not running, as after a host restart: the service starts on its own,
   the VM does not. Start it with `just vm-start`, then re-run the failed run. `runner.sh

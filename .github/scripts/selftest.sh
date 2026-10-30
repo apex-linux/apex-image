@@ -3219,6 +3219,101 @@ check_true "and says why, naming just vm-start" grep -qF \
 rb_stop
 check "runner: nothing listening does not answer" 1 "$(rc_of rb "$rb_port" builder_answers)"
 
+# --- runner.sh once: logind's inhibitor locks are held while the job runs, and only then ------
+FI="$TMP/runner-inhibit"
+mkdir -p "$FI/bin"
+cat >"$FI/bin/systemd-inhibit" <<'EOF'
+#!/usr/bin/env bash
+# --list shows the locks whose holder lives; otherwise --what is taken, unless refused, for COMMAND.
+if [[ $1 == --list ]]; then
+    echo 'WHO UID USER PID COMM WHAT WHY MODE'
+    while read -r who uid user pid rest; do
+        ! kill -0 "$pid" 2>/dev/null || echo "$who $uid $user $pid $rest"
+    done <"$FAKE_INHIBIT/locks"
+    exit 0
+fi
+while [[ $1 == --* ]]; do
+    case $1 in --what=*) what=${1#*=} ;; --why=*) why=${1#*=} ;; esac
+    shift
+done
+if [[ -e $FAKE_INHIBIT/refuse-$what ]]; then echo 'Failed to inhibit: Access denied' >&2; exit 1; fi
+echo "apex-runner 1000 owner $$ tail $what $why block" >>"$FAKE_INHIBIT/locks"
+exec "$@"
+EOF
+cat >"$FI/bin/podman" <<'EOF'
+#!/usr/bin/env bash
+# podman start --attach: a JIT runner's output for one job, which exits with $FAKE_INHIBIT/rc.
+held() { systemd-inhibit --list | awk '$1 == "apex-runner" { print $6 }' | sort | paste -sd' ' -; }
+echo 'Listening for Jobs'
+held >"$FAKE_INHIBIT/before-job"
+echo '2026-10-30 12:26:00Z: Running job: vm'
+for _ in $(seq 50); do [[ $(held) == "$(cat "$FAKE_INHIBIT/expect")" ]] && break; sleep 0.1; done
+held >"$FAKE_INHIBIT/during-job"
+for _ in $(seq 100); do [[ -e $FAKE_INHIBIT/hold ]] || break; sleep 0.1; done
+echo 'Job vm completed'
+exit "$(cat "$FAKE_INHIBIT/rc")"
+EOF
+chmod +x "$FI/bin/"*
+ri() { # RC EXPECT: attach_job on the fake runner whose job exits RC once the locks EXPECT are held
+    echo "$1" >"$FI/rc"
+    echo "$2" >"$FI/expect"
+    : >"$FI/locks"
+    rm -f "$FI/before-job" "$FI/during-job"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; INHIBIT_WAIT=2; attach_job apex-kvm-x' _ \
+        "$APEX_ROOT/tools/runner/runner.sh" >"$FI/out" 2>"$FI/err"
+}
+ri_held() { PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; inhibitors_held' _ "$APEX_ROOT/tools/runner/runner.sh"; }
+ri_released() { # the locks end with the job: tail --pid sees the watcher gone within a second
+    local i
+    for i in $(seq 30); do [[ -z $(ri_held) ]] && return 0; sleep 0.1; done
+    return 1
+}
+ri_rc=0
+ri 0 'handle-lid-switch idle sleep' || ri_rc=$?
+check "runner: a job that succeeds exits 0 through the watcher" 0 "$ri_rc"
+check "runner: no lock while the runner waits for a job" "" "$(cat "$FI/before-job")"
+check "runner: sleep, idle and the lid switch are held while the job runs" \
+    'handle-lid-switch idle sleep' "$(cat "$FI/during-job")"
+check_true "and the job's log says so" grep -qF \
+    'sleep inhibitor: held (sleep idle handle-lid-switch) for VM job: vm, until the job ends' "$FI/err"
+check_true "the runner's own output passes unchanged" grep -qx '2026-10-30 12:26:00Z: Running job: vm' "$FI/out"
+check "runner: the locks end with the job" 0 "$(rc_of ri_released)"
+ri_rc=0
+ri 1 'handle-lid-switch idle sleep' || ri_rc=$?
+check "runner: a job that fails keeps its exit status" 1 "$ri_rc"
+check "runner: and its locks end too" 0 "$(rc_of ri_released)"
+: >"$FI/refuse-sleep"
+: >"$FI/refuse-handle-lid-switch"
+ri 0 idle
+check "runner: polkit's refusal of sleep and the lid leaves idle held" idle "$(cat "$FI/during-job")"
+check_true "and the job's log names each refusal and asks to keep the laptop awake" grep -qF \
+    'sleep inhibitor: refused (sleep: Failed to inhibit: Access denied;handle-lid-switch: Failed to inhibit: Access denied); keep the laptop awake for this job' \
+    "$FI/err"
+rm "$FI/refuse-sleep" "$FI/refuse-handle-lid-switch"
+echo 'handle-lid-switch idle sleep' >"$FI/expect"
+echo 0 >"$FI/rc"
+: >"$FI/locks"
+: >"$FI/hold"
+# shellcheck disable=SC2016 # expanded by the inner bash
+PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" setsid bash -c '. "$1"; attach_job apex-kvm-x' _ \
+    "$APEX_ROOT/tools/runner/runner.sh" >/dev/null 2>&1 &
+ri_pid=$!
+for _ in $(seq 50); do [[ $(ri_held) == 'handle-lid-switch idle sleep' ]] && break; sleep 0.1; done
+kill -TERM -- "-$ri_pid" 2>/dev/null || true
+wait "$ri_pid" 2>/dev/null || true
+check "runner: a job stopped by a signal (systemctl stop) leaves no lock" 0 "$(rc_of ri_released)"
+rm "$FI/hold"
+: >"$FI/locks"
+check "runner: status says when no lock is held" \
+    'sleep inhibitor: none held (no job runs, or polkit refused the locks: see the job'"'"'s log)' \
+    "$(PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; inhibitor_status' _ "$APEX_ROOT/tools/runner/runner.sh")"
+sleep 30 &
+printf 'apex-runner 1000 owner %s tail %s VM job: vm block\n' "$!" sleep "$!" idle >"$FI/locks"
+check "runner: and which locks are held" 'sleep inhibitor: held (idle sleep)' \
+    "$(PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; inhibitor_status' _ "$APEX_ROOT/tools/runner/runner.sh")"
+kill "$!"
+
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
 mkdir -p "$V/bin"
