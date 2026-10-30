@@ -17,7 +17,7 @@ use crate::core::lock;
 use crate::core::manifest::{self, header_field};
 use crate::core::pair::{self, Moves, PairLock, Side, Soak};
 use crate::core::pins::{self, KernelPins, Nevra, NvidiaPins};
-use crate::core::repos::{self, Repos};
+use crate::core::repos::Repos;
 use crate::core::text;
 use crate::core::utc::UtcSecond;
 use crate::error::{Exit, Result, infra, usage};
@@ -133,19 +133,6 @@ impl Vm<'_> {
         Ok(hold::good_key(&lock::family_line(&locked, family)))
     }
 
-    fn pair_dnf_options(&self) -> Result<Vec<String>> {
-        let mut out = Repos::released().bin;
-        let allow_path = self
-            .root
-            .join("image/packages/updates-testing-allowlist.txt");
-        let allow = repos::testing_includepkgs(fs::read_opt(&allow_path)?.as_deref());
-        if self.ga_reached()? != 1 && !allow.is_empty() {
-            out.push("--repo=updates-testing".into());
-            out.push(format!("--setopt=updates-testing.includepkgs={allow}"));
-        }
-        Ok(out)
-    }
-
     /// A next release's pins are apex-kernel's `fedora-N/`, never 45's.
     fn pins_dir(&self, p: &PairPkg) -> PathBuf {
         let release = &self.settings.fedora;
@@ -198,7 +185,7 @@ impl Vm<'_> {
         self.run_ok(&Cmd::new(Program::Cp).args(["-a", "--"]).arg(from).arg(&job))?;
         fs::write(&job.join(JOB_KERNEL_ENV), &kernel_bytes)?;
         fs::write(&job.join(JOB_NVIDIA_ENV), &nvidia_bytes)?;
-        let dnf = self.pair_dnf_options()?;
+        let dnf = Repos::released().bin;
         let mut files = Vec::new();
         // The README is no input of the job: a fix to it must not rebuild a kernel.
         for path in fs::files_under(&job, &|name| name != "README.md")? {

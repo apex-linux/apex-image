@@ -305,7 +305,7 @@ cmd_build() {
     require podman git sha256sum
     mkdir -p "$APEX_WORK"
     [[ -f $APEX_WORK/inputs.env ]] || die "run 'image.sh context' first"
-    local base repos_base version revision ga run
+    local base repos_base version revision run
     base=$(release_arg BASE)
     is_fedora_pin "$base" ||
         die "$(pin_source BASE) must be a digest pin on registry.fedoraproject.org (registry.fedoraproject.org/<repo>[:tag]@sha256:...), got '$base'"
@@ -316,10 +316,8 @@ cmd_build() {
     [[ $run =~ ^[0-9]+$ ]] || die "invalid run number '$run'"
     version="$APEX_FEDORA.$(date -u +%Y%m%d).$run"
     revision=$(git -c safe.directory="$APEX_ROOT" -C "$APEX_ROOT" rev-parse HEAD)
-    ga=$(ga_reached)
     {
-        printf 'BASE=%q\nAPEX_VERSION=%q\nAPEX_REVISION=%q\nGA_REACHED=%q\n' \
-            "$base" "$version" "$revision" "$ga"
+        printf 'BASE=%q\nAPEX_VERSION=%q\nAPEX_REVISION=%q\n' "$base" "$version" "$revision"
         printf 'CREATED=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } >"$APEX_WORK/build.env"
 
@@ -343,7 +341,6 @@ cmd_build() {
         --build-arg "REPOS_BASE=$repos_base"
         --build-arg "APEX_VERSION=$version"
         --build-arg "APEX_REVISION=$revision"
-        --build-arg "GA_REACHED=$ga"
         --build-arg "RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}"
         # bootc install copies this label into its aleph, and bootupd 0.3 fails
         # `bootupctl update` on an aleph without a version.
@@ -354,7 +351,7 @@ cmd_build() {
         args+=(--build-arg "LOCK=$(paste -sd' ' "$APEX_WORK/replay.lock")")
     fi
     [[ -z ${APEX_COMPOSE:-} ]] || args+=(--build-arg "COMPOSE=$APEX_COMPOSE")
-    ! is_next || args+=(--build-arg "FEDORA=$APEX_FEDORA" --build-arg "FEDORA_GA_DATE=$(release_arg FEDORA_GA_DATE)")
+    ! is_next || args+=(--build-arg "FEDORA=$APEX_FEDORA")
     [[ -z ${APEX_TARGET:-} ]] || args+=(--target "$APEX_TARGET")
 
     group "podman build ($version)"
@@ -365,8 +362,8 @@ cmd_build() {
         "${args[@]}" -f "$APEX_CONTAINERFILE" -t "$IMAGE" "$CONTEXT"
     endgroup
     podman_ image prune --force >/dev/null
-    summary "Built \`$IMAGE\` $version from \`$base\` (GA_REACHED=$ga," \
-        "RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}$([[ -f $APEX_WORK/replay.lock ]] && echo ', lock replay'))"
+    summary "Built \`$IMAGE\` $version from \`$base\`" \
+        "(RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}$([[ -f $APEX_WORK/replay.lock ]] && echo ', lock replay'))"
 }
 
 # No build time goes in, so a rebuild of unchanged inputs publishes nothing.

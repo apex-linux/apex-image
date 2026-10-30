@@ -235,7 +235,6 @@ registry_label() {
 is_digest() { [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]]; }
 
 readonly APEX_CONTAINERFILE="$APEX_ROOT/image/Containerfile"
-readonly APEX_TESTING_ALLOWLIST="$APEX_ROOT/image/packages/updates-testing-allowlist.txt"
 
 # containerfile_arg NAME [FILE]: the unquoted default of the first `ARG NAME=...`.
 containerfile_arg() {
@@ -297,28 +296,8 @@ apex_store() {
     if is_next; then printf '%s/next\n' "$store"; else printf '%s\n' "$store"; fi
 }
 
-ga_reached() {
-    local v=${APEX_GA_REACHED:-}
-    [[ -n $v ]] || v=$(release_arg GA_REACHED)
-    [[ -n $v ]] || v=0
-    [[ $v == 0 || $v == 1 ]] || die "GA_REACHED must be 0 or 1, got '$v'"
-    printf '%s\n' "$v"
-}
-
-testing_includepkgs() {
-    [[ -f $APEX_TESTING_ALLOWLIST ]] || return 0
-    sed -e 's/#.*//' -e 's/[[:space:]]//g' "$APEX_TESTING_ALLOWLIST" | sed '/^$/d' | paste -sd, -
-}
-
-# The image compose's repositories, as dnf5 options. The fedora:45 container enables all
-# of updates-testing before GA, so every dnf5 call that builds what Apex ships uses these.
 dnf_repo_args() {
-    local list
     printf '%s\n' --repo=fedora --repo=updates
-    list=$(testing_includepkgs)
-    if [[ $(ga_reached) == 0 && -n $list ]]; then
-        printf '%s\n' --repo=updates-testing "--setopt=updates-testing.includepkgs=$list"
-    fi
 }
 
 # Only registry.fedoraproject.org keeps old Fedora digests: quay.io/fedora forgets one

@@ -21,8 +21,8 @@ const BUILT_FROM: Option<&str> = option_env!("APEX_LANE_TREE");
     name = "apex-lane",
     about = "The rebuild lane: Fedora SRPMs rebuilt with the Apex inputs of packaging/pkgs/<pkg>/, stored by content key and recorded in rpms.lock.next",
     after_help = concat!(
-        "Environment: APEX_STORE [~/apex-store], APEX_GA_REACHED (overrides the Containerfile's ",
-        "GA_REACHED), APEX_KEEP_WORK=1 (keep the rpmbuild tree in _build/lane/PKG/work), ",
+        "Environment: APEX_STORE [~/apex-store], ",
+        "APEX_KEEP_WORK=1 (keep the rpmbuild tree in _build/lane/PKG/work), ",
         "APEX_RPM_SIGNING_ENV [~/.config/apex/rpm-signing.env], APEX_LANE_RECIPES (the ",
         "checkouts holding packaging/pkgs, ':'-separated) [this checkout].\n\n",
         "Exit status: 0 built or unchanged; 1 infrastructure error (nothing recorded); ",
@@ -92,8 +92,9 @@ struct InContainer {
 struct Common {
     #[arg(long)]
     repos_base: String,
-    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=1))]
-    ga_reached: u8,
+    /// Accepted and ignored until the release after Fedora 45 GA: Fedora 45 is released.
+    #[arg(long = "ga-reached", hide = true, value_parser = clap::value_parser!(u8).range(0..=1))]
+    _ga_reached: Option<u8>,
     #[arg(long, requires = "source1_tree")]
     source1: Option<String>,
     #[arg(long, requires = "source1")]
@@ -111,7 +112,6 @@ impl Common {
             n: 0,
             tool: String::new(),
             repos_base: self.repos_base,
-            ga_reached: self.ga_reached,
             source1: self.source1,
             source1_tree: self.source1_tree,
             locked_evr: None,
@@ -225,9 +225,6 @@ fn settings() -> Result<(Settings, Option<UtcSecond>)> {
     let settings = Settings {
         store: apex_lane::core::fedora::store(&env("APEX_STORE").unwrap_or(default_store), &fedora),
         fedora,
-        ga_override: std::env::var("APEX_GA_REACHED")
-            .ok()
-            .filter(|v| !v.is_empty()),
         keep_work: std::env::var("APEX_KEEP_WORK").is_ok_and(|v| v == "1"),
         signing_env: env("APEX_RPM_SIGNING_ENV")
             .unwrap_or_else(|| home().join(".config/apex/rpm-signing.env")),
@@ -389,4 +386,54 @@ fn in_container(c: InContainer, report: &Reporter) -> Result<Exit> {
         is_root: nix::unistd::geteuid().is_root(),
     };
     container.run().map(|()| Exit::Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn in_container_args(extra: &[&str]) -> container::Args {
+        let base = "registry.fedoraproject.org/fedora@sha256:ab";
+        let argv = [
+            &[
+                "apex-lane",
+                "in-container",
+                "prep",
+                "demo",
+                "--repos-base",
+                base,
+            ][..],
+            extra,
+        ]
+        .concat();
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::InContainer(InContainer {
+                mode: InContainerMode::Prep { pkg, nvr, common },
+            }) => container::Args {
+                nvr,
+                ..common.args(ModeKind::Prep, pkg)
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn in_container_accepts_and_ignores_ga_reached() {
+        let without = in_container_args(&[]);
+        assert_eq!(in_container_args(&["--ga-reached", "0"]), without);
+        assert_eq!(in_container_args(&["--ga-reached", "1"]), without);
+        assert!(
+            Cli::try_parse_from([
+                "apex-lane",
+                "in-container",
+                "prep",
+                "demo",
+                "--repos-base",
+                "x",
+                "--ga-reached",
+                "2"
+            ])
+            .is_err()
+        );
+    }
 }

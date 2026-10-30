@@ -48,7 +48,7 @@ _image-help:
     @echo '  # each component builds its RPMs in its own checkout, as root in fedora:45, and the Apex RPM key signs them:'
     @echo '  #   $APEX_SYSTEM_SRC/.github/scripts/rpms.sh build    the apex RPM'
     @echo '  #   $APEX_DESKTOP_SRC/.github/scripts/rpms.sh build   apex-desktop'
-    @echo '  #   $APEX_KERNEL_SRC/.github/scripts/libfprint.sh build   libfprint, with GA_REACHED and the updates-testing allowlist; exit 3 = degraded'
+    @echo '  #   $APEX_KERNEL_SRC/.github/scripts/libfprint.sh build   libfprint, from fedora and updates; exit 3 = degraded'
     @echo '  tools/builder-vm/lane.sh build all  # the rebuild lane (gnome-shell from apex-gnome); exit 3 = held, degraded or stock'
     @echo '  .github/scripts/image.sh context --rpms-dir _build/rpms/apex --desktop-dir _build/rpms/desktop --libfprint-dir _build/libfprint --lane-lock ~/apex-store/rpms.lock.next'
     @echo '  .github/scripts/image.sh build && .github/scripts/image.sh inspect'

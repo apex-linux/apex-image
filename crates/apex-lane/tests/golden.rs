@@ -203,7 +203,6 @@ fn test_vm<'a>(
         settings: Settings {
             store: store.to_path_buf(),
             fedora: "45".into(),
-            ga_override: None,
             keep_work: false,
             signing_env: store.join("no-signing"),
             exe: store.join("no-exe"),
@@ -292,10 +291,21 @@ fn manifest_header_renders_as_stored() {
         stock: "gnome-shell-51.0-1.fc45".into(),
         pin_nvr: Some("mutter-51.0-1.fc45".into()),
         fedora: "45".into(),
-        ga_reached: 0,
         base: text::lossy(&header_field(&m, "base")),
     });
-    assert_eq!(header.as_bytes(), &m[..header.len()]);
+    let stored: Vec<&[u8]> = text::lines(&m).into_iter().take(2).collect();
+    let stored = format!("{}\n", text::lossy(&stored.join(&b'\n'))).replace(" ga_reached=0 ", " ");
+    assert_eq!(header, stored);
+    for field in [
+        "pkg", "family", "key", "release", "n", "stock", "pin", "fedora", "base",
+    ] {
+        assert_eq!(
+            header_field(header.as_bytes(), field),
+            header_field(&m, field),
+            "{field}"
+        );
+    }
+    assert_eq!(header_field(header.as_bytes(), "ga_reached"), b"");
 }
 
 /// Only line 1, which names the writer, differs from the stored `rpms.lock.next`.

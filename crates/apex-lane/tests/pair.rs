@@ -594,7 +594,7 @@ impl PairTest {
         let r = root.path();
         write(
             &r.join("image/Containerfile"),
-            "FROM x\nARG REPOS_BASE=registry.fedoraproject.org/fedora@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb\nARG GA_REACHED=1\n",
+            "FROM x\nARG REPOS_BASE=registry.fedoraproject.org/fedora@sha256:1e13e11f63e147a40a935c9046c79d53a30b861a3cf05ebb023bb53c562382cb\n",
         );
         write(&r.join(PUBLIC_KEY_PATH), "the committed public key\n");
         write(
@@ -659,7 +659,6 @@ impl PairTest {
             settings: Settings {
                 store: self.store.path().to_path_buf(),
                 fedora: self.fedora.borrow().clone(),
-                ga_override: None,
                 keep_work: false,
                 signing_env: self.store.path().join("rpm-signing.env"),
                 exe: PathBuf::from("/opt/apex-lane"),
@@ -1950,7 +1949,7 @@ fn next_test() -> PairTest {
     let t = PairTest::new();
     write(
         &t.root.path().join("image/fedora/46.env"),
-        format!("FEDORA=46\nLANE=next\nREPOS_BASE={NEXT_BASE}\nGA_REACHED=1\n"),
+        format!("FEDORA=46\nLANE=next\nREPOS_BASE={NEXT_BASE}\n"),
     );
     *t.fedora.borrow_mut() = "46".into();
     t
