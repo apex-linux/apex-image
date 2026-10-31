@@ -50,7 +50,8 @@ after=$(diag_skew)
 marker=$(vm_ssh 'cat /var/tmp/spike-marker')
 check "the disk is back to the save: the marker reads '$marker'" test "$marker" = saved
 check "a file made after the save is gone" vm_ssh '! test -e /var/tmp/spike-after-save'
-check "loadvm printed nothing: '$(cat "$QUALIFY_OUT/logs/loadvm.out")'" test ! -s "$QUALIFY_OUT/logs/loadvm.out"
+loadvm_out=$(<"$QUALIFY_OUT/logs/loadvm.out")
+check "loadvm printed nothing, as diag_snapshot_load reads it: '$loadvm_out'" test -z "$loadvm_out"
 check "the loaded guest's clock was ${skew} s off the host's, then ${after} s" \
     awk -v s="$after" 'BEGIN { exit !(s >= -1 && s <= 1) }'
 
