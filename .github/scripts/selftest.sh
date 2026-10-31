@@ -1660,7 +1660,7 @@ local_flow_stubs() {
     assert_bootloader_updated() { :; }
     as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
     assert_green() { result "$1" PASS "green on sha256:feed"; }
-    stage_local_candidate() { LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
+    stage_local_candidate() { echo "$3" >"$STATE/stage-base"; LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
     counted_rollback() { result "$1-fallback" PASS "back on $2"; }
     create_test_user() { result "$1-user" PASS made; }
     set_test_password() { result "$1-password" PASS set; }
@@ -2014,7 +2014,8 @@ staged() {
 rm -rf "$GUEST_DIR/state"
 mkdir -p "$GUEST_DIR/state"
 printf '%s\n' "$manifest" >"$GUEST_DIR/state/manifest"
-stage() { guest stage_local_candidate local-stage "$D0" localhost/apex:build; }
+IMAGE_ID=$(printf 'b%.0s' {1..64})
+stage() { guest stage_local_candidate local-stage "$D0" "$IMAGE_ID"; }
 staged "$D1" true
 echo "$D1" >"$GUEST_DIR/state/pushed"
 echo "$D2" >"$GUEST_DIR/state/local-digest"
@@ -2022,16 +2023,16 @@ check "a newer image built on the host is staged from the host's registry" 0 "$(
 check "its manifest version extends the booted one" 45.20260929.0.1 "$(jq -r .version "$GUEST_DIR/out/candidate/manifest.json")"
 check "and nothing else changes in it" "$(jq -S 'del(.version)' <<<"$manifest")" "$(jq -S 'del(.version)' "$GUEST_DIR/out/candidate/manifest.json")"
 check "the candidate is the image under test plus that manifest, labelled with its version" \
-    "FROM localhost/apex:build|COPY manifest.json /usr/share/apex/manifest.json|LABEL org.opencontainers.image.version=45.20260929.0.1" \
+    "FROM $IMAGE_ID|COPY manifest.json /usr/share/apex/manifest.json|LABEL org.opencontainers.image.version=45.20260929.0.1" \
     "$(paste -sd'|' "$GUEST_DIR/out/candidate/Containerfile")"
-check "the guest reaches the host's registry over plain HTTP" 'location = "10.0.2.2:5000"|insecure = true' \
-    "$(grep -v '^\[' "$GUEST_DIR/state/registries.conf" | paste -sd'|')"
+check "the guest reaches the host's registry over plain HTTP" '[[registry]]|location = "10.0.2.2:5000"|insecure = true' \
+    "$(paste -sd'|' "$GUEST_DIR/state/registries.conf")"
 check "and trusts that registry alone, for the one switch" \
     '{"default":[{"type":"reject"}],"transports":{"docker":{"10.0.2.2:5000":[{"type":"insecureAcceptAnything"}]}}}' \
     "$(jq -c . "$GUEST_DIR/state/policy.json")"
 check "the registry runs from its pinned digest, stops after the switch, and the candidate is removed" \
-    "podman run -d --rm --name apex-qualify-registry -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v apex-qualify-registry|podman rmi localhost/apex-qualify:candidate" \
-    "$(grep -E '^podman (run|rm|rmi) |^switch$' "$GUEST_DIR/state/host-calls" | sed 1d | paste -sd'|')"
+    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v apex-qualify-registry-5000|podman rmi localhost/apex-qualify:candidate" \
+    "$(grep -E '^podman (run|rm|rmi) |^switch$' "$GUEST_DIR/state/host-calls" | paste -sd'|')"
 check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged 10.0.2.2:5000/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
 echo "$D2" >"$GUEST_DIR/state/pushed"
 echo "$D1" >"$GUEST_DIR/state/local-digest"
@@ -2049,13 +2050,23 @@ check "no staged digest fails" 1 "$(stage)"
 staged "$D1" true
 : >"$GUEST_DIR/state/push-fails"
 check "a failed push fails" 1 "$(stage)"
+: >"$GUEST_DIR/state/host-calls"
+: >"$GUEST_DIR/state/vm-dead"
+check "and qualify.sh's exit after it" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "stops the registry this run started" "podman rm -f -v apex-qualify-registry-5000" \
+    "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
 rm "$GUEST_DIR/state/push-fails"
+: >"$GUEST_DIR/state/registry-fails"
+: >"$GUEST_DIR/state/host-calls"
+check "a registry that does not start fails" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check_true "naming its container and port" grep -qF \
+    "| local-stage | FAIL | cannot start apex-qualify-registry-5000 (docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373) on 127.0.0.1:5000: another run's, or the port taken? |" \
+    "$GUEST_DIR/out/results.md"
+check "and qualify.sh's exit then leaves that container alone" "" "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/registry-fails" "$GUEST_DIR/state/vm-dead"
 : >"$GUEST_DIR/state/pushed"
 check "a push that wrote no digest fails" 1 "$(stage)"
 echo "$D1" >"$GUEST_DIR/state/pushed"
-: >"$GUEST_DIR/state/registry-fails"
-check "a registry that does not start fails" 1 "$(stage)"
-rm "$GUEST_DIR/state/registry-fails"
 : >"$GUEST_DIR/state/switch-fails"
 check "a failed switch fails" 1 "$(stage)"
 rm "$GUEST_DIR/state/switch-fails"
@@ -2644,7 +2655,8 @@ local_ready() { # logged in once, so that the guest has its user's files; cmd_lo
 }
 rows_of() { awk -F' [|] ' '{ sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/results.md" | paste -sd'|'; }
 local_ready
-check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:build')"
+check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:selftest')"
+check "the candidate builds on the installed image's ID, not on its tag" cafe "$(cat "$GUEST_DIR/state/stage-base")"
 check "in cmd_local's row order, with no row after the first FAIL" \
     "local-install PASS|local-stage PASS|local-fallback PASS|local-password PASS|local-login-boot PASS|local-greeter-login PASS|local-boot-metrics SKIP|local-login PASS|local-lock PASS|local-unlock PASS|local-unlock-signal PASS|local-user-units PASS|local-lock-wrong-password PASS|local-lock-esc FAIL" \
     "$(rows_of)"

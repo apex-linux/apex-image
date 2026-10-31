@@ -154,7 +154,7 @@ readonly APEX_MENU_SNIPPET=/usr/lib/bootupd/grub2-static/configs.d/07_apex-menu.
 readonly TEST_USER=apexqa
 readonly LOCAL_CANDIDATE=localhost/apex-qualify:candidate
 readonly CANDIDATE_REGISTRY_IMAGE=docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373 # 2
-readonly CANDIDATE_REGISTRY=apex-qualify-registry
+readonly CANDIDATE_REGISTRY=apex-qualify-registry-$QUALIFY_REGISTRY_PORT
 readonly CANDIDATE_GUEST_CONF=/run/apex-qualify
 # $kernel is the key script's: Fedora's kernel, or the kernel pair's with its kmod (ADR 0015).
 # shellcheck disable=SC2016 # expanded in the image
@@ -207,6 +207,7 @@ DIAG_SHELL_PID=
 DIAG_LOST=
 DIAG_RC=0
 QUALIFY_ERRLOG=
+CANDIDATE_REGISTRY_STARTED=
 # cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
     polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
@@ -2031,18 +2032,23 @@ polkit_actions() {
     result "$test" PASS "pkaction --verbose names vendor $POLKIT_VENDOR for the ${#ids[@]} actions of $POLKIT_ACTIONS: ${ids[*]}"
 }
 
+# A registry this run did not start may be another run's, on another port or this one.
 start_candidate_registry() {
-    stop_candidate_registry
     as_root podman run -d --rm --name "$CANDIDATE_REGISTRY" -p "127.0.0.1:$QUALIFY_REGISTRY_PORT:5000" \
-        "$CANDIDATE_REGISTRY_IMAGE" >/dev/null
+        "$CANDIDATE_REGISTRY_IMAGE" >/dev/null || return 1
+    CANDIDATE_REGISTRY_STARTED=1
 }
 
-stop_candidate_registry() { as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1 || true; }
+stop_candidate_registry() {
+    [[ -n $CANDIDATE_REGISTRY_STARTED ]] || return 0
+    as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1 || true
+    CANDIDATE_REGISTRY_STARTED=
+}
 
-# Apply arms only for another digest whose manifest version is higher. The candidate is built
-# and served on the host: the guest fetches only the layer it lacks, as a real update does.
+# Apply arms only for another digest whose manifest version is higher. Built on the host on
+# BASE, the image ID under test, the candidate costs the guest one layer, as an update does.
 stage_local_candidate() {
-    local test=$1 booted=$2 image=$3 manifest version status pushed dir=$QUALIFY_OUT/candidate
+    local test=$1 booted=$2 base=$3 manifest version status pushed dir=$QUALIFY_OUT/candidate
     local served=127.0.0.1:$QUALIFY_REGISTRY_PORT/apex-qualify:candidate
     local guest_ref=10.0.2.2:$QUALIFY_REGISTRY_PORT/apex-qualify:candidate
     manifest=$(vm_ssh "cat $MANIFEST") || fail "$test" "cannot read $MANIFEST"
@@ -2051,11 +2057,12 @@ stage_local_candidate() {
     mkdir -p "$dir" || fail "$test" "cannot make $dir"
     jq --arg v "$version" '.version = $v' <<<"$manifest" >"$dir/manifest.json" || fail "$test" "cannot write $dir/manifest.json"
     chmod 0644 "$dir/manifest.json"
-    printf 'FROM %s\nCOPY manifest.json %s\nLABEL org.opencontainers.image.version=%s\n' "$image" "$MANIFEST" "$version" \
+    printf 'FROM %s\nCOPY manifest.json %s\nLABEL org.opencontainers.image.version=%s\n' "$base" "$MANIFEST" "$version" \
         >"$dir/Containerfile" || fail "$test" "cannot write $dir/Containerfile"
     as_root podman build --pull=never --tag "$LOCAL_CANDIDATE" "$dir" >"$QUALIFY_OUT/logs/$test.build.log" 2>&1 ||
         fail "$test" "podman build of $LOCAL_CANDIDATE failed: see logs/$test.build.log"
-    start_candidate_registry || fail "$test" "cannot start $CANDIDATE_REGISTRY_IMAGE on 127.0.0.1:$QUALIFY_REGISTRY_PORT"
+    start_candidate_registry ||
+        fail "$test" "cannot start $CANDIDATE_REGISTRY ($CANDIDATE_REGISTRY_IMAGE) on 127.0.0.1:$QUALIFY_REGISTRY_PORT: another run's, or the port taken?"
     # The pushed manifest's digest: the push rewrites the local one that podman image inspect names.
     as_root podman push --tls-verify=false --digestfile "$dir/pushed" "$LOCAL_CANDIDATE" "$served" \
         >"$QUALIFY_OUT/logs/$test.push.log" 2>&1 || fail "$test" "podman push to $served failed: see logs/$test.push.log"
@@ -2283,11 +2290,13 @@ cmd_red() {
 
 cmd_local() {
     (($# == 1)) || die "usage: qualify.sh local localhost/NAME:TAG"
-    local image=$1 digest since
+    local image=$1 digest image_id since
     [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
         die "expected a local image reference localhost/NAME[:TAG], got '$image'"
     digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
         die "$image is not in local container storage (build it with image.sh build)"
+    # The tag can move while G4 runs: the candidate builds on the image installed now.
+    image_id=$(as_root podman image inspect --format '{{.Id}}' "$image") || die "cannot read the ID of $image"
     ensure_key
     install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
     start_vm local
@@ -2299,7 +2308,7 @@ cmd_local() {
     vm_ssh 'command -v apexctl' >/dev/null || fail local-install "$image has no apexctl, so nothing can arm the boot counter"
 
     if [[ $QUALIFY_LAYOUT == separate-boot || $QUALIFY_LAYOUT == luks ]]; then
-        stage_local_candidate local-stage "$digest" "$image"
+        stage_local_candidate local-stage "$digest" "$image_id"
         counted_rollback local "$digest" "$LOCAL_CANDIDATE_DIGEST"
     else
         result local-red SKIP "QUALIFY_LAYOUT=$QUALIFY_LAYOUT: GRUB cannot save the counter on a btrfs /boot"
