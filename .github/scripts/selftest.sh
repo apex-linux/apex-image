@@ -3728,6 +3728,109 @@ check "an artifact labelled with another key is a miss" 5 "$(lookup_rc k1 k2 1)"
 check "an absent artifact is a miss" 3 "$(lookup_rc k1 k1 1 ghcr.io/x/missing)"
 check "a bad workflow name is refused" 1 \
     "$(PATH="$O/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" lookup ghcr.io/x/y k '../evil')"
+# --- oci-artifact.sh pull and digest: what image.sh installs, extracted safely ---------------
+OP=$TMP/oci-pull
+mkdir -p "$OP/bin"
+cat >"$OP/bin/skopeo" <<'EOF'
+#!/usr/bin/env bash
+if [[ $1 == copy ]]; then
+    echo copy >>"$FAKE_COPIES"
+    [[ -d $FAKE_LAYOUT ]] || { echo "Error: initializing source: manifest unknown" >&2; exit 1; }
+    dest=${*: -1}
+    cp -r "$FAKE_LAYOUT" "${dest#dir:}"
+    exit 0
+fi
+[[ ${*: -1} != *missing* ]] || { echo "Error: reading manifest x in y: manifest unknown" >&2; exit 1; }
+if [[ " $* " == *" --raw "* ]]; then printf '{}'; exit 0; fi
+printf '{"Digest":"sha256:%064d","Labels":{}}\n' 7
+EOF
+cat >"$OP/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_SLEEPS"
+EOF
+cat >"$OP/layers.py" <<'EOF'
+import hashlib, io, json, os, sys, tarfile
+
+layout, outside, spec = sys.argv[1:]
+os.makedirs(layout)
+digests = []
+for layer in spec.split(";"):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for entry in filter(None, layer.split("|")):
+            kind, _, rest = entry.partition(":")
+            name, _, value = rest.partition("=")
+            info = tarfile.TarInfo(name)
+            if kind == "link":
+                info.type, info.linkname = tarfile.SYMTYPE, value.replace("@OUT", outside)
+                tar.addfile(info)
+            elif kind in ("fifo", "chr"):
+                info.type = tarfile.FIFOTYPE if kind == "fifo" else tarfile.CHRTYPE
+                info.devmajor, info.devminor = (1, 3) if kind == "chr" else (0, 0)
+                tar.addfile(info)
+            else:
+                info.size = len(value.encode())
+                tar.addfile(info, io.BytesIO(value.encode()))
+    digest = hashlib.sha256(buf.getvalue()).hexdigest()
+    open(os.path.join(layout, digest), "wb").write(buf.getvalue())
+    digests.append(f"sha256:{digest}")
+json.dump({"layers": [{"digest": d} for d in digests]}, open(os.path.join(layout, "manifest.json"), "w"))
+EOF
+chmod +x "$OP/bin/skopeo" "$OP/bin/sleep"
+op_refused() { local rc; rc=$(op_pull "$1"); ((rc != 0)) && echo refused || echo "accepted ($rc)"; } # SPEC
+op_sum() { printf '%s  %s' "$(printf '%s' "$2" | sha256sum | cut -d' ' -f1)" "$1"; } # NAME TEXT: its SHA256SUMS line
+op_pull() { # SPEC: pull's exit for a layout of SPEC's layers (op layers.py); its output in $OP/out, the RPMs in $OP/dest
+    local rc=0
+    rm -rf "$OP/layout" "$OP/dest" "$OP/outside" && mkdir -p "$OP/outside" && : >"$OP/copies" && : >"$OP/sleeps"
+    [[ $1 == - ]] || python3 -I "$OP/layers.py" "$OP/layout" "$OP/outside" "$1"
+    # A FIFO that pull reads would block it: the timeout turns that into a failure.
+    PATH="$OP/bin:$PATH" FAKE_LAYOUT="$OP/layout" FAKE_COPIES="$OP/copies" FAKE_SLEEPS="$OP/sleeps" GITHUB_ACTIONS='' \
+        timeout 60 "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull ghcr.io/x/apex-rpms@sha256:abc "$OP/dest" >"$OP/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+OP_SUMS="file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+$(op_sum b.rpm B)
+"
+check "oci pull: two layers' RPMs, checked against SHA256SUMS" 0 \
+    "$(op_pull "file:rpms/a.rpm=A|file:rpms/notes.txt=N;file:rpms/b.rpm=B|$OP_SUMS")"
+check "and DEST holds the RPMs only" "a.rpm b.rpm" "$(find "$OP/dest" -mindepth 1 -printf '%f\n' | sort | paste -sd' ')"
+check_true "and the log counts them" grep -q "extracted 2 RPM(s) from ghcr.io/x/apex-rpms@sha256:abc into $OP/dest" "$OP/out"
+check "oci pull: a layer without /rpms/SHA256SUMS" 1 "$(op_pull "file:rpms/a.rpm=A")"
+check_true "is named" grep -q "ghcr.io/x/apex-rpms@sha256:abc has no /rpms/SHA256SUMS" "$OP/out"
+check "oci pull: an RPM that SHA256SUMS does not match" 1 "$(op_pull "file:rpms/a.rpm=A|file:rpms/b.rpm=changed|$OP_SUMS")"
+check_true "is named" grep -q "ghcr.io/x/apex-rpms@sha256:abc: RPM checksums do not match SHA256SUMS" "$OP/out"
+check "oci pull: no RPM reaches DEST when one does not match" "" "$(ls "$OP/dest" 2>/dev/null)"
+check "oci pull: a copy that keeps failing" 1 "$(op_pull -)"
+check "is tried 4 times" 4 "$(wc -l <"$OP/copies")"
+check "backing off 10, 20 and 40 s" "10 20 40" "$(paste -sd' ' "$OP/sleeps")"
+check "oci pull: an RPM that is a link out of the layer is refused, and nothing reaches DEST" refused \
+    "$(printf secret >"$TMP/oci-pull-secret"; op_refused "link:rpms/evil.rpm=$TMP/oci-pull-secret|file:rpms/SHA256SUMS=$(op_sum evil.rpm secret)"; ls "$OP/dest" 2>/dev/null)"
+check_true "and named, with the ref" grep -qF \
+    "ghcr.io/x/apex-rpms@sha256:abc: /rpms holds entries that are neither files nor directories: evil.rpm (l)" "$OP/out"
+check "oci pull: a link to another RPM of the layer is refused too" refused \
+    "$(op_refused "file:rpms/a.rpm=A|link:rpms/b.rpm=a.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+$(op_sum b.rpm A)
+")"
+check "oci pull: a FIFO among the RPMs is refused, and named" "refused|1" \
+    "$(op_refused "file:rpms/a.rpm=A|fifo:rpms/pipe.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")|$(grep -cF 'neither files nor directories: pipe.rpm (p)' "$OP/out")"
+# Unprivileged, tar cannot make the node and pull fails there; as root it is made and pull names it.
+check "oci pull: a device node among the RPMs is refused" refused \
+    "$(op_refused "file:rpms/a.rpm=A|chr:rpms/null.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")"
+check "and DEST stays empty" "" "$(ls "$OP/dest" 2>/dev/null)"
+check "oci pull: an rpms directory that is a link out of the layer is refused" refused \
+    "$(op_refused "link:rpms=@OUT;file:rpms/a.rpm=A|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")"
+check "and nothing is written through it" "" "$(ls "$OP/outside")"
+check "oci pull: a ../ member writes nothing outside the layer" "" \
+    "$(op_pull "file:../oci-pull-escape.rpm=X|$OP_SUMS" >/dev/null; [[ ! -e $TMP/oci-pull-escape.rpm ]] || echo written)"
+check "oci pull: an absolute member writes nothing outside the layer" "" \
+    "$(op_pull "file:$OP/outside/abs.rpm=X|$OP_SUMS" >/dev/null; ls "$OP/outside")"
+check "oci digest: the registry's digest" "sha256:$(printf '%064d' 7)" \
+    "$(PATH="$OP/bin:$PATH" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/oci-artifact.sh" digest ghcr.io/x/y:k)"
+check "oci digest: an absent ref" 3 \
+    "$(PATH="$OP/bin:$PATH" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" digest ghcr.io/x/missing:k)"
 # --- lane-rehearsal.sh: S1c's rehearsals on a fake lane, image.sh, publish.sh and COPR ---
 LR="$TMP/lane-rehearsal"
 mkdir -p "$LR/co/.github/scripts" "$LR/co/tools/builder-vm/rehearsal" "$LR/co/_build/rpms/apex" \
