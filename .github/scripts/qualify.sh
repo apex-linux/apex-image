@@ -70,7 +70,7 @@ the digest that will be published.
                                      order, whatever an earlier one did: boot-metrics
                                      login-lock-unlock lock-wrong-password lock-esc
                                      lock-blank-wake lock-reduce-motion polkit-agent
-                                     polkit-actions crash-guard safe-karg-lock
+                                     polkit-actions crash-guard-late crash-guard safe-karg-lock
                                      lock-suspend lock-suspend-s3 (all when none is
                                      named). lock-suspend-s3 is deep sleep woken by
                                      QMP, never a G4 row: OVMF 20260812-9 asserts on
@@ -165,6 +165,7 @@ readonly G4_NOT_DUE=3
 readonly APEX_SCHEMA=io.github.apex_linux.Apex.Desktop
 readonly CRASH_GUARD_MARKER=apex-shell-starting
 readonly CRASH_GUARD_TRIPPED=.local/state/apex/shell-guard-tripped
+readonly CRASH_GUARD_TRIPS=.local/state/apex/shell-guard-trips
 readonly TEST_FAULT_FILE=.config/environment.d/90-apex-qualify-fault.conf
 readonly APEX_FAILURE='Apex: (the layer did not load|hook .* threw|enable failed|feature .* off for this session|safe mode)'
 # apex-gnome's lock (S3b): its lines in the user journal, and the karg that turns the layer off.
@@ -194,6 +195,7 @@ LOCAL_CANDIDATE_DIGEST=
 LUKS_PASSPHRASE=
 FEATURE_NOTE=
 SAFE_LOGIN_SINCE=
+LATE_LOGIN_SINCE=
 LOCK_ROW=
 LOCK_ROW_SINCE=
 DIAG=
@@ -204,7 +206,7 @@ DIAG_RC=0
 QUALIFY_ERRLOG=
 # cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
-    polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
+    polkit-agent polkit-actions crash-guard-late crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -1844,6 +1846,9 @@ lock_matrix() {
     matrix_blank_wake_gated "$name" "$pid" "$base" "$login_since"
     matrix_suspend "$name" "$pid" "$base"
     matrix_reduce_motion "$name" "$pid" "$base" "$login_since"
+    # With DESK-1 a late shell failure counts: a stray one would turn later rows' layer off.
+    ! vm_ssh "test -e ~$TEST_USER/$CRASH_GUARD_TRIPS" ||
+        fail "$name-lock-matrix" "$TEST_USER's ~/$CRASH_GUARD_TRIPS exists after the lock matrix: a gnome-shell failed past its 60 s window and counted toward a trip"
 }
 
 # apex.safe=1 turns the layer off at shell start: upstream's two-stage lock asks only after a key.
@@ -1878,6 +1883,57 @@ user_manager_gone() {
     ! vm_ssh "systemctl -q is-active user@$uid.service"
 }
 
+crash_window_closed() { ! crash_guard_armed "$1"; }
+
+# The booted deployment as ostree names it, <checksum>.<serial>: the guard counts per deployment.
+booted_deployment() {
+    vm_ssh 'rpm-ostree status --json' | jq -r '.deployments[] | select(.booted) | "\(.checksum).\(.serial)"'
+}
+
+# Aborts the session's gnome-shell once its 60 s window has closed, waits for the guard's
+# unit, and logs in again.
+late_abort() {
+    local test=$1 uid=$2 cursor pid
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" "/run/user/$uid/$CRASH_GUARD_MARKER outlived the layer's 60 s window" \
+        crash_window_closed "$uid"
+    cursor=$(user_journal_cursor) || true
+    [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
+    pid=$(shell_pid "$uid") || fail "$test" "no gnome-shell runs as $TEST_USER"
+    vm_ssh "kill -ABRT $pid" || fail "$test" "cannot abort gnome-shell $pid"
+    wait_until "$test" "$QUALIFY_LOGIN_TIMEOUT" "apex-shell-safe.service did not finish after gnome-shell $pid aborted" \
+        user_journal_after "$cursor" "Finished apex-shell-safe.service"
+    log_out "$test" "$uid"
+    greeter_login "$test"
+}
+
+# DESK-1 (apex-desktop#32): past the 60 s window a shell failure counts once per deployment,
+# the second one trips, and a trip zeroes the count. Leaves a fresh login with the layer on.
+crash_guard_late() {
+    local name=$1 test=$1-crash-guard-late deployment trips
+    deployment=$(booted_deployment) || deployment=
+    [[ $deployment =~ ^[0-9a-f]{64}\.[0-9]+$ ]] ||
+        fail "$test" "cannot read the booted deployment from rpm-ostree status --json (got '${deployment:-nothing}')"
+    late_abort "$test" "$SESSION_UID"
+    [[ $(user_setting "$SESSION_UID" "$APEX_SCHEMA" layer-enabled) == true ]] ||
+        fail "$test" "one late abort turned the layer off: past the 60 s window a failure only counts"
+    ! vm_ssh "test -e ~$TEST_USER/$CRASH_GUARD_TRIPPED" || fail "$test" "one late abort left ~/$CRASH_GUARD_TRIPPED"
+    trips=$(vm_ssh "cat ~$TEST_USER/$CRASH_GUARD_TRIPS") || trips=
+    [[ $trips == "$deployment 1" ]] || fail "$test" "$TEST_USER's ~/$CRASH_GUARD_TRIPS reads '${trips:-nothing}', not '$deployment 1'"
+    result "$test" PASS "gnome-shell aborted past its 60 s window: apex-shell-safe.service ran, the layer stayed on, ~/$CRASH_GUARD_TRIPS counts '$deployment 1'"
+    test=$name-crash-guard-late-trip
+    late_abort "$test" "$SESSION_UID"
+    [[ $(user_setting "$SESSION_UID" "$APEX_SCHEMA" layer-enabled) == false ]] ||
+        fail "$test" "a second late abort on $deployment left the layer on"
+    vm_ssh "test -e ~$TEST_USER/$CRASH_GUARD_TRIPPED" || fail "$test" "a second late abort on $deployment left no ~/$CRASH_GUARD_TRIPPED"
+    ! vm_ssh "test -e ~$TEST_USER/$CRASH_GUARD_TRIPS" || fail "$test" "the trip left ~/$CRASH_GUARD_TRIPS: a trip zeroes the count"
+    result "$test" PASS "a second late abort on $deployment: layer-enabled false, ~/$CRASH_GUARD_TRIPPED, and the count zeroed"
+    user_run "$SESSION_UID" gsettings set "$APEX_SCHEMA" layer-enabled true || fail "$test" "cannot turn the layer back on"
+    vm_ssh "rm -f ~$TEST_USER/$CRASH_GUARD_TRIPPED" || fail "$test" "cannot remove ~$TEST_USER/$CRASH_GUARD_TRIPPED"
+    log_out "$name-crash-guard-late-reset" "$SESSION_UID"
+    LATE_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail "$name-crash-guard-late-reset" "cannot read the guest's clock"
+    greeter_login "$name-crash-guard-late-reset"
+}
+
 log_out() {
     local test=$1 uid=$2
     vm_ssh "loginctl terminate-user $TEST_USER" >/dev/null 2>&1 || true
@@ -1901,7 +1957,9 @@ crash_guard_logins() {
     grep -q 'aborting the shell' "$log" || fail "$name-crash-guard" "the shell did not abort (logs/${log##*/})"
     grep -q 'Finished apex-shell-safe.service' "$log" ||
         fail "$name-crash-guard" "apex-shell-safe.service did not finish (logs/${log##*/})"
-    result "$name-crash-guard" PASS "a login with APEX_SHELL_TEST_FAULT=abort-after-enable in ~/$TEST_FAULT_FILE: the shell aborted, apex-shell-safe.service ran and left ~/$CRASH_GUARD_TRIPPED (logs/${log##*/})"
+    ! vm_ssh "test -e ~$TEST_USER/$CRASH_GUARD_TRIPS" ||
+        fail "$name-crash-guard" "a failure inside the 60 s window left ~/$CRASH_GUARD_TRIPS: it trips at once, uncounted"
+    result "$name-crash-guard" PASS "a login with APEX_SHELL_TEST_FAULT=abort-after-enable in ~/$TEST_FAULT_FILE: the shell aborted, apex-shell-safe.service ran and left ~/$CRASH_GUARD_TRIPPED and no ~/$CRASH_GUARD_TRIPS (logs/${log##*/})"
 
     log_out "$name-safe-login" "$uid"
     vm_ssh "rm -f ~$TEST_USER/$TEST_FAULT_FILE" || fail "$name-safe-login" "cannot remove ~$TEST_USER/$TEST_FAULT_FILE"
@@ -2289,6 +2347,7 @@ cmd_local() {
     lock_matrix local "$since"
     polkit_agent local "$since"
     polkit_actions local
+    crash_guard_late local
     crash_guard_logins local
     polkit_agent local-safe "$SAFE_LOGIN_SINCE" stock
     safe_karg_lock local
@@ -2383,6 +2442,13 @@ diag_unit() {
             polkit_agent local "$DIAG_LOGIN_SINCE"
             ;;
         polkit-actions) polkit_actions local ;;
+        crash-guard-late)
+            diag_need_login local-crash-guard-late
+            wait_session local-crash-guard-late user "$TEST_USER"
+            diag_layer_active local-crash-guard-late
+            crash_guard_late local
+            DIAG_LOGIN_SINCE=$LATE_LOGIN_SINCE
+            ;;
         crash-guard)
             crash_guard_logins local
             DIAG_LOGIN_SINCE=$SAFE_LOGIN_SINCE

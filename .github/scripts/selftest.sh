@@ -1499,6 +1499,7 @@ password_typed() {
     elif [[ -e $STATE/fault-file ]]; then
         if [[ ! -e $STATE/guard-broken ]]; then
             : >"$STATE/tripped"
+            [[ ! -e $STATE/guard-counts-early ]] || echo "$DEPLOYMENT 1" >"$STATE/trips"
             printf '%s\n' 'Apex: APEX_SHELL_TEST_FAULT=abort-after-enable: aborting the shell' \
                 'Finished apex-shell-safe.service - Turn the Apex desktop layer off' >>"$STATE/journal"
         fi
@@ -1512,6 +1513,31 @@ password_typed() {
     fi
     conversations "$(($(from conversations) - 1))"
     rm -f "$STATE/asking"
+}
+DEPLOYMENT=$(printf '0123456789abcdef%.0s' 1 2 3 4).1
+# gnome-shell aborts past its 60 s window: DESK-1's guard runs and counts per deployment; the
+# guard-* flags are its mutants.
+shell_aborts() {
+    local dep=$DEPLOYMENT line n=0
+    [[ ! -e $STATE/guard-no-serial ]] || dep=${DEPLOYMENT%.*}
+    echo 'Finished apex-shell-safe.service - Turn the Apex desktop layer off' >>"$STATE/journal"
+    rm -f "$STATE/session" "$STATE/manager-active" "$STATE/asking"
+    echo 'c1 60578 wayland' >"$STATE/greeter"
+    conversations 0
+    [[ ! -e $STATE/tripped ]] || return 0
+    if [[ -e $STATE/guard-old ]]; then
+        : >"$STATE/tripped"
+        return 0
+    fi
+    line=$(from trips)
+    [[ ${line% *} != "$dep" ]] || n=${line##* }
+    n=$((n + 1))
+    if ((n >= 2)) || [[ -e $STATE/guard-threshold-1 ]]; then
+        : >"$STATE/tripped"
+        if [[ -e $STATE/guard-no-zero ]]; then echo "$dep $n" >"$STATE/trips"; else rm -f "$STATE/trips"; fi
+    else
+        echo "$dep $n" >"$STATE/trips"
+    fi
 }
 pkexec_typed() {
     if [[ "$TEST_USER:$(from typed)" == "$(from chpasswd)" ]]; then
@@ -1786,6 +1812,14 @@ vm_ssh() {
             fi
             if [[ -e $STATE/crash ]]; then echo 1235 >"$STATE/pid"; fi
             if [[ -e $STATE/js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: x is null' >>"$STATE/journal"; fi ;;
+        "rpm-ostree status --json")
+            [[ ! -e $STATE/no-deployment ]] || return 1
+            printf '{"deployments":[{"booted":false,"checksum":"%s","serial":0},{"booted":true,"checksum":"%s","serial":%s}]}\n' \
+                "$(printf 'f%.0s' {1..64})" "${DEPLOYMENT%.*}" "${DEPLOYMENT##*.}" ;;
+        "kill -ABRT "*) shell_aborts ;;
+        "cat ~$TEST_USER/$CRASH_GUARD_TRIPS") from trips | grep . ;;
+        "test -e ~$TEST_USER/$CRASH_GUARD_TRIPS") [[ -e $STATE/trips ]] ;;
+        "rm -f ~$TEST_USER/$CRASH_GUARD_TRIPPED") rm -f "$STATE/tripped" ;;
         "loginctl terminate-user $TEST_USER")
             rm -f "$STATE/session" "$STATE/manager-active" "$STATE/asking"
             echo 'c1 60578 wayland' >"$STATE/greeter"
@@ -2504,6 +2538,43 @@ echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
 : >"$GUEST_DIR/state/guard-broken"
 check "a fault login whose guard never trips fails" 1 "$(guest crash_guard_logins local)"
 check "at the crash guard" 1 "$(row local-crash-guard FAIL)"
+DEPLOYMENT=$(printf '0123456789abcdef%.0s' 1 2 3 4).1
+TRIPS=.local/state/apex/shell-guard-trips
+logged_in
+echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
+: >"$GUEST_DIR/state/guard-counts-early"
+check "a trip inside the 60 s window that also counts fails" 1 "$(guest crash_guard_logins local)"
+check_true "naming the count" grep -qF "| local-crash-guard | FAIL | a failure inside the 60 s window left ~/$TRIPS: it trips at once, uncounted" \
+    "$GUEST_DIR/out/results.md"
+
+# shellcheck disable=SC2016 # expanded by the fake guest
+late() { guest eval 'wait_session t user apexqa; crash_guard_late local'; }
+late_login() { logged_in; rm -f "$GUEST_DIR/state/marker"; } # its 60 s window has closed
+late_login
+check "DESK-1: two late aborts, the first counted and the second tripping" 0 "$(late)"
+check_true "the first counts 1 on the booted deployment, checksum and serial" grep -qF \
+    "| local-crash-guard-late | PASS | gnome-shell aborted past its 60 s window: apex-shell-safe.service ran, the layer stayed on, ~/$TRIPS counts '$DEPLOYMENT 1'" \
+    "$GUEST_DIR/out/results.md"
+check "the second trips and zeroes it" 1 "$(row local-crash-guard-late-trip PASS)"
+check "and the row leaves a fresh login with the layer on" "1:no tripped:no trips" \
+    "$(row local-crash-guard-late-reset-greeter-login PASS):$([[ -e $GUEST_DIR/state/tripped ]] && echo tripped || echo no tripped):$([[ -e $GUEST_DIR/state/trips ]] && echo trips || echo no trips)"
+late_fails() { # FLAG ROW DETAIL: with FLAG set, crash_guard_late fails at ROW saying DETAIL
+    late_login
+    : >"$GUEST_DIR/state/$1"
+    check "DESK-1: $1 fails" 1 "$(late)"
+    check_true "$1: at $2, saying so" grep -qF "| $2 | FAIL | $3" "$GUEST_DIR/out/results.md"
+}
+late_fails guard-old local-crash-guard-late 'one late abort turned the layer off: past the 60 s window a failure only counts'
+late_fails guard-threshold-1 local-crash-guard-late 'one late abort turned the layer off: past the 60 s window a failure only counts'
+late_fails guard-no-serial local-crash-guard-late "apexqa's ~/$TRIPS reads '${DEPLOYMENT%.*} 1', not '$DEPLOYMENT 1'"
+late_fails guard-no-zero local-crash-guard-late-trip "the trip left ~/$TRIPS: a trip zeroes the count"
+late_fails marker local-crash-guard-late "/run/user/1000/apex-shell-starting outlived the layer's 60 s window"
+late_fails no-deployment local-crash-guard-late "cannot read the booted deployment from rpm-ostree status --json (got 'nothing')"
+apex_locked_in
+echo "$DEPLOYMENT 1" >"$GUEST_DIR/state/trips"
+check "a late shell failure left counted by the lock matrix fails it" 1 "$(guest lock_matrix local 1000)"
+check_true "by name, not by turning the layer off later" grep -qF "| local-lock-matrix | FAIL | apexqa's ~/$TRIPS exists after the lock matrix" \
+    "$GUEST_DIR/out/results.md"
 
 logged_in
 rm -f "$GUEST_DIR/record"
@@ -2622,7 +2693,7 @@ diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$G
 # On this guest Esc also leaves polkit's dialog open, and no policy file exists: two more
 # FAILs, each the unit's own.
 check "but every unit after it still runs, each with its own verdict" \
-    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard-late PASS|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
     "$(diag_units)"
 check_true "the suspends run last, deep S3 after s2idle, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
     test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend-s3 "
