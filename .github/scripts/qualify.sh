@@ -1600,12 +1600,13 @@ suspend_environment() {
 # PM messages on the console through the suspend, and the guest's journal and network on
 # ttyS0 every 5 s: the serial log is all that is left when ssh does not come back.
 suspend_diagnostics() {
-    local test=$1
+    local test=$1 heartbeat
     vm_ssh 'echo N >/sys/module/printk/parameters/console_suspend; echo 1 >/sys/power/pm_debug_messages; echo 1 >/sys/power/pm_print_times; dmesg -n 7' ||
         warn "$test: cannot turn on the PM debug messages"
     vm_ssh 'systemd-run --quiet --unit=apex-qualify-tap -p StandardOutput=tty -p TTYPath=/dev/ttyS0 journalctl -f -o short-monotonic --no-pager' ||
         warn "$test: cannot tap the journal to ttyS0"
-    vm_ssh "systemd-run --quiet --unit=apex-qualify-heartbeat -p StandardOutput=tty -p TTYPath=/dev/ttyS0 sh -c $(printf '%q' "$SUSPEND_HEARTBEAT")" ||
+    heartbeat=$(printf '%q' "$SUSPEND_HEARTBEAT")
+    vm_ssh "systemd-run --quiet --unit=apex-qualify-heartbeat -p StandardOutput=tty -p TTYPath=/dev/ttyS0 sh -c $heartbeat" ||
         warn "$test: cannot start the heartbeat on ttyS0"
 }
 
