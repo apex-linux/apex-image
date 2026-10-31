@@ -1583,9 +1583,11 @@ readonly SUSPEND_HEARTBEAT='while :; do printf "heartbeat %s\n" "$(cat /proc/upt
 
 # The suspend has failed only in a VM so far: name the host, QEMU, firmware and guest kernel.
 suspend_environment() {
-    local test=$1 qemu nested cpu kernel mem_sleep line
+    local test=$1 qemu nested='' f cpu kernel mem_sleep line
     qemu=$(rpm -qf "$(command -v qemu-system-x86_64)" 2>/dev/null || qemu-system-x86_64 --version 2>/dev/null | head -n 1) || qemu=
-    nested=$(cat /sys/module/kvm_amd/parameters/nested /sys/module/kvm_intel/parameters/nested 2>/dev/null | head -n 1) || nested=
+    for f in /sys/module/kvm_amd/parameters/nested /sys/module/kvm_intel/parameters/nested; do
+        if [[ -r $f ]]; then nested=$(<"$f") && break; fi
+    done
     cpu=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -n 1) || cpu=
     kernel=$(vm_ssh 'uname -r' 2>/dev/null) || kernel=
     mem_sleep=$(vm_ssh 'cat /sys/power/mem_sleep' 2>/dev/null) || mem_sleep=
@@ -1659,14 +1661,17 @@ wait_resumed() {
     done
 }
 
-# PATTERN since SINCE, in this boot's journal of the process COMM.
+# PATTERN since SINCE, in this boot's journal of the process COMM. A journal it cannot read
+# fails TEST: no read is no proof that a line is absent.
 journal_since_has() {
-    local since=$1 comm=$2 pattern=$3
-    vm_ssh "journalctl -b _COMM=$comm --since @$((since - 1)) -o cat --no-pager --grep '$pattern'" 2>/dev/null | grep -q .
+    local test=$1 since=$2 comm=$3 pattern=$4 log
+    log=$(vm_ssh "journalctl -b _COMM=$comm --since @$((since - 1)) -o cat --no-pager") ||
+        fail "$test" "cannot read $comm's journal since the row began"
+    grep -qE -- "$pattern" <<<"$log"
 }
 
 matrix_suspend() {
-    local test=$1-lock-suspend pid=$2 base=$3 since boot_id cursor wake_line
+    local test=$1-lock-suspend pid=$2 base=$3 since boot_id woken_boot cursor wake_line
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_row "$test" "$since"
     boot_id=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id"
@@ -1684,15 +1689,17 @@ matrix_suspend() {
     screendump "$test-woken"
     wait_resumed "$test" "$wake_line"
     suspend_serial_after_wake "$test" "$wake_line"
+    woken_boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id after the wake"
+    [[ $woken_boot == "$boot_id" ]] || fail "$test" "the guest rebooted instead of resuming (boot $boot_id -> $woken_boot)"
     # The guest's first S3: its PM lines and the virtio devices' resume, kept whatever follows.
     vm_ssh "journalctl -k -b --since @$((since - 1)) -o short-monotonic --no-pager" >"$QUALIFY_OUT/logs/$test.kernel.txt" 2>&1 ||
         warn "$test: cannot save the kernel journal since the row began"
     screendump "$test-resumed"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "logind logged no \"Operation 'suspend' finished.\" after the wake" \
-        journal_since_has "$since" systemd-logind "Operation .suspend. finished"
+        journal_since_has "$test" "$since" systemd-logind "Operation .suspend. finished"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "NetworkManager logged no wake after the suspend" \
-        journal_since_has "$since" NetworkManager "sleep: wake requested"
-    ! journal_since_has "$since" systemd-logind "Power key pressed" ||
+        journal_since_has "$test" "$since" NetworkManager "sleep: wake requested"
+    ! journal_since_has "$test" "$since" systemd-logind "Power key pressed" ||
         fail "$test" "logind logged a power key press: the wake reached the guest as a power button"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the session is not locked after resume" still_locked
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no '$APEX_LOCK_REBUILT' after the resume" \
@@ -2481,8 +2488,9 @@ cmd_local_diag() {
     done
     save_journal final
     stop_vm
-    drop_disk local
     for unit in "${DIAG_RUN[@]}"; do [[ ${DIAG_STATUS[$unit]} == PASS ]] || failed=$((failed + 1)); done
+    ((failed == 0)) || save_disk_journal local || warn "cannot read the journal off $QUALIFY_OUT/local.raw"
+    drop_disk local
     ((failed == 0)) || die "local-diag: $failed of ${#DIAG_RUN[@]} unit(s) did not pass ($QUALIFY_OUT/diag.md)"
     log "local-diag: all ${#DIAG_RUN[@]} unit(s) passed ($QUALIFY_OUT/diag.md)"
 }
@@ -2575,21 +2583,38 @@ qualify_errexit() {
     [[ -z $QUALIFY_ERRLOG ]] || printf 'line %s: %s exited %s\n' "$2" "$3" "$1" >>"$QUALIFY_ERRLOG"
 }
 
-# A failed run's guest may not answer ssh: its journal comes off the disk, read-only.
+# A failed run's guest may not answer ssh: its journal comes off the disk, read-only. Under
+# QUALIFY_LAYOUT=luks /var is the btrfs subvolume var inside the LUKS2 root.
 save_disk_journal() {
-    local name=$1 disk=$QUALIFY_OUT/$1.raw mnt=$QUALIFY_OUT/mnt-$1-journal loop journal
+    local name=$1 disk=$QUALIFY_OUT/$1.raw mnt=$QUALIFY_OUT/mnt-$1-journal mapper=apex-qualify-$1-journal
+    local loop dev opts=ro journal='' rc=1
     [[ -f $disk ]] || return 0
     loop=$(as_root losetup --find --show --partscan --read-only "$disk") || return 1
+    dev=${loop}p3
+    if [[ -n $LUKS_PASSPHRASE ]]; then
+        if printf '%s' "$LUKS_PASSPHRASE" | as_root cryptsetup open --readonly --key-file - "$dev" "$mapper"; then
+            dev=/dev/mapper/$mapper opts=ro,subvol=var
+        else
+            dev=
+        fi
+    fi
     mkdir -p "$mnt"
-    if as_root mount -o ro,rescue=nologreplay "${loop}p3" "$mnt" 2>/dev/null || as_root mount -o ro "${loop}p3" "$mnt"; then
-        # shellcheck disable=SC2016 # expanded by the root shell
-        journal=$(as_root sh -c 'ls -d "$1"/ostree/deploy/*/var/log/journal 2>/dev/null' sh "$mnt" | head -n 1) || journal=
-        if [[ -n $journal ]]; then
-            as_root journalctl -D "$journal" -o short-monotonic --no-pager >"$QUALIFY_OUT/logs/$name.disk-journal.txt" 2>&1 || true
+    if [[ -n $dev ]] && { as_root mount -o "$opts,rescue=nologreplay" "$dev" "$mnt" 2>/dev/null || as_root mount -o "$opts" "$dev" "$mnt"; }; then
+        if [[ -n $LUKS_PASSPHRASE ]]; then
+            ! as_root test -d "$mnt/log/journal" || journal=$mnt/log/journal
+        else
+            # shellcheck disable=SC2016 # expanded by the root shell
+            journal=$(as_root sh -c 'ls -d "$1"/ostree/deploy/*/var/log/journal 2>/dev/null' sh "$mnt" | head -n 1) || journal=
+        fi
+        if [[ -n $journal ]] &&
+            as_root journalctl -D "$journal" -o short-monotonic --no-pager >"$QUALIFY_OUT/logs/$name.disk-journal.txt" 2>&1; then
+            rc=0
         fi
         as_root umount "$mnt" || as_root umount -l "$mnt" || true
     fi
+    [[ $dev != /dev/mapper/* ]] || as_root cryptsetup close "$mapper" || true
     as_root losetup --detach "$loop" || true
+    return "$rc"
 }
 
 cleanup() {
