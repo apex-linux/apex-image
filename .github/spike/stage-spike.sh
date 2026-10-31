@@ -55,7 +55,7 @@ mkdir -p "$dir" && echo g4 >"$dir/stamp"
 printf 'FROM %s\nCOPY stamp /usr/share/apex-spike-stamp\n' "$IMAGE" >"$dir/Containerfile"
 timed "registry: podman build (host)" as_root podman build --pull=never --tag "$CANDIDATE" "$dir"
 timed "registry: start registry:2 (host)" as_root podman run -d --name spike-registry -p 127.0.0.1:5000:5000 "$REGISTRY_IMAGE"
-timed "registry: podman push (host)" as_root podman push --tls-verify=false "$CANDIDATE" "$SERVED"
+timed "registry: podman push (host)" as_root podman push --tls-verify=false --digestfile "$dir/pushed" "$CANDIDATE" "$SERVED"
 host_minutes=$(minutes $((SECONDS - t0)))
 fresh_guest registry
 vm_ssh "mkdir -p /run/apex-qualify && printf '[[registry]]\nlocation = \"10.0.2.2:5000\"\ninsecure = true\n' >/run/apex-qualify/registries.conf &&
@@ -68,10 +68,11 @@ as_root podman logs --since "$since" spike-registry >"$QUALIFY_OUT/logs/registry
 fetches() { grep -o '"GET /v2/apex-candidate/blobs/[^"]*" [0-9]* [0-9]*' "$QUALIFY_OUT/logs/registry.log" || true; }
 blobs=$(fetches | grep -c . || true)
 bytes=$(fetches | awk '{ s += $NF } END { print s + 0 }')
-served=$(as_root podman image inspect --format '{{.Digest}}' "$CANDIDATE")
+pushed=$(cat "$dir/pushed")
+match=$([[ $registry_digest == "$pushed" ]] && echo matches || echo DIFFERS FROM)
 layers=$(as_root podman image inspect --format '{{len .RootFS.Layers}}' "$CANDIDATE")
 stop_vm
 summary "" "- Booted: $booted" "- Staged from containers-storage: $storage_digest" \
-    "- Staged from the registry: $registry_digest (the host's candidate: $served)" \
+    "- Staged from the registry: $registry_digest, which $match the manifest the host pushed ($pushed)" \
     "- The guest fetched $blobs blob(s), $((bytes / 1024)) KiB, of the candidate's $layers layers" \
     "- Host-side registry steps together: $host_minutes min"
