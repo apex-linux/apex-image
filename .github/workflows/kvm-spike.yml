@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: kvm-spike
+
+# W17, a draft PR that is never merged: a go/no-go for hosted VM preflight (T4) only.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/kvm-spike.yml
+      - .github/spike/**
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  boot:
+    name: three bootc installs and boots under KVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: ci-host.sh kvm
+        run: .github/scripts/ci-host.sh kvm
+
+      - name: qualify.sh host-setup
+        run: .github/scripts/qualify.sh host-setup
+
+      - name: Three installs and boots of fedora-bootc:45, with qualify.sh's QEMU
+        run: .github/spike/kvm-boot.sh 3
+
+      - name: Serial logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kvm-spike-logs
+          path: ${{ runner.temp }}/kvm-spike/logs
+          retention-days: 7
+          if-no-files-found: ignore
