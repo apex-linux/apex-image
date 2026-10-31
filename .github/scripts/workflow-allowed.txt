@@ -1,0 +1,2 @@
+# Write permissions a job needs, one per line: WORKFLOW JOB PERMISSION REASON, the PERMISSION as
+# the workflow writes it without spaces (contents:write). workflow-check.sh fails on a stale line.
