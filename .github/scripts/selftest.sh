@@ -2887,8 +2887,11 @@ check "g4 user units: a oneshot nothing enables any more fails" 1 "$(g4u "$APEX_
 mkdir -p "$CT/bin"
 cat >"$CT/bin/dnf5" <<'EOF'
 #!/usr/bin/env bash
+names=0
 while (($#)); do
     if [[ $1 == --whatprovides ]]; then awk -v f="$2" '$1 == f { print $2 }' "$CT_PROVIDES"; fi
+    if ((names)) && ! grep -qxF -- "$1" "${CT_GONE:-/dev/null}"; then echo "$1"; fi
+    [[ $1 != -- ]] || names=1
     shift
 done
 EOF
@@ -3041,6 +3044,20 @@ sed -i '/^switch-input-source-backward=/d' "$CT/desktop/desktop/schemas/90_apex.
 check "contracts: an override without switch-input-source-backward" 1 "$(ct_run)"
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 check "contracts: the G2 keys hold again" 0 "$(ct_run)"
+check "contracts: every listed package resolves" 0 "$(CT_GONE=/dev/null ct_run)"
+CT_BASE_FIRST=$(grep -nvE '^[[:space:]]*(#|$)' "$APEX_ROOT/image/packages/base.txt" | head -n 1)
+CT_GNOME_LAST=$(grep -nvE '^[[:space:]]*(#|$)' "$APEX_ROOT/image/packages/gnome.txt" | tail -n 1)
+printf '%s\n' "${CT_BASE_FIRST#*:}" "${CT_GNOME_LAST#*:}" | sed 's/#.*//; s/[[:space:]]//g' >"$CT/gone"
+ct_gone_rc=0
+PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" CT_GONE="$CT/gone" APEX_SYSTEM_SRC="$CT/system" \
+    APEX_DESKTOP_SRC="$CT/desktop" APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' \
+    "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || ct_gone_rc=$?
+check "contracts: a base.txt and a gnome.txt package that no longer resolve" 1 "$ct_gone_rc"
+check_true "names the base.txt line, and says Fedora moved" grep -qF \
+    "error: image/packages/base.txt:${CT_BASE_FIRST%%:*} '$(sed -n 1p "$CT/gone")' no longer resolves in fedora+updates (a Fedora change, not this PR's" \
+    "$CT/out"
+check_true "names the gnome.txt line" grep -qF \
+    "error: image/packages/gnome.txt:${CT_GNOME_LAST%%:*} '$(sed -n 2p "$CT/gone")' no longer resolves in fedora+updates" "$CT/out"
 ct_g2_weekday clock-show-weekday=false clock-show-weekday=true
 check "contracts: G2's patched shell drops the weekday the image shows" 1 "$(ct_run)"
 ct_g2_weekday clock-show-weekday=true ''
