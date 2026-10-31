@@ -2751,18 +2751,29 @@ printf '/usr/share/applications/%s\n' 'org.gnome.Nautilus.desktop nautilus' 'org
     'org.example.Unlisted.desktop unlisted' 'org.gnome.Terminal.desktop gnome-terminal' >"$CT/provides"
 CT_KEYS="['<Super><Alt>space', 'XF86Keyboard']"
 CT_BACK_KEYS="['<Shift><Super><Alt>space', '<Shift>XF86Keyboard']"
-ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST], and its input-source keys
-    printf "[org.gnome.desktop.interface]\nicon-theme='Apex'\nclock-show-weekday=true\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1" \
-        >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
+declare -A CT_SESSION=([font-name]="'Adwaita Sans 10.125'" [document-font-name]="'Adwaita Sans 10.125'"
+    [monospace-font-name]="'JetBrains Mono 9.75'" [font-hinting]="'none'" [icon-theme]="'Apex'")
+ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST], and its session, input-source keys
+    local key
+    {
+        printf '[org.gnome.desktop.interface]\n'
+        for key in "${!CT_SESSION[@]}"; do printf '%s=%s\n' "$key" "${CT_SESSION[$key]}"; done
+        printf "clock-show-weekday=true\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1"
+    } >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
     printf '\n[org.gnome.desktop.wm.keybindings]\n# Super+Space opens Spotlight.\n%s\n%s\n' \
         "switch-input-source=$CT_KEYS" "switch-input-source-backward=$CT_BACK_KEYS" \
         >>"$CT/desktop/desktop/schemas/90_apex.gschema.override"
 }
-ct_g2_keys() { # KEYS BACKWARD: apex-gnome's G2 copy of the input-source keys
+ct_g2_keys() { # KEYS BACKWARD: apex-gnome's G2 copy of the input-source keys, and of the session keys
+    local key
     mkdir -p "$CT/gnome/tests/shots"
     printf '%s\n' "readonly PR_CASES=(default keys" '    fault-abort)' "# apex-desktop's 90_apex override." \
         "readonly INPUT_SOURCE_KEYS=\"$1\"" "readonly INPUT_SOURCE_BACKWARD_KEYS=\"$2\"" >"$CT/gnome/tests/shots/parts.sh"
+    for key in "${!CT_SESSION[@]}"; do
+        printf 'readonly %s="%s"\n' "$(ct_session_name "$key")" "${CT_SESSION[$key]}" >>"$CT/gnome/tests/shots/parts.sh"
+    done
 }
+ct_session_name() { local name=${1//-/_}; printf 'SESSION_%s' "${name^^}"; }
 ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
 ct_g2_weekday() { # PATCHED SMOKE: the clock-show-weekday values G2's patched.sh and smoke.sh write
     printf "printf '%%s\\n' '[org.gnome.desktop.interface]' '%s' >x.override\n" "$1" >"$CT/gnome/tests/shots/patched.sh"
@@ -2831,6 +2842,29 @@ sed -i '/^switch-input-source-backward=/d' "$CT/desktop/desktop/schemas/90_apex.
 check "contracts: an override without switch-input-source-backward" 1 "$(ct_run)"
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 check "contracts: the G2 keys hold again" 0 "$(ct_run)"
+
+ct_logged() {
+    local rc=0
+    PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
+        APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+check "contracts: G2's session keys equal apex-desktop's" 0 "$(ct_logged)"
+check_true "and the log says so" grep -q "^contracts: G2's shells set .*weekday, input-source, font and icon keys" "$CT/out"
+for key in font-name document-font-name monospace-font-name font-hinting icon-theme; do
+    name=$(ct_session_name "$key")
+    sed -i "s/^readonly $name=.*/readonly $name=\"'Cantarell 11'\"/" "$CT/gnome/tests/shots/parts.sh"
+    check "contracts: G2's $name differs from apex-desktop's $key" 1 "$(ct_logged)"
+    check_true "and names both values" grep -qF \
+        "has \"'Cantarell 11'\", but $CT/desktop/desktop/schemas/90_apex.gschema.override sets [org.gnome.desktop.interface] $key=\"${CT_SESSION[$key]}\"" \
+        "$CT/out"
+    ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
+done
+sed -i '/^readonly SESSION_ICON_THEME=/d' "$CT/gnome/tests/shots/parts.sh"
+check "contracts: a parts.sh without SESSION_ICON_THEME" 1 "$(ct_logged)"
+check_true "and names only that key" grep -q "parts.sh does not copy SESSION_ICON_THEME exactly once$" "$CT/out"
+ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
+check "contracts: the G2 session keys hold again" 0 "$(ct_run)"
 ct_g2_weekday clock-show-weekday=false clock-show-weekday=true
 check "contracts: G2's patched shell drops the weekday the image shows" 1 "$(ct_run)"
 ct_g2_weekday clock-show-weekday=true ''
