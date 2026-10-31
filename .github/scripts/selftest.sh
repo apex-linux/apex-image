@@ -1733,7 +1733,9 @@ vm_ssh() {
         "pgrep -u 1000 -x gnome-shell") from pid ;;
         "date +%s") echo 1000 ;;
         "journalctl -b _UID=1000 --since @999 -o short-monotonic --no-pager") from journal ;;
-        "test -e /run/user/1000/$CRASH_GUARD_MARKER") [[ -e $STATE/marker ]] ;;
+        "test -e /run/user/1000/$CRASH_GUARD_MARKER") # the layer's 60 s window: gone after it was seen
+            [[ -e $STATE/marker ]] || return 1
+            [[ -e $STATE/marker-stays ]] || rm "$STATE/marker" ;;
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
         "$(user_cmd "gsettings get $APEX_SCHEMA layer-enabled")") if [[ -e $STATE/tripped ]]; then echo false; else echo true; fi ;;
         "$(user_cmd "systemctl --user list-units --state=active --plain --no-legend --no-pager 'apex*'")") from agents ;;
@@ -2568,7 +2570,7 @@ late_fails guard-old local-crash-guard-late 'one late abort turned the layer off
 late_fails guard-threshold-1 local-crash-guard-late 'one late abort turned the layer off: past the 60 s window a failure only counts'
 late_fails guard-no-serial local-crash-guard-late "apexqa's ~/$TRIPS reads '${DEPLOYMENT%.*} 1', not '$DEPLOYMENT 1'"
 late_fails guard-no-zero local-crash-guard-late-trip "the trip left ~/$TRIPS: a trip zeroes the count"
-late_fails marker local-crash-guard-late "/run/user/1000/apex-shell-starting outlived the layer's 60 s window"
+late_fails marker-stays local-crash-guard-late "/run/user/1000/apex-shell-starting outlived the layer's 60 s window"
 late_fails no-deployment local-crash-guard-late "cannot read the booted deployment from rpm-ostree status --json (got 'nothing')"
 apex_locked_in
 echo "$DEPLOYMENT 1" >"$GUEST_DIR/state/trips"
