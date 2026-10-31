@@ -1,5 +1,5 @@
 # Uncovered reads vm.yml need not run on, one per line: READER PATH REASON. Exact paths only;
 # vm-paths-check.sh fails on a line that no longer matches a read.
 .github/scripts/qualify.sh .github/scripts  g4_harness hashes qualify.sh, lib.sh and qualify-allowed-failures.txt there, each a listed path
-.github/workflows/vm.yml .github/scripts/daily-due.sh  the daily-due job only decides whether the scheduled run is due; selftest holds it to its fixtures
+.github/workflows/vm.yml .github/scripts/daily-due.sh  it decides when the scheduled run starts, and reads nothing the build or gates read
 tools/builder-vm/build-image.sh tools/builder-vm/t2-enabled  the qualify-only switch: harness_path() counts it a harness change, so toggling it queues no full run
