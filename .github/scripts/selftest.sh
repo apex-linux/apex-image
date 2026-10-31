@@ -340,6 +340,8 @@ check "three self-reboots, then the fallback boot keeps running" 0 "$rc"
 ((rc == 0)) || cat "$Q/stderr.log" >&2
 check "QEMU started four times" 4 "$(wc -l <"$Q/qemu.log")"
 check "every start has -no-reboot" 4 "$(grep -c -- ' -no-reboot' "$Q/qemu.log")"
+check "and std VGA, whichever start_vm path" 4 "$(grep -c -- ' -device VGA ' "$Q/qemu.log")"
+check_false "never virtio-gpu" grep -qE 'virtio-(vga|gpu)' "$Q/qemu.log"
 check "one console log per boot" "red-attempt1.serial.log red-attempt2.serial.log red-attempt3.serial.log red-fallback.serial.log" \
     "$(find "$Q/out/logs" -type f -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 check "one result row per attempt" 3 "$(grep -c '^| red-attempt[1-3] | PASS |' "$Q/out/results.md")"
@@ -3435,6 +3437,22 @@ check "qemu parity: a second QEMU command line fails rather than going unread" 1
 check_true "and counts them" grep -q 'qualify-two.sh: 2 QEMU -machine options, expected 1' "$QP/err"
 { cat "${QP_REAL[0]}"; printf '    # -machine pc -cpu max: a comment\n'; } >"$QP/qualify-comment.sh"
 check "qemu parity: a comment naming flags is not a QEMU line" 0 "$(qp_rc "$QP/qualify-comment.sh" "${QP_REAL[1]}")"
+gd_rc() { (set +e; g4_display "$1" 2>"$QP/err"; echo $?); }
+check "g4 display: main's qualify.sh runs std VGA" 0 "$(gd_rc "${QP_REAL[0]}")"
+sed 's/-device VGA /-device virtio-vga /' "${QP_REAL[0]}" >"$QP/qualify-virtio.sh"
+check "g4 display: virtio-vga (qualify.sh before the switch) fails" 1 "$(gd_rc "$QP/qualify-virtio.sh")"
+check_true "and says why" grep -q "qualify-virtio.sh: QEMU display device(s) 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
+sed 's/-device VGA /-device VGA -device virtio-gpu-pci /' "${QP_REAL[0]}" >"$QP/qualify-two-gpus.sh"
+check "g4 display: a second display device fails" 1 "$(gd_rc "$QP/qualify-two-gpus.sh")"
+check_true "naming each device in full" grep -qF "qualify-two-gpus.sh: QEMU display device(s) 'VGA virtio-gpu-pci'" "$QP/err"
+sed 's/-device VGA /-device VGA -device "virtio-vga" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-virtio.sh"
+check "g4 display: a quoted second device fails too" 1 "$(gd_rc "$QP/qualify-quoted-virtio.sh")"
+sed 's/-device VGA /-device "VGA" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-vga.sh"
+check "g4 display: a quoted VGA is VGA" 0 "$(gd_rc "$QP/qualify-quoted-vga.sh")"
+sed 's/-device VGA /-device VGA -device bochs-display /' "${QP_REAL[0]}" >"$QP/qualify-bochs-display.sh"
+check "g4 display: a second display device named display fails" 1 "$(gd_rc "$QP/qualify-bochs-display.sh")"
+{ cat "${QP_REAL[0]}"; printf '    # -device virtio-vga: a comment\n'; } >"$QP/qualify-display-comment.sh"
+check "g4 display: a comment naming a device is not a QEMU line" 0 "$(gd_rc "$QP/qualify-display-comment.sh")"
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers

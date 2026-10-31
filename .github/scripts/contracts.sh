@@ -374,6 +374,8 @@ log "contracts: G2's shells set $desktop's weekday, input-source, font and icon 
 qemu_parity "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/tools/builder-vm/desktop-vm.sh" ||
     die "contracts: G4's VM and the desktop VM must run the same guest"
 log "contracts: G4's VM and the desktop VM run QEMU with one -machine and -cpu, and vmport=off"
+g4_display "$APEX_ROOT/.github/scripts/qualify.sh" || die "contracts: G4's VM must run std VGA"
+log "contracts: G4's VM runs std VGA"
 
 units=$(g4_user_units "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_SYSTEM_SRC" "$APEX_DESKTOP_SRC") ||
     die "contracts: G4's login contract and the components' user units disagree"

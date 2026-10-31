@@ -177,6 +177,14 @@ dispatched run that runs G4, check in `_build/qualify/` that:
   the dialog runs `polkit-agent-helper-1` while it asks (`local-polkit*`; the
   screendumps show the dialog). polkitd logs "FAILED to authenticate" for the wrong
   password.
+- [ ] **The guest runs std VGA (bochs-drm), and the screen comes back.** G4 runs
+  `-device VGA`, not virtio-vga: after an s2idle resume virtio_gpu's control queue never
+  drains, a kworker sleeps in D holding the modeset locks and Mutter blocks, 6/6 with
+  GNOME (apex-image#127, run 41141658712: EPYC nested, QEMU 11.1.2-1.fc45, kernel
+  7.2.11, stock GNOME). There, std VGA passed s2idle through GDM's login twice and came
+  back from 20 of 20 DPMS cycles with no atomic errors. Run 18's blank-wake failure (a
+  DRM atomic commit error, the display never back on) is a virtio suspect, not reproduced
+  on std VGA. Check the screendumps show the session, and `local-lock-blank-wake` passes.
 
 The selftest proves the LUKS2 rehearsal (`just vm-qualify-luks`) against a fake serial
 console and QMP only. On its first run, check in `_build/qualify/` that:
