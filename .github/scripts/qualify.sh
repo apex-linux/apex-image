@@ -398,7 +398,7 @@ install_disk() {
     podman_pull "$image"
     as_root podman run --rm --net=none --entrypoint /usr/bin/test "$image" -x /usr/sbin/sshd ||
         die "$image has no /usr/sbin/sshd: qualification needs openssh-server in the image"
-    rm -f "$disk" "$QUALIFY_OUT/$name.vars"
+    rm -f "$disk" "$QUALIFY_OUT/$name.vars" "$disk.qcow2" "$QUALIFY_OUT/$name.vars.qcow2"
     truncate -s "${QUALIFY_DISK_GB}G" "$disk"
 
     local -a common=(--rm --privileged --pid=host --security-opt label=type:unconfined_t
@@ -2433,9 +2433,12 @@ diag_space_check() {
 # The post-login guest, RAM and disks, which every unit after the first starts from. Its
 # session is diag.snapshot.state's.
 diag_snapshot_save() {
-    local test=$1 out
-    out=$(hmp "savevm $DIAG_SNAPSHOT" 600) || fail "$test" "QMP's savevm did not answer"
-    [[ -z $out ]] || fail "$test" "savevm $DIAG_SNAPSHOT: $out"
+    local test=$1 out unit
+    if ! out=$(hmp "savevm $DIAG_SNAPSHOT" 600) || [[ -n $out ]]; then
+        for unit in "${DIAG_RUN[@]}"; do DIAG_DETAIL[$unit]="local-diag could not save its post-login snapshot"; done
+        diag_table
+        fail "$test" "savevm $DIAG_SNAPSHOT: ${out:-QMP did not answer}"
+    fi
     cp "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag.snapshot.state"
     result "$test" PASS "saved the guest after its first login as $DIAG_SNAPSHOT"
 }
@@ -2467,20 +2470,49 @@ diag_skew() {
 
 # The snapshot's clock is the save's: rows read the guest's clock and its journal --since.
 diag_clock() {
-    local test=$1 skew now
+    local test=$1 skew
     skew=$(diag_skew) || fail "$test" "cannot read the guest's clock"
     awk -v s="$skew" 'BEGIN { exit !(s >= -1 && s <= 1) }' && return 0
-    now=$(date +%s.%N)
-    vm_ssh "date -s @$now" >/dev/null || fail "$test" "cannot step the guest's clock, ${skew} s off the host's"
+    # The guest subtracts the skew from its own clock: ssh's connect time cannot add to it.
+    vm_ssh "date -s @\$(awk -v n=\$(date +%s.%N) -v s=$skew 'BEGIN { printf \"%.9f\", n - s }')" >/dev/null ||
+        fail "$test" "cannot step the guest's clock, ${skew} s off the host's"
     skew=$(diag_skew) || fail "$test" "cannot read the guest's clock"
     awk -v s="$skew" 'BEGIN { exit !(s >= -1 && s <= 1) }' ||
         fail "$test" "the guest's clock is still ${skew} s off the host's after one step"
 }
 
-# PREVIOUS: names in DIAG_LOST what PREVIOUS left of its session and gnome-shell, then loads
-# the post-login snapshot, so the next unit starts from that login, unlocked, layer on.
+# The load drops what PREVIOUS's guest wrote: keep its journal, or, if it stopped answering,
+# its disk as snapshot lost-after-PREVIOUS, whose journal the end of the run reads.
+diag_keep_journal() {
+    local test=$1 previous=$2 lost=lost-after-$2 out
+    if vm_alive && vm_answers; then
+        save_journal "after-$previous"
+        return 0
+    fi
+    if vm_alive; then
+        if ! out=$(hmp "savevm $lost" 600) || [[ -n $out ]]; then warn "$test: savevm $lost failed: ${out:-QMP did not answer}"; fi
+    else
+        qemu-img snapshot -c "$lost" "$QUALIFY_OUT/local.raw.qcow2" || warn "$test: cannot keep the lost guest's disk as $lost"
+    fi
+    echo "$lost" >>"$QUALIFY_OUT/diag-lost.txt"
+}
+
+diag_lost_journals() {
+    local lost
+    [[ -f $QUALIFY_OUT/diag-lost.txt ]] || return 0
+    while read -r lost; do
+        if ! qemu-img convert -l "snapshot.name=$lost" -O raw "$QUALIFY_OUT/local.raw.qcow2" "$QUALIFY_OUT/$lost.raw" ||
+            ! save_disk_journal "$lost"; then
+            warn "cannot read the journal of snapshot $lost"
+        fi
+        rm -f "$QUALIFY_OUT/$lost.raw"
+    done <"$QUALIFY_OUT/diag-lost.txt"
+}
+
+# PREVIOUS: names in DIAG_LOST what PREVIOUS left of its session and gnome-shell, keeps its
+# journal, then loads the post-login snapshot: the next unit starts from that login.
 diag_reset() {
-    local test=local-diag-reset previous=$1 found='' id='' uid='' pid='' lost
+    local test=local-diag-reset previous=$1 found='' id='' uid='' pid='' lost serial
     DIAG_LOST=
     if ! vm_alive || ! vm_answers; then
         DIAG_LOST="guest lost after $previous: it stopped answering ssh, and local-diag loaded its post-login snapshot"
@@ -2495,10 +2527,11 @@ diag_reset() {
     else
         DIAG_LOST="before the next unit session ${SESSION_ID:-none} of $TEST_USER was gone"
     fi
+    diag_keep_journal "$test" "$previous"
     diag_snapshot_load "$test"
-    lost=$DIAG_LOST
+    lost=$DIAG_LOST serial=$VM_SERIAL
     diag_load_state "$QUALIFY_OUT/diag.snapshot.state"
-    DIAG_LOST=$lost
+    DIAG_LOST=$lost VM_SERIAL=$serial
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "session $SESSION_ID still locked ${QUALIFY_LOCK_TIMEOUT}s after loadvm $DIAG_SNAPSHOT" \
         lockedhint_and_screensaver_agree "$SESSION_ID" "$SESSION_UID" no
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after loadvm $DIAG_SNAPSHOT" polkit_quiet
@@ -2563,7 +2596,6 @@ cmd_local_diag() {
     for unit in "${asked[@]}"; do
         [[ " ${DIAG_UNITS[*]} " == *" $unit "* ]] || die "no local-diag unit '$unit' (${DIAG_UNITS[*]})"
     done
-    diag_space_check
     DIAG=1
     QUALIFY_ERRLOG=$QUALIFY_OUT/diag-errexit.txt
     declare -gA DIAG_STATUS=() DIAG_DETAIL=()
@@ -2576,15 +2608,14 @@ cmd_local_diag() {
         DIAG_STATUS[$unit]=NOT-RUN
         DIAG_DETAIL[$unit]="local-diag did not reach the login"
     done
-    rm -f "$QUALIFY_OUT/diag.state"
+    rm -f "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag-lost.txt"
     diag_table
 
     digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
         die "$image is not in local container storage (build it with image.sh build)"
     ensure_key
     install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
-    # Overlays a kept earlier run left are on another install.
-    rm -f "$QUALIFY_OUT/local.raw.qcow2" "$QUALIFY_OUT/local.vars.qcow2"
+    diag_space_check
     start_vm local
     wait_ssh
     assert_green local-install "$digest"
@@ -2640,6 +2671,7 @@ cmd_local_diag() {
     save_journal final
     stop_vm
     for unit in "${DIAG_RUN[@]}"; do [[ ${DIAG_STATUS[$unit]} == PASS ]] || failed=$((failed + 1)); done
+    diag_lost_journals
     ((failed == 0)) || save_disk_journal local || warn "cannot read the journal off $QUALIFY_OUT/local.raw"
     drop_disk local
     ((failed == 0)) || die "local-diag: $failed of ${#DIAG_RUN[@]} unit(s) did not pass ($QUALIFY_OUT/diag.md)"
@@ -2740,9 +2772,10 @@ save_disk_journal() {
     local name=$1 disk=$QUALIFY_OUT/$1.raw mnt=$QUALIFY_OUT/mnt-$1-journal mapper=apex-qualify-$1-journal
     local loop dev opts=ro journal='' rc=1
     [[ -f $disk ]] || return 0
-    # local-diag's writes are in its overlay: fold them in, so the raw disk holds the run's journal.
-    if [[ -f $disk.qcow2 ]]; then
+    # local-diag writes to overlays: folded in, the raw disk holds the last unit's journal.
+    if [[ -n $DIAG && -f $disk.qcow2 ]]; then
         qemu-img commit -q "$disk.qcow2" || return 1
+        [[ ! -f $QUALIFY_OUT/$name.vars.qcow2 ]] || qemu-img commit -q "$QUALIFY_OUT/$name.vars.qcow2" || return 1
         rm -f "$disk.qcow2" "$QUALIFY_OUT/$name.vars.qcow2"
     fi
     loop=$(as_root losetup --find --show --partscan --read-only "$disk") || return 1

@@ -1644,6 +1644,7 @@ local_flow_stubs() {
     install_disk() { :; }
     start_vm() { # -loadvm starts the guest as local-diag saved it
         echo "$*" >>"$STATE/started"
+        VM_SERIAL="$QUALIFY_OUT/logs/${2:-$1}.serial.log"
         [[ $* == *"-loadvm $DIAG_SNAPSHOT" ]] || return 0
         snapshot_restore
     }
@@ -1657,6 +1658,7 @@ local_flow_stubs() {
             "loadvm $DIAG_SNAPSHOT")
                 if [[ -e $STATE/loadvm-fails ]]; then echo "Error: Snapshot '$DIAG_SNAPSHOT' does not exist"; return 0; fi
                 snapshot_restore ;;
+            "savevm lost-after-"*) echo "$1" >>"$STATE/disk-calls" ;;
             *) echo "unexpected hmp: $1" ;;
         esac
     }
@@ -1664,7 +1666,7 @@ local_flow_stubs() {
         local f
         rm -rf "$STATE.keep"
         mkdir "$STATE.keep"
-        for f in serial qmp disk-calls started loaded clock-steps stays-dead loadvm-fails load-skew clock-stuck loads-locked; do
+        for f in serial qmp disk-calls journals started loaded clock-steps stays-dead loadvm-fails load-skew clock-stuck loads-locked; do
             [[ ! -e $STATE/$f ]] || cp -a "$STATE/$f" "$STATE.keep/"
         done
         rm -rf "$STATE"
@@ -1678,7 +1680,8 @@ local_flow_stubs() {
     stop_vm() { :; }
     drop_disk() { echo "drop $1" >>"$STATE/disk-calls"; }
     save_disk_journal() { echo "journal $1" >>"$STATE/disk-calls"; }
-    save_journal() { :; }
+    save_journal() { echo "$1" >>"$STATE/journals"; }
+    qemu-img() { echo "qemu-img $*" >>"$STATE/disk-calls"; }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
     as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
@@ -1734,9 +1737,12 @@ vm_ssh() {
         "pgrep -u 1000 -x gnome-shell") from pid ;;
         "date +%s") echo 1000 ;;
         "date +%s.%N") awk -v n="$(date +%s.%N)" -v s="$(from clock-skew)" 'BEGIN { printf "%.3f\n", n + s }' ;;
-        "date -s @"*)
-            echo "${cmd#date -s @}" >>"$STATE/clock-steps"
-            [[ -e $STATE/clock-stuck ]] || rm -f "$STATE/clock-skew" ;;
+        "date -s @\$(awk -v n=\$(date +%s.%N) -v s="*" 'BEGIN { printf \"%.9f\", n - s }')")
+            s=${cmd#*-v s=}
+            s=${s%% *}
+            echo "$s" >>"$STATE/clock-steps"
+            [[ -e $STATE/clock-stuck ]] ||
+                awk -v g="$(from clock-skew)" -v s="$s" 'BEGIN { printf "%.3f\n", g - s }' >"$STATE/clock-skew" ;;
         "journalctl -b _UID=1000 --since @999 -o short-monotonic --no-pager") from journal ;;
         "test -e /run/user/1000/$CRASH_GUARD_MARKER") [[ -e $STATE/marker ]] ;;
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
@@ -2707,6 +2713,9 @@ check_true "naming the lost guest" grep -qF \
     "$GUEST_DIR/out/diag.md"
 check "through QMP, its QEMU still running" "1:0" \
     "$(wc -l <"$GUEST_DIR/state/loaded"):$(grep -c -- -loadvm "$GUEST_DIR/state/started")"
+check "after keeping the lost guest's disk as a snapshot, whose journal the end of the run reads" \
+    "savevm lost-after-login-lock-unlock|qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw|journal lost-after-login-lock-unlock|journal local|drop local" \
+    "$(paste -sd'|' "$GUEST_DIR/state/disk-calls")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/lose-qemu"
@@ -2714,6 +2723,10 @@ check "local-diag: a guest whose QEMU exited between two units fails local-diag"
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
 check "the next runs on a QEMU started from the snapshot" "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
 check "on the same disk, with its own serial log" "local local-diag-recovered -loadvm diag0" "$(tail -n 1 "$GUEST_DIR/state/started")"
+check "which the units after it keep, not the dead QEMU's" "$GUEST_DIR/out/logs/local-diag-recovered.serial.log" \
+    "$(sed -n 's/^VM_SERIAL=//p' "$GUEST_DIR/out/diag.state")"
+check "keeping the dead QEMU's disk first" \
+    "qemu-img snapshot -c lost-after-login-lock-unlock $GUEST_DIR/out/local.raw.qcow2" "$(grep -m 1 '^qemu-img snapshot' "$GUEST_DIR/state/disk-calls")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/lose-guest"
@@ -2762,6 +2775,8 @@ check "local-diag: a guest that cannot be saved fails local-diag" 1 \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock localhost/apex:build')"
 check_true "naming QEMU's refusal" grep -qF \
     "| local-diag-snapshot | FAIL | savevm diag0: Error: Device 'pflash1' is writable but does not support snapshots |" "$GUEST_DIR/out/results.md"
+check_true "and diag.md says why no unit ran" grep -qF \
+    '| login-lock-unlock | NOT-RUN | local-diag could not save its post-login snapshot |' "$GUEST_DIR/out/diag.md"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/loadvm-fails"
@@ -2772,9 +2787,10 @@ check_true "naming QEMU's refusal" grep -qF \
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 echo 90 >"$GUEST_DIR/state/load-skew"
-check "local-diag: a loaded guest 90 s behind the host is stepped once" "login-lock-unlock PASS|lock-wrong-password PASS" \
+check "local-diag: a loaded guest 90 s ahead of the host is stepped once" "login-lock-unlock PASS|lock-wrong-password PASS" \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
-check "to the host's clock" 1 "$(grep -cE '^[0-9]+\.[0-9]+$' "$GUEST_DIR/state/clock-steps")"
+check "by the skew it measured, so the recheck finds the host's clock" "1:ok" \
+    "$(wc -l <"$GUEST_DIR/state/clock-steps"):$(awk '{ print ($1 >= 89 && $1 <= 91) ? "ok" : $1 }' "$GUEST_DIR/state/clock-steps")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 echo 0.4 >"$GUEST_DIR/state/load-skew"
@@ -2790,6 +2806,18 @@ check "a clock one step does not bring within 1 s blocks the next unit" "login-l
 check_true "naming the skew" grep -qE \
     "^\| lock-wrong-password \| BLOCKED \| the reset before it failed: the guest's clock is still -(89|90)\.[0-9]{3} s off the host's after one step \|$" "$GUEST_DIR/out/diag.md"
 check "stepped once, not again" 1 "$(wc -l <"$GUEST_DIR/state/clock-steps")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+check "local-diag: each unit's journal is saved before the next load drops it" "after-login-lock-unlock|after-lock-wrong-password|final" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; paste -sd'|' "$GUEST_DIR/state/journals")"
+logged_in
+cp -a "$GUEST_DIR/state" "$GUEST_DIR/state.snap"
+printf '%s\n' SESSION_ID=4 SESSION_UID=1000 SESSION_TYPE=wayland DIAG_LOGIN_SINCE=999 "DIAG_SHELL_PID=$(cat "$GUEST_DIR/state/pid")" \
+    DIAG_LOST= VM_SERIAL=x >"$GUEST_DIR/out/diag.snapshot.state"
+# shellcheck disable=SC2016 # expanded by the fake guest
+guest eval 'local_flow_stubs; SESSION_ID=7 DIAG_LOGIN_SINCE=555; diag_reset unit; echo "$SESSION_ID $DIAG_LOGIN_SINCE" >"$STATE/after-reset"' >/dev/null
+check "diag_reset: the next unit runs in the snapshot's session and login, not the last unit's" "4 999" \
+    "$(cat "$GUEST_DIR/state/after-reset" 2>/dev/null)"
 
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
@@ -2866,10 +2894,22 @@ check_false "and makes none" test -e "$QO/img.log"
 QEMU_IMG_FAILS=1 qo 1 'save_disk_journal d'
 check "save_disk_journal: an overlay that does not fold back keeps its writes" "commit -q $QO/out/d.raw.qcow2|kept" \
     "$(cat "$QO/img.log")|$([[ -e $QO/out/d.raw.qcow2 ]] && echo kept)"
+qo '' 'save_disk_journal d'
+check "save_disk_journal: outside local-diag it folds no overlay a kept run left" "" "$(cat "$QO/img.log" 2>/dev/null)"
 qo 1 'save_disk_journal d'
-check "save_disk_journal: local-diag's writes are folded into the raw disk before its journal is read" "commit -q $QO/out/d.raw.qcow2" \
-    "$(cat "$QO/img.log")"
+check "save_disk_journal: local-diag's writes, disk and vars, are folded into the raw files before the journal is read" \
+    "commit -q $QO/out/d.raw.qcow2|commit -q $QO/out/d.vars.qcow2" "$(paste -sd'|' "$QO/img.log")"
 check "and the overlays are gone" "" "$(compgen -G "$QO/out/d.*.qcow2" || true)"
+# shellcheck disable=SC2016 # expanded by the inner bash
+qo 1 ': >"$QUALIFY_OUT/d.raw.qcow2"; : >"$QUALIFY_OUT/d.vars.qcow2"; podman_pull() { :; }; as_root() { :; }
+    QUALIFY_LAYOUT=luks; install_luks() { :; }; install_disk d localhost/apex:selftest x'
+check "install_disk: a kept earlier run's overlays are on another install, so they go" "d.raw" \
+    "$(for f in d.raw d.raw.qcow2 d.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done)"
+qo 1 'start_vm d'
+qo '' 'false || cleanup'
+check "cleanup: without QUALIFY_KEEP_DISKS the overlays go with the disk" "" \
+    "$(for f in d.raw d.raw.qcow2 d.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done)"
+: >"$QO/out/d.raw"
 qo 1 'start_vm d'
 qo 1 'drop_disk d'
 check "drop_disk: the disk, the vars and both overlays" "" "$(for f in d.raw d.vars d.raw.qcow2 d.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done)"
