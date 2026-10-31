@@ -9,7 +9,7 @@ usage() {
 
 The contracts between the image and the components it takes, checked against the
 component checkouts APEX_SYSTEM_SRC, APEX_DESKTOP_SRC and APEX_GNOME_SRC (default: the
-pinned clones of tools/components.sh fetch).
+pinned clones of tools/components.sh fetch), and APEX_KERNEL_SRC when it is set.
 
   contracts.sh      exit 0 when every contract holds
 EOF
@@ -149,6 +149,29 @@ if ((${#dead[@]})); then
 fi
 log "contracts: every dock favourite of $desktop is in the image or preinstalled"
 
+# The compose dnf-installs these lists from the same repositories; a name that stopped resolving
+# would fail the VM's build two hours in, so it fails here, and Fedora, not the PR, moved.
+where=$(printf '%s\n' "${repos[@]}" | sed -n 's/^--repo=//p' | paste -sd+)
+gone=()
+for list in base gnome; do
+    file=$APEX_ROOT/image/packages/$list.txt
+    mapfile -t names < <(sed 's/#.*//; s/[[:space:]]//g' "$file")
+    wanted=()
+    for name in "${names[@]}"; do [[ -z $name ]] || wanted+=("$name"); done
+    ((${#wanted[@]})) || die "contracts: image/packages/$list.txt lists no package"
+    found=$("${APEX_DNF:-dnf5}" -q repoquery "${repos[@]}" --qf '%{name}\n' -- "${wanted[@]}" | sort -u) ||
+        die "contracts: dnf5 repoquery of image/packages/$list.txt failed"
+    for i in "${!names[@]}"; do
+        [[ -z ${names[i]} ]] || grep -qxF -- "${names[i]}" <<<"$found" ||
+            gone+=("$list.txt:$((i + 1)) '${names[i]}' no longer resolves in $where (a Fedora change, not this PR's, unless it added the line)")
+    done
+done
+if ((${#gone[@]})); then
+    printf 'error: image/packages/%s\n' "${gone[@]}" >&2
+    die "contracts: the compose would not find every package base.txt and gnome.txt list"
+fi
+log "contracts: every package of base.txt and gnome.txt resolves in $where"
+
 # Copies of one component's files that another keeps, by explicit path, so a moved copy
 # fails too: COPY ORIGINAL pairs.
 readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
@@ -179,8 +202,114 @@ done
 ((stale == 0)) || die "contracts: see above"
 log "contracts: every copy of a component's file equals the pinned original"
 
-# G2 sets 90_apex's weekday and input-source keys from its own copies, so its shells match the
-# image's, and Super+Space stays Spotlight's there too.
+# A component's new copy of a shipped file is caught here, not only when someone adds its row above.
+readonly COPIES_ALLOWED=${APEX_COPIES_ALLOWED:-$APEX_ROOT/.github/scripts/copies-allowed.txt}
+python3 - "$COPIES_ALLOWED" "${#copies[@]}" "${copies[@]}" \
+    apex-system "$APEX_SYSTEM_SRC" packaging/apex.spec Makefile \
+    apex-desktop "$APEX_DESKTOP_SRC" packaging/apex-desktop.spec - \
+    apex-gnome "$APEX_GNOME_SRC" - - apex-kernel "${APEX_KERNEL_SRC:-}" - - <<'EOF' || die "contracts: see above"
+import os
+import re
+import shlex
+import sys
+
+allowed_file, n, *rest = sys.argv[1:]
+listed, rest = {os.path.realpath(p) for p in rest[: int(n)]}, rest[int(n) :]
+trees = [tuple(rest[i : i + 4]) for i in range(0, len(rest), 4) if rest[i + 1]]
+# apex-image is not scanned: its lane fixtures copy apex-gnome's recipes, frozen so the lane's
+# tests don't move with the pin, and no spec ships a recipe, so an allow line for one would be stale.
+SKIP = {".git", "_build", "node_modules", "target"}
+SECTIONS = ("%files", "%changelog", "%check", "%install", "%prep", "%build", "%description", "%package")
+problems, shipped = [], {}
+
+
+def logical(path):
+    try:
+        return open(path, encoding="utf-8").read().replace("\\\n", " ").splitlines()
+    except OSError as e:
+        sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
+
+
+def sources(words):
+    words = iter(words)
+    for w in words:
+        if w == "-t":
+            next(words, None)
+        elif not w.startswith("-") and "buildroot" not in w and "DESTDIR" not in w and "$(1)" not in w and "*" not in w:
+            yield w
+
+
+for name, root, spec, makefile in trees:
+    if spec == "-":
+        continue
+    section = None
+    for line in logical(f"{root}/{spec}"):
+        words = line.split()
+        if words and words[0] in SECTIONS:
+            section = words[0]
+        elif section == "%files" and words and words[0] not in ("%license", "%doc", "%dir") and words[0][0] != "#":
+            if not words[-1].endswith("/") and "*" not in words[-1]:
+                shipped.setdefault(os.path.basename(words[-1]), (name, words[-1]))
+        elif section == "%install" and words[:1] == ["install"]:
+            for src in sources(shlex.split(line)[1:]):
+                shipped.setdefault(os.path.basename(src), (name, f"{src} (installed by {spec})"))
+    if not any(owner == name for owner, _ in shipped.values()):
+        problems.append(f"{root}/{spec} ships no file in its %files")
+    if makefile == "-":
+        continue
+    lines = logical(f"{root}/{makefile}")
+    found = 0
+    variables = dict(m.groups() for m in (re.match(r"(\w+)\s*[:?]?=\s*(\S*)", l) for l in lines) if m)
+    for line in lines:
+        if "$(INSTALL)" not in line:
+            continue
+        for src in sources(line.split("$(INSTALL)", 1)[1].replace("'", " ").split()):
+            for _ in range(5):
+                src = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m[1], m[0]), src)
+            if "$(" not in os.path.basename(src):
+                found += 1
+                shipped.setdefault(os.path.basename(src), (name, f"{src} (installed by {makefile})"))
+    if not found:
+        problems.append(f"{root}/{makefile} installs no file with $(INSTALL)")
+allowed = {}
+for number, line in enumerate(open(allowed_file, encoding="utf-8"), 1):
+    words = line.split("#", 1)[0].split(None, 2)
+    if not words:
+        continue
+    if len(words) < 3:
+        problems.append(f"{allowed_file}:{number}: want COMPONENT PATH REASON, got {line.strip()!r}")
+        continue
+    allowed[words[0], words[1]] = number
+seen = set()
+for name, root, *_ in trees:
+    for top, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP)
+        for f in sorted(files):
+            owner, installed = shipped.get(f, (name, ""))
+            path = os.path.join(top, f)
+            if owner == name or os.path.islink(path) or os.path.realpath(path) in listed:
+                continue
+            rel = os.path.relpath(path, root)
+            if (name, rel) in allowed:
+                seen.add((name, rel))
+                continue
+            problems.append(
+                f"{name} {rel} has the name of {owner}'s {installed}, but no copy row compares it: "
+                f"add it to contracts.sh's copies, or allow it in {os.path.basename(allowed_file)} with a reason"
+            )
+problems += [
+    f"{allowed_file}:{number}: {name} {rel} is no longer a copy of a shipped file: delete the line"
+    for (name, rel), number in allowed.items()
+    if (name, rel) not in seen
+]
+for p in problems:
+    print(f"error: {p}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+EOF
+log "contracts: every file of a component named like another's shipped file is a compared copy"
+
+# G2 sets 90_apex's weekday, input-source, font and icon keys from its own copies, so its shells
+# match the image's, Super+Space stays Spotlight's there too, and its fonts and icons are the image's.
 readonly G2_PARTS=tests/shots/parts.sh G2_SCRIPTS=(tests/shots/patched.sh tests/shots/smoke.sh)
 python3 - "$APEX_DESKTOP_SRC/$FAVORITES" "$APEX_GNOME_SRC" "$G2_PARTS" "${G2_SCRIPTS[@]}" <<'EOF' ||
 import re
@@ -189,7 +318,15 @@ import sys
 
 override, gnome, parts, *scripts = sys.argv[1:]
 KEYBINDINGS, INTERFACE = "org.gnome.desktop.wm.keybindings", "org.gnome.desktop.interface"
-COPIED = {"INPUT_SOURCE_KEYS": "switch-input-source", "INPUT_SOURCE_BACKWARD_KEYS": "switch-input-source-backward"}
+COPIED = {
+    "INPUT_SOURCE_KEYS": (KEYBINDINGS, "switch-input-source"),
+    "INPUT_SOURCE_BACKWARD_KEYS": (KEYBINDINGS, "switch-input-source-backward"),
+    "SESSION_FONT_NAME": (INTERFACE, "font-name"),
+    "SESSION_DOCUMENT_FONT_NAME": (INTERFACE, "document-font-name"),
+    "SESSION_MONOSPACE_FONT_NAME": (INTERFACE, "monospace-font-name"),
+    "SESSION_FONT_HINTING": (INTERFACE, "font-hinting"),
+    "SESSION_ICON_THEME": (INTERFACE, "icon-theme"),
+}
 try:
     override_lines = open(override, encoding="utf-8").read().splitlines()
     parts_lines = open(f"{gnome}/{parts}", encoding="utf-8").read().splitlines()
@@ -212,10 +349,11 @@ for line in parts_lines:
         continue
     if len(words) == 2 and words[0] == "readonly" and words[1].split("=", 1)[0] in COPIED:
         name, value = words[1].split("=", 1)
-        copies.append((f"{parts} {name}", KEYBINDINGS, COPIED[name], value))
+        copies.append((f"{parts} {name}", *COPIED[name], value))
 problems = []
-if sorted(c[2] for c in copies) != sorted(COPIED.values()):
-    problems.append(f"{gnome}/{parts} does not copy each input-source key once")
+names = [where.split()[-1] for where, *_ in copies]
+if off := [name for name in COPIED if names.count(name) != 1]:
+    problems.append(f"{gnome}/{parts} does not copy {', '.join(off)} exactly once")
 for script, text in texts.items():
     weekdays = re.findall(r"clock-show-weekday=(\w+)", text)
     if not weekdays:
@@ -231,11 +369,13 @@ for p in problems:
 sys.exit(1 if problems else 0)
 EOF
     die "contracts: $gnome's G2 settings: see above"
-log "contracts: G2's shells set $desktop's weekday and input-source keys as the image does"
+log "contracts: G2's shells set $desktop's weekday, input-source, font and icon keys as the image does"
 
 qemu_parity "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/tools/builder-vm/desktop-vm.sh" ||
     die "contracts: G4's VM and the desktop VM must run the same guest"
 log "contracts: G4's VM and the desktop VM run QEMU with one -machine and -cpu, and vmport=off"
+g4_display "$APEX_ROOT/.github/scripts/qualify.sh" || die "contracts: G4's VM must run std VGA"
+log "contracts: G4's VM runs std VGA"
 
 units=$(g4_user_units "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_SYSTEM_SRC" "$APEX_DESKTOP_SRC") ||
     die "contracts: G4's login contract and the components' user units disagree"

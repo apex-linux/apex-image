@@ -127,10 +127,15 @@ cmd_pull() {
     while IFS= read -r layer; do
         tar -xf "$tmp/img/${layer#sha256:}" -C "$tmp/root" --no-same-owner
     done < <(jq -r '.layers[].digest' "$tmp/img/manifest.json")
+    [[ -d $tmp/root/rpms && ! -L $tmp/root/rpms ]] || die "$ref has no /rpms directory"
+    # sha256sum and cp follow a link, so an RPM link would copy the file it names into DEST.
+    local odd
+    odd=$(find "$tmp/root/rpms" -mindepth 1 ! -type f ! -type d -printf '%P (%y) ')
+    [[ -z $odd ]] || die "$ref: /rpms holds entries that are neither files nor directories: ${odd:0:300}"
     [[ -f $tmp/root/rpms/SHA256SUMS ]] || die "$ref has no /rpms/SHA256SUMS"
     (cd "$tmp/root/rpms" && sha256sum --check --strict --quiet SHA256SUMS) ||
         die "$ref: RPM checksums do not match SHA256SUMS"
-    cp -- "$tmp"/root/rpms/*.rpm "$dest/"
+    cp --no-dereference -- "$tmp"/root/rpms/*.rpm "$dest/"
     log "extracted $(find "$tmp/root/rpms" -name '*.rpm' | wc -l) RPM(s) from $ref into $dest"
 }
 

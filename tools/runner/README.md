@@ -166,9 +166,10 @@ dispatched run that runs G4, check in `_build/qualify/` that:
 - [ ] **The password conversations count as expected.** While the lock asks, there is one
   `pam/gdm-password` worker more than with the session unlocked. There is none more while
   the screen is off (`local-lock-blank-wake`). Esc ends the extra one (`local-lock-esc`).
-- [ ] **OVMF resumes from S3.** With `-global ICH9-LPC.disable_s3=0`, `systemctl suspend`
-  reaches QMP's `suspended`, and `system_wakeup` brings the guest back
-  (`local-lock-suspend`).
+- [ ] **The guest resumes from s2idle on the keyboard.** `PM: suspend entry (s2idle)` reaches
+  the console, QMP's wake key brings the guest back, and `pm_wakeup_irq` is IRQ 1, i8042
+  (`local-lock-suspend`). Deep S3 is local-diag's `lock-suspend-s3` only: OVMF
+  20260812-9 asserts on S3 resume (`MemoryServices.c(203)`, hosted repro #127).
 - [ ] **`rpm-ostree kargs --append=apex.safe=1` works on the bootc image.** The next
   boot has `apex.safe=1` in `/proc/cmdline` (`local-lock-safe`).
 - [ ] **pkexec from the user's manager reaches the shell's agent.** polkit takes the
@@ -176,6 +177,14 @@ dispatched run that runs G4, check in `_build/qualify/` that:
   the dialog runs `polkit-agent-helper-1` while it asks (`local-polkit*`; the
   screendumps show the dialog). polkitd logs "FAILED to authenticate" for the wrong
   password.
+- [ ] **The guest runs std VGA (bochs-drm), and the screen comes back.** G4 runs
+  `-device VGA`, not virtio-vga: after an s2idle resume virtio_gpu's control queue never
+  drains, a kworker sleeps in D holding the modeset locks and Mutter blocks, 6/6 with
+  GNOME (apex-image#127, run 41141658712: EPYC nested, QEMU 11.1.2-1.fc45, kernel
+  7.2.11, stock GNOME). There, std VGA passed s2idle through GDM's login twice and came
+  back from 20 of 20 DPMS cycles with no atomic errors. Run 18's blank-wake failure (a
+  DRM atomic commit error, the display never back on) is a virtio suspect, not reproduced
+  on std VGA. Check the screendumps show the session, and `local-lock-blank-wake` passes.
 
 The selftest proves the LUKS2 rehearsal (`just vm-qualify-luks`) against a fake serial
 console and QMP only. On its first run, check in `_build/qualify/` that:
@@ -308,7 +317,8 @@ Owner steps that a change on `main` needs on the host, newest first.
 what the build or its gates read: `components.lock`, `Cargo.lock`, `Cargo.toml` (both
 feed the lane's tool id and every family's content key), `image/**` (its READMEs ship in
 the image, so they count), `crates/apex-lane/**`, `tools/components.sh`, qualify.sh,
-`qualify-allowed-failures.txt`, `image.sh` and `lib.sh` in `.github/scripts/`, and
+`qualify-allowed-failures.txt`, `image.sh`, `oci-artifact.sh` (image.sh pulls the RPMs with it),
+`ci-host.sh` (qualify.sh checks KVM and podman with it) and `lib.sh` in `.github/scripts/`, and
 `build-image.sh`, `lane.sh`, `snapshot.sh`, `metrics.sh` and `lane-absorb-report.sh` in
 `tools/builder-vm/`. Each such push queues a run of about two hours on the laptop. A push
 that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
@@ -319,7 +329,11 @@ with a `sha` input builds that commit of `main` instead of the head, and needs t
 chooses: the full gate run, or a qualify-only run when its conditions hold), `gate` (the
 full gate run, with G4 due whatever its last pass) or `g4` (the qualify-only run, refused
 when its conditions fail). It goes to the VM as `ci-build <sha> gate` or `g4`, and
-`lane.sh promote` never runs for `g4`.
+`lane.sh promote` never runs for `g4`. The daily run builds only when its hosted
+`daily-due` job finds no other `vm.yml` run queued, waiting or running and no build of
+`main`'s head that started in the last 20 h and gave a verdict (it passed, or failed after
+G2 or G4 ran: its step "A gate gave its verdict" ran); it says why in a notice,
+and builds whenever the Actions API cannot answer.
 
 The build step calls `ssh apex-builder ci-build <sha>`, with workflow commands stopped
 for the VM's log. In the VM, `ci-build` then:
