@@ -2630,6 +2630,59 @@ check_true "names the stale line" grep -qF "allowed:2: ci.yml build contents:wri
 check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build contents:write\n' >>allowed")"
 check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
 
+# --- guest-lint.sh: the code qualify.sh runs in the guest parses on hosted CI ---------------
+check "guest code: this checkout's qualify.sh parses" 0 \
+    "$(rc_of "$APEX_ROOT/.github/scripts/guest-lint.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/guest-lint-allowed.txt")"
+GL=$TMP/guest-lint
+gl() { # EDIT: the check's exit on a fresh fixture qualify.sh after EDIT ran in $GL, its errors in $GL.err
+    local rc=0
+    rm -rf "$GL" && mkdir -p "$GL"
+    cat >"$GL/qualify.sh" <<'GL_EOF'
+readonly PKGS=(a '$k' b)
+readonly QMP_X='
+import sys
+print(sys.argv)
+'
+vm_ssh() { ssh x -- "$@"; }
+listing_script() {
+    cat <<'EOF'
+for i in 1 2; do echo "$i"; done
+EOF
+}
+rows() {
+    vm_ssh bash -s < <(listing_script)
+    vm_ssh "test -e $DIR/x && k=y && echo ${PKGS[*]}"
+    vm_ssh 'date +%s'
+    vm_ssh true
+    python3 -c "$QMP_X"
+}
+GL_EOF
+    printf '# FUNCTION SCnnnn REASON\n' >"$GL/allowed"
+    (cd "$GL" && eval "$1")
+    "$APEX_ROOT/.github/scripts/guest-lint.sh" "$GL/qualify.sh" "$GL/allowed" >"$GL.out" 2>"$GL.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "guest code: a fixture whose guest code parses" 0 "$(gl :)"
+check_true "and counts what it read" grep -qF "guest code: 4 vm_ssh commands, 1 fed scripts and the python3 -c strings" "$GL.out"
+check "guest code: a fed script that does not parse" 1 "$(gl "sed -i 's/; done$//' qualify.sh")"
+check_true "names the function" grep -qF "qualify.sh:13 (listing_script): bash -n:" "$GL.err"
+check "guest code: a python3 -c string that does not compile" 1 "$(gl "sed -i 's/^print(sys.argv)$/print(sys.argv/' qualify.sh")"
+check_true "names it" grep -qF "qualify.sh: QMP_X, its line" "$GL.err"
+check "guest code: a remote command with an unbalanced quote" 1 "$(gl "sed -i \"s/vm_ssh 'date +%s'/vm_ssh \\\"echo 'oops\\\"/\" qualify.sh")"
+check_true "names its line" grep -qF "qualify.sh:15: bash -n:" "$GL.err"
+check "guest code: a quoted command with no end on its line" 1 "$(gl "sed -i 's/vm_ssh true/vm_ssh \"true/' qualify.sh")"
+check_true "says so" grep -qF "qualify.sh:16: cannot find the end of vm_ssh's quoted command" "$GL.err"
+check "guest code: a command built at run time" 1 "$(gl "sed -i 's/vm_ssh true/vm_ssh \$cmd/' qualify.sh")"
+check_true "says it cannot be checked" grep -qF "qualify.sh:16: vm_ssh's command is built at run time (\$cmd): it cannot be checked" "$GL.err"
+check "guest code: bash -s with no script fed from a function" 1 "$(gl "sed -i 's/vm_ssh true/vm_ssh bash -s <<<x/' qualify.sh")"
+check "guest code: a shellcheck finding in a fed script" 1 "$(gl "sed -i 's/^for i in 1 2; do echo \"\$i\"; done$/&\nread -r line; echo \$line/' qualify.sh")"
+check_true "names the function and the code" grep -qF "qualify.sh listing_script(), its line 2: SC2086:" "$GL.err"
+check "guest code: an allowed shellcheck finding" 0 \
+    "$(gl "sed -i 's/^for i in 1 2; do echo \"\$i\"; done$/&\nread -r line; echo \$line/' qualify.sh; printf 'listing_script SC2086  the words must split\n' >>allowed")"
+check "guest code: an allow line that no longer fires" 1 "$(gl "printf 'listing_script SC2086  the words must split\n' >>allowed")"
+check_true "names the stale line" grep -qF "allowed:2: listing_script SC2086 no longer fires" "$GL.err"
+check "guest code: an allow line without a reason" 1 "$(gl "printf 'listing_script SC2086\n' >>allowed")"
+
 # --- g4-fixtures-check.sh: every G4 fixture listed, read and scrubbed ---------------------
 G4C=$TMP/g4-fixtures-check
 g4c() { # EDIT: the check's exit on a fresh copy of g4-fixtures/ after EDIT ran in it, its errors in $G4C.err
@@ -2836,8 +2889,11 @@ check "g4 user units: a oneshot nothing enables any more fails" 1 "$(g4u "$APEX_
 mkdir -p "$CT/bin"
 cat >"$CT/bin/dnf5" <<'EOF'
 #!/usr/bin/env bash
+names=0
 while (($#)); do
     if [[ $1 == --whatprovides ]]; then awk -v f="$2" '$1 == f { print $2 }' "$CT_PROVIDES"; fi
+    if ((names)) && ! grep -qxF -- "$1" "${CT_GONE:-/dev/null}"; then echo "$1"; fi
+    [[ $1 != -- ]] || names=1
     shift
 done
 EOF
@@ -3024,6 +3080,20 @@ check "contracts: a parts.sh without SESSION_ICON_THEME" 1 "$(ct_logged)"
 check_true "and names only that key" grep -q "parts.sh does not copy SESSION_ICON_THEME exactly once$" "$CT/out"
 ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
 check "contracts: the G2 session keys hold again" 0 "$(ct_run)"
+check "contracts: every listed package resolves" 0 "$(CT_GONE=/dev/null ct_run)"
+CT_BASE_FIRST=$(grep -nvE '^[[:space:]]*(#|$)' "$APEX_ROOT/image/packages/base.txt" | head -n 1)
+CT_GNOME_LAST=$(grep -nvE '^[[:space:]]*(#|$)' "$APEX_ROOT/image/packages/gnome.txt" | tail -n 1)
+printf '%s\n' "${CT_BASE_FIRST#*:}" "${CT_GNOME_LAST#*:}" | sed 's/#.*//; s/[[:space:]]//g' >"$CT/gone"
+ct_gone_rc=0
+PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" CT_GONE="$CT/gone" APEX_SYSTEM_SRC="$CT/system" \
+    APEX_DESKTOP_SRC="$CT/desktop" APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' \
+    "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || ct_gone_rc=$?
+check "contracts: a base.txt and a gnome.txt package that no longer resolve" 1 "$ct_gone_rc"
+check_true "names the base.txt line, and says Fedora moved" grep -qF \
+    "error: image/packages/base.txt:${CT_BASE_FIRST%%:*} '$(sed -n 1p "$CT/gone")' no longer resolves in fedora+updates (a Fedora change, not this PR's" \
+    "$CT/out"
+check_true "names the gnome.txt line" grep -qF \
+    "error: image/packages/gnome.txt:${CT_GNOME_LAST%%:*} '$(sed -n 2p "$CT/gone")' no longer resolves in fedora+updates" "$CT/out"
 ct_g2_weekday clock-show-weekday=false clock-show-weekday=true
 check "contracts: G2's patched shell drops the weekday the image shows" 1 "$(ct_run)"
 ct_g2_weekday clock-show-weekday=true ''
@@ -3502,6 +3572,77 @@ host_log=$(env -u APEX_SCRATCH RUNNER_TEMP="$H/none" APEX_CI_STORE="$H/store" GI
 check_true "preflight without a recorded directory says so" grep -q "no scratch directory recorded" <<<"$host_log"
 check "APEX_SCRATCH wins over the record" /elsewhere \
     "$(APEX_SCRATCH=/elsewhere RUNNER_TEMP="$H/runner" bash -c '. "$1"; scratch_dir' _ "$APEX_ROOT/.github/scripts/ci-host.sh")"
+
+# --- ci-host.sh: what qualify.sh and the image jobs ask of the runner, behind a fake sudo ---------
+HC=$TMP/ci-host
+mkdir -p "$HC/bin"
+cat >"$HC/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_SUDO"
+case $1 in
+    tee) cat >>"$FAKE_TEE" ;;
+    losetup) echo /dev/loop9 ;;
+esac
+EOF
+cat >"$HC/bin/df" <<'EOF'
+#!/usr/bin/env bash
+key=$(printf '%s' "${*: -1}" | tr -c 'a-z0-9' _)
+seen=$(grep -cx "$key" "$FAKE_DF_CALLS" || true)
+echo "$key" >>"$FAKE_DF_CALLS"
+mapfile -t values < <(sed -n "s/^$key=//p" "$FAKE_DF")
+((${#values[@]})) || values=(0)
+printf 'Avail\n%s\n' "${values[seen < ${#values[@]} ? seen : ${#values[@]} - 1]}"
+EOF
+cat >"$HC/bin/mountpoint" <<'EOF'
+#!/usr/bin/env bash
+[[ -n ${FAKE_MOUNTED:-} ]]
+EOF
+printf '#!/bin/sh\nexit 0\n' >"$HC/bin/mkfs.btrfs"
+cp "$HC/bin/mkfs.btrfs" "$HC/bin/docker"
+chmod +x "$HC/bin/"*
+ch() { # SUBCOMMAND [PATH_KEY=BYTES...]: ci-host.sh's exit on Actions behind the fakes, sudo's calls in $HC/sudo
+    local cmd=$1 rc=0
+    shift
+    rm -rf "$HC/run" && mkdir -p "$HC/run" && : >"$HC/sudo" && : >"$HC/tee" && : >"$HC/df-calls"
+    printf '%s\n' "$@" >"$HC/df"
+    [[ -x $HC/bin/sudo ]] || { echo "no fake sudo"; return; }
+    PATH="$HC/bin:$PATH" GITHUB_ACTIONS=true GITHUB_ENV="$HC/run/env" RUNNER_TEMP="$HC/run" APEX_CI_STORE="$HC/run/store" \
+        FAKE_SUDO="$HC/sudo" FAKE_TEE="$HC/tee" FAKE_DF="$HC/df" FAKE_DF_CALLS="$HC/df-calls" \
+        "$APEX_ROOT/.github/scripts/ci-host.sh" "$cmd" >"$HC/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+CH_G=$((1024 * 1024 * 1024))
+for c in free-disk storage podman-conf kvm; do
+    check "ci-host $c refuses to run off GitHub Actions" 1 \
+        "$(PATH="$HC/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/ci-host.sh" "$c")"
+done
+check "ci-host podman-conf" 0 "$(ch podman-conf)"
+check "writes the sqlite drop-in with temp in the store" \
+    "[engine]|database_backend = \"sqlite\"|image_copy_tmp_dir = \"$HC/run/store/tmp\"" "$(paste -sd'|' "$HC/tee")"
+check_true "to containers.conf.d" grep -qx "tee /etc/containers/containers.conf.d/50-apex-ci.conf" "$HC/sudo"
+check "ci-host kvm passes exactly when /dev/kvm is writable" "$([[ -w /dev/kvm ]] && echo 0 || echo 1)" "$(ch kvm)"
+check_true "after the udev rule for kvm" grep -qx "tee /etc/udev/rules.d/99-apex-kvm.rules" "$HC/sudo"
+check "and gives the kvm group the node" 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' "$(cat "$HC/tee")"
+check "ci-host free-disk" 0 "$(ch free-disk "_=$((20 * CH_G))" "_=$((50 * CH_G))")"
+check_true "deletes the toolchains" grep -qx "rm -rf /usr/share/dotnet" "$HC/sudo"
+check_true "and prunes docker's images" grep -qx "docker image prune --all --force" "$HC/sudo"
+check_true "and logs what it freed" grep -q "free-disk: / had 20 GiB free, now 50 GiB" "$HC/out"
+check "ci-host free-disk deletes only under /usr, /opt and /usr/local" "" \
+    "$(sed -n 's/^rm -rf //p' "$HC/sudo" | tr ' ' '\n' | grep -vE '^/(usr|opt)/' || true)"
+check "ci-host storage on a larger /mnt" 0 "$(ch storage "_mnt=$((70 * CH_G))" "_=$((30 * CH_G))")"
+check_true "backs the store on /mnt" grep -qx "truncate -s $((67 * CH_G)) /mnt/apex-containers.btrfs" "$HC/sudo"
+check_true "mounts it compressed, with async discard" \
+    grep -qx "mount -o compress=zstd:1,noatime,discard=async /dev/loop9 $HC/run/store" "$HC/sudo"
+check "puts scratch on the other disk" "APEX_SCRATCH=/var/tmp/apex-scratch" "$(cat "$HC/run/env")"
+check "and records it for preflight" /var/tmp/apex-scratch "$(cat "$HC/run/apex-scratch")"
+check_true "and writes podman's drop-in" grep -qx "tee /etc/containers/containers.conf.d/50-apex-ci.conf" "$HC/sudo"
+check "ci-host storage on a larger /" 0 "$(ch storage "_mnt=$((14 * CH_G))" "_=$((80 * CH_G))" "_var_tmp=$((80 * CH_G))")"
+check "puts the store on /var/tmp and scratch on /mnt" "APEX_SCRATCH=/mnt/apex-scratch" "$(cat "$HC/run/env")"
+check "ci-host storage with under 13 GiB free" 1 "$(ch storage "_mnt=$((12 * CH_G))" "_=$((5 * CH_G))")"
+check_true "says so" grep -q "storage: less than 13 GiB free on /mnt" "$HC/out"
+check "ci-host storage on a store that is already mounted" 0 "$(FAKE_MOUNTED=1 ch storage)"
+check_true "keeps it" grep -q "storage: $HC/run/store is already a mount point; keeping it" "$HC/out"
+check "and mounts nothing" "" "$(grep '^mount ' "$HC/sudo" || true)"
 
 # --- qualify.sh: the guests never depend on Flathub -------------------------------------
 kargs=$(bash -c '. "$1"; install_kargs' _ "$APEX_ROOT/.github/scripts/qualify.sh" | paste -sd' ' -)
