@@ -1463,7 +1463,7 @@ wait_display_on() {
     until display_on; do
         if ((SECONDS >= deadline)); then
             log=$(vm_ssh "journalctl -b --since @$((since - 1)) -o cat --no-pager" 2>/dev/null) || log=
-            errors=$(grep -iE 'drm|atomic' <<<"$log" | head -n 3 | paste -sd';' -) || errors=
+            errors=$(grep -m 3 -iE 'drm|atomic' <<<"$log" | paste -sd';' -) || true
             save_journal "$test"
             fail "$test" "the display did not come back on after PowerSaveMode 0 ($DISPLAY_STATE; DRM and atomic errors since the blank: ${errors:-none})"
         fi

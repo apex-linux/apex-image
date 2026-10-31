@@ -1648,7 +1648,8 @@ vm_ssh() {
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
         *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
-        "$DRM_OUTPUTS") if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; else echo 'Virtual-1 On'; fi ;;
+        "$DRM_OUTPUTS")
+            if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; elif [[ -e $STATE/drm-outputs ]]; then from drm-outputs; else echo 'Virtual-1 On'; fi ;;
         "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
         *"PowerSaveMode i 3")
             echo 3 >"$STATE/power-save"
@@ -1657,7 +1658,7 @@ vm_ssh() {
             [[ -e $STATE/keeps-asking-blank || -e $STATE/blank-unlogged ]] ||
                 echo 'Apex: lock: screen blank, prompt torn down' >>"$STATE/journal" ;;
         *"PowerSaveMode i 0")
-            echo 0 >"$STATE/power-save"
+            if [[ -e $STATE/psm-stays-3 ]]; then echo 3 >"$STATE/power-save"; else echo 0 >"$STATE/power-save"; fi
             if [[ -e $STATE/display-stays-off ]]; then
                 echo 'gnome-shell[1234]: Cursor update failed: drmModeAtomicCommit: Invalid argument' >>"$STATE/drm-errors"
                 return 0
@@ -2056,6 +2057,32 @@ lock_matrix_fails display-stays-off local-lock-blank-wake
 check_true "naming the display, not the lock, with the atomic commit's error" grep -qF \
     '| local-lock-blank-wake | FAIL | the display did not come back on after PowerSaveMode 0 (PowerSaveMode 0; outputs Virtual-1 Off; DRM and atomic errors since the blank: gnome-shell[1234]: Cursor update failed: drmModeAtomicCommit: Invalid argument)' \
     "$GUEST_DIR/out/results.md"
+display_fails() { # FLAG DETAIL: blank-wake fails with the display not back, saying DETAIL
+    check_true "$1: names the display" grep -qF "| local-lock-blank-wake | FAIL | the display did not come back on after PowerSaveMode 0 ($2)" \
+        "$GUEST_DIR/out/results.md"
+}
+apex_locked_in
+printf '%s\n' 'Virtual-1 On' 'Virtual-2 Off' >"$GUEST_DIR/state/drm-outputs"
+check "blank-wake: a second connected output still off fails" 1 "$(guest lock_matrix local 1000)"
+display_fails second-output 'PowerSaveMode 0; outputs Virtual-1 On,Virtual-2 Off; DRM and atomic errors since the blank: none'
+lock_matrix_fails psm-stays-3 local-lock-blank-wake
+display_fails psm-stays-3 'PowerSaveMode 3; outputs Virtual-1 On; DRM and atomic errors since the blank: none'
+apex_locked_in
+: >"$GUEST_DIR/state/display-stays-off"
+for i in $(seq 2000); do echo "kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence $i"; done >"$GUEST_DIR/state/drm-errors"
+check "blank-wake: a flood of DRM errors (over 64 KB) fails" 1 "$(guest lock_matrix local 1000)"
+display_fails drm-flood "PowerSaveMode 0; outputs Virtual-1 Off; DRM and atomic errors since the blank: $(printf 'kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence %s;' 1 2)kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence 3"
+DRMFS="$TMP/drm-sysfs"
+for c in card0-Virtual-1:connected:On card0-Virtual-2:disconnected:Off card0-HDMI-A-1:connected:Off; do
+    IFS=: read -r name status dpms <<<"$c"
+    mkdir -p "$DRMFS/$name"
+    echo "$status" >"$DRMFS/$name/status"
+    echo "$dpms" >"$DRMFS/$name/dpms"
+done
+mkdir -p "$DRMFS/card0"
+# shellcheck disable=SC2016 # expanded by qualify.sh's shell
+check "DRM_OUTPUTS: each connected connector with its DPMS, none disconnected" "HDMI-A-1 Off|Virtual-1 On" \
+    "$(sh -c "$(qualify_fn eval 'echo "$DRM_OUTPUTS"' | sed "s#/sys/class/drm#$DRMFS#")" | paste -sd'|')"
 # The lock's blank and the nudge's wake log both lines before the test blanks the screen.
 lock_logged_both() {
     apex_locked_in
