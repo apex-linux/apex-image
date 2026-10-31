@@ -2131,7 +2131,7 @@ g4_key_lines() {
 
 # What runs the rows: a changed or added row makes G4 due again. vm.yml's verdicts name it too.
 g4_harness() {
-    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh qualify-allowed-failures.txt) | sha256sum | cut -d' ' -f1
+    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh qualify-allowed-failures.txt ci-host.sh) | sha256sum | cut -d' ' -f1
 }
 
 g4_key_with_harness() {

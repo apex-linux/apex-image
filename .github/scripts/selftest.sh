@@ -2541,7 +2541,7 @@ check "nor one with a FAIL, BLOCKED or NOT-RUN row" "1:no record|1:no record|1:n
 H="$TMP/harness"
 mkdir -p "$H/.github/scripts"
 cp "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/lib.sh" \
-    "$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt" "$H/.github/scripts/"
+    "$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt" "$APEX_ROOT/.github/scripts/ci-host.sh" "$H/.github/scripts/"
 h_key() { # the g4-key of an image whose guest key is one package, by the harness in $H
     # shellcheck disable=SC2016 # expanded by the inner bash
     bash -c '. "$1"; g4_key_of_image() { echo "package gdm-1:51.0-1.fc45.x86_64"; }; cmd_g4_key localhost/apex:build' \
@@ -2551,13 +2551,13 @@ h_base=$(h_key)
 check "g4-key: the image's key and one harness line" \
     "harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64" \
     "$(paste -sd'|' <<<"$h_base")"
-for h_file in qualify.sh lib.sh qualify-allowed-failures.txt; do
+for h_file in qualify.sh lib.sh qualify-allowed-failures.txt ci-host.sh; do
     cp "$H/.github/scripts/$h_file" "$H/$h_file.orig"
     echo '# a changed row' >>"$H/.github/scripts/$h_file"
     check_false "g4-key: a changed $h_file changes the key" test "$(h_key)" = "$h_base"
     cp "$H/$h_file.orig" "$H/.github/scripts/$h_file"
 done
-check "and the same three files give the same key" "$h_base" "$(h_key)"
+check "and the same four files give the same key" "$h_base" "$(h_key)"
 key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-a.key"
 echo 'harness aaaa' >>"$G4_DIR/harness-a.key"
 record_pass "$G4_DIR/harness-a.key" "$(date -u -d '-1 day' +%FT%TZ)"
@@ -3074,6 +3074,49 @@ check_true "names the path" grep -qF "error: tools/runner/README.md: \"What a ru
 check "vm paths: a README naming what vm.yml does not list" 1 "$(vp "sed -i 's/gate.sh,/gate.sh, \`tools\/extra.sh\`,/' tools/runner/README.md")"
 check_true "names it" grep -qF "error: tools/runner/README.md: \"What a run does\" names tools/extra.sh, which no" "$VP.err"
 check "vm paths: a vm.yml without push paths" 1 "$(vp "sed -i '/paths:/,/image/d' .github/workflows/vm.yml")"
+
+# --- g4-harness-check.sh: G4's key changes with every file G4 runs on ------------------------
+check "g4 harness: this checkout's digest covers what G4 reads" 0 "$(rc_of "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$APEX_ROOT")"
+HC4=$TMP/g4-harness
+hc4() { # EDIT: the check's exit on a fresh fixture checkout after EDIT ran in it, its errors in $HC4.err
+    local rc=0
+    rm -rf "$HC4" && mkdir -p "$HC4/.github/scripts"
+    cat >"$HC4/.github/scripts/qualify.sh" <<'HC4_EOF'
+#!/usr/bin/env bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+readonly ALLOWED=$APEX_ROOT/.github/scripts/allowed-failures.txt
+"$APEX_ROOT/.github/scripts/helper.sh" kvm
+g4_harness() {
+    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh allowed-failures.txt helper.sh) | sha256sum | cut -d' ' -f1
+}
+HC4_EOF
+    printf '#!/usr/bin/env bash\n' >"$HC4/.github/scripts/lib.sh"
+    printf '#!/usr/bin/env bash\n' >"$HC4/.github/scripts/helper.sh"
+    : >"$HC4/.github/scripts/allowed-failures.txt"
+    printf '%s\n' '# READER PATH REASON' '.github/scripts/qualify.sh .github/scripts  the digest'"'"'s own cd' \
+        >"$HC4/.github/scripts/g4-harness-allowed.txt"
+    (cd "$HC4" && eval "$1" && git init -q && git add -A)
+    "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$HC4" >"$HC4.out" 2>"$HC4.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "g4 harness: a fixture whose digest covers every read" 0 "$(hc4 :)"
+check_true "and lists what G4 reached" grep -qF "reached .github/scripts/helper.sh (from .github/scripts/qualify.sh:4)" "$HC4.out"
+check "g4 harness: a script G4 runs that the digest leaves out" 1 "$(hc4 "sed -i 's/ helper.sh)/)/' .github/scripts/qualify.sh")"
+check_true "names the reader's line" grep -qF \
+    "error: .github/scripts/qualify.sh:4: reads .github/scripts/helper.sh, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a new dependency nobody hashed" 1 \
+    "$(hc4 "printf 'cat \"\$APEX_ROOT/.github/scripts/rows.txt\"\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "is named" grep -qF "reads .github/scripts/rows.txt, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a read two scripts down" 1 "$(hc4 "printf 'cat tools/data.txt\n' >>.github/scripts/helper.sh; mkdir tools; : >tools/data.txt")"
+check_true "names the second script" grep -qF "error: .github/scripts/helper.sh:2: reads tools/data.txt" "$HC4.err"
+check "g4 harness: an allowed unhashed read" 0 \
+    "$(hc4 "printf 'cat tools/data.txt\n' >>.github/scripts/helper.sh; mkdir tools; : >tools/data.txt; printf '.github/scripts/helper.sh tools/data.txt  read for the log only\n' >>.github/scripts/g4-harness-allowed.txt")"
+check "g4 harness: an allow line no read needs" 1 \
+    "$(hc4 "printf '.github/scripts/helper.sh tools/data.txt  read for the log only\n' >>.github/scripts/g4-harness-allowed.txt")"
+check_true "names the stale line" grep -qF "g4-harness-allowed.txt:3: .github/scripts/helper.sh tools/data.txt is no longer an unhashed read" "$HC4.err"
+check "g4 harness: a digest that hashes a file the checkout lacks" 1 "$(hc4 "rm .github/scripts/helper.sh")"
+check_true "names it" grep -qF "g4_harness hashes .github/scripts/helper.sh, which is not in the checkout" "$HC4.err"
+check "g4 harness: a qualify.sh without g4_harness" 1 "$(hc4 "sed -i '/^g4_harness()/,/^}/d' .github/scripts/qualify.sh")"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
