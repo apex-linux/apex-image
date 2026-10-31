@@ -4431,6 +4431,10 @@ for layer in spec.split(";"):
             if kind == "link":
                 info.type, info.linkname = tarfile.SYMTYPE, value.replace("@OUT", outside)
                 tar.addfile(info)
+            elif kind in ("fifo", "chr"):
+                info.type = tarfile.FIFOTYPE if kind == "fifo" else tarfile.CHRTYPE
+                info.devmajor, info.devminor = (1, 3) if kind == "chr" else (0, 0)
+                tar.addfile(info)
             else:
                 info.size = len(value.encode())
                 tar.addfile(info, io.BytesIO(value.encode()))
@@ -4446,8 +4450,9 @@ op_pull() { # SPEC: pull's exit for a layout of SPEC's layers (op layers.py); it
     local rc=0
     rm -rf "$OP/layout" "$OP/dest" "$OP/outside" && mkdir -p "$OP/outside" && : >"$OP/copies" && : >"$OP/sleeps"
     [[ $1 == - ]] || python3 -I "$OP/layers.py" "$OP/layout" "$OP/outside" "$1"
+    # A FIFO that pull reads would block it: the timeout turns that into a failure.
     PATH="$OP/bin:$PATH" FAKE_LAYOUT="$OP/layout" FAKE_COPIES="$OP/copies" FAKE_SLEEPS="$OP/sleeps" GITHUB_ACTIONS='' \
-        "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull ghcr.io/x/apex-rpms@sha256:abc "$OP/dest" >"$OP/out" 2>&1 || rc=$?
+        timeout 60 "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull ghcr.io/x/apex-rpms@sha256:abc "$OP/dest" >"$OP/out" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
 OP_SUMS="file:rpms/SHA256SUMS=$(op_sum a.rpm A)
@@ -4465,12 +4470,36 @@ check "oci pull: no RPM reaches DEST when one does not match" "" "$(ls "$OP/dest
 check "oci pull: a copy that keeps failing" 1 "$(op_pull -)"
 check "is tried 4 times" 4 "$(wc -l <"$OP/copies")"
 check "backing off 10, 20 and 40 s" "10 20 40" "$(paste -sd' ' "$OP/sleeps")"
-# r20: pull copies the file an RPM link points at, so this row stays off until oci-artifact.sh refuses links.
-# check "oci pull: an RPM that is a link out of the layer is refused, and nothing reaches DEST" refused "$(printf secret >"$TMP/oci-pull-secret"; op_refused "link:rpms/evil.rpm=$TMP/oci-pull-secret|file:rpms/SHA256SUMS=$(op_sum evil.rpm secret)"; ls "$OP/dest" 2>/dev/null)"
+check "oci pull: an RPM that is a link out of the layer is refused, and nothing reaches DEST" refused \
+    "$(printf secret >"$TMP/oci-pull-secret"; op_refused "link:rpms/evil.rpm=$TMP/oci-pull-secret|file:rpms/SHA256SUMS=$(op_sum evil.rpm secret)"; ls "$OP/dest" 2>/dev/null)"
+check_true "and named, with the ref" grep -qF \
+    "ghcr.io/x/apex-rpms@sha256:abc: /rpms holds entries that are neither files nor directories: evil.rpm (l)" "$OP/out"
+check "oci pull: a link to another RPM of the layer is refused too" refused \
+    "$(op_refused "file:rpms/a.rpm=A|link:rpms/b.rpm=a.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+$(op_sum b.rpm A)
+")"
+check "oci pull: a FIFO among the RPMs is refused, and named" "refused|1" \
+    "$(op_refused "file:rpms/a.rpm=A|fifo:rpms/pipe.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")|$(grep -cF 'neither files nor directories: pipe.rpm (p)' "$OP/out")"
+# Unprivileged, tar cannot make the node and pull fails there; as root it is made and pull names it.
+check "oci pull: a device node among the RPMs is refused" refused \
+    "$(op_refused "file:rpms/a.rpm=A|chr:rpms/null.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")"
+if ((EUID == 0)); then
+    check_true "and named" grep -qF 'neither files nor directories: null.rpm (c)' "$OP/out"
+else
+    check_true "by tar, which cannot make it unprivileged" grep -q 'Cannot mknod' "$OP/out"
+    echo "note: unprivileged, so pull's own device check is not exercised (tar refuses the node first)"
+fi
+check "and DEST stays empty" "" "$(ls "$OP/dest" 2>/dev/null)"
 check "oci pull: an rpms directory that is a link out of the layer is refused" refused \
     "$(op_refused "link:rpms=@OUT;file:rpms/a.rpm=A|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
 ")"
 check "and nothing is written through it" "" "$(ls "$OP/outside")"
+# tar writes a link inside the layer, and find does not descend through its starting link.
+check "oci pull: an rpms directory that is a link inside the layer is refused" refused \
+    "$(op_refused "link:rpms=real|link:real/evil.rpm=$TMP/oci-pull-secret|file:real/SHA256SUMS=$(op_sum evil.rpm secret)")"
+check_true "and says it has no /rpms directory" grep -qF 'has no /rpms directory' "$OP/out"
 check "oci pull: a ../ member writes nothing outside the layer" "" \
     "$(op_pull "file:../oci-pull-escape.rpm=X|$OP_SUMS" >/dev/null; [[ ! -e $TMP/oci-pull-escape.rpm ]] || echo written)"
 check "oci pull: an absolute member writes nothing outside the layer" "" \
