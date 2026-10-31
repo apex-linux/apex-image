@@ -1463,6 +1463,7 @@ qualify_sh=$1
 . "$qualify_sh"
 STATE=$2
 shift 2
+VM_SERIAL=$STATE/serial
 from() { cat "$STATE/$1" 2>/dev/null || true; }
 as_root() { [[ "$*" == "podman image inspect --format {{.Id}} localhost/apex:build" ]] && echo cafe; }
 TEST_PASSWORD=$(from password)
@@ -1534,24 +1535,71 @@ vm_reboot() {
         rm -f "$STATE/apex-lock"
     fi
 }
+guest_wakes() {
+    if [[ -e $STATE/resuspends && ! -e $STATE/woken ]]; then : >"$STATE/woken"; else rm -f "$STATE/suspended" "$STATE/frozen"; fi
+    [[ ! -e $STATE/reboots-on-wake ]] || echo boot-2 >"$STATE/boot-id"
+    [[ ! -e $STATE/dies-on-wake ]] || : >"$STATE/vm-dead"
+    [[ -e $STATE/no-logind-finish ]] || echo "Operation 'suspend' finished." >>"$STATE/journal-systemd-logind"
+    [[ -e $STATE/no-nm-wake ]] || echo 'manager: sleep: wake requested (sleeping: yes  enabled: yes)' >>"$STATE/journal-NetworkManager"
+    [[ ! -e $STATE/power-key ]] || echo 'Power key pressed short.' >>"$STATE/journal-systemd-logind"
+    [[ -e $STATE/no-rebuild ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
+    if [[ -e $STATE/resume-unlocks ]]; then echo no >"$STATE/locked"; echo false >"$STATE/active"; fi
+}
+s2idle_wakes() {
+    local n
+    guest_wakes
+    n=$(from success)
+    [[ -e $STATE/no-success ]] || echo $((${n:-0} + 1)) >"$STATE/success"
+    [[ ! -e $STATE/two-suspends ]] || echo $((${n:-0} + 2)) >"$STATE/success"
+    if [[ -e $STATE/mouse-wakes ]]; then
+        echo ' 12:          0          0  IO-APIC  12-edge      i8042' >"$STATE/wakeup-irq"
+    else
+        echo '  1:          9          0  IO-APIC   1-edge      i8042' >"$STATE/wakeup-irq"
+    fi
+    # Printk's clock carries the real time from freeze to wake; journald, frozen too, stamps both
+    # lines at the wake. With frozen-clock (the laptop's) the offset also grows by that time.
+    local start end now
+    start=$(from frozen-at)
+    now=$(date +%s.%N)
+    end=$now
+    [[ ! -e $STATE/short-sleep ]] || end=$start
+    [[ ! -e $STATE/sleeps-0.96 ]] || end=$(awk -v s="$start" 'BEGIN { printf "%.6f", s + 0.96 }')
+    if [[ -e $STATE/frozen-clock ]]; then
+        awk -v n="$(from sleep-offset)" -v s="$start" -v e="$end" 'BEGIN { printf "%.3f\n", n + e - s }' >"$STATE/sleep-offset.new"
+        mv "$STATE/sleep-offset.new" "$STATE/sleep-offset"
+    fi
+    if [[ ! -e $STATE/no-pm-lines ]]; then
+        printf '[%s] guest kernel: %s\n' "$now" 'PM: suspend-to-idle' "$now" 'PM: resume from suspend-to-idle' >>"$STATE/kernel"
+        kmsg_line 'PM: suspend-to-idle' "$start" >>"$STATE/kmsg"
+        kmsg_line 'PM: resume from suspend-to-idle' "$end" >>"$STATE/kmsg"
+    fi
+    rm -f "$STATE/frozen"
+}
+# MESSAGE TIME: a kmsg record as journalctl -o json gives it. With boottime-differs the BOOTTIME
+# field carries TIME and MONOTONIC a stale 1 s; with kmsg-no-time the suspend line has neither.
+kmsg_line() {
+    local us
+    us=$(awk -v t="$2" 'BEGIN { printf "%d", t * 1e6 }')
+    if [[ -e $STATE/kmsg-no-time && $1 == 'PM: suspend-to-idle' ]]; then
+        jq -cn --arg m "$1" '{MESSAGE: $m}'
+    elif [[ -e $STATE/boottime-differs ]]; then
+        jq -cn --arg m "$1" --arg t "$us" '{MESSAGE: $m, _SOURCE_BOOTTIME_TIMESTAMP: $t, _SOURCE_MONOTONIC_TIMESTAMP: "1000000"}'
+    else
+        jq -cn --arg m "$1" --arg t "$us" '{MESSAGE: $m, _SOURCE_MONOTONIC_TIMESTAMP: $t}'
+    fi
+}
 qmp() {
     local cmd keys
     [[ ! -e $STATE/qmp-down ]] || return 1
     for cmd in "$@"; do
         printf '%s\n' "$cmd" >>"$STATE/qmp"
-        if [[ $cmd == *system_wakeup* ]]; then
-            if [[ -e $STATE/resuspends && ! -e $STATE/woken ]]; then : >"$STATE/woken"; else rm -f "$STATE/suspended"; fi
-            [[ ! -e $STATE/reboots-on-wake ]] || echo boot-2 >"$STATE/boot-id"
-            [[ ! -e $STATE/dies-on-wake ]] || : >"$STATE/vm-dead"
-            [[ -e $STATE/no-logind-finish ]] || echo "Operation 'suspend' finished." >>"$STATE/journal-systemd-logind"
-            [[ -e $STATE/no-nm-wake ]] || echo 'manager: sleep: wake requested (sleeping: yes  enabled: yes)' >>"$STATE/journal-NetworkManager"
-            [[ ! -e $STATE/power-key ]] || echo 'Power key pressed short.' >>"$STATE/journal-systemd-logind"
-            [[ -e $STATE/no-rebuild ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
-            if [[ -e $STATE/resume-unlocks ]]; then echo no >"$STATE/locked"; echo false >"$STATE/active"; fi
-        fi
+        [[ $cmd != *system_wakeup* ]] || guest_wakes
+        # With serio0's wakeup any key or pointer move wakes s2idle: a rescue would show.
+        if [[ -e $STATE/frozen && ( $cmd == *send-key* || $cmd == *input-send-event* ) ]]; then s2idle_wakes; fi
         keys=$(jq -r 'select(.execute == "send-key") | [.arguments.keys[].data] | join("+")' <<<"$cmd")
         case $keys in
             "") ;;
+            wake) ;;
             ret)
                 if [[ -e $STATE/ret-lost ]]; then
                     rm "$STATE/ret-lost"
@@ -1665,6 +1713,7 @@ vm_ssh() {
         "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
         "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
+        "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
         "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
@@ -1677,7 +1726,22 @@ vm_ssh() {
         *"PowerSaveMode i 0")
             [[ -e $STATE/wake-unlogged ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
             start_asking ;;
-        "systemd-run --quiet --on-active=2 systemctl suspend") [[ -e $STATE/no-suspend ]] || : >"$STATE/suspended" ;;
+        "systemd-run --quiet --on-active=2 systemctl suspend")
+            if [[ -e $STATE/no-suspend ]]; then
+                :
+            elif [[ $(from mem-sleep) == s2idle ]]; then
+                echo 'PM: suspend entry (s2idle)' >>"$VM_SERIAL"
+                : >"$STATE/frozen"
+                date +%s.%N >"$STATE/frozen-at"
+            else
+                : >"$STATE/suspended"
+            fi ;;
+        "echo s2idle >/sys/power/mem_sleep && echo enabled >/sys/bus/serio/devices/serio0/power/wakeup")
+            [[ ! -e $STATE/no-s2idle ]] && echo s2idle >"$STATE/mem-sleep" ;;
+        "echo deep >/sys/power/mem_sleep") echo deep >"$STATE/mem-sleep" ;;
+        "cat /sys/power/suspend_stats/success") n=$(from success); echo "${n:-0}" ;;
+        "$SLEEP_OFFSET") n=$(from sleep-offset); echo "${n:-0}" ;;
+        "$WAKEUP_IRQ_LINE") from wakeup-irq | grep . ;;
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
             if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
         *"gsettings reset org.gnome.desktop.a11y.interface reduced-motion") ;;
@@ -1758,7 +1822,7 @@ EOF
 guest() {
     local rc=0
     : >"$GUEST_DIR/out/results.md"
-    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 QUALIFY_RESUME_TIMEOUT=2 \
+    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 QUALIFY_RESUME_TIMEOUT=2 QUALIFY_SUSPEND_HOLD="${HOLD:-1}" \
         QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' APEX_GNOME_SRC="$GUEST_DIR/gnome" \
         bash "$TMP/qualify-fake-guest.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$GUEST_DIR/state" "$@" \
         >"$GUEST_DIR/stderr" 2>&1 || rc=$?
@@ -2060,7 +2124,7 @@ for r in wrong-password esc blank-wake suspend reduce-motion; do
 done
 check_true "the wrong password went in before the right one" grep -qF '"data":"n"' "$GUEST_DIR/state/qmp"
 check_true "Esc was pressed" grep -qF '"data":"esc"' "$GUEST_DIR/state/qmp"
-check_true "the VM was woken" grep -qF system_wakeup "$GUEST_DIR/state/qmp"
+check_true "the VM was woken by the keyboard" grep -qF '"data":"wake"' "$GUEST_DIR/state/qmp"
 check_true "results.md names the feature gating each row: lock for the blank wake" \
     grep -q '^| local-lock-blank-wake | PASS | .* | lock: enabled (apex-gnome [0-9a-f]*) |$' "$GUEST_DIR/out/results.md"
 check_true "motion, not in this pin, for Reduce Motion" \
@@ -2098,6 +2162,29 @@ lock_matrix_fails resume-unlocks local-lock-suspend
 apex_locked_in
 check "suspend: the matrix passes on a resume that finished, woke the network and pressed no key" 0 \
     "$(guest lock_matrix local 1000)"
+check_true "in s2idle, woken by the keyboard after the hold, and slept through it on the VM's running clock" grep -qE \
+    '^\| local-lock-suspend \| PASS \| s2idle held 1s and the wake key while locked; suspend_stats success \+1, woken by IRQ 1 \(i8042\), slept [3-9]\.[0-9]{3}s by the kernel'"'"'s clock \(frozen timekeeping \+0\.000s\);' \
+    "$GUEST_DIR/out/results.md"
+check "no other key or pointer move from the wake key to the resumed screen" 1 \
+    "$(sed -n '/"data":"wake"/,/local-lock-suspend-resumed.png/p' "$GUEST_DIR/state/qmp" | grep -cE 'send-key|input-send-event')"
+apex_locked_in
+: >"$GUEST_DIR/state/frozen-clock"
+check "suspend: the laptop's frozen timekeeping passes too" 0 "$(guest lock_matrix local 1000)"
+check_true "counted once, by the kernel's clock, though the offset grew by as much" grep -qE \
+    '\| local-lock-suspend \| PASS \| .*slept [3-5]\.[0-9]{3}s by the kernel'"'"'s clock \(frozen timekeeping \+[3-5]\.[0-9]{3}s\);' \
+    "$GUEST_DIR/out/results.md"
+check_true "whose lines journald stamped together at the wake" \
+    test "$(grep -c 'suspend-to-idle$' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt"):$(grep 'suspend-to-idle$' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt" | cut -d']' -f1 | sort -u | wc -l)" = 2:1
+apex_locked_in
+: >"$GUEST_DIR/state/frozen-clock"
+: >"$GUEST_DIR/state/sleeps-0.96"
+check "suspend: a frozen clock adds nothing on top of the kernel's: 0.96 s of a 1 s hold fails" 1 "$(guest lock_matrix local 1000)"
+check_true "saying so" grep -qF "| local-lock-suspend | FAIL | the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.960s) of a 1s hold" \
+    "$GUEST_DIR/out/results.md"
+apex_locked_in
+check "suspend: a 3 s hold passes" 0 "$(HOLD=3 guest lock_matrix local 1000)"
+check_true "having slept at least 3 s" grep -qE '\| local-lock-suspend \| PASS \| s2idle held 3s .*slept [5-9]\.[0-9]{3}s' "$GUEST_DIR/out/results.md"
+check_false "with no QMP system_wakeup" grep -qF system_wakeup "$GUEST_DIR/state/qmp"
 check_true "the row names what it saw" grep -q \
     '^| local-lock-suspend | PASS | .*logind finished the suspend, NetworkManager woke, no power key; still locked, prompt rebuilt' \
     "$GUEST_DIR/out/results.md"
@@ -2113,27 +2200,40 @@ suspend_fails() { # FLAG DETAIL: with FLAG set, the suspend row fails saying DET
     lock_matrix_fails "$1" local-lock-suspend
     check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2" "$GUEST_DIR/out/results.md"
 }
-# QMP's commands after system_wakeup, before and after fail()'s own pointer nudge.
+# QMP's commands after the wake, before and after fail()'s own pointer nudge.
 qmp_after_wake() {
-    awk -v part="$1" '/system_wakeup/ { on = 1; next } on && /input-send-event/ { if (part == "before") exit; after = 1; next }
+    awk -v part="$1" '/system_wakeup|"data":"wake"/ { on = 1; next } on && /input-send-event/ { if (part == "before") exit; after = 1; next }
         on && (part == "before" || after)' "$GUEST_DIR/state/qmp" | jq -r .execute | sort -u | paste -sd' '
 }
-resume_fails() { # FLAG DETAIL: wait_resumed fails, sends the guest nothing, and names the screen
-    suspend_fails "$1" "$2"
-    check "$1: only QEMU's state is read until the failure" "" \
+resume_checks() { # ROW FLAG: after wait_resumed failed ROW, the guest was sent nothing and the screen is named
+    check "$2: only QEMU's state is read until the failure" "" \
         "$(qmp_after_wake before | tr ' ' '\n' | grep -vxE 'query-status|human-monitor-command|screendump')"
-    check "$1: one system_wakeup, and no second to rescue it" 1 "$(grep -c system_wakeup "$GUEST_DIR/state/qmp")"
-    check "$1: after fail()'s nudge, only its screendump" screendump "$(qmp_after_wake after)"
-    check_true "$1: the row names that screen" grep -qF '(the screen at the failure: logs/local-lock-suspend-failed.png); no JS ERROR since the row began' \
+    check "$2: one wake, and no second to rescue it" 1 "$(grep -cE 'system_wakeup|"data":"wake"' "$GUEST_DIR/state/qmp")"
+    check "$2: after fail()'s nudge, only its screendump" screendump "$(qmp_after_wake after)"
+    check_true "$2: the row names that screen" grep -qF "(the screen at the failure: logs/$1-failed.png); no JS ERROR since the row began" \
         "$GUEST_DIR/out/results.md"
-    check_true "$1: which was dumped" grep -qF 'local-lock-suspend-failed.png' "$GUEST_DIR/state/qmp"
+    check_true "$2: which was dumped" grep -qF "$1-failed.png" "$GUEST_DIR/state/qmp"
 }
-resume_fails resuspends 'the guest suspended again after system_wakeup'
-resume_fails dies-on-wake 'the VM exited after system_wakeup (QEMU run states: '
-resume_fails no-resume 'no ssh 2s after system_wakeup (QEMU run state running; seen: running; logs/local-lock-suspend.resume-timeout.txt)'
+suspend_fails no-s2idle 'cannot select s2idle and let the keyboard wake the guest'
+suspend_fails no-suspend "no 'PM: suspend entry (s2idle)' on the console"
+suspend_fails dies-on-wake 'the VM exited after the wake key (QEMU run states: '
+resume_checks local-lock-suspend dies-on-wake
+suspend_fails no-resume 'no ssh 2s after the wake key (QEMU run state running; seen: running; logs/local-lock-suspend.resume-timeout.txt)'
 check_true "and the timeout keeps QEMU's view of the guest" grep -q '^## info usernet, an ssh probe in flight' \
     "$GUEST_DIR/out/logs/local-lock-suspend.resume-timeout.txt"
+resume_checks local-lock-suspend no-resume
 suspend_fails reboots-on-wake 'the guest rebooted instead of resuming (boot boot-1 -> boot-2)'
+suspend_fails no-success 'suspend_stats/success went from 0 to 0, not up by one'
+suspend_fails mouse-wakes 'the wake IRQ is not the i8042 keyboard'"'"'s (pm_wakeup_irq:  12: 0 0 IO-APIC 12-edge i8042)'
+suspend_fails two-suspends 'suspend_stats/success went from 0 to 2, not up by one'
+suspend_fails short-sleep "the guest slept 0.000s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
+suspend_fails sleeps-0.96 "the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
+suspend_fails no-pm-lines "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+suspend_fails kmsg-no-time "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+apex_locked_in
+: >"$GUEST_DIR/state/boottime-differs"
+check "suspend: the BOOTTIME field is read first" 0 "$(guest lock_matrix local 1000)"
+check_true "its gap is the sleep" grep -qE '\| local-lock-suspend \| PASS \| .*slept [3-9]\.[0-9]{3}s by the kernel' "$GUEST_DIR/out/results.md"
 apex_locked_in
 : >"$GUEST_DIR/state/resuspends"
 rm -f "$GUEST_DIR/state/woken"
@@ -2154,6 +2254,26 @@ suspend_fails no-logind-finish "logind logged no \"Operation 'suspend' finished.
 suspend_fails no-nm-wake 'NetworkManager logged no wake after the suspend'
 suspend_fails power-key 'logind logged a power key press: the wake reached the guest as a power button'
 suspend_fails no-rebuild "no 'Apex: lock: screen on, prompt rebuilt' after the resume"
+# shellcheck disable=SC2016 # expanded by the fake guest
+suspend_s3() { guest eval 'wait_session t user apexqa; matrix_suspend local "$(shell_pid 1000)" "$(password_conversations)" s3'; }
+apex_locked_in
+check "suspend-s3: deep sleep woken by QMP, for local-diag" 0 "$(suspend_s3)"
+check_true "its own row, saying so" grep -qF '| local-lock-suspend-s3 | PASS | deep suspend (QMP: suspended) and system_wakeup while locked;' \
+    "$GUEST_DIR/out/results.md"
+check "after selecting deep sleep" deep "$(cat "$GUEST_DIR/state/mem-sleep")"
+check "and one system_wakeup" 1 "$(grep -c system_wakeup "$GUEST_DIR/state/qmp")"
+suspend_s3_fails() { # FLAG DETAIL
+    apex_locked_in
+    : >"$GUEST_DIR/state/$1"
+    check "suspend-s3: $1 fails" 1 "$(suspend_s3)"
+    check_true "$1: saying so" grep -qF "| local-lock-suspend-s3 | FAIL | $2" "$GUEST_DIR/out/results.md"
+}
+suspend_s3_fails resuspends 'the guest suspended again after system_wakeup'
+resume_checks local-lock-suspend-s3 resuspends
+suspend_s3_fails dies-on-wake 'the VM exited after system_wakeup (QEMU run states: '
+resume_checks local-lock-suspend-s3 dies-on-wake
+suspend_s3_fails no-resume 'no ssh 2s after system_wakeup (QEMU run state running;'
+resume_checks local-lock-suspend-s3 no-resume
 apex_locked_in
 printf '%s\n' 'PM: suspend entry (deep)' 'ACPI: PM: Waking up from system sleep state S3' 'PM: suspend exit' >"$GUEST_DIR/state/kernel"
 check "suspend: the matrix passes with the kernel's resume lines" 0 "$(guest lock_matrix local 1000)"
@@ -2451,10 +2571,10 @@ diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$G
 # On this guest Esc also leaves polkit's dialog open, and no policy file exists: two more
 # FAILs, each the unit's own.
 check "but every unit after it still runs, each with its own verdict" \
-    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
     "$(diag_units)"
-check_true "the suspend runs last, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
-    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend "
+check_true "the suspends run last, deep S3 after s2idle, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
+    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend-s3 "
 check_false "and the safe karg is gone" test -e "$GUEST_DIR/state/karg"
 check_true "and the reset closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
     grep -q '^| crash-guard | PASS | local-crash-guard PASS' "$GUEST_DIR/out/diag.md"

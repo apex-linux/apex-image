@@ -71,7 +71,12 @@ the digest that will be published.
                                      login-lock-unlock lock-wrong-password lock-esc
                                      lock-blank-wake lock-reduce-motion polkit-agent
                                      polkit-actions crash-guard safe-karg-lock
-                                     lock-suspend (all when none is named). Needs its
+                                     lock-suspend lock-suspend-s3 (all when none is
+                                     named). lock-suspend-s3 is deep sleep woken by
+                                     QMP, never a G4 row: OVMF 20260812-9 asserts on
+                                     S3 resume (MemoryServices.c(203), hosted repro
+                                     #127) and the guest cold-boots; it stays out of
+                                     G4 until a firmware fix. Needs its
                                      own QUALIFY_OUT; writes diag.md there, one row per
                                      unit, and exits 1 when one did not pass
   qualify.sh g4-harness              print the digest of qualify.sh, lib.sh and
@@ -101,8 +106,10 @@ Environment (all optional):
   QUALIFY_POLL          seconds between checks while waiting for QEMU (default 5)
   QUALIFY_LOGIN_TIMEOUT seconds to wait for GDM's greeter, for the login through it, and
                         for the user's gnome-shell to answer (default 300)
-  QUALIFY_RESUME_TIMEOUT  seconds the suspended guest may take, after QMP's
-                        system_wakeup, to answer ssh again (default 300)
+  QUALIFY_RESUME_TIMEOUT  seconds the suspended guest may take, after its wake (the
+                        wake key, or QMP's system_wakeup), to answer ssh again (default 300)
+  QUALIFY_SUSPEND_HOLD  seconds the guest is held in s2idle before the wake key; it must
+                        have slept at least as long (default 10)
   QUALIFY_LOCK_TIMEOUT  seconds loginctl lock-session and unlock-session may take to show
                         in gnome-shell's state (default 60)
   QUALIFY_G4_RECORD     the G4 key of the last local pass (default _build/g4-passed.txt)
@@ -126,6 +133,7 @@ EOF
 : "${QUALIFY_LOGIN_TIMEOUT:=300}"
 : "${QUALIFY_LOCK_TIMEOUT:=60}"
 : "${QUALIFY_RESUME_TIMEOUT:=300}"
+: "${QUALIFY_SUSPEND_HOLD:=10}"
 : "${QUALIFY_G4_RECORD:=$APEX_ROOT/_build/g4-passed.txt}"
 
 readonly STRICT_POLICY=/usr/share/apex/containers/policy.json
@@ -196,7 +204,7 @@ DIAG_RC=0
 QUALIFY_ERRLOG=
 # cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
-    polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend)
+    polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -1581,6 +1589,22 @@ vm_suspended() { [[ $(vm_run_state) == suspended ]]; }
 # shellcheck disable=SC2016 # expanded by the guest's shell
 readonly SUSPEND_HEARTBEAT='while :; do printf "heartbeat %s\n" "$(cat /proc/uptime)"; ip -br -4 a; nmcli -t general; sleep 5; done'
 
+# shellcheck disable=SC2016 # expanded by the guest's shell
+readonly SLEEP_OFFSET='awk '\''FNR == NR { b = $1; next } /^now at/ { printf "%.3f\n", b - $3 / 1e9; exit }'\'' /proc/uptime /proc/timer_list'
+# shellcheck disable=SC2016 # expanded by the guest's shell
+readonly WAKEUP_IRQ_LINE='irq=$(cat /sys/power/pm_wakeup_irq) && grep -E "^ *$irq:" /proc/interrupts'
+
+# Printk's clock (_SOURCE_BOOTTIME_TIMESTAMP, else _SOURCE_MONOTONIC_TIMESTAMP, µs) from 'PM: suspend-to-idle'
+# to its resume line: journald, frozen in between, stamps both at the thaw. A line without one is no line.
+s2idle_gap() {
+    jq -r 'select(.MESSAGE == "PM: suspend-to-idle" or .MESSAGE == "PM: resume from suspend-to-idle")
+        | (._SOURCE_BOOTTIME_TIMESTAMP // ._SOURCE_MONOTONIC_TIMESTAMP) as $t
+        | select($t | type == "string" and test("^[0-9]+$")) | "\($t) \(.MESSAGE)"' "$1" |
+        awk '$3 == "suspend-to-idle" { start = $1; next }
+            $3 == "resume" && start != "" { printf "%.6f\n", ($1 - start) / 1e6; found = 1; exit }
+            END { exit !found }'
+}
+
 # The suspend has failed only in a VM so far: name the host, QEMU, firmware and guest kernel.
 suspend_environment() {
     local test=$1 qemu nested='' f cpu kernel mem_sleep line
@@ -1637,26 +1661,26 @@ resume_timeout_dump() {
     } >"$QUALIFY_OUT/logs/$test.resume-timeout.txt" 2>&1 || true
 }
 
-# After system_wakeup: QEMU's run state on every pass, then one ssh probe. Nothing is sent
+# After the wake: QEMU's run state on every pass, then one ssh probe. Nothing more is sent
 # to the guest, so what it does on its own is what the row sees.
 wait_resumed() {
-    local test=$1 wake_line=$2 deadline=$((SECONDS + QUALIFY_RESUME_TIMEOUT)) state='' seen=''
+    local test=$1 wake_line=$2 wake=$3 deadline=$((SECONDS + QUALIFY_RESUME_TIMEOUT)) state='' seen=''
     while :; do
         if ! vm_alive; then
             suspend_serial_after_wake "$test" "$wake_line"
-            fail "$test" "the VM exited after system_wakeup (QEMU run states: ${seen:-none})"
+            fail "$test" "the VM exited after $wake (QEMU run states: ${seen:-none})"
         fi
         state=$(vm_run_state 2>/dev/null) || state=
         [[ -z $state || " $seen " == *" $state "* ]] || seen+=${seen:+ }$state
         if [[ $state == suspended ]]; then
             suspend_serial_after_wake "$test" "$wake_line"
-            fail "$test" "the guest suspended again after system_wakeup"
+            fail "$test" "the guest suspended again after $wake"
         fi
         if [[ $state == running ]] && vm_answers; then return 0; fi
         if ((SECONDS >= deadline)); then
             suspend_serial_after_wake "$test" "$wake_line"
             resume_timeout_dump "$test"
-            fail "$test" "no ssh ${QUALIFY_RESUME_TIMEOUT}s after system_wakeup (QEMU run state ${state:-unknown}; seen: ${seen:-none}; logs/$test.resume-timeout.txt)"
+            fail "$test" "no ssh ${QUALIFY_RESUME_TIMEOUT}s after $wake (QEMU run state ${state:-unknown}; seen: ${seen:-none}; logs/$test.resume-timeout.txt)"
         fi
         sleep "$QUALIFY_POLL"
     done
@@ -1671,8 +1695,12 @@ journal_since_has() {
     grep -qE -- "$pattern" <<<"$log"
 }
 
+# s2idle, woken by the keyboard, is the laptop's sleep and the gating row. Deep S3 woken by
+# QMP is a local-diag unit only: OVMF's S3 resume asserts in the firmware G4 runs.
 matrix_suspend() {
-    local test=$1-lock-suspend pid=$2 base=$3 since boot_id woken_boot cursor wake_line
+    local test=$1-lock-suspend pid=$2 base=$3 mode=${4:-s2idle} since boot_id woken_boot cursor mark wake_line wake success offset
+    local after clock gap slept irq detail
+    [[ $mode == s2idle ]] || test+=-$mode
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_row "$test" "$since"
     boot_id=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id"
@@ -1682,20 +1710,58 @@ matrix_suspend() {
     cursor=$(user_journal_cursor) || true
     [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
     suspend_diagnostics "$test"
+    if [[ $mode == s2idle ]]; then
+        vm_ssh 'echo s2idle >/sys/power/mem_sleep && echo enabled >/sys/bus/serio/devices/serio0/power/wakeup' ||
+            fail "$test" "cannot select s2idle and let the keyboard wake the guest"
+        success=$(vm_ssh 'cat /sys/power/suspend_stats/success') || fail "$test" "cannot read suspend_stats/success"
+        offset=$(vm_ssh "$SLEEP_OFFSET") || fail "$test" "cannot read the guest's BOOTTIME and MONOTONIC clocks"
+        wake='the wake key'
+    else
+        vm_ssh 'echo deep >/sys/power/mem_sleep' || fail "$test" "cannot select deep sleep"
+        wake=system_wakeup
+    fi
+    mark=$(serial_lines)
     vm_ssh 'systemd-run --quiet --on-active=2 systemctl suspend' || fail "$test" "cannot schedule systemctl suspend"
-    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the VM did not suspend (QMP query-status)" vm_suspended
-    wake_line=$(serial_lines)
-    qmp '{"execute":"system_wakeup"}' || fail "$test" "QEMU took no system_wakeup"
+    if [[ $mode == s2idle ]]; then
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no 'PM: suspend entry (s2idle)' on the console" \
+            serial_has "$mark" 'PM: suspend entry \(s2idle\)'
+        # The console line comes before the devices suspend: the 2 s past the hold cover them.
+        sleep "$((QUALIFY_SUSPEND_HOLD + 2))"
+        wake_line=$(serial_lines)
+        qmp "$(key_press wake)" || fail "$test" "QEMU took no wake key"
+    else
+        wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the VM did not suspend (QMP query-status)" vm_suspended
+        wake_line=$(serial_lines)
+        qmp '{"execute":"system_wakeup"}' || fail "$test" "QEMU took no system_wakeup"
+    fi
     sleep "$QUALIFY_POLL"
     screendump "$test-woken"
-    wait_resumed "$test" "$wake_line"
+    wait_resumed "$test" "$wake_line" "$wake"
     suspend_serial_after_wake "$test" "$wake_line"
     woken_boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id after the wake"
     [[ $woken_boot == "$boot_id" ]] || fail "$test" "the guest rebooted instead of resuming (boot $boot_id -> $woken_boot)"
-    # The guest's first S3: its PM lines and the virtio devices' resume, kept whatever follows.
+    # The guest's suspend: its PM lines and the virtio devices' resume, kept whatever follows.
     vm_ssh "journalctl -k -b --since @$((since - 1)) -o short-monotonic --no-pager" >"$QUALIFY_OUT/logs/$test.kernel.txt" 2>&1 ||
         warn "$test: cannot save the kernel journal since the row began"
     screendump "$test-resumed"
+    detail="deep suspend (QMP: suspended) and system_wakeup while locked"
+    if [[ $mode == s2idle ]]; then
+        after=$(vm_ssh 'cat /sys/power/suspend_stats/success') || fail "$test" "cannot read suspend_stats/success after the wake"
+        ((after == success + 1)) || fail "$test" "suspend_stats/success went from $success to $after, not up by one"
+        irq=$(vm_ssh "$WAKEUP_IRQ_LINE" | tr -s ' ') || irq=
+        [[ $irq =~ ^\ ?1:.*i8042 ]] || fail "$test" "the wake IRQ is not the i8042 keyboard's (pm_wakeup_irq: ${irq:-none})"
+        clock=$(vm_ssh "$SLEEP_OFFSET") || fail "$test" "cannot read the guest's BOOTTIME and MONOTONIC clocks after the wake"
+        vm_ssh "journalctl -k -b --since @$((since - 1)) -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager" \
+            >"$QUALIFY_OUT/logs/$test.kernel.json" || fail "$test" "cannot read the kernel's journal since the row began"
+        gap=$(s2idle_gap "$QUALIFY_OUT/logs/$test.kernel.json") ||
+            fail "$test" "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+        # Printk's clock on x86 runs through a frozen timekeeping too (the laptop's C2/C3), so its gap
+        # alone is the sleep; the BOOTTIME - MONOTONIC change only says whether the clock froze.
+        slept=$(awk -v a="$clock" -v b="$offset" -v g="$gap" 'BEGIN { printf "%.3fs by the kernel'"'"'s clock (frozen timekeeping +%.3fs)", g, a - b }')
+        awk -v g="$gap" -v h="$QUALIFY_SUSPEND_HOLD" 'BEGIN { exit !(g >= h) }' ||
+            fail "$test" "the guest slept $slept of a ${QUALIFY_SUSPEND_HOLD}s hold"
+        detail="s2idle held ${QUALIFY_SUSPEND_HOLD}s and the wake key while locked; suspend_stats success +1, woken by IRQ 1 (i8042), slept $slept"
+    fi
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "logind logged no \"Operation 'suspend' finished.\" after the wake" \
         journal_since_has "$test" "$since" systemd-logind "Operation .suspend. finished"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "NetworkManager logged no wake after the suspend" \
@@ -1707,7 +1773,7 @@ matrix_suspend() {
         user_journal_after "$cursor" "$APEX_LOCK_REBUILT"
     vm_ssh 'systemctl stop apex-qualify-tap.service apex-qualify-heartbeat.service' >/dev/null 2>&1 || true
     type_password_after_enter "$test" "the lock screen after resume" "$base"
-    assert_unlocked "$test" "$pid" "$since" "suspend (QMP: suspended) and system_wakeup while locked; logind finished the suspend, NetworkManager woke, no power key; still locked, prompt rebuilt, then the password"
+    assert_unlocked "$test" "$pid" "$since" "$detail; logind finished the suspend, NetworkManager woke, no power key; still locked, prompt rebuilt, then the password"
 }
 
 matrix_reduce_motion() {
@@ -2268,6 +2334,7 @@ diag_matrix_row() {
         esc) matrix_esc local "$pid" "$base" ;;
         blank-wake) matrix_blank_wake_gated local "$pid" "$base" "$DIAG_LOGIN_SINCE" ;;
         suspend) matrix_suspend local "$pid" "$base" ;;
+        suspend-s3) matrix_suspend local "$pid" "$base" s3 ;;
         reduce-motion) matrix_reduce_motion local "$pid" "$base" "$DIAG_LOGIN_SINCE" ;;
     esac
 }
