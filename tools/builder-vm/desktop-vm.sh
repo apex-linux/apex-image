@@ -421,8 +421,8 @@ stop_vm() {
     running || { log "not running"; rm -f "$PIDFILE"; return 0; }
     local pid
     pid=$(cat "$PIDFILE")
-    # poweroff lets ostree finalize a staged update. The ACPI button powers the VM off
-    # at once: in a VM gnome-settings-daemon leaves the power key to logind.
+    # poweroff lets ostree finalize a staged update. The ACPI button powers the VM off at
+    # once: in a VM gnome-settings-daemon powers off on any power-button-action but 'nothing'.
     if vm_ssh true >/dev/null 2>&1; then
         log "shutting down (systemctl poweroff)"
         # The connection drops while the guest goes down; that is not a failure.

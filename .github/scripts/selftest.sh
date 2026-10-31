@@ -340,6 +340,8 @@ check "three self-reboots, then the fallback boot keeps running" 0 "$rc"
 ((rc == 0)) || cat "$Q/stderr.log" >&2
 check "QEMU started four times" 4 "$(wc -l <"$Q/qemu.log")"
 check "every start has -no-reboot" 4 "$(grep -c -- ' -no-reboot' "$Q/qemu.log")"
+check "and std VGA, whichever start_vm path" 4 "$(grep -c -- ' -device VGA ' "$Q/qemu.log")"
+check_false "never virtio-gpu" grep -qE 'virtio-(vga|gpu)' "$Q/qemu.log"
 check "one console log per boot" "red-attempt1.serial.log red-attempt2.serial.log red-attempt3.serial.log red-fallback.serial.log" \
     "$(find "$Q/out/logs" -type f -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
 check "one result row per attempt" 3 "$(grep -c '^| red-attempt[1-3] | PASS |' "$Q/out/results.md")"
@@ -567,8 +569,12 @@ check_true "a case named before its subject is found too" grep -qx 'case default
 check_false "a failing case without a log prints nothing" grep -q '== G2 dock-pin' "$BUILD_DIR/out"
 check_false "nor does a passing line" grep -q '^== G2 PASS' "$BUILD_DIR/out"
 rm -rf "$G2_RUN1" "$BUILD_DIR/g2-rc"
-check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" break-glass \
-    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f6)"
+check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" "PASS break-glass" \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f4,6 | tr '\t' ' ')"
+echo 1 >"$BUILD_DIR/g4-rc"
+check "and so does a break-glass G4 failure, which a gate FAIL row would offer to qualify-only" "FAIL break-glass" \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f4,6 | tr '\t' ' ')"
+rm -f "$BUILD_DIR/g4-rc"
 check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
     "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
@@ -771,6 +777,9 @@ for helper in image_id image_revision image_created git_ qualify last_verdict ha
     check "fail-safe: $helper alone fails: the full gate run" 1 "$(t2_rc "$helper() { return 1; }")"
 done
 # shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: git status alone fails, diff and merge-base work: the full gate run" "1|git status failed" \
+    "$(t2_plan_of 'git_() { [[ $1 != status ]] || return 1; git -c safe.directory="$PWD" "$@"; }')"
+# shellcheck disable=SC2016 # expanded by the inner bash
 check "fail-safe: an unset variable in the detection is the full gate run too" 1 "$(t2_rc 'image_revision() { echo "$UNSET_X"; }')"
 # shellcheck disable=SC2016 # expanded by the inner bash
 check "fail-safe: main with every helper broken runs the full gate, and says why" \
@@ -851,6 +860,7 @@ esac
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
+: >"$FAKE/build-ran"
 echo "== plan: gate (G4 first)" >&2
 echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
 mkdir -p _build
@@ -1017,10 +1027,13 @@ check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "c
 rm "$CI_DIR/no-plan"
 cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
 sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
-rm -f "$CI_DIR/ci-mode"
-check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
-    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build" \
-    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/home/apex-image/_build/plan.txt && $CI_DIR/home/apex-image/_build/plan.txt -nt $CI_DIR/build-image-d.sh ]] && echo build || echo 'no build')"
+# gate too: an old build-image.sh would run its own plan, and a skipped G4 would read as not due.
+for mode in g4 gate; do
+    rm -f "$CI_DIR/ci-mode" "$CI_DIR/build-ran"
+    check "$mode for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
+        "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run $mode|no build|no build-image line" \
+        "$(ci_request "ci-build $CI_SHA $mode")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -q '^build-image ' && echo 'build-image line' || echo 'no build-image line')"
+done
 mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
@@ -1452,6 +1465,7 @@ qualify_sh=$1
 . "$qualify_sh"
 STATE=$2
 shift 2
+VM_SERIAL=$STATE/serial
 from() { cat "$STATE/$1" 2>/dev/null || true; }
 as_root() { [[ "$*" == "podman image inspect --format {{.Id}} localhost/apex:build" ]] && echo cafe; }
 TEST_PASSWORD=$(from password)
@@ -1505,8 +1519,13 @@ pkexec_typed() {
     if [[ -e $STATE/wrong-ends-pkexec ]]; then echo 127 >"$STATE/pkexec.rc"; rm -f "$STATE/pkexec-running"; fi
     if [[ -e $STATE/no-retry ]]; then echo 0 >"$STATE/polkit"; fi
 }
-qmp_query() { if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi; }
+qmp_query() {
+    printf '%s\n' "$1" >>"$STATE/qmp"
+    if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi
+}
 wait_ssh() { :; }
+vm_alive() { [[ ! -e $STATE/vm-dead ]]; }
+vm_answers() { [[ ! -e $STATE/no-resume && ! -e $STATE/unreachable ]]; }
 vm_reboot() {
     : >"$STATE/journal"
     : >"$STATE/syslog"
@@ -1518,18 +1537,71 @@ vm_reboot() {
         rm -f "$STATE/apex-lock"
     fi
 }
+guest_wakes() {
+    if [[ -e $STATE/resuspends && ! -e $STATE/woken ]]; then : >"$STATE/woken"; else rm -f "$STATE/suspended" "$STATE/frozen"; fi
+    [[ ! -e $STATE/reboots-on-wake ]] || echo boot-2 >"$STATE/boot-id"
+    [[ ! -e $STATE/dies-on-wake ]] || : >"$STATE/vm-dead"
+    [[ -e $STATE/no-logind-finish ]] || echo "Operation 'suspend' finished." >>"$STATE/journal-systemd-logind"
+    [[ -e $STATE/no-nm-wake ]] || echo 'manager: sleep: wake requested (sleeping: yes  enabled: yes)' >>"$STATE/journal-NetworkManager"
+    [[ ! -e $STATE/power-key ]] || echo 'Power key pressed short.' >>"$STATE/journal-systemd-logind"
+    [[ -e $STATE/no-rebuild ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
+    if [[ -e $STATE/resume-unlocks ]]; then echo no >"$STATE/locked"; echo false >"$STATE/active"; fi
+}
+s2idle_wakes() {
+    local n
+    guest_wakes
+    n=$(from success)
+    [[ -e $STATE/no-success ]] || echo $((${n:-0} + 1)) >"$STATE/success"
+    [[ ! -e $STATE/two-suspends ]] || echo $((${n:-0} + 2)) >"$STATE/success"
+    if [[ -e $STATE/mouse-wakes ]]; then
+        echo ' 12:          0          0  IO-APIC  12-edge      i8042' >"$STATE/wakeup-irq"
+    else
+        echo '  1:          9          0  IO-APIC   1-edge      i8042' >"$STATE/wakeup-irq"
+    fi
+    # Printk's clock carries the real time from freeze to wake; journald, frozen too, stamps both
+    # lines at the wake. With frozen-clock (the laptop's) the offset also grows by that time.
+    local start end now
+    start=$(from frozen-at)
+    now=$(date +%s.%N)
+    end=$now
+    [[ ! -e $STATE/short-sleep ]] || end=$start
+    [[ ! -e $STATE/sleeps-0.96 ]] || end=$(awk -v s="$start" 'BEGIN { printf "%.6f", s + 0.96 }')
+    if [[ -e $STATE/frozen-clock ]]; then
+        awk -v n="$(from sleep-offset)" -v s="$start" -v e="$end" 'BEGIN { printf "%.3f\n", n + e - s }' >"$STATE/sleep-offset.new"
+        mv "$STATE/sleep-offset.new" "$STATE/sleep-offset"
+    fi
+    if [[ ! -e $STATE/no-pm-lines ]]; then
+        printf '[%s] guest kernel: %s\n' "$now" 'PM: suspend-to-idle' "$now" 'PM: resume from suspend-to-idle' >>"$STATE/kernel"
+        kmsg_line 'PM: suspend-to-idle' "$start" >>"$STATE/kmsg"
+        kmsg_line 'PM: resume from suspend-to-idle' "$end" >>"$STATE/kmsg"
+    fi
+    rm -f "$STATE/frozen"
+}
+# MESSAGE TIME: a kmsg record as journalctl -o json gives it. With boottime-differs the BOOTTIME
+# field carries TIME and MONOTONIC a stale 1 s; with kmsg-no-time the suspend line has neither.
+kmsg_line() {
+    local us
+    us=$(awk -v t="$2" 'BEGIN { printf "%d", t * 1e6 }')
+    if [[ -e $STATE/kmsg-no-time && $1 == 'PM: suspend-to-idle' ]]; then
+        jq -cn --arg m "$1" '{MESSAGE: $m}'
+    elif [[ -e $STATE/boottime-differs ]]; then
+        jq -cn --arg m "$1" --arg t "$us" '{MESSAGE: $m, _SOURCE_BOOTTIME_TIMESTAMP: $t, _SOURCE_MONOTONIC_TIMESTAMP: "1000000"}'
+    else
+        jq -cn --arg m "$1" --arg t "$us" '{MESSAGE: $m, _SOURCE_MONOTONIC_TIMESTAMP: $t}'
+    fi
+}
 qmp() {
     local cmd keys
     [[ ! -e $STATE/qmp-down ]] || return 1
     for cmd in "$@"; do
         printf '%s\n' "$cmd" >>"$STATE/qmp"
-        if [[ $cmd == *system_wakeup* ]]; then
-            rm -f "$STATE/suspended"
-            if [[ -e $STATE/resume-unlocks ]]; then echo no >"$STATE/locked"; echo false >"$STATE/active"; fi
-        fi
+        [[ $cmd != *system_wakeup* ]] || guest_wakes
+        # With serio0's wakeup any key or pointer move wakes s2idle: a rescue would show.
+        if [[ -e $STATE/frozen && ( $cmd == *send-key* || $cmd == *input-send-event* ) ]]; then s2idle_wakes; fi
         keys=$(jq -r 'select(.execute == "send-key") | [.arguments.keys[].data] | join("+")' <<<"$cmd")
         case $keys in
             "") ;;
+            wake) ;;
             ret)
                 if [[ -e $STATE/ret-lost ]]; then
                     rm "$STATE/ret-lost"
@@ -1570,7 +1642,8 @@ local_flow_stubs() {
         vm_reboot
     }
     stop_vm() { :; }
-    drop_disk() { :; }
+    drop_disk() { echo "drop $1" >>"$STATE/disk-calls"; }
+    save_disk_journal() { echo "journal $1" >>"$STATE/disk-calls"; }
     save_journal() { :; }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
@@ -1642,19 +1715,47 @@ vm_ssh() {
         "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
         "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
+        "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
         "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
+        *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
+        "$DRM_OUTPUTS")
+            if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; elif [[ -e $STATE/drm-outputs ]]; then from drm-outputs; else echo 'Virtual-1 On'; fi ;;
+        "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
         *"PowerSaveMode i 3")
+            echo 3 >"$STATE/power-save"
+            : >"$STATE/display-off"
             [[ -e $STATE/keeps-asking-blank ]] || stop_asking
             [[ -e $STATE/keeps-asking-blank || -e $STATE/blank-unlogged ]] ||
                 echo 'Apex: lock: screen blank, prompt torn down' >>"$STATE/journal" ;;
         *"PowerSaveMode i 0")
+            if [[ -e $STATE/psm-stays-3 ]]; then echo 3 >"$STATE/power-save"; else echo 0 >"$STATE/power-save"; fi
+            if [[ -e $STATE/display-stays-off ]]; then
+                echo 'gnome-shell[1234]: Cursor update failed: drmModeAtomicCommit: Invalid argument' >>"$STATE/drm-errors"
+                return 0
+            fi
+            rm -f "$STATE/display-off"
             [[ -e $STATE/wake-unlogged ]] || echo 'Apex: lock: screen on, prompt rebuilt' >>"$STATE/journal"
             start_asking ;;
-        "systemd-run --quiet --on-active=2 systemctl suspend") [[ -e $STATE/no-suspend ]] || : >"$STATE/suspended" ;;
+        "systemd-run --quiet --on-active=2 systemctl suspend")
+            if [[ -e $STATE/no-suspend ]]; then
+                :
+            elif [[ $(from mem-sleep) == s2idle ]]; then
+                echo 'PM: suspend entry (s2idle)' >>"$VM_SERIAL"
+                : >"$STATE/frozen"
+                date +%s.%N >"$STATE/frozen-at"
+            else
+                : >"$STATE/suspended"
+            fi ;;
+        "echo s2idle >/sys/power/mem_sleep && echo enabled >/sys/bus/serio/devices/serio0/power/wakeup")
+            [[ ! -e $STATE/no-s2idle ]] && echo s2idle >"$STATE/mem-sleep" ;;
+        "echo deep >/sys/power/mem_sleep") echo deep >"$STATE/mem-sleep" ;;
+        "cat /sys/power/suspend_stats/success") n=$(from success); echo "${n:-0}" ;;
+        "$SLEEP_OFFSET") n=$(from sleep-offset); echo "${n:-0}" ;;
+        "$WAKEUP_IRQ_LINE") from wakeup-irq | grep . ;;
         *"gsettings set org.gnome.desktop.a11y.interface reduced-motion \"'reduce'\"")
             if [[ -e $STATE/motion-js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: motion' >>"$STATE/journal"; fi ;;
         *"gsettings reset org.gnome.desktop.a11y.interface reduced-motion") ;;
@@ -1684,6 +1785,18 @@ vm_ssh() {
             conversations 0 ;;
         "systemctl -q is-active user@1000.service") [[ -e $STATE/manager-active ]] ;;
         "id -u $TEST_USER") echo 1000 ;;
+        "cat /proc/sys/kernel/random/boot_id") n=$(from boot-id); echo "${n:-boot-1}" ;;
+        "uname -r") echo 7.2.11-200.fc45.x86_64 ;;
+        "cat /sys/power/mem_sleep") echo 's2idle [deep]' ;;
+        "echo N >/sys/module/printk/parameters/console_suspend;"*) : >"$STATE/pm-debug" ;;
+        "systemd-run --quiet --unit=apex-qualify-"*) echo "${cmd#*--unit=}" | cut -d' ' -f1 >>"$STATE/taps" ;;
+        "systemctl stop apex-qualify-tap.service apex-qualify-heartbeat.service") : >"$STATE/taps-stopped" ;;
+        "journalctl -b _COMM="*" --since @999 -o cat --no-pager")
+            c=${cmd#*_COMM=}
+            c=${c%% *}
+            echo x >>"$STATE/reads-$c"
+            [[ ! -e $STATE/readable-$c || $(wc -l <"$STATE/reads-$c") -le $(from "readable-$c") ]] || return 1
+            from "journal-$c" ;;
         "runuser -u $TEST_USER -- sh -c 'mkdir -p ~$TEST_USER/.config/environment.d && echo APEX_SHELL_TEST_FAULT=abort-after-enable >~$TEST_USER/$TEST_FAULT_FILE'")
             : >"$STATE/fault-file" ;;
         "test -e ~$TEST_USER/$CRASH_GUARD_TRIPPED") [[ -e $STATE/tripped ]] ;;
@@ -1723,7 +1836,7 @@ EOF
 guest() {
     local rc=0
     : >"$GUEST_DIR/out/results.md"
-    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 \
+    QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_LOGIN_TIMEOUT=2 QUALIFY_LOCK_TIMEOUT=2 QUALIFY_RESUME_TIMEOUT=2 QUALIFY_SUSPEND_HOLD="${HOLD:-1}" \
         QUALIFY_G4_RECORD="$GUEST_DIR/record" GITHUB_ACTIONS='' APEX_GNOME_SRC="$GUEST_DIR/gnome" \
         bash "$TMP/qualify-fake-guest.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$GUEST_DIR/state" "$@" \
         >"$GUEST_DIR/stderr" 2>&1 || rc=$?
@@ -2025,7 +2138,7 @@ for r in wrong-password esc blank-wake suspend reduce-motion; do
 done
 check_true "the wrong password went in before the right one" grep -qF '"data":"n"' "$GUEST_DIR/state/qmp"
 check_true "Esc was pressed" grep -qF '"data":"esc"' "$GUEST_DIR/state/qmp"
-check_true "the VM was woken" grep -qF system_wakeup "$GUEST_DIR/state/qmp"
+check_true "the VM was woken by the keyboard" grep -qF '"data":"wake"' "$GUEST_DIR/state/qmp"
 check_true "results.md names the feature gating each row: lock for the blank wake" \
     grep -q '^| local-lock-blank-wake | PASS | .* | lock: enabled (apex-gnome [0-9a-f]*) |$' "$GUEST_DIR/out/results.md"
 check_true "motion, not in this pin, for Reduce Motion" \
@@ -2041,6 +2154,36 @@ lock_matrix_fails no-pam-log local-lock-wrong-password
 check_true "naming PAM" grep -q '^| local-lock-wrong-password | FAIL | PAM logged no authentication failure' "$GUEST_DIR/out/results.md"
 lock_matrix_fails esc-ignored local-lock-esc
 lock_matrix_fails keeps-asking-blank local-lock-blank-wake
+lock_matrix_fails display-stays-off local-lock-blank-wake
+check_true "naming the display, not the lock, with the atomic commit's error" grep -qF \
+    '| local-lock-blank-wake | FAIL | the display did not come back on after PowerSaveMode 0 (PowerSaveMode 0; outputs Virtual-1 Off; DRM and atomic errors since the blank: gnome-shell[1234]: Cursor update failed: drmModeAtomicCommit: Invalid argument)' \
+    "$GUEST_DIR/out/results.md"
+display_fails() { # FLAG DETAIL: blank-wake fails with the display not back, saying DETAIL
+    check_true "$1: names the display" grep -qF "| local-lock-blank-wake | FAIL | the display did not come back on after PowerSaveMode 0 ($2)" \
+        "$GUEST_DIR/out/results.md"
+}
+apex_locked_in
+printf '%s\n' 'Virtual-1 On' 'Virtual-2 Off' >"$GUEST_DIR/state/drm-outputs"
+check "blank-wake: a second connected output still off fails" 1 "$(guest lock_matrix local 1000)"
+display_fails second-output 'PowerSaveMode 0; outputs Virtual-1 On,Virtual-2 Off; DRM and atomic errors since the blank: none'
+lock_matrix_fails psm-stays-3 local-lock-blank-wake
+display_fails psm-stays-3 'PowerSaveMode 3; outputs Virtual-1 On; DRM and atomic errors since the blank: none'
+apex_locked_in
+: >"$GUEST_DIR/state/display-stays-off"
+for i in $(seq 2000); do echo "kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence $i"; done >"$GUEST_DIR/state/drm-errors"
+check "blank-wake: a flood of DRM errors (over 64 KB) fails" 1 "$(guest lock_matrix local 1000)"
+display_fails drm-flood "PowerSaveMode 0; outputs Virtual-1 Off; DRM and atomic errors since the blank: $(printf 'kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence %s;' 1 2)kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence 3"
+DRMFS="$TMP/drm-sysfs"
+for c in card0-Virtual-1:connected:On card0-Virtual-2:disconnected:Off card0-HDMI-A-1:connected:Off; do
+    IFS=: read -r name status dpms <<<"$c"
+    mkdir -p "$DRMFS/$name"
+    echo "$status" >"$DRMFS/$name/status"
+    echo "$dpms" >"$DRMFS/$name/dpms"
+done
+mkdir -p "$DRMFS/card0"
+# shellcheck disable=SC2016 # expanded by qualify.sh's shell
+check "DRM_OUTPUTS: each connected connector with its DPMS, none disconnected" "HDMI-A-1 Off|Virtual-1 On" \
+    "$(sh -c "$(qualify_fn eval 'echo "$DRM_OUTPUTS"' | sed "s#/sys/class/drm#$DRMFS#")" | paste -sd'|')"
 # The lock's blank and the nudge's wake log both lines before the test blanks the screen.
 lock_logged_both() {
     apex_locked_in
@@ -2060,6 +2203,121 @@ check_true "naming that line" \
     grep -q "^| local-lock-blank-wake | FAIL | no 'Apex: lock: screen on, prompt rebuilt' after the screen woke" "$GUEST_DIR/out/results.md"
 lock_matrix_fails no-suspend local-lock-suspend
 lock_matrix_fails resume-unlocks local-lock-suspend
+apex_locked_in
+check "suspend: the matrix passes on a resume that finished, woke the network and pressed no key" 0 \
+    "$(guest lock_matrix local 1000)"
+check_true "in s2idle, woken by the keyboard after the hold, and slept through it on the VM's running clock" grep -qE \
+    '^\| local-lock-suspend \| PASS \| s2idle held 1s and the wake key while locked; suspend_stats success \+1, woken by IRQ 1 \(i8042\), slept [3-9]\.[0-9]{3}s by the kernel'"'"'s clock \(frozen timekeeping \+0\.000s\);' \
+    "$GUEST_DIR/out/results.md"
+check "no other key or pointer move from the wake key to the resumed screen" 1 \
+    "$(sed -n '/"data":"wake"/,/local-lock-suspend-resumed.png/p' "$GUEST_DIR/state/qmp" | grep -cE 'send-key|input-send-event')"
+apex_locked_in
+: >"$GUEST_DIR/state/frozen-clock"
+check "suspend: the laptop's frozen timekeeping passes too" 0 "$(guest lock_matrix local 1000)"
+check_true "counted once, by the kernel's clock, though the offset grew by as much" grep -qE \
+    '\| local-lock-suspend \| PASS \| .*slept [3-5]\.[0-9]{3}s by the kernel'"'"'s clock \(frozen timekeeping \+[3-5]\.[0-9]{3}s\);' \
+    "$GUEST_DIR/out/results.md"
+check_true "whose lines journald stamped together at the wake" \
+    test "$(grep -c 'suspend-to-idle$' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt"):$(grep 'suspend-to-idle$' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt" | cut -d']' -f1 | sort -u | wc -l)" = 2:1
+apex_locked_in
+: >"$GUEST_DIR/state/frozen-clock"
+: >"$GUEST_DIR/state/sleeps-0.96"
+check "suspend: a frozen clock adds nothing on top of the kernel's: 0.96 s of a 1 s hold fails" 1 "$(guest lock_matrix local 1000)"
+check_true "saying so" grep -qF "| local-lock-suspend | FAIL | the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.960s) of a 1s hold" \
+    "$GUEST_DIR/out/results.md"
+apex_locked_in
+check "suspend: a 3 s hold passes" 0 "$(HOLD=3 guest lock_matrix local 1000)"
+check_true "having slept at least 3 s" grep -qE '\| local-lock-suspend \| PASS \| s2idle held 3s .*slept [5-9]\.[0-9]{3}s' "$GUEST_DIR/out/results.md"
+check_false "with no QMP system_wakeup" grep -qF system_wakeup "$GUEST_DIR/state/qmp"
+check_true "the row names what it saw" grep -q \
+    '^| local-lock-suspend | PASS | .*logind finished the suspend, NetworkManager woke, no power key; still locked, prompt rebuilt' \
+    "$GUEST_DIR/out/results.md"
+for dump in local-lock-suspend-locked local-lock-suspend-woken local-lock-suspend-resumed; do
+    check_true "with the screendump $dump.png" grep -qF "$dump.png" "$GUEST_DIR/state/qmp"
+done
+check_true "the PM debug messages went to the console before the suspend" test -e "$GUEST_DIR/state/pm-debug"
+check "the journal tap and the heartbeat ran on ttyS0, and stopped after the row" "apex-qualify-tap apex-qualify-heartbeat:stopped" \
+    "$(paste -sd' ' "$GUEST_DIR/state/taps"):$([[ -e $GUEST_DIR/state/taps-stopped ]] && echo stopped)"
+check_true "and the environment line names the guest's kernel and sleep state" \
+    grep -q 'guest kernel 7.2.11-200.fc45.x86_64; .*guest mem_sleep s2idle \[deep\]' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+suspend_fails() { # FLAG DETAIL: with FLAG set, the suspend row fails saying DETAIL
+    lock_matrix_fails "$1" local-lock-suspend
+    check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2" "$GUEST_DIR/out/results.md"
+}
+# QMP's commands after the wake, before and after fail()'s own pointer nudge.
+qmp_after_wake() {
+    awk -v part="$1" '/system_wakeup|"data":"wake"/ { on = 1; next } on && /input-send-event/ { if (part == "before") exit; after = 1; next }
+        on && (part == "before" || after)' "$GUEST_DIR/state/qmp" | jq -r .execute | sort -u | paste -sd' '
+}
+resume_checks() { # ROW FLAG: after wait_resumed failed ROW, the guest was sent nothing and the screen is named
+    check "$2: only QEMU's state is read until the failure" "" \
+        "$(qmp_after_wake before | tr ' ' '\n' | grep -vxE 'query-status|human-monitor-command|screendump')"
+    check "$2: one wake, and no second to rescue it" 1 "$(grep -cE 'system_wakeup|"data":"wake"' "$GUEST_DIR/state/qmp")"
+    check "$2: after fail()'s nudge, only its screendump" screendump "$(qmp_after_wake after)"
+    check_true "$2: the row names that screen" grep -qF "(the screen at the failure: logs/$1-failed.png); no JS ERROR since the row began" \
+        "$GUEST_DIR/out/results.md"
+    check_true "$2: which was dumped" grep -qF "$1-failed.png" "$GUEST_DIR/state/qmp"
+}
+suspend_fails no-s2idle 'cannot select s2idle and let the keyboard wake the guest'
+suspend_fails no-suspend "no 'PM: suspend entry (s2idle)' on the console"
+suspend_fails dies-on-wake 'the VM exited after the wake key (QEMU run states: '
+resume_checks local-lock-suspend dies-on-wake
+suspend_fails no-resume 'no ssh 2s after the wake key (QEMU run state running; seen: running; logs/local-lock-suspend.resume-timeout.txt)'
+check_true "and the timeout keeps QEMU's view of the guest" grep -q '^## info usernet, an ssh probe in flight' \
+    "$GUEST_DIR/out/logs/local-lock-suspend.resume-timeout.txt"
+resume_checks local-lock-suspend no-resume
+suspend_fails reboots-on-wake 'the guest rebooted instead of resuming (boot boot-1 -> boot-2)'
+suspend_fails no-success 'suspend_stats/success went from 0 to 0, not up by one'
+suspend_fails mouse-wakes 'the wake IRQ is not the i8042 keyboard'"'"'s (pm_wakeup_irq:  12: 0 0 IO-APIC 12-edge i8042)'
+suspend_fails two-suspends 'suspend_stats/success went from 0 to 2, not up by one'
+suspend_fails short-sleep "the guest slept 0.000s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
+suspend_fails sleeps-0.96 "the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
+suspend_fails no-pm-lines "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+suspend_fails kmsg-no-time "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+apex_locked_in
+: >"$GUEST_DIR/state/boottime-differs"
+check "suspend: the BOOTTIME field is read first" 0 "$(guest lock_matrix local 1000)"
+check_true "its gap is the sleep" grep -qE '\| local-lock-suspend \| PASS \| .*slept [3-9]\.[0-9]{3}s by the kernel' "$GUEST_DIR/out/results.md"
+apex_locked_in
+: >"$GUEST_DIR/state/resuspends"
+rm -f "$GUEST_DIR/state/woken"
+: >"$GUEST_DIR/state/suspended"
+guest qmp '{"execute":"system_wakeup"}' >/dev/null
+check_true "the fake's guest suspends again after one system_wakeup" test -e "$GUEST_DIR/state/suspended"
+guest qmp '{"execute":"system_wakeup"}' >/dev/null
+check_false "and wakes on a second: a rescue would pass the row" test -e "$GUEST_DIR/state/suspended"
+for n in 0 1; do
+    apex_locked_in
+    echo "$n" >"$GUEST_DIR/state/readable-systemd-logind"
+    echo 'manager: sleep: wake requested' >>"$GUEST_DIR/state/journal-NetworkManager"
+    check "suspend: logind's journal unreadable after $n read(s) fails the row" 1 "$(guest lock_matrix local 1000)"
+    check_true "naming the read, not the line" grep -qF "| local-lock-suspend | FAIL | cannot read systemd-logind's journal since the row began" \
+        "$GUEST_DIR/out/results.md"
+done
+suspend_fails no-logind-finish "logind logged no \"Operation 'suspend' finished.\" after the wake"
+suspend_fails no-nm-wake 'NetworkManager logged no wake after the suspend'
+suspend_fails power-key 'logind logged a power key press: the wake reached the guest as a power button'
+suspend_fails no-rebuild "no 'Apex: lock: screen on, prompt rebuilt' after the resume"
+# shellcheck disable=SC2016 # expanded by the fake guest
+suspend_s3() { guest eval 'wait_session t user apexqa; matrix_suspend local "$(shell_pid 1000)" "$(password_conversations)" s3'; }
+apex_locked_in
+check "suspend-s3: deep sleep woken by QMP, for local-diag" 0 "$(suspend_s3)"
+check_true "its own row, saying so" grep -qF '| local-lock-suspend-s3 | PASS | deep suspend (QMP: suspended) and system_wakeup while locked;' \
+    "$GUEST_DIR/out/results.md"
+check "after selecting deep sleep" deep "$(cat "$GUEST_DIR/state/mem-sleep")"
+check "and one system_wakeup" 1 "$(grep -c system_wakeup "$GUEST_DIR/state/qmp")"
+suspend_s3_fails() { # FLAG DETAIL
+    apex_locked_in
+    : >"$GUEST_DIR/state/$1"
+    check "suspend-s3: $1 fails" 1 "$(suspend_s3)"
+    check_true "$1: saying so" grep -qF "| local-lock-suspend-s3 | FAIL | $2" "$GUEST_DIR/out/results.md"
+}
+suspend_s3_fails resuspends 'the guest suspended again after system_wakeup'
+resume_checks local-lock-suspend-s3 resuspends
+suspend_s3_fails dies-on-wake 'the VM exited after system_wakeup (QEMU run states: '
+resume_checks local-lock-suspend-s3 dies-on-wake
+suspend_s3_fails no-resume 'no ssh 2s after system_wakeup (QEMU run state running;'
+resume_checks local-lock-suspend-s3 no-resume
 apex_locked_in
 printf '%s\n' 'PM: suspend entry (deep)' 'ACPI: PM: Waking up from system sleep state S3' 'PM: suspend exit' >"$GUEST_DIR/state/kernel"
 check "suspend: the matrix passes with the kernel's resume lines" 0 "$(guest lock_matrix local 1000)"
@@ -2283,7 +2541,7 @@ check "nor one with a FAIL, BLOCKED or NOT-RUN row" "1:no record|1:no record|1:n
 H="$TMP/harness"
 mkdir -p "$H/.github/scripts"
 cp "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/lib.sh" \
-    "$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt" "$H/.github/scripts/"
+    "$APEX_ROOT/.github/scripts/qualify-allowed-failures.txt" "$APEX_ROOT/.github/scripts/ci-host.sh" "$H/.github/scripts/"
 h_key() { # the g4-key of an image whose guest key is one package, by the harness in $H
     # shellcheck disable=SC2016 # expanded by the inner bash
     bash -c '. "$1"; g4_key_of_image() { echo "package gdm-1:51.0-1.fc45.x86_64"; }; cmd_g4_key localhost/apex:build' \
@@ -2293,13 +2551,13 @@ h_base=$(h_key)
 check "g4-key: the image's key and one harness line" \
     "harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64" \
     "$(paste -sd'|' <<<"$h_base")"
-for h_file in qualify.sh lib.sh qualify-allowed-failures.txt; do
+for h_file in qualify.sh lib.sh qualify-allowed-failures.txt ci-host.sh; do
     cp "$H/.github/scripts/$h_file" "$H/$h_file.orig"
     echo '# a changed row' >>"$H/.github/scripts/$h_file"
     check_false "g4-key: a changed $h_file changes the key" test "$(h_key)" = "$h_base"
     cp "$H/$h_file.orig" "$H/.github/scripts/$h_file"
 done
-check "and the same three files give the same key" "$h_base" "$(h_key)"
+check "and the same four files give the same key" "$h_base" "$(h_key)"
 key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-a.key"
 echo 'harness aaaa' >>"$G4_DIR/harness-a.key"
 record_pass "$G4_DIR/harness-a.key" "$(date -u -d '-1 day' +%FT%TZ)"
@@ -2351,14 +2609,16 @@ check_false "and no G4 pass is recorded" test -e "$GUEST_DIR/record"
 
 local_ready
 check "local-diag: a FAIL at Esc fails local-diag" 1 "$(guest eval 'local_flow_stubs; cmd_local_diag localhost/apex:build')"
+check "and keeps the failing disk's journal before it drops the disk" "journal local|drop local" \
+    "$(paste -sd'|' "$GUEST_DIR/state/disk-calls")"
 diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/diag.md" | paste -sd'|'; }
 # On this guest Esc also leaves polkit's dialog open, and no policy file exists: two more
 # FAILs, each the unit's own.
 check "but every unit after it still runs, each with its own verdict" \
-    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
     "$(diag_units)"
-check_true "the suspend runs last, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
-    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend "
+check_true "the suspends run last, deep S3 after s2idle, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
+    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend-s3 "
 check_false "and the safe karg is gone" test -e "$GUEST_DIR/state/karg"
 check_true "and the reset closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
     grep -q '^| crash-guard | PASS | local-crash-guard PASS' "$GUEST_DIR/out/diag.md"
@@ -2377,6 +2637,10 @@ env -u QUALIFY_G4_RECORD QUALIFY_OUT="$GUEST_DIR/out" QUALIFY_POLL=0.01 QUALIFY_
     diag_rc=$?
 check "local-diag with G4's default record path: its unit passes" "0:login-lock-unlock PASS" "$diag_rc:$(diag_units)"
 check_false "and it writes no g4-passed.txt there" test -e "$H/_build/g4-passed.txt"
+local_ready
+rm -f "$GUEST_DIR/state/esc-ignored" "$GUEST_DIR/state/disk-calls"
+check "local-diag: every unit passing" 0 "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock localhost/apex:build')"
+check "drops the disk without reading its journal" "drop local" "$(paste -sd'|' "$GUEST_DIR/state/disk-calls")"
 
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
@@ -2811,6 +3075,49 @@ check "vm paths: a README naming what vm.yml does not list" 1 "$(vp "sed -i 's/g
 check_true "names it" grep -qF "error: tools/runner/README.md: \"What a run does\" names tools/extra.sh, which no" "$VP.err"
 check "vm paths: a vm.yml without push paths" 1 "$(vp "sed -i '/paths:/,/image/d' .github/workflows/vm.yml")"
 
+# --- g4-harness-check.sh: G4's key changes with every file G4 runs on ------------------------
+check "g4 harness: this checkout's digest covers what G4 reads" 0 "$(rc_of "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$APEX_ROOT")"
+HC4=$TMP/g4-harness
+hc4() { # EDIT: the check's exit on a fresh fixture checkout after EDIT ran in it, its errors in $HC4.err
+    local rc=0
+    rm -rf "$HC4" && mkdir -p "$HC4/.github/scripts"
+    cat >"$HC4/.github/scripts/qualify.sh" <<'HC4_EOF'
+#!/usr/bin/env bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+readonly ALLOWED=$APEX_ROOT/.github/scripts/allowed-failures.txt
+"$APEX_ROOT/.github/scripts/helper.sh" kvm
+g4_harness() {
+    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh allowed-failures.txt helper.sh) | sha256sum | cut -d' ' -f1
+}
+HC4_EOF
+    printf '#!/usr/bin/env bash\n' >"$HC4/.github/scripts/lib.sh"
+    printf '#!/usr/bin/env bash\n' >"$HC4/.github/scripts/helper.sh"
+    : >"$HC4/.github/scripts/allowed-failures.txt"
+    printf '%s\n' '# READER PATH REASON' '.github/scripts/qualify.sh .github/scripts  the digest'"'"'s own cd' \
+        >"$HC4/.github/scripts/g4-harness-allowed.txt"
+    (cd "$HC4" && eval "$1" && git init -q && git add -A)
+    "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$HC4" >"$HC4.out" 2>"$HC4.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "g4 harness: a fixture whose digest covers every read" 0 "$(hc4 :)"
+check_true "and lists what G4 reached" grep -qF "reached .github/scripts/helper.sh (from .github/scripts/qualify.sh:4)" "$HC4.out"
+check "g4 harness: a script G4 runs that the digest leaves out" 1 "$(hc4 "sed -i 's/ helper.sh)/)/' .github/scripts/qualify.sh")"
+check_true "names the reader's line" grep -qF \
+    "error: .github/scripts/qualify.sh:4: reads .github/scripts/helper.sh, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a new dependency nobody hashed" 1 \
+    "$(hc4 "printf 'cat \"\$APEX_ROOT/.github/scripts/rows.txt\"\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "is named" grep -qF "reads .github/scripts/rows.txt, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a read two scripts down" 1 "$(hc4 "printf 'cat tools/data.txt\n' >>.github/scripts/helper.sh; mkdir tools; : >tools/data.txt")"
+check_true "names the second script" grep -qF "error: .github/scripts/helper.sh:2: reads tools/data.txt" "$HC4.err"
+check "g4 harness: an allowed unhashed read" 0 \
+    "$(hc4 "printf 'cat tools/data.txt\n' >>.github/scripts/helper.sh; mkdir tools; : >tools/data.txt; printf '.github/scripts/helper.sh tools/data.txt  read for the log only\n' >>.github/scripts/g4-harness-allowed.txt")"
+check "g4 harness: an allow line no read needs" 1 \
+    "$(hc4 "printf '.github/scripts/helper.sh tools/data.txt  read for the log only\n' >>.github/scripts/g4-harness-allowed.txt")"
+check_true "names the stale line" grep -qF "g4-harness-allowed.txt:3: .github/scripts/helper.sh tools/data.txt is no longer an unhashed read" "$HC4.err"
+check "g4 harness: a digest that hashes a file the checkout lacks" 1 "$(hc4 "rm .github/scripts/helper.sh")"
+check_true "names it" grep -qF "g4_harness hashes .github/scripts/helper.sh, which is not in the checkout" "$HC4.err"
+check "g4 harness: a qualify.sh without g4_harness" 1 "$(hc4 "sed -i '/^g4_harness()/,/^}/d' .github/scripts/qualify.sh")"
+
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
     local ga_reached=$1 allowlist=$2
@@ -2900,18 +3207,29 @@ printf '/usr/share/applications/%s\n' 'org.gnome.Nautilus.desktop nautilus' 'org
     'org.example.Unlisted.desktop unlisted' 'org.gnome.Terminal.desktop gnome-terminal' >"$CT/provides"
 CT_KEYS="['<Super><Alt>space', 'XF86Keyboard']"
 CT_BACK_KEYS="['<Shift><Super><Alt>space', '<Shift>XF86Keyboard']"
-ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST], and its input-source keys
-    printf "[org.gnome.desktop.interface]\nicon-theme='Apex'\nclock-show-weekday=true\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1" \
-        >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
+declare -A CT_SESSION=([font-name]="'Adwaita Sans 10.125'" [document-font-name]="'Adwaita Sans 10.125'"
+    [monospace-font-name]="'JetBrains Mono 9.75'" [font-hinting]="'none'" [icon-theme]="'Apex'")
+ct_favorites() { # LIST: apex-desktop's dock, favorite-apps=[LIST], and its session, input-source keys
+    local key
+    {
+        printf '[org.gnome.desktop.interface]\n'
+        for key in "${!CT_SESSION[@]}"; do printf '%s=%s\n' "$key" "${CT_SESSION[$key]}"; done
+        printf "clock-show-weekday=true\n\n[org.gnome.shell]\nfavorite-apps=[%s]\n" "$1"
+    } >"$CT/desktop/desktop/schemas/90_apex.gschema.override"
     printf '\n[org.gnome.desktop.wm.keybindings]\n# Super+Space opens Spotlight.\n%s\n%s\n' \
         "switch-input-source=$CT_KEYS" "switch-input-source-backward=$CT_BACK_KEYS" \
         >>"$CT/desktop/desktop/schemas/90_apex.gschema.override"
 }
-ct_g2_keys() { # KEYS BACKWARD: apex-gnome's G2 copy of the input-source keys
+ct_g2_keys() { # KEYS BACKWARD: apex-gnome's G2 copy of the input-source keys, and of the session keys
+    local key
     mkdir -p "$CT/gnome/tests/shots"
     printf '%s\n' "readonly PR_CASES=(default keys" '    fault-abort)' "# apex-desktop's 90_apex override." \
         "readonly INPUT_SOURCE_KEYS=\"$1\"" "readonly INPUT_SOURCE_BACKWARD_KEYS=\"$2\"" >"$CT/gnome/tests/shots/parts.sh"
+    for key in "${!CT_SESSION[@]}"; do
+        printf 'readonly %s="%s"\n' "$(ct_session_name "$key")" "${CT_SESSION[$key]}" >>"$CT/gnome/tests/shots/parts.sh"
+    done
 }
+ct_session_name() { local name=${1//-/_}; printf 'SESSION_%s' "${name^^}"; }
 ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
 ct_g2_weekday() { # PATCHED SMOKE: the clock-show-weekday values G2's patched.sh and smoke.sh write
     printf "printf '%%s\\n' '[org.gnome.desktop.interface]' '%s' >x.override\n" "$1" >"$CT/gnome/tests/shots/patched.sh"
@@ -3044,6 +3362,29 @@ sed -i '/^switch-input-source-backward=/d' "$CT/desktop/desktop/schemas/90_apex.
 check "contracts: an override without switch-input-source-backward" 1 "$(ct_run)"
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 check "contracts: the G2 keys hold again" 0 "$(ct_run)"
+
+ct_logged() {
+    local rc=0
+    PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
+        APEX_GNOME_SRC="$CT/gnome" GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+check "contracts: G2's session keys equal apex-desktop's" 0 "$(ct_logged)"
+check_true "and the log says so" grep -q "^contracts: G2's shells set .*weekday, input-source, font and icon keys" "$CT/out"
+for key in font-name document-font-name monospace-font-name font-hinting icon-theme; do
+    name=$(ct_session_name "$key")
+    sed -i "s/^readonly $name=.*/readonly $name=\"'Cantarell 11'\"/" "$CT/gnome/tests/shots/parts.sh"
+    check "contracts: G2's $name differs from apex-desktop's $key" 1 "$(ct_logged)"
+    check_true "and names both values" grep -qF \
+        "has \"'Cantarell 11'\", but $CT/desktop/desktop/schemas/90_apex.gschema.override sets [org.gnome.desktop.interface] $key=\"${CT_SESSION[$key]}\"" \
+        "$CT/out"
+    ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
+done
+sed -i '/^readonly SESSION_ICON_THEME=/d' "$CT/gnome/tests/shots/parts.sh"
+check "contracts: a parts.sh without SESSION_ICON_THEME" 1 "$(ct_logged)"
+check_true "and names only that key" grep -q "parts.sh does not copy SESSION_ICON_THEME exactly once$" "$CT/out"
+ct_g2_keys "$CT_KEYS" "$CT_BACK_KEYS"
+check "contracts: the G2 session keys hold again" 0 "$(ct_run)"
 check "contracts: every listed package resolves" 0 "$(CT_GONE=/dev/null ct_run)"
 CT_BASE_FIRST=$(grep -nvE '^[[:space:]]*(#|$)' "$APEX_ROOT/image/packages/base.txt" | head -n 1)
 CT_GNOME_LAST=$(grep -nvE '^[[:space:]]*(#|$)' "$APEX_ROOT/image/packages/gnome.txt" | tail -n 1)
@@ -3139,6 +3480,22 @@ check "qemu parity: a second QEMU command line fails rather than going unread" 1
 check_true "and counts them" grep -q 'qualify-two.sh: 2 QEMU -machine options, expected 1' "$QP/err"
 { cat "${QP_REAL[0]}"; printf '    # -machine pc -cpu max: a comment\n'; } >"$QP/qualify-comment.sh"
 check "qemu parity: a comment naming flags is not a QEMU line" 0 "$(qp_rc "$QP/qualify-comment.sh" "${QP_REAL[1]}")"
+gd_rc() { (set +e; g4_display "$1" 2>"$QP/err"; echo $?); }
+check "g4 display: main's qualify.sh runs std VGA" 0 "$(gd_rc "${QP_REAL[0]}")"
+sed 's/-device VGA /-device virtio-vga /' "${QP_REAL[0]}" >"$QP/qualify-virtio.sh"
+check "g4 display: virtio-vga (qualify.sh before the switch) fails" 1 "$(gd_rc "$QP/qualify-virtio.sh")"
+check_true "and says why" grep -q "qualify-virtio.sh: QEMU display device(s) 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
+sed 's/-device VGA /-device VGA -device virtio-gpu-pci /' "${QP_REAL[0]}" >"$QP/qualify-two-gpus.sh"
+check "g4 display: a second display device fails" 1 "$(gd_rc "$QP/qualify-two-gpus.sh")"
+check_true "naming each device in full" grep -qF "qualify-two-gpus.sh: QEMU display device(s) 'VGA virtio-gpu-pci'" "$QP/err"
+sed 's/-device VGA /-device VGA -device "virtio-vga" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-virtio.sh"
+check "g4 display: a quoted second device fails too" 1 "$(gd_rc "$QP/qualify-quoted-virtio.sh")"
+sed 's/-device VGA /-device "VGA" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-vga.sh"
+check "g4 display: a quoted VGA is VGA" 0 "$(gd_rc "$QP/qualify-quoted-vga.sh")"
+sed 's/-device VGA /-device VGA -device bochs-display /' "${QP_REAL[0]}" >"$QP/qualify-bochs-display.sh"
+check "g4 display: a second display device named display fails" 1 "$(gd_rc "$QP/qualify-bochs-display.sh")"
+{ cat "${QP_REAL[0]}"; printf '    # -device virtio-vga: a comment\n'; } >"$QP/qualify-display-comment.sh"
+check "g4 display: a comment naming a device is not a QEMU line" 0 "$(gd_rc "$QP/qualify-display-comment.sh")"
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers
@@ -4117,6 +4474,10 @@ for layer in spec.split(";"):
             if kind == "link":
                 info.type, info.linkname = tarfile.SYMTYPE, value.replace("@OUT", outside)
                 tar.addfile(info)
+            elif kind in ("fifo", "chr"):
+                info.type = tarfile.FIFOTYPE if kind == "fifo" else tarfile.CHRTYPE
+                info.devmajor, info.devminor = (1, 3) if kind == "chr" else (0, 0)
+                tar.addfile(info)
             else:
                 info.size = len(value.encode())
                 tar.addfile(info, io.BytesIO(value.encode()))
@@ -4132,8 +4493,9 @@ op_pull() { # SPEC: pull's exit for a layout of SPEC's layers (op layers.py); it
     local rc=0
     rm -rf "$OP/layout" "$OP/dest" "$OP/outside" && mkdir -p "$OP/outside" && : >"$OP/copies" && : >"$OP/sleeps"
     [[ $1 == - ]] || python3 -I "$OP/layers.py" "$OP/layout" "$OP/outside" "$1"
+    # A FIFO that pull reads would block it: the timeout turns that into a failure.
     PATH="$OP/bin:$PATH" FAKE_LAYOUT="$OP/layout" FAKE_COPIES="$OP/copies" FAKE_SLEEPS="$OP/sleeps" GITHUB_ACTIONS='' \
-        "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull ghcr.io/x/apex-rpms@sha256:abc "$OP/dest" >"$OP/out" 2>&1 || rc=$?
+        timeout 60 "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull ghcr.io/x/apex-rpms@sha256:abc "$OP/dest" >"$OP/out" 2>&1 || rc=$?
     printf '%s' "$rc"
 }
 OP_SUMS="file:rpms/SHA256SUMS=$(op_sum a.rpm A)
@@ -4151,12 +4513,36 @@ check "oci pull: no RPM reaches DEST when one does not match" "" "$(ls "$OP/dest
 check "oci pull: a copy that keeps failing" 1 "$(op_pull -)"
 check "is tried 4 times" 4 "$(wc -l <"$OP/copies")"
 check "backing off 10, 20 and 40 s" "10 20 40" "$(paste -sd' ' "$OP/sleeps")"
-# r20: pull copies the file an RPM link points at, so this row stays off until oci-artifact.sh refuses links.
-# check "oci pull: an RPM that is a link out of the layer is refused, and nothing reaches DEST" refused "$(printf secret >"$TMP/oci-pull-secret"; op_refused "link:rpms/evil.rpm=$TMP/oci-pull-secret|file:rpms/SHA256SUMS=$(op_sum evil.rpm secret)"; ls "$OP/dest" 2>/dev/null)"
+check "oci pull: an RPM that is a link out of the layer is refused, and nothing reaches DEST" refused \
+    "$(printf secret >"$TMP/oci-pull-secret"; op_refused "link:rpms/evil.rpm=$TMP/oci-pull-secret|file:rpms/SHA256SUMS=$(op_sum evil.rpm secret)"; ls "$OP/dest" 2>/dev/null)"
+check_true "and named, with the ref" grep -qF \
+    "ghcr.io/x/apex-rpms@sha256:abc: /rpms holds entries that are neither files nor directories: evil.rpm (l)" "$OP/out"
+check "oci pull: a link to another RPM of the layer is refused too" refused \
+    "$(op_refused "file:rpms/a.rpm=A|link:rpms/b.rpm=a.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+$(op_sum b.rpm A)
+")"
+check "oci pull: a FIFO among the RPMs is refused, and named" "refused|1" \
+    "$(op_refused "file:rpms/a.rpm=A|fifo:rpms/pipe.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")|$(grep -cF 'neither files nor directories: pipe.rpm (p)' "$OP/out")"
+# Unprivileged, tar cannot make the node and pull fails there; as root it is made and pull names it.
+check "oci pull: a device node among the RPMs is refused" refused \
+    "$(op_refused "file:rpms/a.rpm=A|chr:rpms/null.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")"
+if ((EUID == 0)); then
+    check_true "and named" grep -qF 'neither files nor directories: null.rpm (c)' "$OP/out"
+else
+    check_true "by tar, which cannot make it unprivileged" grep -q 'Cannot mknod' "$OP/out"
+    echo "note: unprivileged, so pull's own device check is not exercised (tar refuses the node first)"
+fi
+check "and DEST stays empty" "" "$(ls "$OP/dest" 2>/dev/null)"
 check "oci pull: an rpms directory that is a link out of the layer is refused" refused \
     "$(op_refused "link:rpms=@OUT;file:rpms/a.rpm=A|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
 ")"
 check "and nothing is written through it" "" "$(ls "$OP/outside")"
+# tar writes a link inside the layer, and find does not descend through its starting link.
+check "oci pull: an rpms directory that is a link inside the layer is refused" refused \
+    "$(op_refused "link:rpms=real|link:real/evil.rpm=$TMP/oci-pull-secret|file:real/SHA256SUMS=$(op_sum evil.rpm secret)")"
+check_true "and says it has no /rpms directory" grep -qF 'has no /rpms directory' "$OP/out"
 check "oci pull: a ../ member writes nothing outside the layer" "" \
     "$(op_pull "file:../oci-pull-escape.rpm=X|$OP_SUMS" >/dev/null; [[ ! -e $TMP/oci-pull-escape.rpm ]] || echo written)"
 check "oci pull: an absolute member writes nothing outside the layer" "" \
@@ -4710,6 +5096,91 @@ check "runner: and which locks are held" 'sleep inhibitor: held (idle sleep)' \
     "$(PATH="$FI/bin:$PATH" FAKE_INHIBIT="$FI" bash -c '. "$1"; inhibitor_status' _ "$APEX_ROOT/tools/runner/runner.sh")"
 kill "$!"
 
+# --- qualify.sh's QEMU: the event log, OVMF's console, a stop without ssh, a failed run's journal ---
+QV="$TMP/qemu-side"
+mkdir -p "$QV/bin" "$QV/out/logs" "$QV/out/qmp"
+cat >"$QV/bin/qemu-system-x86_64" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$QEMU_ARGS"
+while (($#)); do [[ $1 != -pidfile ]] || echo $$ >"$2"; shift; done
+EOF
+chmod +x "$QV/bin/qemu-system-x86_64"
+: >"$QV/code.fd"
+: >"$QV/vars.fd"
+# shellcheck disable=SC2016 # expanded by the inner bash
+PATH="$QV/bin:$PATH" QEMU_ARGS="$QV/args" QUALIFY_OUT="$QV/out" OVMF_CODE="$QV/code.fd" OVMF_VARS="$QV/vars.fd" \
+    bash -c '. "$1"; require_kvm() { :; }; start_vm t' _ "$APEX_ROOT/.github/scripts/qualify.sh" >/dev/null 2>&1
+check_true "start_vm: a second QMP socket for the event reader" grep -qx "unix:$QV/out/qmp/t.events.sock,server=on,wait=off" "$QV/args"
+check_true "OVMF's debug console in the row's logs" grep -qx "file:$QV/out/logs/t.ovmf.log" "$QV/args"
+check_true "at OVMF's debug port" grep -qx 'isa-debugcon.iobase=0x402' "$QV/args"
+python3 - "$QV/events.sock" >/dev/null 2>&1 <<'EOF' &
+import json, os, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1] + ".tmp")
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+s.listen()
+c, _ = s.accept()
+f = c.makefile("rw")
+f.write('{"QMP": {}}\n'); f.flush()
+f.readline()
+f.write('{"return": {}}\n')
+for e in ["STOP", "SUSPEND", "RTC_CHANGE", "WAKEUP", "RESUME", "SHUTDOWN"]:
+    f.write(json.dumps({"event": e, "data": {"guest": True}, "timestamp": {"seconds": 1, "microseconds": 0}}) + "\n")
+f.flush()
+c.close()
+EOF
+qv_pid=$!
+until [[ -S $QV/events.sock ]]; do sleep 0.05; done
+# shellcheck disable=SC2016 # expanded by the inner bash
+timeout 10 bash -c '. "$1"; python3 -c "$QMP_EVENTS" "$2" "$3"' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$QV/events.sock" "$QV/events.log"
+wait "$qv_pid" || true
+check "the QMP event reader keeps the run-state events, each with the host's time" "STOP SUSPEND WAKEUP RESUME SHUTDOWN" \
+    "$(awk '{print $2}' "$QV/events.log" | paste -sd' ')"
+check_true "as ISO times" grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+\+00:00 SUSPEND \{"guest": true\}$' "$QV/events.log"
+(sleep 300 >/dev/null 2>&1 & echo $! >"$QV/out/v.pid")
+qv_vm=$(cat "$QV/out/v.pid")
+qv_start=$SECONDS
+# shellcheck disable=SC2016 # expanded by the inner bash
+QUALIFY_OUT="$QV/out" bash -c '. "$1"; VM_NAME=v; vm_answers() { return 1; }; stop_vm' _ "$APEX_ROOT/.github/scripts/qualify.sh" >/dev/null 2>&1
+check_false "stop_vm: a guest without ssh is not waited on for a poweroff it never got" kill -0 "$qv_vm"
+check_true "but stopped in seconds" test $((SECONDS - qv_start)) -lt 20
+qv_cleanup() { # RC [luks|nojournal]: cleanup after a run that exits RC, its guest unreachable, with QEMU, QMP and root as stubs
+    rm -f "$QV/calls" "$QV/quit" "$QV/out/logs/v.disk-journal.txt"
+    : >"$QV/out/v.raw"
+    : >"$QV/out/results.md"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    QUALIFY_OUT="$QV/out" QUALIFY_KEEP_DISKS=1 GITHUB_ACTIONS='' bash -c '. "$1"; QV=$3 mode=$4; VM_NAME=v
+        [[ $mode != luks ]] || LUKS_PASSPHRASE=x
+        vm_alive() { [[ ! -e $QV/quit ]]; }
+        vm_answers() { return 1; }
+        qmp() { echo "qmp $*" >>"$QV/calls"; : >"$QV/quit"; }
+        as_root() {
+            echo "$*" >>"$QV/calls"
+            case $1 in
+                losetup) [[ $2 == --detach ]] || echo /dev/loop9 ;;
+                sh) [[ $mode == nojournal ]] || echo "$QV/out/mnt-v-journal/ostree/deploy/default/var/log/journal" ;;
+                journalctl) echo "the guest journal, off its disk" ;;
+            esac
+        }
+        trap cleanup EXIT
+        exit "$2"' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1" "$QV" "${2:-}" >/dev/null 2>"$QV/err" || true
+}
+qv_cleanup 3
+check_true "cleanup after a failure: QEMU quits over QMP" grep -qF 'qmp {"execute":"quit"}' "$QV/calls"
+check_true "the disk is mapped read-only" grep -qx "losetup --find --show --partscan --read-only $QV/out/v.raw" "$QV/calls"
+check "and its own journal is kept, though ssh never answered" "the guest journal, off its disk" \
+    "$(cat "$QV/out/logs/v.disk-journal.txt")"
+qv_cleanup 0
+check_false "a run that passed maps no disk" grep -q losetup "$QV/calls"
+qv_cleanup 3 nojournal
+check_true "a disk with no journal on it is said so" grep -qF "cannot read the journal off $QV/out/v.raw" "$QV/err"
+check_false "rather than kept empty" test -e "$QV/out/logs/v.disk-journal.txt"
+qv_cleanup 3 luks
+check_true "luks: the root is opened read-only" grep -qx 'cryptsetup open --readonly --key-file - /dev/loop9p3 apex-qualify-v-journal' "$QV/calls"
+check_true "and /var's subvolume mounted read-only" grep -qx "mount -o ro,subvol=var,rescue=nologreplay /dev/mapper/apex-qualify-v-journal $QV/out/mnt-v-journal" "$QV/calls"
+check_true "its journal read" grep -qx "journalctl -D $QV/out/mnt-v-journal/log/journal -o short-monotonic --no-pager" "$QV/calls"
+check_true "and the mapping closed" grep -qx 'cryptsetup close apex-qualify-v-journal' "$QV/calls"
+
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
 mkdir -p "$V/bin"
@@ -4726,7 +5197,9 @@ cat >"$V/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 if [[ $* == "apex-builder ci-build modes" ]]; then
     [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
-    echo "daily next gate g4"
+    [[ ! -e $FAKE_VM/modes-lost ]] || exit 255
+    # The ci-build installed before r18: it takes modes, and answers without gate and g4.
+    if [[ -e $FAKE_VM/next-host ]]; then echo "daily next"; else echo "daily next gate g4"; fi
     exit 0
 fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
@@ -4854,6 +5327,20 @@ vm_reset
 check "build: a push still runs on it: build-image.sh chooses" "0|apex-builder ci-build $CI_SHA" \
     "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=)|$(cat "$V/ssh.args")"
 rm "$V/old-host"
+: >"$V/next-host"
+for extra in daily gate g4; do
+    vm_reset
+    check "build: the ci-build that answers modes with 'daily next' fails $extra at once too, building nothing" \
+        "2|::error::the builder VM's ci-build predates gate and g4, so it cannot run $extra as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+        "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=$extra)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+done
+rm "$V/next-host"
+: >"$V/modes-lost"
+vm_reset
+check "build: ssh lost while asking modes is exit 255, and nothing builds" \
+    "255|::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)|no build" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+rm "$V/modes-lost"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"
