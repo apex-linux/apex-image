@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: snapshot-spike
+
+# A draft PR that is never merged: local-diag's snapshot functions on a real KVM guest.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/snapshot-spike.yml
+      - .github/spike/**
+  workflow_dispatch:
+    inputs:
+      image:
+        description: The image to install (default registry.fedoraproject.org/fedora-bootc:45)
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  snapshot:
+    name: savevm, loadvm and -loadvm on qcow2 overlays, under KVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk
+        run: .github/scripts/ci-host.sh free-disk
+
+      - name: ci-host.sh kvm
+        run: .github/scripts/ci-host.sh kvm
+
+      - name: qualify.sh host-setup
+        run: .github/scripts/qualify.sh host-setup
+
+      - name: Save, change, load, kill and restart
+        env:
+          SPIKE_IMAGE: ${{ inputs.image }}
+        run: .github/spike/snapshot-spike.sh
+
+      - name: Logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: snapshot-spike-logs
+          path: ${{ runner.temp }}/snapshot-spike/logs
+          retention-days: 7
+          if-no-files-found: ignore
