@@ -15,6 +15,8 @@ host run only on GitHub Actions.
                                         and APEX_SCRATCH on the other disk
   ci-host.sh podman-conf                rootful podman: sqlite database, temp in the store
   ci-host.sh kvm                        make /dev/kvm usable by the runner user
+  ci-host.sh qualify                    what qualify.sh needs: QEMU, OVMF and its other
+                                        tools, podman-conf, then kvm
   ci-host.sh preflight STORE_GB SCRATCH_GB
                                         fail fast unless that much space is free
   ci-host.sh usage STEP                 add a df/du row for STEP to the job summary
@@ -131,6 +133,15 @@ cmd_kvm() {
     log "kvm: /dev/kvm is writable"
 }
 
+cmd_qualify() {
+    ci_only qualify
+    retry 3 10 sudo apt-get update -qq
+    retry 3 10 sudo apt-get install -y -qq --no-install-recommends \
+        qemu-system-x86 qemu-utils ovmf dosfstools btrfs-progs openssh-client jq
+    cmd_podman_conf
+    cmd_kvm
+}
+
 cmd_preflight() {
     (($# == 2)) || die "usage: ci-host.sh preflight STORE_GB SCRATCH_GB"
     local need_store=$1 need_scratch=$2 scratch
@@ -186,6 +197,7 @@ main() {
         storage) cmd_storage "$@" ;;
         podman-conf) cmd_podman_conf "$@" ;;
         kvm) cmd_kvm "$@" ;;
+        qualify) cmd_qualify "$@" ;;
         preflight) cmd_preflight "$@" ;;
         usage) cmd_usage "$@" ;;
         *) usage ;;

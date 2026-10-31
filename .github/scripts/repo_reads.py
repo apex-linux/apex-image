@@ -44,6 +44,11 @@ REF = re.compile(rf"(?:(?<=[\s\"'=<(;|&`]){PREFIX}?|{PREFIX}|^)({TOP})")
 MESSAGE = re.compile(r"""^\s*(?:echo|printf|die|log|warn|note|notice|usage|flunk|fail|diag_block|error|info)\b|::(?:error|warning|notice)""")
 BESIDE = re.compile(r"\$\(dirname[^)]*\)\"?/((?:\.\./)*[\w.-][\w./-]*)")
 CASE = re.compile(r"^\s*[^()#]*[^(]\)\s*(?:;;|return\b|$)")
+IMPORT = re.compile(r"^\s*(?:from\s+(\w+)|import\s+(\w+))")
+HERE = re.compile(
+    r"""(?:os\.path\.dirname\((?:os\.path\.(?:abs|real)path\()?__file__\)?\)|Path\(__file__\)(?:\.resolve\(\))?\.parent)"""
+    r"""\s*[,/]\s*["']([^"']+)["']"""
+)
 
 
 def strip(line):
@@ -73,6 +78,12 @@ def references(path, numbered):
         depth = max(0, depth + text.count("(") - text.count(")"))
         if pattern:
             continue
+        if not shell:
+            m = IMPORT.match(line)
+            if m:
+                yield number, os.path.join(os.path.dirname(path), (m[1] or m[2]) + ".py")
+            for m in HERE.finditer(text):
+                yield number, os.path.normpath(os.path.join(os.path.dirname(path), m[1]))
         for m in REF.finditer(text):
             yield number, m[1].rstrip(".,;:)\"'")
         for m in BESIDE.finditer(text):
@@ -100,6 +111,8 @@ def walk(repo, queue, covered, allowed, covers, under, problems):
         token, where = queue.pop(0)
         reader = where.split(":")[0]
         static = re.split(r"[$*\[{]", token)[0]
+        if static == token and token.endswith("/"):
+            token = static = token.rstrip("/")
         if token in repo.tracked:
             if token not in seen:
                 seen[token] = where

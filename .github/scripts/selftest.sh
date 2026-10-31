@@ -3063,6 +3063,9 @@ check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:15: r
 check "vm paths: a dynamic path outside every path" 1 \
     "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.env\"\n' >>.github/scripts/helper.sh")"
 check_true "names each file it can be" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env, which no" "$VP.err"
+check "vm paths: a directory read with a trailing slash, outside every path" 1 \
+    "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\"*.env\n' >>.github/scripts/helper.sh")"
+check_true "names the directory" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf, which no" "$VP.err"
 check "vm paths: a dynamic path that names no file, outside every path" 1 \
     "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.conf\"\n' >>.github/scripts/helper.sh")"
 check_true "is unresolvable" grep -qF \
@@ -3143,6 +3146,25 @@ check "g4 harness: a case pattern is not a read" 0 \
 check "g4 harness: a Python script G4 runs is walked too" 1 \
     "$(hc4 "sed -i 's/ helper.sh)/ helper.sh tool.py)/' .github/scripts/qualify.sh; printf 'python3 \"\$APEX_ROOT/.github/scripts/tool.py\"\n' >>.github/scripts/qualify.sh; printf 'open(\".github/scripts/rows.txt\")\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
 check_true "naming its line" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+HC4_PY="sed -i 's/ helper.sh)/ helper.sh tool.py)/' .github/scripts/qualify.sh; printf 'python3 \"\$APEX_ROOT/.github/scripts/tool.py\"\n' >>.github/scripts/qualify.sh"
+check "g4 harness: a module the Python script imports from beside it" 1 \
+    "$(hc4 "$HC4_PY; printf 'import json\nfrom rowsmod import rows\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py")"
+check_true "is walked as a read" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/rowsmod.py, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a file the Python script finds beside itself with os.path" 1 \
+    "$(hc4 "$HC4_PY; printf 'open(os.path.join(os.path.dirname(os.path.abspath(__file__)), \"rows.txt\"))\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "is a read of it" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: and with pathlib" 1 \
+    "$(hc4 "$HC4_PY; printf '(Path(__file__).resolve().parent / \"rows.txt\").read_text()\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "is a read of it too" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: a directory read with a trailing slash" 1 \
+    "$(hc4 "printf 'for f in \"\$APEX_ROOT/.github/scripts/\"*.rows; do . \"\$f\"; done\n' >>.github/scripts/qualify.sh; : >.github/scripts/x.rows")"
+check_true "is the directory's second read" grep -qF "qualify.sh:8: reads .github/scripts again; its allow line excuses only .github/scripts/qualify.sh:6" "$HC4.err"
+check "g4 harness: and of a directory nothing excuses" 1 \
+    "$(hc4 "printf 'ls \"\$APEX_ROOT/tools/conf/\"\n' >>.github/scripts/helper.sh; mkdir -p tools/conf; : >tools/conf/a.env")"
+check_true "names the directory" grep -qF "error: .github/scripts/helper.sh:2: reads tools/conf, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line" 1 \
+    "$(hc4 "printf 'case \$1 in\n    x)\n        rows=\$(sort\n            \"\$APEX_ROOT/.github/scripts/rows.txt\")\n        ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
@@ -3943,7 +3965,7 @@ ch() { # SUBCOMMAND [PATH_KEY=BYTES...]: ci-host.sh's exit on Actions behind the
     printf '%s' "$rc"
 }
 CH_G=$((1024 * 1024 * 1024))
-for c in free-disk storage podman-conf kvm; do
+for c in free-disk storage podman-conf kvm qualify; do
     check "ci-host $c refuses to run off GitHub Actions" 1 \
         "$(PATH="$HC/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/ci-host.sh" "$c")"
 done
@@ -3954,6 +3976,10 @@ check_true "to containers.conf.d" grep -qx "tee /etc/containers/containers.conf.
 check "ci-host kvm passes exactly when /dev/kvm is writable" "$([[ -w /dev/kvm ]] && echo 0 || echo 1)" "$(ch kvm)"
 check_true "after the udev rule for kvm" grep -qx "tee /etc/udev/rules.d/99-apex-kvm.rules" "$HC/sudo"
 check "and gives the kvm group the node" 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' "$(cat "$HC/tee")"
+check "ci-host qualify passes exactly when /dev/kvm is writable" "$([[ -w /dev/kvm ]] && echo 0 || echo 1)" "$(ch qualify)"
+check "after qualify.sh's packages, podman-conf and the udev rule for kvm" \
+    "apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils ovmf dosfstools btrfs-progs openssh-client jq|tee /etc/containers/containers.conf.d/50-apex-ci.conf|tee /etc/udev/rules.d/99-apex-kvm.rules" \
+    "$(grep -E '^(apt-get install|tee)' "$HC/sudo" | paste -sd'|')"
 check "ci-host free-disk" 0 "$(ch free-disk "_=$((20 * CH_G))" "_=$((50 * CH_G))")"
 check_true "deletes the toolchains" grep -qx "rm -rf /usr/share/dotnet" "$HC/sudo"
 check_true "and prunes docker's images" grep -qx "docker image prune --all --force" "$HC/sudo"
