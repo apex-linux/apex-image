@@ -7,7 +7,7 @@ single depsolve of the compose through a local repository (`createrepo_c`, prior
 
 | RPM | Built from | By | Output |
 |---|---|---|---|
-| `apex` (`apexctl`, `apex-updated`, `apex-boot-assess`) | apex-system (`APEX_SYSTEM_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/apex/` |
+| `apex` (`apexctl`, `apex-updated`, `apex-boot-assess`, and `apex-session-agent` with its user unit and `80-apex.preset`) | apex-system (`APEX_SYSTEM_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/apex/` |
 | `apex-desktop` (the Apex GSettings schema and the shell's crash guard) | apex-desktop (`APEX_DESKTOP_SRC`) | its `.github/scripts/rpms.sh build` | `_build/rpms/desktop/` |
 | libfprint with the ELAN `04f3:0c6e` patches | apex-kernel (`APEX_KERNEL_SRC`) | its `.github/scripts/libfprint.sh build`, given this image's `GA_REACHED` and updates-testing allowlist | `_build/libfprint/`, or "degraded" |
 | gnome-shell with the Apex layer, and later the kernel pair | the recipes in `packaging/pkgs/` of apex-gnome and apex-kernel (`APEX_LANE_RECIPES`) | `apex-lane build` ([below](#the-rebuild-lane)) | `~/apex-store/`, `rpms.lock.next` |

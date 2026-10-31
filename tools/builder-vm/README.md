@@ -241,8 +241,9 @@ just vm-qualify
 - GDM's greeter, once the user `apexqa` exists (made only in the guest);
 - the login of `apexqa` through GDM's greeter: its password, made for the run, is typed
   over QEMU's QMP socket (a Unix socket in `_build/qualify/qmp/`); the Apex layer arms
-  its crash guard and logs no failure, `color-scheme` is `'default'`, and no Apex user
-  unit runs;
+  its crash guard and logs no failure, `color-scheme` is `'default'`, no Apex user unit
+  has failed, the only active one is `apex-session-agent` (running, never restarted), and
+  `apex-folder-icons` has run and exited 0;
 - `loginctl lock-session` and an unlock by the password typed into the unlock dialog,
   then a second lock and `loginctl unlock-session`: each time gnome-shell's
   `LockedHint` and `org.gnome.ScreenSaver` follow, the shell survives, and it logs no
