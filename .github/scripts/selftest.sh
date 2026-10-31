@@ -567,8 +567,12 @@ check_true "a case named before its subject is found too" grep -qx 'case default
 check_false "a failing case without a log prints nothing" grep -q '== G2 dock-pin' "$BUILD_DIR/out"
 check_false "nor does a passing line" grep -q '^== G2 PASS' "$BUILD_DIR/out"
 rm -rf "$G2_RUN1" "$BUILD_DIR/g2-rc"
-check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" break-glass \
-    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f6)"
+check "a break-glass G4 verdict says break-glass in verdicts.tsv: the same tag, another kernel" "PASS break-glass" \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f4,6 | tr '\t' ' ')"
+echo 1 >"$BUILD_DIR/g4-rc"
+check "and so does a break-glass G4 failure, which a gate FAIL row would offer to qualify-only" "FAIL break-glass" \
+    "$(APEX_KERNEL=fedora build_gates >/dev/null; tail -n 1 "$BUILD_DIR/work/_build/qualify/verdicts.tsv" | cut -f4,6 | tr '\t' ' ')"
+rm -f "$BUILD_DIR/g4-rc"
 check "a break-glass image (KERNEL=fedora) records nothing, so lane.sh promote refuses it" "0:no record" \
     "$(APEX_KERNEL=fedora build_gates):$([[ -e $BUILD_DIR/work/_build/gates-passed.txt ]] && echo record || echo 'no record')"
 check_true "and says so" grep -q 'break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded' "$BUILD_DIR/out"
@@ -771,6 +775,9 @@ for helper in image_id image_revision image_created git_ qualify last_verdict ha
     check "fail-safe: $helper alone fails: the full gate run" 1 "$(t2_rc "$helper() { return 1; }")"
 done
 # shellcheck disable=SC2016 # expanded by the inner bash
+check "fail-safe: git status alone fails, diff and merge-base work: the full gate run" "1|git status failed" \
+    "$(t2_plan_of 'git_() { [[ $1 != status ]] || return 1; git -c safe.directory="$PWD" "$@"; }')"
+# shellcheck disable=SC2016 # expanded by the inner bash
 check "fail-safe: an unset variable in the detection is the full gate run too" 1 "$(t2_rc 'image_revision() { echo "$UNSET_X"; }')"
 # shellcheck disable=SC2016 # expanded by the inner bash
 check "fail-safe: main with every helper broken runs the full gate, and says why" \
@@ -851,6 +858,7 @@ esac
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 #!/usr/bin/env bash
+: >"$FAKE/build-ran"
 echo "== plan: gate (G4 first)" >&2
 echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
 mkdir -p _build
@@ -1017,10 +1025,13 @@ check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "c
 rm "$CI_DIR/no-plan"
 cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
 sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
-rm -f "$CI_DIR/ci-mode"
-check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
-    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build" \
-    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/home/apex-image/_build/plan.txt && $CI_DIR/home/apex-image/_build/plan.txt -nt $CI_DIR/build-image-d.sh ]] && echo build || echo 'no build')"
+# gate too: an old build-image.sh would run its own plan, and a skipped G4 would read as not due.
+for mode in g4 gate; do
+    rm -f "$CI_DIR/ci-mode" "$CI_DIR/build-ran"
+    check "$mode for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
+        "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run $mode|no build|no build-image line" \
+        "$(ci_request "ci-build $CI_SHA $mode")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -q '^build-image ' && echo 'build-image line' || echo 'no build-image line')"
+done
 mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
@@ -4934,7 +4945,9 @@ cat >"$V/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 if [[ $* == "apex-builder ci-build modes" ]]; then
     [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
-    echo "daily next gate g4"
+    [[ ! -e $FAKE_VM/modes-lost ]] || exit 255
+    # The ci-build installed before r18: it takes modes, and answers without gate and g4.
+    if [[ -e $FAKE_VM/next-host ]]; then echo "daily next"; else echo "daily next gate g4"; fi
     exit 0
 fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
@@ -5062,6 +5075,20 @@ vm_reset
 check "build: a push still runs on it: build-image.sh chooses" "0|apex-builder ci-build $CI_SHA" \
     "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=)|$(cat "$V/ssh.args")"
 rm "$V/old-host"
+: >"$V/next-host"
+for extra in daily gate g4; do
+    vm_reset
+    check "build: the ci-build that answers modes with 'daily next' fails $extra at once too, building nothing" \
+        "2|::error::the builder VM's ci-build predates gate and g4, so it cannot run $extra as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+        "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=$extra)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+done
+rm "$V/next-host"
+: >"$V/modes-lost"
+vm_reset
+check "build: ssh lost while asking modes is exit 255, and nothing builds" \
+    "255|::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)|no build" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+rm "$V/modes-lost"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"
