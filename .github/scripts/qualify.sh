@@ -1594,6 +1594,15 @@ readonly SLEEP_OFFSET='awk '\''FNR == NR { b = $1; next } /^now at/ { printf "%.
 # shellcheck disable=SC2016 # expanded by the guest's shell
 readonly WAKEUP_IRQ_LINE='irq=$(cat /sys/power/pm_wakeup_irq) && grep -E "^ *$irq:" /proc/interrupts'
 
+# CLOCK_MONOTONIC from the kernel's 'PM: suspend-to-idle' to its 'PM: resume from suspend-to-idle'
+# (pm_debug_messages) in a journalctl -k -o short-monotonic log: the time s2idle ran.
+s2idle_gap() {
+    awk '{ t = $0; sub(/^\[ */, "", t); sub(/\].*/, "", t) }
+        / PM: suspend-to-idle$/ { start = t; next }
+        / PM: resume from suspend-to-idle$/ && start != "" { printf "%.6f\n", t - start; found = 1; exit }
+        END { exit !found }' "$1"
+}
+
 # The suspend has failed only in a VM so far: name the host, QEMU, firmware and guest kernel.
 suspend_environment() {
     local test=$1 qemu nested='' f cpu kernel mem_sleep line
@@ -1687,7 +1696,7 @@ journal_since_has() {
 # QMP is a local-diag unit only: OVMF's S3 resume asserts in the firmware G4 runs.
 matrix_suspend() {
     local test=$1-lock-suspend pid=$2 base=$3 mode=${4:-s2idle} since boot_id woken_boot cursor mark wake_line wake success offset
-    local after slept irq detail
+    local after clock gap slept irq detail
     [[ $mode == s2idle ]] || test+=-$mode
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_row "$test" "$since"
@@ -1713,7 +1722,7 @@ matrix_suspend() {
     if [[ $mode == s2idle ]]; then
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no 'PM: suspend entry (s2idle)' on the console" \
             serial_has "$mark" 'PM: suspend entry \(s2idle\)'
-        # The console line comes before the devices and the clock suspend: 2 s covers those.
+        # The console line comes before the devices suspend: the 2 s past the hold cover them.
         sleep "$((QUALIFY_SUSPEND_HOLD + 2))"
         wake_line=$(serial_lines)
         qmp "$(key_press wake)" || fail "$test" "QEMU took no wake key"
@@ -1738,11 +1747,15 @@ matrix_suspend() {
         ((after == success + 1)) || fail "$test" "suspend_stats/success went from $success to $after, not up by one"
         irq=$(vm_ssh "$WAKEUP_IRQ_LINE" | tr -s ' ') || irq=
         [[ $irq =~ ^\ ?1:.*i8042 ]] || fail "$test" "the wake IRQ is not the i8042 keyboard's (pm_wakeup_irq: ${irq:-none})"
-        slept=$(vm_ssh "$SLEEP_OFFSET") || fail "$test" "cannot read the guest's BOOTTIME and MONOTONIC clocks after the wake"
-        slept=$(awk -v a="$slept" -v b="$offset" 'BEGIN { printf "%.1f", a - b }')
-        awk -v s="$slept" -v h="$QUALIFY_SUSPEND_HOLD" 'BEGIN { exit !(s >= h) }' ||
-            fail "$test" "the guest slept ${slept}s (BOOTTIME - MONOTONIC) of a ${QUALIFY_SUSPEND_HOLD}s hold"
-        detail="s2idle held ${QUALIFY_SUSPEND_HOLD}s and the wake key while locked; suspend_stats success +1, woken by IRQ 1 (i8042), slept ${slept}s"
+        clock=$(vm_ssh "$SLEEP_OFFSET") || fail "$test" "cannot read the guest's BOOTTIME and MONOTONIC clocks after the wake"
+        gap=$(s2idle_gap "$QUALIFY_OUT/logs/$test.kernel.txt") ||
+            fail "$test" "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel log since the row began"
+        # Timekeeping freezes in s2idle only in an idle state with enter_s2idle (the laptop's C2/C3,
+        # not the VM's C1): BOOTTIME - MONOTONIC counts a frozen sleep, the lines' gap the rest.
+        slept=$(awk -v a="$clock" -v b="$offset" -v g="$gap" 'BEGIN { printf "%.3fs (suspend-to-idle lines %.3fs apart, frozen clock +%.3fs)", a - b + g, g, a - b }')
+        awk -v a="$clock" -v b="$offset" -v g="$gap" -v h="$QUALIFY_SUSPEND_HOLD" 'BEGIN { exit !(a - b + g >= h) }' ||
+            fail "$test" "the guest slept $slept of a ${QUALIFY_SUSPEND_HOLD}s hold"
+        detail="s2idle held ${QUALIFY_SUSPEND_HOLD}s and the wake key while locked; suspend_stats success +1, woken by IRQ 1 (i8042), slept $slept"
     fi
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "logind logged no \"Operation 'suspend' finished.\" after the wake" \
         journal_since_has "$test" "$since" systemd-logind "Operation .suspend. finished"
