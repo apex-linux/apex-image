@@ -38,7 +38,7 @@
 7.470323 0 gdm-launch-environment][787]: pam_unix(gdm-launch-environment:session): session opened for user gdm-greeter(uid=60578) by (uid=0)
 7.474640 60578 systemd[796]: Created slice session.slice - User Core Session Slice.
 7.476085 60578 systemd[796]: Starting dbus-broker.service - D-Bus User Message Bus...
-7.486834 0 audit[787]: USER_START pid=787 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:xdm_t:s0-s0:c0.c1023 msg='op=PAM:session_open grantors=pam_keyinit,pam_keyinit,pam_limits,pam_systemd,pam_unix,pam_umask acct="gdm-greeter" exe="/usr/libexec/gdm-session-worker" hostname=apex addr=?
+7.486834 0 audit[787]: USER_START pid=787 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:xdm_t:s0-s0:c0.c1023 msg='op=PAM:session_open grantors=pam_keyinit,pam_keyinit,pam_limits,pam_systemd,pam_unix,pam_umask acct="gdm-greeter" exe="/usr/libexec/gdm-session-worker" hostname=guest addr=
 7.507601 0 dbus-broker-launch[840]: Policy to allow eavesdropping in /usr/share/dbus-1/session.conf +31: Eavesdropping is deprecated and ignored
 7.508984 0 dbus-broker-launch[840]: Policy to allow eavesdropping in /usr/share/dbus-1/session.conf +33: Eavesdropping is deprecated and ignored
 7.508832 60578 systemd[796]: Started dbus-broker.service - D-Bus User Message Bus.
@@ -93,7 +93,7 @@
 8.281210 0 dbus-broker-launch[924]: Ready
 8.284921 60578 gnome-shell[864]: Using public X11 display :1024, (using unix:/tmp/.X11-unix/X1025 for managed services)
 8.285085 60578 gnome-shell[864]: Using Wayland display name 'wayland-0'
-8.359159 0 kernel: EXT4-fs (vda2): re-mounted c803f2a5-da3b-4a88-bd91-487f4f01b4ff r/w.
+8.359159 0 kernel: EXT4-fs (vda2): re-mounted 00000000-0000-0000-0000-000000000000 r/w.
 8.360209 0 bootc[907]: No changes needed for source 'tuned'
 8.371927 0 systemd[1]: Started tuned.service - Dynamic System Tuning Daemon.
 8.371833 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=tuned comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
@@ -437,8 +437,8 @@
 27.676834 0 audit: SELINUX_ERR op=setxattr invalid_context="system_u:object_r:invalid_bootcinstall_testlabel_t:s0"
 27.676833 0 audit[1535]: SYSCALL arch=c000003e syscall=188 success=no exit=-22 a0=558653241c80 a1=7fde6ef5936f a2=558653243270 a3=36 items=0 ppid=1531 pid=1535 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="chcon" exe="/usr/bin/chcon" subj=sys
 27.676834 0 audit: PROCTITLE proctitle=6368636F6E002D7400696E76616C69645F626F6F7463696E7374616C6C5F746573746C6162656C5F74002F746D702F2E746D704159696A5358
-27.744089 0 kernel: EXT4-fs (vda2): re-mounted c803f2a5-da3b-4a88-bd91-487f4f01b4ff.
-27.772072 0 kernel: EXT4-fs (vda2): re-mounted c803f2a5-da3b-4a88-bd91-487f4f01b4ff.
+27.744089 0 kernel: EXT4-fs (vda2): re-mounted 00000000-0000-0000-0000-000000000000.
+27.772072 0 kernel: EXT4-fs (vda2): re-mounted 00000000-0000-0000-0000-000000000000.
 27.809910 0 systemd[1]: Started apex-updated.service - Apex update service.
 27.808834 0 audit[1]: SERVICE_START pid=1 uid=0 auid=4294967295 ses=4294967295 subj=system_u:system_r:init_t:s0 msg='unit=apex-updated comm="systemd" exe="/usr/lib/systemd/systemd" hostname=? addr=? terminal=? res=success'
 27.809965 0 apex-updated[1527]: serving io.github.apex_linux.Apex.Update1
@@ -456,7 +456,7 @@
 27.811809 0 apex-boot-assess[1170]:  INFO check image-source: pass
 27.811809 0 apex-boot-assess[1170]:  INFO entry 0 at the next boot: booted
 27.813556 0 apex-boot-assess[1170]:  INFO decision: green (report green sha256:9e574b83a792c2c47f36c847f7c1f81a6f83bde61477b201abbbda26f3f332ad); grubenv: set apex_ok=1
-27.830102 0 kernel: EXT4-fs (vda2): re-mounted c803f2a5-da3b-4a88-bd91-487f4f01b4ff.
+27.830102 0 kernel: EXT4-fs (vda2): re-mounted 00000000-0000-0000-0000-000000000000.
 27.895173 0 apex-boot-assess[1170]:  INFO step 0 (grubenv: set apex_ok=1): done
 27.895818 0 apex-updated[1527]: boot assessment reported
 27.895883 0 apex-updated[1527]: boot assessed green
@@ -606,7 +606,7 @@
 28.981162 0 dbus-broker-launch[1597]: Ready
 28.991924 0 systemd[948]: Starting gvfs-daemon.service - Virtual filesystem service...
 29.015076 0 systemd[948]: Started gvfs-daemon.service - Virtual filesystem service.
-29.024075 0 kernel: EXT4-fs (vda2): re-mounted c803f2a5-da3b-4a88-bd91-487f4f01b4ff.
+29.024075 0 kernel: EXT4-fs (vda2): re-mounted 00000000-0000-0000-0000-000000000000.
 29.052809 0 sshd-session[1589]: Received disconnect from 192.0.2.1 port 43988:11: disconnected by user
 29.051834 0 audit[1586]: CRYPTO_KEY_USER pid=1586 uid=0 auid=0 ses=8 subj=system_u:system_r:sshd_session_t:s0-s0:c0.c1023 msg='op=destroy kind=session fp=? direction=both spid=1589 suid=0 rport=43988 laddr=192.0.2.1 lport=22  exe="/usr/libexec/openssh/sshd-session" hostname=? addr=192.0.2.1 terminal
 29.053414 0 sshd-session[1589]: Disconnected from user root 192.0.2.1 port 43988

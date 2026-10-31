@@ -1,0 +1,2 @@
+# Component files that share a name with another component's shipped file but are not copies of
+# it, one per line: COMPONENT PATH REASON. Exact paths only; contracts.sh fails on a stale line.

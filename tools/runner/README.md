@@ -316,7 +316,8 @@ Owner steps that a change on `main` needs on the host, newest first.
 what the build or its gates read: `components.lock`, `Cargo.lock`, `Cargo.toml` (both
 feed the lane's tool id and every family's content key), `image/**` (its READMEs ship in
 the image, so they count), `crates/apex-lane/**`, `tools/components.sh`, qualify.sh,
-`qualify-allowed-failures.txt`, `image.sh` and `lib.sh` in `.github/scripts/`, and
+`qualify-allowed-failures.txt`, `image.sh`, `oci-artifact.sh` (image.sh pulls the RPMs with it),
+`ci-host.sh` (qualify.sh checks KVM and podman with it) and `lib.sh` in `.github/scripts/`, and
 `build-image.sh`, `lane.sh`, `snapshot.sh`, `metrics.sh` and `lane-absorb-report.sh` in
 `tools/builder-vm/`. Each such push queues a run of about two hours on the laptop. A push
 that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
@@ -327,7 +328,11 @@ with a `sha` input builds that commit of `main` instead of the head, and needs t
 chooses: the full gate run, or a qualify-only run when its conditions hold), `gate` (the
 full gate run, with G4 due whatever its last pass) or `g4` (the qualify-only run, refused
 when its conditions fail). It goes to the VM as `ci-build <sha> gate` or `g4`, and
-`lane.sh promote` never runs for `g4`.
+`lane.sh promote` never runs for `g4`. The daily run builds only when its hosted
+`daily-due` job finds no other `vm.yml` run queued, waiting or running and no build of
+`main`'s head that started in the last 20 h and gave a verdict (it passed, or failed after
+G2 or G4 ran: its step "A gate gave its verdict" ran); it says why in a notice,
+and builds whenever the Actions API cannot answer.
 
 The build step calls `ssh apex-builder ci-build <sha>`, with workflow commands stopped
 for the VM's log. In the VM, `ci-build` then:

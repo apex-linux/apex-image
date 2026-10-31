@@ -2581,6 +2581,185 @@ check_true "naming the blank line, with no JS ERROR in its real lines" grep -q \
     "$GUEST_DIR/out/results.md"
 rm -rf "$GUEST_DIR/state"
 
+# --- workflow-check.sh: least permissions, timeouts and pinned actions ----------------------
+check "workflows: this checkout's pass" 0 \
+    "$(rc_of "$APEX_ROOT/.github/scripts/workflow-check.sh" "$APEX_ROOT/.github/workflows" "$APEX_ROOT/.github/scripts/workflow-allowed.txt")"
+WF=$TMP/workflows
+wf() { # EDIT: the check's exit on a fresh fixture workflow after EDIT ran in $WF, its errors in $WF.err
+    local rc=0
+    rm -rf "$WF" && mkdir -p "$WF/wf"
+    cat >"$WF/wf/ci.yml" <<'WF_EOF'
+name: ci
+on:
+  push: {}
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: echo build
+WF_EOF
+    printf '# WORKFLOW JOB PERMISSION REASON\n' >"$WF/allowed"
+    (cd "$WF" && eval "$1")
+    "$APEX_ROOT/.github/scripts/workflow-check.sh" "$WF/wf" "$WF/allowed" >/dev/null 2>"$WF.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "workflows: a fixture with every rule kept" 0 "$(wf :)"
+check "workflows: no top-level permissions: {}" 1 "$(wf "sed -i '/^permissions:/d' wf/ci.yml")"
+check_true "is named" grep -qF "wf/ci.yml: no top-level permissions: {}" "$WF.err"
+check "workflows: a job without permissions:" 1 "$(wf "sed -i '/^    permissions:/,/contents: read/d' wf/ci.yml")"
+check_true "names the job" grep -qF "wf/ci.yml:6: job build has no permissions:" "$WF.err"
+check "workflows: a job without timeout-minutes:" 1 "$(wf "sed -i '/timeout-minutes/d' wf/ci.yml")"
+check_true "names the job" grep -qF "wf/ci.yml:6: job build has no timeout-minutes:" "$WF.err"
+check "workflows: an action by tag" 1 "$(wf "sed -i 's/@3d3c[0-9a-f]* # v7.0.1/@v7/' wf/ci.yml")"
+check_true "names the line" grep -qF "wf/ci.yml:12: uses: 'actions/checkout@v7' is not pinned to a 40-hex commit" "$WF.err"
+check "workflows: a pinned action without its version comment" 1 "$(wf "sed -i 's/ # v7.0.1//' wf/ci.yml")"
+check "workflows: pull_request_target" 1 "$(wf "sed -i 's/  push: {}/  pull_request_target: {}/' wf/ci.yml")"
+check_true "is named" grep -qF "wf/ci.yml:3: pull_request_target runs with the base repository's secrets" "$WF.err"
+check "workflows: a write permission with no reason" 1 "$(wf "sed -i 's/contents: read/contents: write/' wf/ci.yml")"
+check_true "names the grant" grep -qF "wf/ci.yml:10: job build grants 'contents: write' with no reason in allowed" "$WF.err"
+check "workflows: write-all" 1 "$(wf "sed -i '/contents: read/d; s/^    permissions:$/    permissions: write-all/' wf/ci.yml")"
+check "workflows: an allowed write permission" 0 \
+    "$(wf "sed -i 's/contents: read/contents: write/' wf/ci.yml; printf 'ci.yml build contents:write  it pushes the tag\n' >>allowed")"
+check "workflows: an allow line no job needs" 1 "$(wf "printf 'ci.yml build contents:write  it pushes the tag\n' >>allowed")"
+check_true "names the stale line" grep -qF "allowed:2: ci.yml build contents:write is no longer granted" "$WF.err"
+check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build contents:write\n' >>allowed")"
+check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
+
+# --- g4-fixtures-check.sh: every G4 fixture listed, read and scrubbed ---------------------
+G4C=$TMP/g4-fixtures-check
+g4c() { # EDIT: the check's exit on a fresh copy of g4-fixtures/ after EDIT ran in it, its errors in $G4C.err
+    local rc=0
+    rm -rf "$G4C" && cp -r "$G4F" "$G4C" && (cd "$G4C" && eval "$1")
+    "$APEX_ROOT/.github/scripts/g4-fixtures-check.sh" "$G4C" "$APEX_ROOT/.github/scripts/selftest.sh" \
+        >/dev/null 2>"$G4C.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "g4 fixtures: the committed ones are listed, read and scrubbed" 0 "$(g4c :)"
+check "g4 fixtures: a file README.md does not list" 1 "$(g4c ": >run99-extra.journal")"
+check_true "is named" grep -qF "run99-extra.journal: has no row in README.md's table" "$G4C.err"
+check "g4 fixtures: a README.md row for a file that is gone" 1 "$(g4c "rm run11-login.journal")"
+check_true "is named" grep -qF "README.md: lists run11-login.journal, which is not in" "$G4C.err"
+G4C_UNREAD=run$$.journal
+check "g4 fixtures: a listed file that selftest never reads" 1 \
+    "$(g4c ": >$G4C_UNREAD; printf '| \`$G4C_UNREAD\` | 99 | x | | x |\n' >>README.md")"
+check_true "is named" grep -qF "$G4C_UNREAD: is read by none of" "$G4C.err"
+while IFS='|' read -r rule line; do
+    check "g4 fixtures: a $rule fails: $line" 1 "$(g4c "printf '%s\n' $(printf '%q' "$line") >>run11-login.journal")"
+    check_true "naming its line" grep -qF "run11-login.journal:32: $rule: " "$G4C.err"
+done <<'EOF'
+host name|pam: hostname=laptop addr=?
+host name|dhcp: lease for apex-builder
+host name|resolved: myhost.local answered
+user name|session opened for user alice by (uid=0)
+user name|op=login acct="alice" exe=x
+user name|cd /home/alice
+user name|LOGNAME=alice
+user name|pam: user alice(uid=1001) logged in
+machine or boot ID|machine 5944da07fb22b6d631b5ede59484c304
+filesystem or device UUID|re-mounted 333f66d6-3eba-4e9d-90a5-1e0a6b8eb248 r/w.
+IPv4 address|addr=10.0.2.15
+IPv6 address|inet6 fe80::5054:ff:fe12:3456
+MAC address|link 52:54:00:12:34:56
+email address|from alice@example.invalid
+serial number|DMI: Serial Number: PF3ABC12
+serial number|udev: ID_SERIAL=WDC_WD10EZEX_WD-WCC6Y0000000
+serial number|smartd: S/N WD-WCC6Y0000000
+EOF
+check "g4 fixtures: a user name hidden in an audit proctitle" 1 \
+    "$(g4c "printf 'audit: PROCTITLE proctitle=%s\n' $(printf 'ls /home/alice' | od -An -tx1 | tr -d ' \n' | tr a-f A-F) >>run11-login.journal")"
+check_true "is decoded and named" grep -qF "run11-login.journal:32 (proctitle): user name: '/home/alice'" "$G4C.err"
+check "g4 fixtures: a line past the cut's 300 characters" 1 "$(g4c "printf '%0301d\n' 0 >>run11-login.journal")"
+check_true "is named" grep -qF "run11-login.journal:32: longer than the cut's 300 characters (301)" "$G4C.err"
+check "g4 fixtures: a manager line from another host" 1 \
+    "$(g4c "printf '[    9.000001] laptop systemd[1]: x\n' >>run16-greeter.manager")"
+check_true "is named" grep -qF "run16-greeter.manager:87: host name: 'laptop'" "$G4C.err"
+check "g4 fixtures: what the cut keeps passes" 0 "$(g4c "printf '%s\n' \
+    'image sha256:5944da07fb22b6d631b5ede59484c304a0d2b29d897651a3bd95c61bc91783ac' \
+    'boot 00000000000000000000000000000000 on 00000000-0000-0000-0000-000000000000' \
+    'hostname=guest addr=192.0.2.1 lo 127.0.0.1 ::1 link 02:00:00:00:00:00' \
+    'cipher aes256-gcm@openssh.com for user root, user root(uid=0), user@1000.service' \
+    'oo7_daemon::service started, AccountsService.User::password-mode, serial-getty@ttyS0' >>run11-login.journal")"
+
+# --- vm-paths-check.sh: vm.yml's push paths cover what a run reads ---------------------------
+check "vm paths: this checkout's vm.yml covers every read" 0 "$(rc_of "$APEX_ROOT/.github/scripts/vm-paths-check.sh" "$APEX_ROOT")"
+VP=$TMP/vm-paths
+vp() { # EDIT: the check's exit on a fresh fixture checkout after EDIT ran in it, its errors in $VP.err
+    local rc=0
+    rm -rf "$VP" && mkdir -p "$VP/.github/workflows" "$VP/.github/scripts" "$VP/tools/runner" "$VP/tools/conf"
+    printf '%s\n' 'on:' '  push:' '    paths:' '      - components.lock' '      - .github/scripts/gate.sh' \
+        '      - .github/scripts/lib.sh' '      - .github/scripts/helper.sh' '      - tools/data.txt' '      - image/**' \
+        'jobs:' '  build:' '    steps:' '      - run: |' '          .github/scripts/gate.sh' >"$VP/.github/workflows/vm.yml"
+    cat >"$VP/.github/scripts/gate.sh" <<'VP_EOF'
+#!/usr/bin/env bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+readonly DATA=tools/data.txt
+"$APEX_ROOT/.github/scripts/helper.sh" "$DATA"
+echo "see tools/runner/notes.sh"
+# tools/runner/notes.sh
+case $1 in
+    tools/runner/notes.sh) ;;
+esac
+VP_EOF
+    printf '#!/usr/bin/env bash\n' >"$VP/.github/scripts/lib.sh"
+    cat >"$VP/.github/scripts/helper.sh" <<'VP_EOF'
+#!/usr/bin/env bash
+cat "$APEX_ROOT/image/fedora/$FEDORA.env"
+VP_EOF
+    : >"$VP/components.lock"
+    : >"$VP/tools/data.txt"
+    : >"$VP/tools/runner/notes.sh"
+    : >"$VP/tools/conf/a.env"
+    mkdir -p "$VP/image/fedora" && : >"$VP/image/fedora/45.env"
+    printf '# READER PATH REASON\n' >"$VP/.github/scripts/vm-paths-allowed.txt"
+    cat >"$VP/tools/runner/README.md" <<'VP_EOF'
+## What a run does
+
+on a push to `main` that touches `components.lock`, `image/**`, gate.sh,
+`lib.sh`, `helper.sh` and `tools/data.txt`. Each such push queues a run.
+VP_EOF
+    (cd "$VP" && eval "$1" && git init -q && git add -A)
+    "$APEX_ROOT/.github/scripts/vm-paths-check.sh" "$VP" >"$VP.out" 2>"$VP.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "vm paths: a fixture whose paths cover every read" 0 "$(vp :)"
+check_true "and lists what it reached, and from where" grep -qF "reached tools/data.txt (from .github/workflows/vm.yml paths)" "$VP.out"
+check "vm paths: an executed script no path covers" 1 "$(vp "sed -i '/helper.sh$/d' .github/workflows/vm.yml")"
+check_true "names the reader's line" grep -qF \
+    "error: .github/scripts/gate.sh:4: reads .github/scripts/helper.sh, which no .github/workflows/vm.yml path covers" "$VP.err"
+check "vm paths: a sourced file no path covers" 1 "$(vp "sed -i '/lib.sh$/d' .github/workflows/vm.yml")"
+check_true "names it" grep -qF "error: .github/scripts/gate.sh:2: reads .github/scripts/lib.sh" "$VP.err"
+check "vm paths: a data file no path covers" 1 "$(vp "sed -i '/data.txt$/d' .github/workflows/vm.yml")"
+check_true "names it" grep -qF "error: .github/scripts/gate.sh:3: reads tools/data.txt" "$VP.err"
+check "vm paths: a read two scripts down" 1 \
+    "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh")"
+check_true "names the second script" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env" "$VP.err"
+check "vm paths: a script vm.yml runs that no path covers" 1 \
+    "$(vp "printf '          .github/scripts/daily.sh\n' >>.github/workflows/vm.yml; : >.github/scripts/daily.sh")"
+check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:15: reads .github/scripts/daily.sh" "$VP.err"
+check "vm paths: a dynamic path outside every path" 1 \
+    "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.env\"\n' >>.github/scripts/helper.sh")"
+check_true "is unresolvable" grep -qF \
+    "error: .github/scripts/helper.sh:3: unresolvable path 'tools/conf/\$NAME.env': its static part tools/conf is not under a" "$VP.err"
+printf -v VP_ALLOW '%s\n' '.github/scripts/helper.sh tools/conf/a.env  read for the log only'
+check "vm paths: an allowed uncovered read" 0 \
+    "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh; printf '%s' '$VP_ALLOW' >>.github/scripts/vm-paths-allowed.txt")"
+check "vm paths: an allow line no read needs" 1 "$(vp "printf '%s' '$VP_ALLOW' >>.github/scripts/vm-paths-allowed.txt")"
+check_true "names the stale line" grep -qF \
+    "vm-paths-allowed.txt:2: .github/scripts/helper.sh tools/conf/a.env is no longer an uncovered read" "$VP.err"
+check "vm paths: an allow line without a reason" 1 \
+    "$(vp "printf '.github/scripts/helper.sh tools/conf/a.env\n' >>.github/scripts/vm-paths-allowed.txt")"
+check_true "names it" grep -qF "vm-paths-allowed.txt:2: want READER PATH REASON" "$VP.err"
+check "vm paths: a README that leaves a path out" 1 "$(vp "sed -i 's/ and \`tools\/data.txt\`//' tools/runner/README.md")"
+check_true "names the path" grep -qF "error: tools/runner/README.md: \"What a run does\" does not name tools/data.txt" "$VP.err"
+check "vm paths: a README naming what vm.yml does not list" 1 "$(vp "sed -i 's/gate.sh,/gate.sh, \`tools\/extra.sh\`,/' tools/runner/README.md")"
+check_true "names it" grep -qF "error: tools/runner/README.md: \"What a run does\" names tools/extra.sh, which no" "$VP.err"
+check "vm paths: a vm.yml without push paths" 1 "$(vp "sed -i '/paths:/,/image/d' .github/workflows/vm.yml")"
+
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
     local ga_reached=$1 allowlist=$2
@@ -2628,6 +2807,9 @@ ct_user_units() { # SYSTEM DESKTOP: the user units the components' specs ship an
     printf '[Unit]\n' >"$2/desktop/systemd/user/apex-shell-safe.service"
 }
 ct_user_units "$CT/system" "$CT/desktop"
+printf '%s\n' 'UPDATED_DATA := crates/apex-updated/data' 'define install_data' \
+    "	\$(INSTALL) -Dm0644 \$(UPDATED_DATA)/apex.tmpfiles.conf \\" "		'\$(1)\$(TMPFILESDIR)/apex.conf'" 'endef' \
+    >"$CT/system/Makefile"
 G4U=$TMP/g4-user-units
 g4u() { # QUALIFY: g4_user_units' exit on a fresh copy of the components after "$G4U/edit"; its errors in $G4U/err
     rm -rf "$G4U/system" "$G4U/desktop" && ct_user_units "$G4U/system" "$G4U/desktop"
@@ -2743,6 +2925,70 @@ check "contracts: Settings' Update1 copy equals apex-system's" 0 "$(ct_run)"
 rm "$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
 check "contracts: a Settings Update1 copy with no XML in apex-system" 1 "$(ct_run)"
 cp "$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1" "$CT/system/crates/apex-dbus/data/"
+ct_copies() { # [KERNEL]: contracts.sh's exit with $CT/allowed as the allow list, its output in $CT/out
+    local rc=0
+    PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
+        APEX_GNOME_SRC="$CT/gnome" APEX_KERNEL_SRC="${1:-}" APEX_COPIES_ALLOWED="$CT/allowed" GITHUB_ACTIONS='' \
+        "$APEX_ROOT/.github/scripts/contracts.sh" >"$CT/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+printf '# COMPONENT PATH REASON\n' >"$CT/allowed"
+mkdir -p "$CT/kernel/packaging" "$CT/gnome/tests/units"
+check "contracts: every component file named like a shipped one is a listed copy" 0 "$(ct_copies "$CT/kernel")"
+check_true "and says so" grep -q "^contracts: every file of a component named like another's shipped file is a compared copy$" "$CT/out"
+printf '[Unit]\n' >"$CT/gnome/tests/units/apex-folder-icons.service"
+check "contracts: apex-gnome's unlisted copy of apex-desktop's unit" 1 "$(ct_copies)"
+check_true "names the copy and the shipped file" grep -qF \
+    "error: apex-gnome tests/units/apex-folder-icons.service has the name of apex-desktop's %{_userunitdir}/apex-folder-icons.service, but no copy row compares it" \
+    "$CT/out"
+printf '%s\n' '# COMPONENT PATH REASON' 'apex-gnome tests/units/apex-folder-icons.service  a stub unit, not the shipped one' >"$CT/allowed"
+check "contracts: an allowed same-named file" 0 "$(ct_copies)"
+rm "$CT/gnome/tests/units/apex-folder-icons.service"
+check "contracts: an allow line for a file that is gone" 1 "$(ct_copies)"
+check_true "names the stale line" grep -qF "$CT/allowed:2: apex-gnome tests/units/apex-folder-icons.service is no longer a copy of a shipped file" "$CT/out"
+printf 'apex-gnome tests/units/apex-folder-icons.service\n' >"$CT/allowed"
+check "contracts: an allow line without a reason" 1 "$(ct_copies)"
+check_true "names the line" grep -qF "$CT/allowed:1: want COMPONENT PATH REASON" "$CT/out"
+printf '# COMPONENT PATH REASON\n' >"$CT/allowed"
+cp "$CT/system/data/80-apex.preset" "$CT/desktop/desktop/80-apex.preset"
+check "contracts: apex-desktop's unlisted copy of apex-system's preset" 1 "$(ct_copies)"
+check_true "names it" grep -qF "error: apex-desktop desktop/80-apex.preset has the name of apex-system's %{_userpresetdir}/80-apex.preset" "$CT/out"
+rm "$CT/desktop/desktop/80-apex.preset"
+cp "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" "$CT/kernel/packaging/"
+check "contracts: apex-kernel's unlisted copy of apex-desktop's unit" 1 "$(ct_copies "$CT/kernel")"
+check_true "names it" grep -qF "error: apex-kernel packaging/apex-shell-safe.service has the name of apex-desktop's" "$CT/out"
+check "contracts: apex-kernel is not scanned without APEX_KERNEL_SRC" 0 "$(ct_copies)"
+rm "$CT/kernel/packaging/apex-shell-safe.service"
+ln -s ../../desktop/desktop/systemd/user/apex-shell-safe.service "$CT/gnome/tests/units/apex-shell-safe.service"
+check "contracts: a link named like a shipped file is no copy" 0 "$(ct_copies)"
+rm "$CT/gnome/tests/units/apex-shell-safe.service"
+cp "$CT/system/packaging/apex.spec" "$CT/apex.spec"
+printf '%%files\n%%license LICENSE\n' >"$CT/system/packaging/apex.spec"
+check "contracts: an apex-system spec that ships nothing" 1 "$(ct_copies)"
+check_true "says so" grep -qF "$CT/system/packaging/apex.spec ships no file in its %files" "$CT/out"
+mv "$CT/apex.spec" "$CT/system/packaging/apex.spec"
+cp "$CT/system/data/80-apex.preset" "$CT/gnome/tests/units/apex.tmpfiles.conf"
+check "contracts: a copy under the name apex-system's Makefile installs from" 1 "$(ct_copies)"
+check_true "names the Makefile's source" grep -qF \
+    "error: apex-gnome tests/units/apex.tmpfiles.conf has the name of apex-system's crates/apex-updated/data/apex.tmpfiles.conf (installed by Makefile)" \
+    "$CT/out"
+rm "$CT/gnome/tests/units/apex.tmpfiles.conf"
+cp "$CT/desktop/packaging/apex-desktop.spec" "$CT/apex-desktop.spec"
+printf '%s\n' '%install' "install -Dm0644 desktop/keybindings/60-apex.xml \\" \
+    '    %{buildroot}%{_datadir}/gnome-control-center/keybindings/60-apex.xml' >>"$CT/desktop/packaging/apex-desktop.spec"
+printf '<KeyListEntries/>\n' >"$CT/gnome/tests/units/60-apex.xml"
+check "contracts: a copy of a file apex-desktop's %install installs" 1 "$(ct_copies)"
+check_true "names the spec's source" grep -qF \
+    "error: apex-gnome tests/units/60-apex.xml has the name of apex-desktop's desktop/keybindings/60-apex.xml (installed by packaging/apex-desktop.spec)" \
+    "$CT/out"
+rm "$CT/gnome/tests/units/60-apex.xml"
+mv "$CT/apex-desktop.spec" "$CT/desktop/packaging/apex-desktop.spec"
+cp "$CT/system/Makefile" "$CT/Makefile"
+printf 'all:\n' >"$CT/system/Makefile"
+check "contracts: an apex-system Makefile that installs nothing" 1 "$(ct_copies)"
+check_true "says so" grep -qF "$CT/system/Makefile installs no file with \$(INSTALL)" "$CT/out"
+mv "$CT/Makefile" "$CT/system/Makefile"
+check "contracts: the shipped names hold again" 0 "$(ct_copies "$CT/kernel")"
 check "contracts: G2's input-source keys equal apex-desktop's" 0 "$(ct_run)"
 ct_g2_keys "['<Super>space', 'XF86Keyboard']" "$CT_BACK_KEYS"
 check "contracts: G2's switch-input-source differs from apex-desktop's" 1 "$(ct_run)"
@@ -3746,6 +3992,90 @@ check "an artifact labelled with another key is a miss" 5 "$(lookup_rc k1 k2 1)"
 check "an absent artifact is a miss" 3 "$(lookup_rc k1 k1 1 ghcr.io/x/missing)"
 check "a bad workflow name is refused" 1 \
     "$(PATH="$O/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" lookup ghcr.io/x/y k '../evil')"
+# --- oci-artifact.sh pull and digest: what image.sh installs, extracted safely ---------------
+OP=$TMP/oci-pull
+mkdir -p "$OP/bin"
+cat >"$OP/bin/skopeo" <<'EOF'
+#!/usr/bin/env bash
+if [[ $1 == copy ]]; then
+    echo copy >>"$FAKE_COPIES"
+    [[ -d $FAKE_LAYOUT ]] || { echo "Error: initializing source: manifest unknown" >&2; exit 1; }
+    dest=${*: -1}
+    cp -r "$FAKE_LAYOUT" "${dest#dir:}"
+    exit 0
+fi
+[[ ${*: -1} != *missing* ]] || { echo "Error: reading manifest x in y: manifest unknown" >&2; exit 1; }
+if [[ " $* " == *" --raw "* ]]; then printf '{}'; exit 0; fi
+printf '{"Digest":"sha256:%064d","Labels":{}}\n' 7
+EOF
+cat >"$OP/bin/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_SLEEPS"
+EOF
+cat >"$OP/layers.py" <<'EOF'
+import hashlib, io, json, os, sys, tarfile
+
+layout, outside, spec = sys.argv[1:]
+os.makedirs(layout)
+digests = []
+for layer in spec.split(";"):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for entry in filter(None, layer.split("|")):
+            kind, _, rest = entry.partition(":")
+            name, _, value = rest.partition("=")
+            info = tarfile.TarInfo(name)
+            if kind == "link":
+                info.type, info.linkname = tarfile.SYMTYPE, value.replace("@OUT", outside)
+                tar.addfile(info)
+            else:
+                info.size = len(value.encode())
+                tar.addfile(info, io.BytesIO(value.encode()))
+    digest = hashlib.sha256(buf.getvalue()).hexdigest()
+    open(os.path.join(layout, digest), "wb").write(buf.getvalue())
+    digests.append(f"sha256:{digest}")
+json.dump({"layers": [{"digest": d} for d in digests]}, open(os.path.join(layout, "manifest.json"), "w"))
+EOF
+chmod +x "$OP/bin/skopeo" "$OP/bin/sleep"
+op_refused() { local rc; rc=$(op_pull "$1"); ((rc != 0)) && echo refused || echo "accepted ($rc)"; } # SPEC
+op_sum() { printf '%s  %s' "$(printf '%s' "$2" | sha256sum | cut -d' ' -f1)" "$1"; } # NAME TEXT: its SHA256SUMS line
+op_pull() { # SPEC: pull's exit for a layout of SPEC's layers (op layers.py); its output in $OP/out, the RPMs in $OP/dest
+    local rc=0
+    rm -rf "$OP/layout" "$OP/dest" "$OP/outside" && mkdir -p "$OP/outside" && : >"$OP/copies" && : >"$OP/sleeps"
+    [[ $1 == - ]] || python3 -I "$OP/layers.py" "$OP/layout" "$OP/outside" "$1"
+    PATH="$OP/bin:$PATH" FAKE_LAYOUT="$OP/layout" FAKE_COPIES="$OP/copies" FAKE_SLEEPS="$OP/sleeps" GITHUB_ACTIONS='' \
+        "$APEX_ROOT/.github/scripts/oci-artifact.sh" pull ghcr.io/x/apex-rpms@sha256:abc "$OP/dest" >"$OP/out" 2>&1 || rc=$?
+    printf '%s' "$rc"
+}
+OP_SUMS="file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+$(op_sum b.rpm B)
+"
+check "oci pull: two layers' RPMs, checked against SHA256SUMS" 0 \
+    "$(op_pull "file:rpms/a.rpm=A|file:rpms/notes.txt=N;file:rpms/b.rpm=B|$OP_SUMS")"
+check "and DEST holds the RPMs only" "a.rpm b.rpm" "$(find "$OP/dest" -mindepth 1 -printf '%f\n' | sort | paste -sd' ')"
+check_true "and the log counts them" grep -q "extracted 2 RPM(s) from ghcr.io/x/apex-rpms@sha256:abc into $OP/dest" "$OP/out"
+check "oci pull: a layer without /rpms/SHA256SUMS" 1 "$(op_pull "file:rpms/a.rpm=A")"
+check_true "is named" grep -q "ghcr.io/x/apex-rpms@sha256:abc has no /rpms/SHA256SUMS" "$OP/out"
+check "oci pull: an RPM that SHA256SUMS does not match" 1 "$(op_pull "file:rpms/a.rpm=A|file:rpms/b.rpm=changed|$OP_SUMS")"
+check_true "is named" grep -q "ghcr.io/x/apex-rpms@sha256:abc: RPM checksums do not match SHA256SUMS" "$OP/out"
+check "oci pull: no RPM reaches DEST when one does not match" "" "$(ls "$OP/dest" 2>/dev/null)"
+check "oci pull: a copy that keeps failing" 1 "$(op_pull -)"
+check "is tried 4 times" 4 "$(wc -l <"$OP/copies")"
+check "backing off 10, 20 and 40 s" "10 20 40" "$(paste -sd' ' "$OP/sleeps")"
+# r20: pull copies the file an RPM link points at, so this row stays off until oci-artifact.sh refuses links.
+# check "oci pull: an RPM that is a link out of the layer is refused, and nothing reaches DEST" refused "$(printf secret >"$TMP/oci-pull-secret"; op_refused "link:rpms/evil.rpm=$TMP/oci-pull-secret|file:rpms/SHA256SUMS=$(op_sum evil.rpm secret)"; ls "$OP/dest" 2>/dev/null)"
+check "oci pull: an rpms directory that is a link out of the layer is refused" refused \
+    "$(op_refused "link:rpms=@OUT;file:rpms/a.rpm=A|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
+")"
+check "and nothing is written through it" "" "$(ls "$OP/outside")"
+check "oci pull: a ../ member writes nothing outside the layer" "" \
+    "$(op_pull "file:../oci-pull-escape.rpm=X|$OP_SUMS" >/dev/null; [[ ! -e $TMP/oci-pull-escape.rpm ]] || echo written)"
+check "oci pull: an absolute member writes nothing outside the layer" "" \
+    "$(op_pull "file:$OP/outside/abs.rpm=X|$OP_SUMS" >/dev/null; ls "$OP/outside")"
+check "oci digest: the registry's digest" "sha256:$(printf '%064d' 7)" \
+    "$(PATH="$OP/bin:$PATH" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' "$APEX_ROOT/.github/scripts/oci-artifact.sh" digest ghcr.io/x/y:k)"
+check "oci digest: an absent ref" 3 \
+    "$(PATH="$OP/bin:$PATH" APEX_RETRY_DELAY=0 GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/oci-artifact.sh" digest ghcr.io/x/missing:k)"
 # --- lane-rehearsal.sh: S1c's rehearsals on a fake lane, image.sh, publish.sh and COPR ---
 LR="$TMP/lane-rehearsal"
 mkdir -p "$LR/co/.github/scripts" "$LR/co/tools/builder-vm/rehearsal" "$LR/co/_build/rpms/apex" \
@@ -4451,7 +4781,8 @@ check "gates: each stage with its UTC start and its minutes" \
 check_true "gates: G4's table has its header with the layer feature column" \
     grep -qx '| Test | Result | Detail | Layer feature |' "$V/summary"
 check "gates: and G4's, G2's and the diagnosis's logs for the artifact" "logs=$V/temp/logs|diag-logs g2-logs qualify-logs" \
-    "$(cat "$V/output")|$(find "$V/temp/logs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' ')"
+    "$(grep '^logs=' "$V/output")|$(find "$V/temp/logs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' ')"
+check "gates: and a verdict for daily-due, since G2 and G4 ran" "verdict=1" "$(grep '^verdict=' "$V/output")"
 vm_reset
 vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 0\nexit 0' "$CI_SHA")" "gates-passed.txt=lock-sha256 x"
 check "gates: a gates file without ci-build's promotion line is no pass" \
@@ -4473,8 +4804,15 @@ check "gates: run 16's tar fails on ci-build's exit" "1|::error::ci-build exited
     "$(vm_gates)|$(grep -v '^::notice title=G4 frontier::' "$V/log")"
 check "gates: and shows G4's frontier, the furthest row it reached" "Frontier: row 5, local-lock-suspend FAIL" \
     "$(grep '^Frontier: ' "$V/summary")"
+check "gates: and is a verdict for daily-due: G4 ran and failed" "verdict=1" "$(grep '^verdict=' "$V/output")"
 check "gates: and as a notice, which the API keeps after the artifact expires" \
     "::notice title=G4 frontier::row 5, local-lock-suspend FAIL" "$(grep '^::notice title=G4 frontier' "$V/log")"
+for ran in "g4-results.md=| local-lock-blank-wake | FAIL | no password conversation | lock |" "g2-result.txt=status failed"; do
+    vm_reset
+    vm_results "ci-build.txt=$(printf 'sha %s\nbuild-image 1\nexit 1' "$CI_SHA")" "$ran"
+    vm_gates >/dev/null
+    check "gates: ${ran%%=*} alone is a verdict for daily-due" "verdict=1" "$(grep '^verdict=' "$V/output")"
+done
 # A qualify-only run (T2): advisory, so never a green run, whatever it says.
 for t2 in "build-image 0|promote skipped: no gates record|exit 0" "build-image 1|exit 1" "build-image 0|promote passed|exit 0"; do
     vm_reset
@@ -4484,6 +4822,7 @@ for t2 in "build-image 0|promote skipped: no gates record|exit 0" "build-image 1
         "1|::notice title=qualify-only::advisory: records nothing, promotes nothing by design" \
         "$(vm_gates)|$(grep -v '^::notice title=G4 frontier::' "$V/log")"
     check_true "gates: and still writes its summary" grep -qx '### G4 (results.md)' "$V/summary"
+    check "gates: but no verdict for daily-due" "" "$(grep '^verdict=' "$V/output" 2>/dev/null)"
 done
 vm_reset
 vm_results "ci-build.txt=sha $CI_SHA" "lock.diff=x"
@@ -4541,7 +4880,10 @@ NEXT_REPORT='Next lane report'
 next_job=$(awk '/^  next-compose:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
 check_true "next-compose runs only on the schedule, with APEX_NEXT_COMPOSE on" \
     grep -q "github.event_name == 'schedule' && vars.APEX_NEXT_COMPOSE == 'on'" <<<"$next_job"
-check_true "after the 45 build, whatever its result" grep -qx '    needs: build' <<<"$next_job"
+check_true "after the 45 build, whatever its result, and only when the daily is due" \
+    grep -qx '    needs: \[build, daily-due\]' <<<"$next_job"
+check_true "and a daily-due that said due=false skips it" \
+    grep -qF "&& (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')" <<<"$next_job"
 check "and no step of it exits non-zero on its own" 0 "$(grep -cE '^\s+exit [1-9"$]' <<<"$next_job")"
 vm_reset
 : >"$V/old-host"
@@ -4573,6 +4915,134 @@ check "report: their logs go to the next-logs artifact" "logs=$V/temp/next/next/
 vm_reset
 check "report: no results warn, and never fail the job" "0|1" \
     "$(vm_run "$NEXT_REPORT")|$(grep -c 'returned no results' "$V/log")"
+
+# --- vm.yml's daily-due: the daily builds only when no run is active and main's head is unbuilt ---
+DD="$TMP/daily-due"
+mkdir -p "$DD"
+DD_NOW=1793404800 DD_RUN=900 DD_SHA=$CI_SHA
+dd_iso() { date -u -d "@$((DD_NOW - $1 * 3600))" +%Y-%m-%dT%H:%M:%SZ; } # HOURS ago
+dd_runs() { # [ID:STATUS:EVENT...]: the runs list, this run in_progress first
+    local r
+    {
+        printf '{"workflow_runs":[{"id":%s,"status":"in_progress","event":"schedule","head_sha":"%s"}' "$DD_RUN" "$DD_SHA"
+        for r in "$@"; do
+            IFS=: read -r id st ev <<<"$r"
+            printf ',{"id":%s,"status":"%s","event":"%s","head_sha":"%s"}' "$id" "$st" "$ev" "$DD_SHA"
+        done
+        printf ']}\n'
+    } >"$DD/runs.json"
+}
+dd_jobs() { # [RUN:NAME:HOURS|-:CONCLUSION:SHA...]: the jobs list
+    local j run name h concl sha started sep=''
+    {
+        printf '{"jobs":['
+        for j in "$@"; do
+            IFS=: read -r run name h concl sha <<<"$j"
+            if [[ $h == - ]]; then started=null; else started="\"$(dd_iso "$h")\""; fi
+            printf '%s{"run_id":%s,"name":"%s","head_sha":"%s","started_at":%s,"conclusion":%s}' \
+                "$sep" "$run" "$name" "${sha:-$DD_SHA}" "$started" "$([[ $concl == - ]] && echo null || echo "\"$concl\"")"
+            sep=,
+        done
+        printf ']}\n'
+    } >"$DD/jobs.json"
+}
+dd() { "$APEX_ROOT/.github/scripts/daily-due.sh" "$DD/runs.json" "$DD/jobs.json" "$DD_RUN" "$DD_SHA" "$DD_NOW" 2>&1 | cut -d: -f1; }
+BJ='builder VM build and gates'
+dd_runs
+dd_jobs
+check "daily-due: no other run and no build of main's head is due" due "$(dd)"
+for st in queued waiting pending in_progress; do
+    dd_runs "901:$st:push"
+    check "daily-due: another run $st skips it" skip "$(dd)"
+done
+check_true "and says which run" grep -q 'skip: vm.yml run 901 (push, aaaaaaaaaaaa) is in_progress' \
+    <("$APEX_ROOT/.github/scripts/daily-due.sh" "$DD/runs.json" "$DD/jobs.json" "$DD_RUN" "$DD_SHA" "$DD_NOW")
+dd_runs "901:completed:push"
+dd_jobs "901:$BJ:3:success"
+check "daily-due: a build of main's head 3 h ago that passed skips it" skip "$(dd)"
+dd_jobs "901:$BJ:3:failure"
+check "daily-due: one that failed with no verdict step is due" due "$(dd)"
+dd_jobs "901:$BJ:3:cancelled"
+check "daily-due: a cancelled build of it is due" due "$(dd)"
+dd_jobs "901:$BJ:-:success"
+check "daily-due: a build with no start time is due, whatever its conclusion says" due "$(dd)"
+dd_jobs "901:$BJ:21:success"
+check "daily-due: a build 21 h ago is due" due "$(dd)"
+dd_jobs "901:$BJ:3:success:$(printf 'b%.0s' {1..40})"
+check "daily-due: a build of another commit is due" due "$(dd)"
+dd_jobs "901:daily run due:3:success"
+check "daily-due: another job of that run is no build" due "$(dd)"
+dd_jobs "$DD_RUN:$BJ:3:success"
+check "daily-due: and this run's own build is not counted" due "$(dd)"
+: >"$DD/runs.json"
+check "daily-due: an unread runs list is due" due "$(dd)"
+dd_runs
+: >"$DD/jobs.json"
+check "daily-due: an unread jobs list is due" due "$(dd)"
+# Real jobs-API answers (daily-due-fixtures/): the clock set 3 h after each build started.
+dd_real() { # FIXTURE: its verdict, with this run alone active
+    local f=$1 sha started
+    [[ $f == /* ]] || f=$APEX_ROOT/.github/scripts/daily-due-fixtures/$f
+    sha=$(jq -r '.jobs[0].head_sha' "$f")
+    started=$(jq -r '.jobs[0].started_at | fromdateiso8601' "$f")
+    printf '{"workflow_runs":[{"id":%s,"status":"in_progress","event":"schedule","head_sha":"%s"}]}\n' "$DD_RUN" "$sha" >"$DD/runs.json"
+    "$APEX_ROOT/.github/scripts/daily-due.sh" "$DD/runs.json" "$f" "$DD_RUN" "$sha" "$((started + 3 * 3600))" | cut -d: -f1
+}
+check "daily-due: run 18's G4 failure with its verdict step 3 h ago skips it" skip "$(dd_real run18-verdict.json)"
+check "daily-due: and the same build passing" skip "$(dd_real run18-as-success.json)"
+check "daily-due: a runner lost mid-build (40674776728) is due" due "$(dd_real runner-lost-40674776728.json)"
+check "daily-due: ci-build refusing in seconds (41088141083) is due" due "$(dd_real refused-41088141083.json)"
+check "daily-due: a failure from before the verdict step (run 18 as it ran) is due" due "$(dd_real run18-pre-verdict-step.json)"
+jq '.jobs[0].steps |= map(if .name == "A gate gave its verdict" then .conclusion = "skipped" else . end)' \
+    "$APEX_ROOT/.github/scripts/daily-due-fixtures/run18-verdict.json" >"$DD/verdict-skipped.json"
+check "daily-due: a failure whose verdict step was skipped is due" due "$(dd_real "$DD/verdict-skipped.json")"
+verdict_step=$(sed -n "s/^readonly BUILD_JOB='\([^']*\)' VERDICT_STEP='\([^']*\)'.*/\1|\2/p" "$APEX_ROOT/.github/scripts/daily-due.sh")
+check "daily-due.sh names vm.yml's build job" "$(sed -n 's/^    name: \(builder VM.*\)/\1/p' "$APEX_ROOT/.github/workflows/vm.yml")" "${verdict_step%%|*}"
+check "and its verdict step, run only on the Gates file's verdict" \
+    "      - name: ${verdict_step#*|}|        if: \${{ !cancelled() && steps.results.outputs.verdict == '1' }}" \
+    "$(grep -A1 -xF "      - name: ${verdict_step#*|}" "$APEX_ROOT/.github/workflows/vm.yml" | paste -sd'|')"
+cat >"$V/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ ! -e $FAKE_VM/gh-fails ]] || exit 1
+case $2 in
+    */workflows/vm.yml/runs*) cat "$FAKE_VM/gh-runs.json" ;;
+    */runs/*/jobs*)
+        id=${2%/jobs*}
+        id=${id##*/}
+        [[ ! -e $FAKE_VM/gh-jobs-$id.fails ]] || exit 1
+        cat "$FAKE_VM/gh-jobs-$id.json" ;;
+esac
+EOF
+chmod +x "$V/bin/gh"
+DAILY_DUE='Is the daily due'
+dd_runs "901:completed:push" "902:completed:push"
+cp "$DD/runs.json" "$V/gh-runs.json"
+dd_jobs "901:$BJ:3:success"
+cp "$DD/jobs.json" "$V/gh-jobs-901.json"
+dd_jobs "902:$BJ:21:success"
+cp "$DD/jobs.json" "$V/gh-jobs-902.json"
+dd_jobs
+cp "$DD/jobs.json" "$V/gh-jobs-$DD_RUN.json"
+vm_reset
+check "daily-due step: main's head built 3 h ago gives due=false, with a notice" "0|due=false|1" \
+    "$(cd "$APEX_ROOT" && vm_run "$DAILY_DUE" GITHUB_REPOSITORY=apex-linux/apex-image RUN_ID=$DD_RUN)|$(cat "$V/output")|$(grep -c '^::notice::daily skip: ' "$V/log")"
+: >"$V/gh-fails"
+vm_reset
+check "daily-due step: an API error gives due=true" "0|due=true|1" \
+    "$(cd "$APEX_ROOT" && vm_run "$DAILY_DUE" GITHUB_REPOSITORY=apex-linux/apex-image RUN_ID=$DD_RUN)|$(cat "$V/output")|$(grep -c '^::notice::daily due: ' "$V/log")"
+rm "$V/gh-fails"
+: >"$V/gh-jobs-902.fails"
+vm_reset
+check "daily-due step: one run's jobs unread gives due=true, though an earlier one's show the build" "0|due=true" \
+    "$(cd "$APEX_ROOT" && vm_run "$DAILY_DUE" GITHUB_REPOSITORY=apex-linux/apex-image RUN_ID=$DD_RUN)|$(cat "$V/output")"
+rm "$V/gh-jobs-902.fails" "$V/bin/gh"
+dd_job=$(awk '/^  daily-due:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
+build_job=$(awk '/^  build:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
+check_true "daily-due runs only on the schedule" grep -q "&& github.event_name == 'schedule'$" <<<"$dd_job"
+check "daily-due may only read Actions" "actions: read" "$(awk '/^    permissions:$/ { p = 1; next } p && /^      / { print $1, $2; next } p { exit }' <<<"$dd_job")"
+check_true "build waits for daily-due" grep -qx '    needs: \[dispatch-approval, daily-due\]' <<<"$build_job"
+check_true "and only a daily-due that ran and said due=false skips it" \
+    grep -qF "&& (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')" <<<"$build_job"
 
 # --- S4's budget: qualify.sh's boot phases and metrics.sh's rows, history and warnings -------
 bp() { bash -c '. "$1"; boot_phases' _ "$APEX_ROOT/.github/scripts/qualify.sh" | paste -sd' '; }
