@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: components.sh fetch | env | promotable | provenance
+usage: components.sh fetch | env | promotable | provenance | verify PATH
 
 The component checkouts the image builds from, pinned by components.lock at the root of
 this checkout: one line per repository, `NAME GIT-URL SHA` (40 lowercase hex digits);
@@ -26,6 +26,10 @@ blank lines and lines starting with # are skipped.
               or on a pin/* branch whose commits past main are each a `git cherry-pick -x`
               of a commit X on main, with a `(cherry picked from commit X)` trailer and
               changing only paths that X changes; 1 otherwise
+  verify PATH exit 0 when PATH is a pinned clone of the last fetch that is still at its
+              pin, clean, and holds no git config that runs code (filters, fsmonitor,
+              hooks, includes); 1, naming what is wrong, otherwise. build-image.sh asks
+              before it caches RPMs built from PATH
 
 APEX_SRC_<NAME> (NAME upper-cased, - as _; APEX_SRC_APEX_DESKTOP for apex-desktop)
 points at a sibling checkout to use instead of the pinned clone, relative to this
@@ -50,6 +54,24 @@ git_in() {
     local dir=$1
     shift
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directory="$dir" -C "$dir" "$@"
+}
+
+# Keys whose values git runs as commands, or that pull in other config: a clone a build
+# container wrote could carry them, and git on this host would run them.
+readonly UNSAFE_CONFIG='^(filter\.|include\.|includeif\.|core\.fsmonitor|core\.hookspath|core\.sshcommand|core\.gitproxy|core\.askpass|core\.editor|core\.pager|credential\.|diff\.[^.]+\.(textconv|command)|merge\.[^.]+\.driver|uploadpack\.packobjectshook)'
+
+# DIR: why its clone's own config is not safe to run git on, or nothing. Read as files, never
+# through git's include handling.
+unsafe_config() {
+    local f keys
+    [[ -d $1/.git && ! -L $1/.git ]] || { echo ".git is not a directory"; return; }
+    for f in "$1/.git/config" "$1/.git/config.worktree"; do
+        [[ -e $f || -L $f ]] || continue
+        [[ -f $f && ! -L $f ]] || { echo "${f#"$1"/} is not a regular file"; return; }
+        keys=$(git config --file "$f" --no-includes --name-only --list 2>/dev/null | grep -iE "$UNSAFE_CONFIG" | sort -u | paste -sd' ') ||
+            true
+        [[ -z $keys ]] || { echo "${f#"$1"/} sets $keys"; return; }
+    done
 }
 
 lock_sha256() {
@@ -93,6 +115,12 @@ reclaim() {
 clone_pinned() {
     local name=$1 url=$2 sha=$3 dest=$DIR/$1
     reclaim "$name" "$dest"
+    local unsafe
+    unsafe=$([[ ! -e $dest ]] || unsafe_config "$dest")
+    if [[ -n $unsafe ]]; then
+        log "$name: $unsafe; cloning afresh"
+        rm -rf -- "$dest"
+    fi
     if [[ -d $dest/.git && $(git_in "$dest" remote get-url origin 2>/dev/null) == "$url" ]]; then
         git_in "$dest" fetch -q --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
     else
@@ -211,9 +239,25 @@ cmd_provenance() {
     return "$bad"
 }
 
+cmd_verify() {
+    local kind name mode sha path found='' unsafe
+    current_state
+    while read -r kind name mode sha path; do
+        [[ $kind == component && $path == "$1" ]] || continue
+        found=$name
+        [[ $mode == pinned ]] || die "$name: $path is a $mode, not a pinned clone"
+        unsafe=$(unsafe_config "$path")
+        [[ -z $unsafe ]] || die "$name: $unsafe"
+        [[ $(git_in "$path" rev-parse HEAD 2>/dev/null) == "$sha" ]] || die "$name: HEAD is not its pin $sha"
+        [[ -z $(git_in "$path" status --porcelain --ignored=no 2>&1) ]] || die "$name: the clone of $sha is not clean"
+    done <"$STATE"
+    [[ -n $found ]] || die "$1 is no component of the last fetch"
+}
+
 main() {
-    (($# == 1)) || { usage >&2; exit "$EXIT_USAGE"; }
+    [[ $# == 1 || ($# == 2 && $1 == verify) ]] || { usage >&2; exit "$EXIT_USAGE"; }
     case $1 in
+        verify) cmd_verify "$2" ;;
         fetch) cmd_fetch ;;
         env) cmd_env ;;
         promotable) cmd_promotable ;;
