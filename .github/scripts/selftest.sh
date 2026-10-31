@@ -2681,6 +2681,9 @@ ct_user_units() { # SYSTEM DESKTOP: the user units the components' specs ship an
     printf '[Unit]\n' >"$2/desktop/systemd/user/apex-shell-safe.service"
 }
 ct_user_units "$CT/system" "$CT/desktop"
+printf '%s\n' 'UPDATED_DATA := crates/apex-updated/data' 'define install_data' \
+    "	\$(INSTALL) -Dm0644 \$(UPDATED_DATA)/apex.tmpfiles.conf \\" "		'\$(1)\$(TMPFILESDIR)/apex.conf'" 'endef' \
+    >"$CT/system/Makefile"
 G4U=$TMP/g4-user-units
 g4u() { # QUALIFY: g4_user_units' exit on a fresh copy of the components after "$G4U/edit"; its errors in $G4U/err
     rm -rf "$G4U/system" "$G4U/desktop" && ct_user_units "$G4U/system" "$G4U/desktop"
@@ -2827,6 +2830,27 @@ printf '%%files\n%%license LICENSE\n' >"$CT/system/packaging/apex.spec"
 check "contracts: an apex-system spec that ships nothing" 1 "$(ct_copies)"
 check_true "says so" grep -qF "$CT/system/packaging/apex.spec ships no file in its %files" "$CT/out"
 mv "$CT/apex.spec" "$CT/system/packaging/apex.spec"
+cp "$CT/system/data/80-apex.preset" "$CT/gnome/tests/units/apex.tmpfiles.conf"
+check "contracts: a copy under the name apex-system's Makefile installs from" 1 "$(ct_copies)"
+check_true "names the Makefile's source" grep -qF \
+    "error: apex-gnome tests/units/apex.tmpfiles.conf has the name of apex-system's crates/apex-updated/data/apex.tmpfiles.conf (installed by Makefile)" \
+    "$CT/out"
+rm "$CT/gnome/tests/units/apex.tmpfiles.conf"
+cp "$CT/desktop/packaging/apex-desktop.spec" "$CT/apex-desktop.spec"
+printf '%s\n' '%install' "install -Dm0644 desktop/keybindings/60-apex.xml \\" \
+    '    %{buildroot}%{_datadir}/gnome-control-center/keybindings/60-apex.xml' >>"$CT/desktop/packaging/apex-desktop.spec"
+printf '<KeyListEntries/>\n' >"$CT/gnome/tests/units/60-apex.xml"
+check "contracts: a copy of a file apex-desktop's %install installs" 1 "$(ct_copies)"
+check_true "names the spec's source" grep -qF \
+    "error: apex-gnome tests/units/60-apex.xml has the name of apex-desktop's desktop/keybindings/60-apex.xml (installed by packaging/apex-desktop.spec)" \
+    "$CT/out"
+rm "$CT/gnome/tests/units/60-apex.xml"
+mv "$CT/apex-desktop.spec" "$CT/desktop/packaging/apex-desktop.spec"
+cp "$CT/system/Makefile" "$CT/Makefile"
+printf 'all:\n' >"$CT/system/Makefile"
+check "contracts: an apex-system Makefile that installs nothing" 1 "$(ct_copies)"
+check_true "says so" grep -qF "$CT/system/Makefile installs no file with \$(INSTALL)" "$CT/out"
+mv "$CT/Makefile" "$CT/system/Makefile"
 check "contracts: the shipped names hold again" 0 "$(ct_copies "$CT/kernel")"
 check "contracts: G2's input-source keys equal apex-desktop's" 0 "$(ct_run)"
 ct_g2_keys "['<Super>space', 'XF86Keyboard']" "$CT_BACK_KEYS"
