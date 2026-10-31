@@ -11,8 +11,6 @@ Qualify an Apex image in a KVM guest with OVMF: a real `bootc install`, GRUB, th
 boot counter and boot assessment, signature enforcement and the upgrade path, all on
 the digest that will be published.
 
-  qualify.sh host-setup              for a CI runner, if one is ever used: /dev/kvm
-                                     access, QEMU, OVMF
   qualify.sh fresh CANDIDATE         install CANDIDATE, boot, assert, negative
                                      signature tests, reboot with a download-only stage
   qualify.sh upgrade FROM CANDIDATE  install FROM (e.g. the current stable), stage
@@ -250,7 +248,7 @@ find_ovmf() {
 }
 
 require_kvm() {
-    [[ -w /dev/kvm ]] || die "/dev/kvm is not writable (run 'qualify.sh host-setup' on a runner)"
+    [[ -w /dev/kvm ]] || die "/dev/kvm is not writable (run 'ci-host.sh qualify' on a runner)"
 }
 
 candidate_ref() {
@@ -2131,7 +2129,7 @@ g4_key_lines() {
 
 # What runs the rows: a changed or added row makes G4 due again. vm.yml's verdicts name it too.
 g4_harness() {
-    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh qualify-allowed-failures.txt ci-host.sh) | sha256sum | cut -d' ' -f1
+    (cd "$APEX_ROOT/.github/scripts" && sha256sum qualify.sh lib.sh qualify-allowed-failures.txt) | sha256sum | cut -d' ' -f1
 }
 
 g4_key_with_harness() {
@@ -2663,15 +2661,6 @@ cmd_all() {
     esac
 }
 
-cmd_host_setup() {
-    in_github_actions || die "host-setup changes the host; in the builder VM install qemu-system-x86, edk2-ovmf, dosfstools, btrfs-progs and openssh-clients yourself"
-    "$APEX_ROOT/.github/scripts/ci-host.sh" kvm
-    retry 3 10 sudo apt-get update -qq
-    retry 3 10 sudo apt-get install -y -qq --no-install-recommends \
-        qemu-system-x86 qemu-utils ovmf dosfstools btrfs-progs openssh-client jq
-    "$APEX_ROOT/.github/scripts/ci-host.sh" podman-conf
-}
-
 # errexit ends G4 with no line of its own: name the command first. Inside $(...) errexit is
 # off (no inherit_errexit), so a failure a caller tolerates there prints nothing.
 trap_errexit() {
@@ -2743,7 +2732,6 @@ main() {
     local cmd=${1:-}
     shift || true
     case $cmd in
-        host-setup) cmd_host_setup; return ;;
         g4-key) cmd_g4_key "$@"; return ;;
         g4-due) cmd_g4_due "$@"; return ;;
         g4-harness) g4_harness; return ;;
