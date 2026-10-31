@@ -182,6 +182,34 @@ jobs:
           . "$RUNNER_TEMP/components.env"
           .github/scripts/contracts.sh
 
+      - name: Each component gives the content key the signed-RPM cache keys on (build-image.sh component_key)
+        # This job is fedora:45 already, so each key script runs here, not in a container of its own.
+        run: |
+          . "$RUNNER_TEMP/components.env"
+          # shellcheck disable=SC2016 # expanded by the inner bash
+          bash -c '
+            . tools/builder-vm/build-image.sh
+            in_component() {
+              local src=$1 a
+              local -a env=()
+              shift
+              for a in "${COMPONENT_ENV[@]}"; do [[ $a == -e ]] || env+=("$a"); done
+              (cd "$src" && env "${env[@]}" "$@")
+            }
+            given() { [[ -n $1 && $1 != rpm-cache:* ]]; }
+            fail=0
+            desktop=$(component_key apex-desktop "$APEX_DESKTOP_SRC" .github/scripts/rpms.sh)
+            libfprint_env
+            fprint=$(component_key libfprint "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh)
+            COMPONENT_ENV=()
+            system=$(component_key apex-system "$APEX_SYSTEM_SRC" .github/scripts/rpms.sh)
+            for k in "apex-desktop $desktop" "libfprint $fprint"; do
+              given "${k#* }" && echo "${k%% *}: ${k#* }" || { echo "::error::${k#* }"; fail=1; }
+            done
+            # apex-system 70fa599 dispatches key to a cmd_key it lacks: built uncached until a pin has one.
+            given "$system" && echo "apex-system: $system" || echo "::warning::$system"
+            exit "$fail"'
+
       - name: The journal lines G4 waits for, against the current Fedora sources (qualify-markers.txt)
         run: |
           . "$RUNNER_TEMP/components.env"
