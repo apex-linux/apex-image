@@ -31,9 +31,15 @@ Formats follow what the fake guest serves:
 Scrubbed before committing, by the script that cut them:
 - the guest's host names (`apex`, and `apex-builder` that DHCP gave it) are `guest`;
 - the test user's name is `@TEST_USER@`, which selftest replaces with qualify.sh's `TEST_USER`;
-- 32-hex machine and boot IDs are zeros;
+- 32-hex machine and boot IDs, and filesystem UUIDs, are zeros;
 - IPv4 addresses are `192.0.2.1`, and MAC addresses `02:00:00:00:00:00`;
 - every line is cut to 300 characters.
+
+`g4-fixtures-check.sh`, which selftest runs, holds every file here to that and more. Each file
+needs a row above and a selftest line that reads it. No line may hold a host name but `guest`, a
+user name but `root`, `gdm`, `gdm-greeter` and `@TEST_USER@`, a machine, boot or filesystem ID, an
+IPv4, IPv6 or MAC address but the ones above, an email address or a serial number. It decodes
+audit's `proctitle=` hex and checks that too.
 
 No password reaches a journal. The image digests (64-hex sha256) stay: they name builds, not people.
 apex-ci's privacy guard passes over these files.
