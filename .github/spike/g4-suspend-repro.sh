@@ -745,8 +745,27 @@ lock_and_blank() {
 
 snapshot() { vm_ssh bash -s <<<"$GUEST_SNAPSHOT" >"$TDIR/$1.txt" 2>&1; }
 
+# BOOTTIME - MONOTONIC grows by the time asleep; the PM lines by journald's and the kernel's own clocks.
+GUEST_CLOCKS=$(
+    cat <<'EOF'
+echo "== $1"
+python3 -c 'import time; print("boottime-monotonic %.6f" % (time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)))' 2>/dev/null ||
+    awk -v up="$(cut -d' ' -f1 /proc/uptime)" '/^now at/ { printf "boottime-monotonic %.6f (uptime, timer_list)\n", up - $3 / 1e9; exit }' /proc/timer_list
+[ "$1" = pre ] && exit 0
+systemctl --version | head -n 1
+echo "clocksource $(cat /sys/devices/system/clocksource/clocksource0/current_clocksource)"
+echo "== short-monotonic"
+journalctl -k -b -o short-monotonic --no-pager | grep -E 'PM: (suspend-to-idle|resume from suspend-to-idle)$'
+echo "== json"
+journalctl -k -b -o json --no-pager --output-fields=MESSAGE,_SOURCE_MONOTONIC_TIMESTAMP,_SOURCE_BOOTTIME_TIMESTAMP |
+    grep -E '"PM: (suspend-to-idle|resume from suspend-to-idle)"'
+EOF
+)
+readonly GUEST_CLOCKS
+
 post_ok() {
     local mode=$1 since=$2 base=$3 deadline
+    [[ ${META[wake]} != s2idle ]] || vm_ssh bash -s -- post <<<"$GUEST_CLOCKS" >>"$TDIR/clocks.txt" 2>&1 || true
     snapshot post || true
     vm_ssh "journalctl -b --since @$((since - 1)) -o short-monotonic --no-pager" >"$TDIR/journal.txt" 2>&1 || true
     vm_ssh "journalctl -k -b --since @$((since - 1)) -o short-monotonic --no-pager" >"$TDIR/kernel.txt" 2>&1 || true
@@ -902,9 +921,9 @@ dpms_cycles() {
 }
 
 # MODE-WAKE[-OPT...]: G locked GNOME or H none; sw (QMP system_wakeup), rtc, s2idle (send-key) or dpms; OPT
-# nothing (gsd's power-button-action), stdvga (not virtio-vga), bare, rN (a repeat), fwN (REPRO_EDK2_ALT's Nth).
+# nothing (gsd's power-button-action), stdvga, bare, rN (a repeat), fwN (REPRO_EDK2_ALT's Nth), holdN (s2idle secs).
 run_trial() {
-    local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need fw=0
+    local name=$1 m wake opts mode vga=virtio inst=full pba=interactive need fw=0 hold=5
     IFS=- read -r m wake opts <<<"$name"
     case $m in G) mode=gnome ;; H) mode=headless ;; *) warn "unknown trial $name"; return 0 ;; esac
     [[ $wake == sw || $wake == rtc || $wake == s2idle || $wake == dpms ]] || { warn "unknown wake in trial $name"; return 0; }
@@ -912,11 +931,12 @@ run_trial() {
     [[ -$opts- != *-bare-* ]] || inst=bare
     [[ -$opts- != *-nothing-* ]] || pba=nothing
     [[ ! -$opts- =~ -fw([0-9])- ]] || fw=${BASH_REMATCH[1]}
+    [[ ! -$opts- =~ -hold([0-9]+)- ]] || hold=${BASH_REMATCH[1]}
     TRIAL_N=$((TRIAL_N + 1))
     TRIAL_ID=$(printf 't%02d-%s' "$TRIAL_N" "$name")
     TDIR=$TRIALS_DIR/$TRIAL_ID
     mkdir -p "$TDIR"
-    META=([trial]=$TRIAL_ID [name]=$name [mode]=$mode [wake]=$wake [inst]=$inst [pba]=$pba [vga]=$vga [fw]=$fw
+    META=([trial]=$TRIAL_ID [name]=$name [mode]=$mode [wake]=$wake [inst]=$inst [pba]=$pba [vga]=$vga [fw]=$fw [hold]=$hold
         [qmp_log]=$QMP_LOG [t_start]=$(now))
     # A failing trial: lock and suspend 20 s, the window, diagnostics 25 s, recovery up to 105 s,
     # the kill 15 s; a boot first (with the GNOME autologin) about 150 s more.
@@ -966,6 +986,7 @@ run_trial() {
     fi
     vm_ssh bash -s -- "$inst" "$REPRO_PRINT_TIMES" <<<"$GUEST_INSTRUMENT" >"$TDIR/instrument.txt" 2>&1 || true
     snapshot pre || true
+    [[ $wake != s2idle ]] || vm_ssh bash -s -- pre <<<"$GUEST_CLOCKS" >"$TDIR/clocks.txt" 2>&1 || true
     since=$(vm_ssh 'date +%s') || since=0
     if [[ $mode == gnome ]]; then
         lock_and_blank || { mark "the session did not lock"; META[lock]=failed; }
@@ -989,7 +1010,7 @@ run_trial() {
     mark "systemd-run --on-active=2 systemctl suspend (S3 #$S3_IN_BOOT of boot $BOOTN)"
     vm_ssh 'systemd-run --quiet --on-active=2 systemctl suspend' || META[suspend_req]=failed
     # qualify.sh's wait: query-status every QUALIFY_POLL until 'suspended', QUALIFY_LOCK_TIMEOUT at most.
-    # s2idle never leaves QEMU's 'running': the console's entry line, then 5 s for the freeze.
+    # s2idle never leaves QEMU's 'running': the console's entry line, then the hold (5 s, or -holdN).
     local entered=''
     deadline=$((SECONDS + QUALIFY_LOCK_TIMEOUT))
     if [[ $wake == s2idle ]]; then
@@ -997,7 +1018,7 @@ run_trial() {
             if ((SECONDS >= deadline)) || ! vm_alive; then break; fi
             sleep 1
         done
-        if tail -c +$((ser_off + 1)) "$VM_SERIAL" 2>/dev/null | grep -q 'PM: suspend entry (s2idle)'; then entered=1; sleep 5; fi
+        if tail -c +$((ser_off + 1)) "$VM_SERIAL" 2>/dev/null | grep -q 'PM: suspend entry (s2idle)'; then entered=1; sleep "$hold"; fi
     else
         until [[ $(vm_run_state 2>/dev/null) == suspended ]]; do
             if ((SECONDS >= deadline)) || ! vm_alive; then break; fi
