@@ -9,7 +9,7 @@ usage() {
 
 The contracts between the image and the components it takes, checked against the
 component checkouts APEX_SYSTEM_SRC, APEX_DESKTOP_SRC and APEX_GNOME_SRC (default: the
-pinned clones of tools/components.sh fetch).
+pinned clones of tools/components.sh fetch), and APEX_KERNEL_SRC when it is set.
 
   contracts.sh      exit 0 when every contract holds
 EOF
@@ -178,6 +178,76 @@ for ((i = 0; i < ${#copies[@]}; i += 2)); do
 done
 ((stale == 0)) || die "contracts: see above"
 log "contracts: every copy of a component's file equals the pinned original"
+
+# A component's new copy of a shipped file is caught here, not only when someone adds its row above.
+readonly COPIES_ALLOWED=${APEX_COPIES_ALLOWED:-$APEX_ROOT/.github/scripts/copies-allowed.txt}
+python3 - "$COPIES_ALLOWED" "${#copies[@]}" "${copies[@]}" apex-system "$APEX_SYSTEM_SRC" packaging/apex.spec \
+    apex-desktop "$APEX_DESKTOP_SRC" packaging/apex-desktop.spec apex-gnome "$APEX_GNOME_SRC" - \
+    apex-kernel "${APEX_KERNEL_SRC:-}" - <<'EOF' || die "contracts: see above"
+import os
+import sys
+
+allowed_file, n, *rest = sys.argv[1:]
+listed, rest = {os.path.realpath(p) for p in rest[: int(n)]}, rest[int(n) :]
+trees = [(rest[i], rest[i + 1], rest[i + 2]) for i in range(0, len(rest), 3) if rest[i + 1]]
+SKIP = {".git", "_build", "node_modules", "target"}
+problems, shipped = [], {}
+for name, root, spec in trees:
+    if spec == "-":
+        continue
+    try:
+        lines = open(f"{root}/{spec}", encoding="utf-8").read().splitlines()
+    except OSError as e:
+        sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
+    section = None
+    for line in lines:
+        if line.startswith("%") and line.split()[0] in ("%files", "%changelog", "%check", "%install", "%prep", "%build"):
+            section = line.split()[0]
+            continue
+        words = line.split()
+        if section != "%files" or not words or words[0] in ("%license", "%doc", "%dir") or line.startswith("#"):
+            continue
+        path = words[-1]
+        if not path.endswith("/") and "*" not in path:
+            shipped.setdefault(os.path.basename(path), (name, path))
+    if not any(owner == name for owner, _ in shipped.values()):
+        problems.append(f"{root}/{spec} ships no file in its %files")
+allowed = {}
+for number, line in enumerate(open(allowed_file, encoding="utf-8"), 1):
+    words = line.split("#", 1)[0].split(None, 2)
+    if not words:
+        continue
+    if len(words) < 3:
+        problems.append(f"{allowed_file}:{number}: want COMPONENT PATH REASON, got {line.strip()!r}")
+        continue
+    allowed[words[0], words[1]] = number
+seen = set()
+for name, root, _ in trees:
+    for top, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP)
+        for f in sorted(files):
+            owner, installed = shipped.get(f, (name, ""))
+            path = os.path.join(top, f)
+            if owner == name or os.path.islink(path) or os.path.realpath(path) in listed:
+                continue
+            rel = os.path.relpath(path, root)
+            if (name, rel) in allowed:
+                seen.add((name, rel))
+                continue
+            problems.append(
+                f"{name} {rel} has the name of {owner}'s {installed}, but no copy row compares it: "
+                f"add it to contracts.sh's copies, or allow it in {os.path.basename(allowed_file)} with a reason"
+            )
+problems += [
+    f"{allowed_file}:{number}: {name} {rel} is no longer a copy of a shipped file: delete the line"
+    for (name, rel), number in allowed.items()
+    if (name, rel) not in seen
+]
+for p in problems:
+    print(f"error: {p}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+EOF
+log "contracts: every file of a component named like another's shipped file is a compared copy"
 
 # G2 sets 90_apex's weekday and input-source keys from its own copies, so its shells match the
 # image's, and Super+Space stays Spotlight's there too.
