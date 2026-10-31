@@ -1753,7 +1753,7 @@ vm_ssh() {
             c=${cmd#*_COMM=}
             c=${c%% *}
             echo x >>"$STATE/reads-$c"
-            [[ $(wc -l <"$STATE/reads-$c") -le $(cat "$STATE/readable-$c" 2>/dev/null || echo 99) ]] || return 1
+            [[ ! -e $STATE/readable-$c || $(wc -l <"$STATE/reads-$c") -le $(from "readable-$c") ]] || return 1
             from "journal-$c" ;;
         "runuser -u $TEST_USER -- sh -c 'mkdir -p ~$TEST_USER/.config/environment.d && echo APEX_SHELL_TEST_FAULT=abort-after-enable >~$TEST_USER/$TEST_FAULT_FILE'")
             : >"$STATE/fault-file" ;;
