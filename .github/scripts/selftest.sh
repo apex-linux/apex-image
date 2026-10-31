@@ -1474,7 +1474,18 @@ STATE=$2
 shift 2
 VM_SERIAL=$STATE/serial
 from() { cat "$STATE/$1" 2>/dev/null || true; }
-as_root() { [[ "$*" == "podman image inspect --format {{.Id}} localhost/apex:build" ]] && echo cafe; }
+as_root() {
+    printf '%s\n' "$*" >>"$STATE/host-calls"
+    case "$*" in
+        "podman image inspect --format {{.Id}} localhost/apex:build") echo cafe ;;
+        "podman image inspect --format {{.Digest}} $LOCAL_CANDIDATE") from local-digest ;;
+        "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rm -f -v $CANDIDATE_REGISTRY" | "podman rmi $LOCAL_CANDIDATE") ;;
+        "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] ;;
+        "podman push --tls-verify=false --digestfile $QUALIFY_OUT/candidate/pushed $LOCAL_CANDIDATE 127.0.0.1:5000/apex-qualify:candidate")
+            [[ ! -e $STATE/push-fails ]] && from pushed >"$QUALIFY_OUT/candidate/pushed" ;;
+        *) return 1 ;;
+    esac
+}
 TEST_PASSWORD=$(from password)
 conversations() { echo "${1:-$(from conversations)}" >"$STATE/conversations"; }
 start_asking() {
@@ -1656,7 +1667,7 @@ local_flow_stubs() {
     assert_bootloader_updated() { :; }
     as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
     assert_green() { result "$1" PASS "green on sha256:feed"; }
-    stage_local_candidate() { LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
+    stage_local_candidate() { echo "$3" >"$STATE/stage-base"; LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
     counted_rollback() { result "$1-fallback" PASS "back on $2"; }
     create_test_user() { result "$1-user" PASS made; }
     set_test_password() { result "$1-password" PASS set; }
@@ -1694,13 +1705,12 @@ vm_ssh() {
         "rpm-ostree kargs --delete=apex.safe=1") rm -f "$STATE/karg" "$STATE/safe-booted"; : >"$STATE/apex-lock" ;;
         "command -v apexctl") echo /usr/bin/apexctl ;;
         "journalctl -b _UID=60578 _COMM=systemd -o short-monotonic --no-pager") from greeter-manager ;;
-        "rm -rf $GUEST_TMP/candidate && mkdir -p $GUEST_TMP/candidate") ;;
-        "cat > $GUEST_TMP/candidate/manifest.json && chmod 0644 $GUEST_TMP/candidate/manifest.json") cat >"$STATE/built-manifest" ;;
-        "cat > $GUEST_TMP/candidate/Containerfile") cat >"$STATE/built-containerfile" ;;
-        "timeout 1800 bootc image copy-to-storage") ;;
-        "timeout 1800 podman build --pull=never --tag $LOCAL_CANDIDATE $GUEST_TMP/candidate") ;;
-        "timeout 3600 bootc switch --transport containers-storage --download-only $LOCAL_CANDIDATE") ;;
-        "podman rmi $LOCAL_CANDIDATE localhost/bootc >/dev/null") ;;
+        "mkdir -p $CANDIDATE_GUEST_CONF && cat > $CANDIDATE_GUEST_CONF/registries.conf") cat >"$STATE/registries.conf" ;;
+        "cat > $CANDIDATE_GUEST_CONF/policy.json") cat >"$STATE/policy.json" ;;
+        "timeout 3600 env CONTAINERS_REGISTRIES_CONF=$CANDIDATE_GUEST_CONF/registries.conf CONTAINERS_POLICY_JSON=$CANDIDATE_GUEST_CONF/policy.json bootc switch --download-only 10.0.2.2:5000/apex-qualify:candidate")
+            echo switch >>"$STATE/host-calls"
+            [[ ! -e $STATE/switch-fails ]] ;;
+        "rm -rf $CANDIDATE_GUEST_CONF") ;;
         "bootc status --format=json --format-version=1") from status ;;
         "grub2-editenv /boot/grub2/grubenv list") echo apex_ok=0 ;;
         *"org.gnome.ScreenSaver.GetActive"*) printf '(%s,)\n' "$(from active)" ;;
@@ -2011,23 +2021,67 @@ staged() {
 rm -rf "$GUEST_DIR/state"
 mkdir -p "$GUEST_DIR/state"
 printf '%s\n' "$manifest" >"$GUEST_DIR/state/manifest"
+IMAGE_ID=$(printf 'b%.0s' {1..64})
+stage() { guest stage_local_candidate local-stage "$D0" "$IMAGE_ID"; }
 staged "$D1" true
-check "a newer image derived in the guest is staged" 0 "$(guest stage_local_candidate local-stage "$D0")"
-check "its manifest version extends the booted one" 45.20260929.0.1 "$(jq -r .version "$GUEST_DIR/state/built-manifest")"
-check "and nothing else changes in it" "$(jq -S 'del(.version)' <<<"$manifest")" "$(jq -S 'del(.version)' "$GUEST_DIR/state/built-manifest")"
-check "the candidate is the booted image plus that manifest, labelled with its version" \
-    "FROM localhost/bootc|COPY manifest.json /usr/share/apex/manifest.json|LABEL org.opencontainers.image.version=45.20260929.0.1" \
-    "$(paste -sd'|' "$GUEST_DIR/state/built-containerfile")"
-check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged localhost/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
+echo "$D1" >"$GUEST_DIR/state/pushed"
+echo "$D2" >"$GUEST_DIR/state/local-digest"
+check "a newer image built on the host is staged from the host's registry" 0 "$(stage)"
+check "its manifest version extends the booted one" 45.20260929.0.1 "$(jq -r .version "$GUEST_DIR/out/candidate/manifest.json")"
+check "and nothing else changes in it" "$(jq -S 'del(.version)' <<<"$manifest")" "$(jq -S 'del(.version)' "$GUEST_DIR/out/candidate/manifest.json")"
+check "the candidate is the image under test plus that manifest, labelled with its version" \
+    "FROM $IMAGE_ID|COPY manifest.json /usr/share/apex/manifest.json|LABEL org.opencontainers.image.version=45.20260929.0.1" \
+    "$(paste -sd'|' "$GUEST_DIR/out/candidate/Containerfile")"
+check "the guest reaches the host's registry over plain HTTP" '[[registry]]|location = "10.0.2.2:5000"|insecure = true' \
+    "$(paste -sd'|' "$GUEST_DIR/state/registries.conf")"
+check "and trusts that registry alone, for the one switch" \
+    '{"default":[{"type":"reject"}],"transports":{"docker":{"10.0.2.2:5000":[{"type":"insecureAcceptAnything"}]}}}' \
+    "$(jq -c . "$GUEST_DIR/state/policy.json")"
+check "the registry runs from its pinned digest, stops after the switch, and the candidate is removed" \
+    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v apex-qualify-registry-5000|podman rmi localhost/apex-qualify:candidate" \
+    "$(grep -E '^podman (run|rm|rmi) |^switch$' "$GUEST_DIR/state/host-calls" | paste -sd'|')"
+check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged 10.0.2.2:5000/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
+echo "$D2" >"$GUEST_DIR/state/pushed"
+echo "$D1" >"$GUEST_DIR/state/local-digest"
+check "a staged digest other than the pushed manifest's fails, even when podman image inspect names it" 1 "$(stage)"
+check_true "naming both" grep -qF "| local-stage | FAIL | bootc staged $D1, not $D2, the manifest the host pushed" "$GUEST_DIR/out/results.md"
+echo "$D1" >"$GUEST_DIR/state/pushed"
 staged "$D0" true
-check "a candidate with the booted digest fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
+echo "$D0" >"$GUEST_DIR/state/pushed"
+check "a candidate with the booted digest fails" 1 "$(stage)"
+echo "$D1" >"$GUEST_DIR/state/pushed"
 staged "$D1" false
-check "a candidate that is not download-only fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
+check "a candidate that is not download-only fails" 1 "$(stage)"
 staged "" true
-check "no staged digest fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
-jq 'del(.version)' <<<"$manifest" >"$GUEST_DIR/state/manifest"
+check "no staged digest fails" 1 "$(stage)"
 staged "$D1" true
-check "a booted manifest without a version fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
+: >"$GUEST_DIR/state/push-fails"
+check "a failed push fails" 1 "$(stage)"
+: >"$GUEST_DIR/state/host-calls"
+: >"$GUEST_DIR/state/vm-dead"
+check "and qualify.sh's exit after it" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "stops the registry this run started" "podman rm -f -v apex-qualify-registry-5000" \
+    "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/push-fails"
+: >"$GUEST_DIR/state/registry-fails"
+: >"$GUEST_DIR/state/host-calls"
+check "a registry that does not start fails" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check_true "naming its container and port" grep -qF \
+    "| local-stage | FAIL | cannot start apex-qualify-registry-5000 (docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373) on 127.0.0.1:5000: another run's, or the port taken? |" \
+    "$GUEST_DIR/out/results.md"
+check "and qualify.sh's exit then leaves that container alone" "" "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/registry-fails" "$GUEST_DIR/state/vm-dead"
+: >"$GUEST_DIR/state/pushed"
+check "a push that wrote no digest fails" 1 "$(stage)"
+echo "$D1" >"$GUEST_DIR/state/pushed"
+: >"$GUEST_DIR/state/switch-fails"
+check "a failed switch fails" 1 "$(stage)"
+rm "$GUEST_DIR/state/switch-fails"
+jq 'del(.version)' <<<"$manifest" >"$GUEST_DIR/state/manifest"
+check "a booted manifest without a version fails" 1 "$(stage)"
+check "qualify.sh's registry:2 is publish.sh's rehearsal registry" \
+    "$(sed -n 's/^readonly REHEARSAL_REGISTRY_IMAGE=\([^ ]*\).*/\1/p' "$APEX_ROOT/.github/scripts/publish.sh")" \
+    "$(sed -n 's/^readonly CANDIDATE_REGISTRY_IMAGE=\([^ ]*\).*/\1/p' "$APEX_ROOT/.github/scripts/qualify.sh")"
 
 logged_in() {
     at_greeter
@@ -2608,7 +2662,8 @@ local_ready() { # logged in once, so that the guest has its user's files; cmd_lo
 }
 rows_of() { awk -F' [|] ' '{ sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/results.md" | paste -sd'|'; }
 local_ready
-check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:build')"
+check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:selftest')"
+check "the candidate builds on the installed image's ID, not on its tag" cafe "$(cat "$GUEST_DIR/state/stage-base")"
 check "in cmd_local's row order, with no row after the first FAIL" \
     "local-install PASS|local-stage PASS|local-fallback PASS|local-password PASS|local-login-boot PASS|local-greeter-login PASS|local-boot-metrics SKIP|local-login PASS|local-lock PASS|local-unlock PASS|local-unlock-signal PASS|local-user-units PASS|local-lock-wrong-password PASS|local-lock-esc FAIL" \
     "$(rows_of)"
