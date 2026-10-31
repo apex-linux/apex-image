@@ -2683,6 +2683,81 @@ check "g4 fixtures: what the cut keeps passes" 0 "$(g4c "printf '%s\n' \
     'cipher aes256-gcm@openssh.com for user root, user root(uid=0), user@1000.service' \
     'oo7_daemon::service started, AccountsService.User::password-mode, serial-getty@ttyS0' >>run11-login.journal")"
 
+# --- vm-paths-check.sh: vm.yml's push paths cover what a run reads ---------------------------
+check "vm paths: this checkout's vm.yml covers every read" 0 "$(rc_of "$APEX_ROOT/.github/scripts/vm-paths-check.sh" "$APEX_ROOT")"
+VP=$TMP/vm-paths
+vp() { # EDIT: the check's exit on a fresh fixture checkout after EDIT ran in it, its errors in $VP.err
+    local rc=0
+    rm -rf "$VP" && mkdir -p "$VP/.github/workflows" "$VP/.github/scripts" "$VP/tools/runner" "$VP/tools/conf"
+    printf '%s\n' 'on:' '  push:' '    paths:' '      - components.lock' '      - .github/scripts/gate.sh' \
+        '      - .github/scripts/lib.sh' '      - .github/scripts/helper.sh' '      - tools/data.txt' '      - image/**' \
+        'jobs:' '  build:' '    steps:' '      - run: |' '          .github/scripts/gate.sh' >"$VP/.github/workflows/vm.yml"
+    cat >"$VP/.github/scripts/gate.sh" <<'VP_EOF'
+#!/usr/bin/env bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+readonly DATA=tools/data.txt
+"$APEX_ROOT/.github/scripts/helper.sh" "$DATA"
+echo "see tools/runner/notes.sh"
+# tools/runner/notes.sh
+case $1 in
+    tools/runner/notes.sh) ;;
+esac
+VP_EOF
+    printf '#!/usr/bin/env bash\n' >"$VP/.github/scripts/lib.sh"
+    cat >"$VP/.github/scripts/helper.sh" <<'VP_EOF'
+#!/usr/bin/env bash
+cat "$APEX_ROOT/image/fedora/$FEDORA.env"
+VP_EOF
+    : >"$VP/components.lock"
+    : >"$VP/tools/data.txt"
+    : >"$VP/tools/runner/notes.sh"
+    : >"$VP/tools/conf/a.env"
+    mkdir -p "$VP/image/fedora" && : >"$VP/image/fedora/45.env"
+    printf '# READER PATH REASON\n' >"$VP/.github/scripts/vm-paths-allowed.txt"
+    cat >"$VP/tools/runner/README.md" <<'VP_EOF'
+## What a run does
+
+on a push to `main` that touches `components.lock`, `image/**`, gate.sh,
+`lib.sh`, `helper.sh` and `tools/data.txt`. Each such push queues a run.
+VP_EOF
+    (cd "$VP" && eval "$1" && git init -q && git add -A)
+    "$APEX_ROOT/.github/scripts/vm-paths-check.sh" "$VP" >"$VP.out" 2>"$VP.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "vm paths: a fixture whose paths cover every read" 0 "$(vp :)"
+check_true "and lists what it reached, and from where" grep -qF "reached tools/data.txt (from .github/workflows/vm.yml paths)" "$VP.out"
+check "vm paths: an executed script no path covers" 1 "$(vp "sed -i '/helper.sh$/d' .github/workflows/vm.yml")"
+check_true "names the reader's line" grep -qF \
+    "error: .github/scripts/gate.sh:4: reads .github/scripts/helper.sh, which no .github/workflows/vm.yml path covers" "$VP.err"
+check "vm paths: a sourced file no path covers" 1 "$(vp "sed -i '/lib.sh$/d' .github/workflows/vm.yml")"
+check_true "names it" grep -qF "error: .github/scripts/gate.sh:2: reads .github/scripts/lib.sh" "$VP.err"
+check "vm paths: a data file no path covers" 1 "$(vp "sed -i '/data.txt$/d' .github/workflows/vm.yml")"
+check_true "names it" grep -qF "error: .github/scripts/gate.sh:3: reads tools/data.txt" "$VP.err"
+check "vm paths: a read two scripts down" 1 \
+    "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh")"
+check_true "names the second script" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env" "$VP.err"
+check "vm paths: a script vm.yml runs that no path covers" 1 \
+    "$(vp "printf '          .github/scripts/daily.sh\n' >>.github/workflows/vm.yml; : >.github/scripts/daily.sh")"
+check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:15: reads .github/scripts/daily.sh" "$VP.err"
+check "vm paths: a dynamic path outside every path" 1 \
+    "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.env\"\n' >>.github/scripts/helper.sh")"
+check_true "is unresolvable" grep -qF \
+    "error: .github/scripts/helper.sh:3: unresolvable path 'tools/conf/\$NAME.env': its static part tools/conf is not under a" "$VP.err"
+printf -v VP_ALLOW '%s\n' '.github/scripts/helper.sh tools/conf/a.env  read for the log only'
+check "vm paths: an allowed uncovered read" 0 \
+    "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh; printf '%s' '$VP_ALLOW' >>.github/scripts/vm-paths-allowed.txt")"
+check "vm paths: an allow line no read needs" 1 "$(vp "printf '%s' '$VP_ALLOW' >>.github/scripts/vm-paths-allowed.txt")"
+check_true "names the stale line" grep -qF \
+    "vm-paths-allowed.txt:2: .github/scripts/helper.sh tools/conf/a.env is no longer an uncovered read" "$VP.err"
+check "vm paths: an allow line without a reason" 1 \
+    "$(vp "printf '.github/scripts/helper.sh tools/conf/a.env\n' >>.github/scripts/vm-paths-allowed.txt")"
+check_true "names it" grep -qF "vm-paths-allowed.txt:2: want READER PATH REASON" "$VP.err"
+check "vm paths: a README that leaves a path out" 1 "$(vp "sed -i 's/ and \`tools\/data.txt\`//' tools/runner/README.md")"
+check_true "names the path" grep -qF "error: tools/runner/README.md: \"What a run does\" does not name tools/data.txt" "$VP.err"
+check "vm paths: a README naming what vm.yml does not list" 1 "$(vp "sed -i 's/gate.sh,/gate.sh, \`tools\/extra.sh\`,/' tools/runner/README.md")"
+check_true "names it" grep -qF "error: tools/runner/README.md: \"What a run does\" names tools/extra.sh, which no" "$VP.err"
+check "vm paths: a vm.yml without push paths" 1 "$(vp "sed -i '/paths:/,/image/d' .github/workflows/vm.yml")"
+
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
     local ga_reached=$1 allowlist=$2

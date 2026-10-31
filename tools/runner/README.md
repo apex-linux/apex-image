@@ -308,7 +308,8 @@ Owner steps that a change on `main` needs on the host, newest first.
 what the build or its gates read: `components.lock`, `Cargo.lock`, `Cargo.toml` (both
 feed the lane's tool id and every family's content key), `image/**` (its READMEs ship in
 the image, so they count), `crates/apex-lane/**`, `tools/components.sh`, qualify.sh,
-`qualify-allowed-failures.txt`, `image.sh` and `lib.sh` in `.github/scripts/`, and
+`qualify-allowed-failures.txt`, `image.sh`, `oci-artifact.sh` (image.sh pulls the RPMs with it),
+`ci-host.sh` (qualify.sh checks KVM and podman with it) and `lib.sh` in `.github/scripts/`, and
 `build-image.sh`, `lane.sh`, `snapshot.sh`, `metrics.sh` and `lane-absorb-report.sh` in
 `tools/builder-vm/`. Each such push queues a run of about two hours on the laptop. A push
 that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
