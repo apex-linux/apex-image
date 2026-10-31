@@ -179,19 +179,18 @@ copies=(
     "$APEX_GNOME_SRC/tests/layer/fixtures/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA"
     "$APEX_GNOME_SRC/tests/layer/fixtures/apex-shell-safe.service"
     "$APEX_DESKTOP_SRC/desktop/systemd/user/apex-shell-safe.service"
+    "$APEX_SYSTEM_SRC/crates/apex-session-agent/tests/data/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA"
 )
-if [[ -d $APEX_SYSTEM_SRC/crates/apex-session-agent ]]; then
-    copies+=("$APEX_SYSTEM_SRC/crates/apex-session-agent/tests/data/$SCHEMA" "$APEX_DESKTOP_SRC/desktop/schemas/$SCHEMA")
-fi
 # Settings' Software Updates page generates its D-Bus code from a copy of Update1's XML.
 readonly UPDATE1=io.github.apex_linux.Apex.Update1.xml
-if [[ -e $APEX_GNOME_SRC/desktop/control-center/panels/apex/$UPDATE1 ]]; then
-    copies+=("$APEX_GNOME_SRC/desktop/control-center/panels/apex/$UPDATE1" "$APEX_SYSTEM_SRC/crates/apex-dbus/data/$UPDATE1")
-fi
+copies+=("$APEX_GNOME_SRC/desktop/control-center/panels/apex/$UPDATE1" "$APEX_SYSTEM_SRC/crates/apex-dbus/data/$UPDATE1")
 stale=0
 for ((i = 0; i < ${#copies[@]}; i += 2)); do
     if [[ ! -f ${copies[i + 1]} ]]; then
         printf 'error: %s is missing\n' "${copies[i + 1]}" >&2
+        stale=1
+    elif [[ ! -f ${copies[i]} ]]; then
+        printf 'error: %s is missing: copy it from the pinned original %s\n' "${copies[i]}" "${copies[i + 1]}" >&2
         stale=1
     elif ! cmp -s -- "${copies[i]}" "${copies[i + 1]}"; then
         printf 'error: %s is missing or differs from %s: copy it from the pinned original\n' \
