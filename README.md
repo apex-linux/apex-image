@@ -17,7 +17,7 @@ from its components, gates it, and holds the builder VM and the pipeline that bu
 
 | Component | Gives the image |
 |---|---|
-| [apex-system](https://github.com/apex-linux/apex-system) | the `apex` RPM (`apexctl`, `apex-updated`, `apex-boot-assess`) and the machine profile's rendered files |
+| [apex-system](https://github.com/apex-linux/apex-system) | the `apex` RPM (`apexctl`, `apex-updated`, `apex-boot-assess`, and `apex-session-agent` with its user unit and `80-apex.preset`) and the machine profile's rendered files |
 | [apex-desktop](https://github.com/apex-linux/apex-desktop) | the `apex-desktop` RPM: the Apex GSettings schema, the crash guard and the desktop data |
 | [apex-gnome](https://github.com/apex-linux/apex-gnome) | the gnome-shell recipe with the Apex layer, and G2, the headless shell |
 | [apex-kernel](https://github.com/apex-linux/apex-kernel) | the patched libfprint and the kernel lane's recipe |
