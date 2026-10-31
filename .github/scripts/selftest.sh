@@ -2288,7 +2288,7 @@ suspend_read_fails() { # FLAG DETAIL: with FLAG set, matrix_suspend alone fails 
     apex_locked_in
     : >"$GUEST_DIR/state/$1"
     check "suspend: $1 fails the row" 1 "$(suspend_only)"
-    check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2" "$GUEST_DIR/out/results.md"
+    check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2 (the screen at the failure" "$GUEST_DIR/out/results.md"
 }
 suspend_read_fails boot-id-unreadable "cannot read the guest's boot_id"
 suspend_read_fails woken-boot-unreadable "cannot read the guest's boot_id after the wake"
