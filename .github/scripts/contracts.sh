@@ -179,8 +179,8 @@ done
 ((stale == 0)) || die "contracts: see above"
 log "contracts: every copy of a component's file equals the pinned original"
 
-# G2 sets 90_apex's weekday and input-source keys from its own copies, so its shells match the
-# image's, and Super+Space stays Spotlight's there too.
+# G2 sets 90_apex's weekday, input-source, font and icon keys from its own copies, so its shells
+# match the image's, Super+Space stays Spotlight's there too, and its fonts and icons are the image's.
 readonly G2_PARTS=tests/shots/parts.sh G2_SCRIPTS=(tests/shots/patched.sh tests/shots/smoke.sh)
 python3 - "$APEX_DESKTOP_SRC/$FAVORITES" "$APEX_GNOME_SRC" "$G2_PARTS" "${G2_SCRIPTS[@]}" <<'EOF' ||
 import re
@@ -189,7 +189,15 @@ import sys
 
 override, gnome, parts, *scripts = sys.argv[1:]
 KEYBINDINGS, INTERFACE = "org.gnome.desktop.wm.keybindings", "org.gnome.desktop.interface"
-COPIED = {"INPUT_SOURCE_KEYS": "switch-input-source", "INPUT_SOURCE_BACKWARD_KEYS": "switch-input-source-backward"}
+COPIED = {
+    "INPUT_SOURCE_KEYS": (KEYBINDINGS, "switch-input-source"),
+    "INPUT_SOURCE_BACKWARD_KEYS": (KEYBINDINGS, "switch-input-source-backward"),
+    "SESSION_FONT_NAME": (INTERFACE, "font-name"),
+    "SESSION_DOCUMENT_FONT_NAME": (INTERFACE, "document-font-name"),
+    "SESSION_MONOSPACE_FONT_NAME": (INTERFACE, "monospace-font-name"),
+    "SESSION_FONT_HINTING": (INTERFACE, "font-hinting"),
+    "SESSION_ICON_THEME": (INTERFACE, "icon-theme"),
+}
 try:
     override_lines = open(override, encoding="utf-8").read().splitlines()
     parts_lines = open(f"{gnome}/{parts}", encoding="utf-8").read().splitlines()
@@ -212,10 +220,11 @@ for line in parts_lines:
         continue
     if len(words) == 2 and words[0] == "readonly" and words[1].split("=", 1)[0] in COPIED:
         name, value = words[1].split("=", 1)
-        copies.append((f"{parts} {name}", KEYBINDINGS, COPIED[name], value))
+        copies.append((f"{parts} {name}", *COPIED[name], value))
 problems = []
-if sorted(c[2] for c in copies) != sorted(COPIED.values()):
-    problems.append(f"{gnome}/{parts} does not copy each input-source key once")
+names = [where.split()[-1] for where, *_ in copies]
+if off := [name for name in COPIED if names.count(name) != 1]:
+    problems.append(f"{gnome}/{parts} does not copy {', '.join(off)} exactly once")
 for script, text in texts.items():
     weekdays = re.findall(r"clock-show-weekday=(\w+)", text)
     if not weekdays:
@@ -231,7 +240,7 @@ for p in problems:
 sys.exit(1 if problems else 0)
 EOF
     die "contracts: $gnome's G2 settings: see above"
-log "contracts: G2's shells set $desktop's weekday and input-source keys as the image does"
+log "contracts: G2's shells set $desktop's weekday, input-source, font and icon keys as the image does"
 
 qemu_parity "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/tools/builder-vm/desktop-vm.sh" ||
     die "contracts: G4's VM and the desktop VM must run the same guest"
