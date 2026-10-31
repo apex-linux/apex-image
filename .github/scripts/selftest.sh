@@ -4205,11 +4205,21 @@ check "oci pull: a FIFO among the RPMs is refused, and named" "refused|1" \
 check "oci pull: a device node among the RPMs is refused" refused \
     "$(op_refused "file:rpms/a.rpm=A|chr:rpms/null.rpm|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
 ")"
+if ((EUID == 0)); then
+    check_true "and named" grep -qF 'neither files nor directories: null.rpm (c)' "$OP/out"
+else
+    check_true "by tar, which cannot make it unprivileged" grep -q 'Cannot mknod' "$OP/out"
+    echo "note: unprivileged, so pull's own device check is not exercised (tar refuses the node first)"
+fi
 check "and DEST stays empty" "" "$(ls "$OP/dest" 2>/dev/null)"
 check "oci pull: an rpms directory that is a link out of the layer is refused" refused \
     "$(op_refused "link:rpms=@OUT;file:rpms/a.rpm=A|file:rpms/SHA256SUMS=$(op_sum a.rpm A)
 ")"
 check "and nothing is written through it" "" "$(ls "$OP/outside")"
+# tar writes a link inside the layer, and find does not descend through its starting link.
+check "oci pull: an rpms directory that is a link inside the layer is refused" refused \
+    "$(op_refused "link:rpms=real|link:real/evil.rpm=$TMP/oci-pull-secret|file:real/SHA256SUMS=$(op_sum evil.rpm secret)")"
+check_true "and says it has no /rpms directory" grep -qF 'has no /rpms directory' "$OP/out"
 check "oci pull: a ../ member writes nothing outside the layer" "" \
     "$(op_pull "file:../oci-pull-escape.rpm=X|$OP_SUMS" >/dev/null; [[ ! -e $TMP/oci-pull-escape.rpm ]] || echo written)"
 check "oci pull: an absolute member writes nothing outside the layer" "" \
