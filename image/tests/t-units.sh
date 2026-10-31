@@ -60,11 +60,12 @@ logged_decision() {
     sed -n 's/^.* => //p' "$SNAPSHOT" | sed "s/\\bT\\b/$DIGEST/g; s/\\bP\\b/$DIGEST/g" | grep -m 1 "^$1" | sed 's/^/ INFO decision: /'
 }
 GREEN_DECISION=$(logged_decision 'green (report green sha256:')
+GREEN_PLAIN_DECISION=$(logged_decision 'green (report green)')
 RED_DECISION=$(logged_decision 'red-armed-session (report red sha256:')
-if [ -n "$GREEN_DECISION" ] && [ -n "$RED_DECISION" ]; then
-    ok "apex-boot's decision table logs a green and a red decision"
+if [ -n "$GREEN_DECISION" ] && [ -n "$GREEN_PLAIN_DECISION" ] && [ -n "$RED_DECISION" ]; then
+    ok "apex-boot's decision table logs a green decision with and without a digest, and a red one"
 else
-    not_ok "apex-boot's decision table logs a green and a red decision ($SNAPSHOT)"
+    not_ok "apex-boot's decision table logs a green decision with and without a digest, and a red one ($SNAPSHOT)"
 fi
 
 FAKE_METERED='' FAKE_GETENT_FAIL='' FAKE_INSTALL_FAIL=''
@@ -163,6 +164,10 @@ no_uninstall "but keeps the stale ones"
 expect_out "and says why" 'has not judged this boot green: stale GL.nvidia extensions stay'
 FAKE_ASSESS=$GREEN
 
+FAKE_DECISION=$GREEN_PLAIN_DECISION
+gl_step
+expect_file "a green decision with no digest removes the stale ones too" \
+    "^uninstall --system --noninteractive $GL\\.nvidia-615-71-09\$" "$T/flatpak.log"
 FAKE_DECISION=$RED_DECISION
 gl_step
 no_uninstall "a red decision keeps the stale ones"

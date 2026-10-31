@@ -790,8 +790,8 @@ stage_candidate() {
     result "$test" PASS "staged $digest download-only under the strict policy"
 }
 
-# Apply arms unless nothing is booted, nothing is staged, or the stage is the booted image
-# (arming_precondition). A booted image health-failure.json names only pins its rollback first.
+# Past validate_apply's gates, Apply arms unless nothing is booted, nothing is staged, or the
+# stage is booted. A booted image unconfirmed or named by health-failure.json is pinned first.
 apply_candidate() {
     local test=$1 digest=$2 fixture=$3
     vm_ssh "apexctl update apply --digest $digest" || fail "$test" "apexctl update apply failed"
