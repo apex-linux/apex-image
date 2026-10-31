@@ -1545,19 +1545,23 @@ s2idle_wakes() {
     else
         echo '  1:          9          0  IO-APIC   1-edge      i8042' >"$STATE/wakeup-irq"
     fi
-    # The VM's s2idle: the clock runs on and the kernel's lines are the real time apart. With
-    # frozen-clock the laptop's: the offset grows by that time and the lines are 0 s apart.
-    local start end
+    # Printk's clock carries the real time from freeze to wake; journald, frozen too, stamps both
+    # lines at the wake. With frozen-clock (the laptop's) the offset also grows by that time.
+    local start end now
     start=$(from frozen-at)
-    end=$(date +%s.%N)
+    now=$(date +%s.%N)
+    end=$now
     [[ ! -e $STATE/short-sleep ]] || end=$start
     [[ ! -e $STATE/sleeps-0.96 ]] || end=$(awk -v s="$start" 'BEGIN { printf "%.6f", s + 0.96 }')
     if [[ -e $STATE/frozen-clock ]]; then
         awk -v n="$(from sleep-offset)" -v s="$start" -v e="$end" 'BEGIN { printf "%.3f\n", n + e - s }' >"$STATE/sleep-offset.new"
         mv "$STATE/sleep-offset.new" "$STATE/sleep-offset"
-        end=$start
     fi
-    [[ -e $STATE/no-pm-lines ]] || printf '[%s] guest kernel: PM: resume from suspend-to-idle\n' "$end" >>"$STATE/kernel"
+    if [[ ! -e $STATE/no-pm-lines ]]; then
+        printf '[%s] guest kernel: %s\n' "$now" 'PM: suspend-to-idle' "$now" 'PM: resume from suspend-to-idle' >>"$STATE/kernel"
+        jq -cn --arg t "$start" '{MESSAGE: "PM: suspend-to-idle", _SOURCE_MONOTONIC_TIMESTAMP: ($t | tonumber * 1e6 | floor | tostring)}' >>"$STATE/kmsg"
+        jq -cn --arg t "$end" '{MESSAGE: "PM: resume from suspend-to-idle", _SOURCE_MONOTONIC_TIMESTAMP: ($t | tonumber * 1e6 | floor | tostring)}' >>"$STATE/kmsg"
+    fi
     rm -f "$STATE/frozen"
 }
 qmp() {
@@ -1685,6 +1689,7 @@ vm_ssh() {
         "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
         "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
+        "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
         "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
@@ -1704,7 +1709,6 @@ vm_ssh() {
                 echo 'PM: suspend entry (s2idle)' >>"$VM_SERIAL"
                 : >"$STATE/frozen"
                 date +%s.%N >"$STATE/frozen-at"
-                [[ -e $STATE/no-pm-lines ]] || printf '[%s] guest kernel: PM: suspend-to-idle\n' "$(from frozen-at)" >>"$STATE/kernel"
             else
                 : >"$STATE/suspended"
             fi ;;
@@ -2135,15 +2139,23 @@ apex_locked_in
 check "suspend: the matrix passes on a resume that finished, woke the network and pressed no key" 0 \
     "$(guest lock_matrix local 1000)"
 check_true "in s2idle, woken by the keyboard after the hold, and slept through it on the VM's running clock" grep -qE \
-    '^\| local-lock-suspend \| PASS \| s2idle held 1s and the wake key while locked; suspend_stats success \+1, woken by IRQ 1 \(i8042\), slept [3-9]\.[0-9]{3}s \(suspend-to-idle lines [3-9]\.[0-9]{3}s apart, frozen clock \+0\.000s\);' \
+    '^\| local-lock-suspend \| PASS \| s2idle held 1s and the wake key while locked; suspend_stats success \+1, woken by IRQ 1 \(i8042\), slept [3-9]\.[0-9]{3}s by the kernel'"'"'s clock \(frozen timekeeping \+0\.000s\);' \
     "$GUEST_DIR/out/results.md"
 check "no other key or pointer move from the wake key to the resumed screen" 1 \
     "$(sed -n '/"data":"wake"/,/local-lock-suspend-resumed.png/p' "$GUEST_DIR/state/qmp" | grep -cE 'send-key|input-send-event')"
 apex_locked_in
 : >"$GUEST_DIR/state/frozen-clock"
 check "suspend: the laptop's frozen timekeeping passes too" 0 "$(guest lock_matrix local 1000)"
-check_true "counted by the clock offset, the kernel's lines 0 s apart" grep -qE \
-    '\| local-lock-suspend \| PASS \| .*slept [3-9]\.[0-9]{3}s \(suspend-to-idle lines 0\.000s apart, frozen clock \+[3-9]\.[0-9]{3}s\);' \
+check_true "counted once, by the kernel's clock, though the offset grew by as much" grep -qE \
+    '\| local-lock-suspend \| PASS \| .*slept [3-5]\.[0-9]{3}s by the kernel'"'"'s clock \(frozen timekeeping \+[3-5]\.[0-9]{3}s\);' \
+    "$GUEST_DIR/out/results.md"
+check_true "whose lines journald stamped together at the wake" \
+    test "$(grep -c 'suspend-to-idle$' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt"):$(grep 'suspend-to-idle$' "$GUEST_DIR/out/logs/local-lock-suspend.kernel.txt" | cut -d']' -f1 | sort -u | wc -l)" = 2:1
+apex_locked_in
+: >"$GUEST_DIR/state/frozen-clock"
+: >"$GUEST_DIR/state/sleeps-0.96"
+check "suspend: a frozen clock adds nothing on top of the kernel's: 0.96 s of a 1 s hold fails" 1 "$(guest lock_matrix local 1000)"
+check_true "saying so" grep -qF "| local-lock-suspend | FAIL | the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.960s) of a 1s hold" \
     "$GUEST_DIR/out/results.md"
 apex_locked_in
 check "suspend: a 3 s hold passes" 0 "$(HOLD=3 guest lock_matrix local 1000)"
@@ -2190,9 +2202,9 @@ suspend_fails reboots-on-wake 'the guest rebooted instead of resuming (boot boot
 suspend_fails no-success 'suspend_stats/success went from 0 to 0, not up by one'
 suspend_fails mouse-wakes 'the wake IRQ is not the i8042 keyboard'"'"'s (pm_wakeup_irq:  12: 0 0 IO-APIC 12-edge i8042)'
 suspend_fails two-suspends 'suspend_stats/success went from 0 to 2, not up by one'
-suspend_fails short-sleep 'the guest slept 0.000s (suspend-to-idle lines 0.000s apart, frozen clock +0.000s) of a 1s hold'
-suspend_fails sleeps-0.96 'the guest slept 0.960s (suspend-to-idle lines 0.960s apart, frozen clock +0.000s) of a 1s hold'
-suspend_fails no-pm-lines "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel log since the row began"
+suspend_fails short-sleep "the guest slept 0.000s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
+suspend_fails sleeps-0.96 "the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
+suspend_fails no-pm-lines "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
 apex_locked_in
 : >"$GUEST_DIR/state/resuspends"
 rm -f "$GUEST_DIR/state/woken"

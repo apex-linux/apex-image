@@ -1594,13 +1594,14 @@ readonly SLEEP_OFFSET='awk '\''FNR == NR { b = $1; next } /^now at/ { printf "%.
 # shellcheck disable=SC2016 # expanded by the guest's shell
 readonly WAKEUP_IRQ_LINE='irq=$(cat /sys/power/pm_wakeup_irq) && grep -E "^ *$irq:" /proc/interrupts'
 
-# CLOCK_MONOTONIC from the kernel's 'PM: suspend-to-idle' to its 'PM: resume from suspend-to-idle'
-# (pm_debug_messages) in a journalctl -k -o short-monotonic log: the time s2idle ran.
+# Printk's clock (_SOURCE_MONOTONIC_TIMESTAMP, µs) from 'PM: suspend-to-idle' to its resume line, in
+# journalctl -o json: journald, frozen in between, stamps both at the thaw.
 s2idle_gap() {
-    awk '{ t = $0; sub(/^\[ */, "", t); sub(/\].*/, "", t) }
-        / PM: suspend-to-idle$/ { start = t; next }
-        / PM: resume from suspend-to-idle$/ && start != "" { printf "%.6f\n", t - start; found = 1; exit }
-        END { exit !found }' "$1"
+    jq -r 'select(.MESSAGE == "PM: suspend-to-idle" or .MESSAGE == "PM: resume from suspend-to-idle")
+        | "\(._SOURCE_MONOTONIC_TIMESTAMP) \(.MESSAGE)"' "$1" |
+        awk '$3 == "suspend-to-idle" { start = $1; next }
+            $3 == "resume" && start != "" { printf "%.6f\n", ($1 - start) / 1e6; found = 1; exit }
+            END { exit !found }'
 }
 
 # The suspend has failed only in a VM so far: name the host, QEMU, firmware and guest kernel.
@@ -1748,12 +1749,14 @@ matrix_suspend() {
         irq=$(vm_ssh "$WAKEUP_IRQ_LINE" | tr -s ' ') || irq=
         [[ $irq =~ ^\ ?1:.*i8042 ]] || fail "$test" "the wake IRQ is not the i8042 keyboard's (pm_wakeup_irq: ${irq:-none})"
         clock=$(vm_ssh "$SLEEP_OFFSET") || fail "$test" "cannot read the guest's BOOTTIME and MONOTONIC clocks after the wake"
-        gap=$(s2idle_gap "$QUALIFY_OUT/logs/$test.kernel.txt") ||
-            fail "$test" "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel log since the row began"
-        # Timekeeping freezes in s2idle only in an idle state with enter_s2idle (the laptop's C2/C3,
-        # not the VM's C1): BOOTTIME - MONOTONIC counts a frozen sleep, the lines' gap the rest.
-        slept=$(awk -v a="$clock" -v b="$offset" -v g="$gap" 'BEGIN { printf "%.3fs (suspend-to-idle lines %.3fs apart, frozen clock +%.3fs)", a - b + g, g, a - b }')
-        awk -v a="$clock" -v b="$offset" -v g="$gap" -v h="$QUALIFY_SUSPEND_HOLD" 'BEGIN { exit !(a - b + g >= h) }' ||
+        vm_ssh "journalctl -k -b --since @$((since - 1)) -o json --output-fields=MESSAGE,_SOURCE_MONOTONIC_TIMESTAMP --no-pager" \
+            >"$QUALIFY_OUT/logs/$test.kernel.json" || fail "$test" "cannot read the kernel's journal since the row began"
+        gap=$(s2idle_gap "$QUALIFY_OUT/logs/$test.kernel.json") ||
+            fail "$test" "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+        # Printk's clock on x86 runs through a frozen timekeeping too (the laptop's C2/C3), so its gap
+        # alone is the sleep; the BOOTTIME - MONOTONIC change only says whether the clock froze.
+        slept=$(awk -v a="$clock" -v b="$offset" -v g="$gap" 'BEGIN { printf "%.3fs by the kernel'"'"'s clock (frozen timekeeping +%.3fs)", g, a - b }')
+        awk -v g="$gap" -v h="$QUALIFY_SUSPEND_HOLD" 'BEGIN { exit !(g >= h) }' ||
             fail "$test" "the guest slept $slept of a ${QUALIFY_SUSPEND_HOLD}s hold"
         detail="s2idle held ${QUALIFY_SUSPEND_HOLD}s and the wake key while locked; suspend_stats success +1, woken by IRQ 1 (i8042), slept $slept"
     fi
