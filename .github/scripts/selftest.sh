@@ -1355,30 +1355,33 @@ EOF
 # Each cache entry takes 5 GiB of the disk the fake df reports, and du says so.
 cat >"$RC/bin/df" <<'EOF'
 #!/usr/bin/env bash
-n=$(find _build/rpm-cache -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
+n=$(find "$FAKE/cache/fedora-45/entries" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
+# The cache's own disk: any other path is full, so the room must be measured where the entries go.
+[[ ${*: -1} == "$FAKE/cache/"* ]] || n=1000000
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nx 1 1 %s 1%% /\n' "$(($(cat "$FAKE/avail") - n * 5242880))"
 EOF
 cat >"$RC/bin/cp" <<'EOF'
 #!/usr/bin/env bash
 /usr/bin/cp "$@" || exit
-[[ -e $FAKE/cp-corrupt && ${*: -1} == _build/*.tmp/ ]] || exit 0
+[[ -e $FAKE/cp-corrupt && ${*: -1} == *.tmp/ ]] || exit 0
 for f in "${*: -1}"*.rpm; do echo corrupt >>"$f"; done
 EOF
 cat >"$RC/bin/du" <<'EOF'
 #!/usr/bin/env bash
-case $3 in */rpm-cache/*) printf '5242880\t%s\n' "$3" ;; *) exec /usr/bin/du "$@" ;; esac
+case $3 in */cache/fedora-45/entries/*) printf '5242880\t%s\n' "$3" ;; *) exec /usr/bin/du "$@" ;; esac
 EOF
 chmod +x "$RC/bin/"*
 echo $((1000 * 1024 * 1024)) >"$RC/avail"
 D1=sha256:$(printf 'a%.0s' {1..64})
 D2=sha256:$(printf 'b%.0s' {1..64})
 KFP=libfprint-1.94.10-1.fc45-s0123456789ab
+RCE=$RC/cache/fedora-45/entries
 bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints its exit
     local rc=0
     rm -f "$RC/steps.log" "$RC/rpmkeys.log" "$BI/steps.log"
     # shellcheck disable=SC2016 # expanded by the inner bash
     (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
-        APEX_KERNEL_SRC=/pinned/kernel bash -c '
+        APEX_KERNEL_SRC=/pinned/kernel APEX_RPM_CACHE=$RC/cache APEX_COMPONENTS=${RC_COMPONENTS:-pinned} bash -c '
         . "$1"
         sudo() {
             [[ $1 == podman ]] || return 0
@@ -1407,7 +1410,7 @@ bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints 
                 printf "# key=%s tests=%s\n" "$k" "$(cat "$FAKE/fp-tests" 2>/dev/null || echo passed)" >"$d/manifest.txt"
                 return "$(cat "$FAKE/libfprint-rc" 2>/dev/null || echo 0)"
             fi
-            echo "signed $name" >"$d/$name.rpm"
+            printf "signed %s\nnvr apex-%s 0:1-1.x86_64\n" "$name" "$name" >"$d/$name.rpm"
             if [[ ${*: -1} == /build/* ]]; then echo unkeyed >"$d/KEY"; else printf "%s\n" "${*: -1}" >"$d/KEY"; fi
         }
         eval "$2"
@@ -1415,17 +1418,23 @@ bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints 
     printf '%s' "$rc"
 }
 rc_builds() { grep -v ' key$' "$RC/steps.log" 2>/dev/null | grep -o '/pinned/[a-z]*:/component' | sed 's|/pinned/||; s|:/component||' | paste -sd' '; }
-rc_cached() { (cd "$BIW/_build/rpm-cache" 2>/dev/null && find . -type f | sed 's|/[0-9a-f]\{32\}/|/E/|' | sort | uniq -c | paste -sd' '); }
-rc_keys() { (cd "$BIW/_build/rpm-cache/$1" && cat -- */KEY | sort | paste -sd' '); }
+rc_cached() { (cd "$RCE" 2>/dev/null && find . -type f | sed 's|/[0-9a-f]\{32\}/|/E/|' | sort | uniq -c | paste -sd' '); }
+rc_keys() { (cd "$RCE/$1" && cat -- */KEY | sort | paste -sd' '); }
 rc_said() { if grep -qF -- "$1" "$RC/out"; then echo yes; else echo no; fi; }
 rc_entry() { # NAME KEY: the entry this build would use for the component's key
     # shellcheck disable=SC2016 # expanded by the inner bash
-    (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC bash -c '. "$1"; sudo() { cat "$FAKE/digest"; }
+    (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC APEX_RPM_CACHE=$RC/cache bash -c '. "$1"; sudo() { cat "$FAKE/digest"; }
         [[ $2 != libfprint ]] || libfprint_env
-        cache_entry "$2" "$3" >/dev/null && echo "$PWD/$CACHE_ENTRY"' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$1" "$2")
+        cache_entry "$2" "$3" >/dev/null && echo "$CACHE_ENTRY"' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$1" "$2")
+}
+rc_index() { printf '%s\n' "$RC/cache/fedora-45/index/${1#"$RCE"/}"; }
+rc_reindex() { # ENTRY: its index rewritten from the entry as it now is, so a row reaches the check after it
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC APEX_RPM_CACHE=$RC/cache bash -c '. "$1"; write_index "$2" "$(date +%s)"' \
+        _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$1")
 }
 rc_contents() { local sums; sums=$(cd "$1" && find . -mindepth 1 -maxdepth 1 ! -name CONTENTS -printf '%f\n' | sort | xargs sha256sum --) && printf '%s\n' "$sums" >"$1/CONTENTS"; }
-rm -rf "$BIW/_build"
+rm -rf "$BIW/_build" "$RC/cache"
 printf '%s\n' ksys >"$RC/keys/system"
 printf '%s\n' kdesk >"$RC/keys/desktop"
 printf '%s\n' "$KFP" >"$RC/keys/kernel"
@@ -1435,10 +1444,15 @@ check "libfprint's key is taken once, with this image's GA_REACHED" 1 \
     "$(grep -c -- "-e GA_REACHED=$(ga_reached) .* .github/scripts/libfprint.sh key$" "$RC/steps.log")"
 check_true "and apex-system's build is held to the key it resolved" grep -q '.github/scripts/rpms.sh build /build/rpms/apex ksys$' "$RC/steps.log"
 check "and stores each component's signed RPMs, sums, key files and inputs, one entry each" \
-    "$(printf '%s\n' ./apex-desktop/E/{CONTENTS,CREATED,KEY,PREIMAGE,SHA256SUMS,desktop.rpm} \
-        ./apex-system/E/{CONTENTS,CREATED,KEY,PREIMAGE,SHA256SUMS,system.rpm} \
-        ./libfprint/E/{CONTENTS,CREATED,PREIMAGE,SHA256SUMS,key.txt,libfprint.rpm,manifest.txt} | sort | uniq -c | paste -sd' ')" \
+    "$(printf '%s\n' ./apex-desktop/E/{CONTENTS,KEY,PREIMAGE,SHA256SUMS,desktop.rpm} \
+        ./apex-system/E/{CONTENTS,KEY,PREIMAGE,SHA256SUMS,system.rpm} \
+        ./libfprint/E/{CONTENTS,PREIMAGE,SHA256SUMS,key.txt,libfprint.rpm,manifest.txt} | sort | uniq -c | paste -sd' ')" \
     "$(rc_cached)"
+check_false "outside _build, which the component containers mount" test -e "$BIW/_build/rpm-cache"
+E=$(rc_entry apex-system ksys)
+check "each entry has an index outside it: its inputs' and lists' digests, each RPM's NEVRA, and when it was stored" \
+    "preimage $(sha256sum <"$E/PREIMAGE" | cut -d' ' -f1)|sums $(sha256sum <"$E/SHA256SUMS" | cut -d' ' -f1)|contents $(sha256sum <"$E/CONTENTS" | cut -d' ' -f1)|rpm system.rpm apex-system 0:1-1.x86_64|created" \
+    "$(sed 's/^created .*/created/' "$(rc_index "$E")" | paste -sd'|')"
 check "an entry names the key, fedora:45's digest, lane.sh's tool, the Apex key and the build's environment" \
     "$(printf 'apex rpm-cache 1\ncomponent apex-system\nkey ksys\nfedora registry.fedoraproject.org/fedora:45@%s\nlane-tool tool1\napex-key %s\nenv ' \
         "$D1" "$(sha256sum <"$BIW/image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" | cut -d' ' -f1)")" \
@@ -1450,7 +1464,7 @@ check "and checks each signature against the committed key in a scratch rpmdb" \
     "import image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" "$(sort -u "$RC/rpmkeys.log")"
 check "and the image takes the cached RPMs, with the key files image.sh reads" \
     "signed system|signed kernel|ksys|$KFP|# key=$KFP tests=passed" \
-    "$(cat "$BIW/_build/rpms/apex/system.rpm")|$(head -n 1 "$BIW/_build/libfprint/libfprint.rpm")|$(cat "$BIW/_build/rpms/apex/KEY")|$(cat "$BIW/_build/libfprint/key.txt")|$(cat "$BIW/_build/libfprint/manifest.txt")"
+    "$(head -n 1 "$BIW/_build/rpms/apex/system.rpm")|$(head -n 1 "$BIW/_build/libfprint/libfprint.rpm")|$(cat "$BIW/_build/rpms/apex/KEY")|$(cat "$BIW/_build/libfprint/key.txt")|$(cat "$BIW/_build/libfprint/manifest.txt")"
 check_true "with their SHA256SUMS" test -s "$BIW/_build/rpms/apex/SHA256SUMS"
 echo kdesk2 >"$RC/keys/desktop"
 check "rpm-cache: a component whose key moved is built again, alone" "0|desktop" "$(bi_cache)|$(rc_builds)"
@@ -1469,61 +1483,68 @@ echo 'apex rpm key' >"$BIW/image/system_files/usr/share/apex/keys/RPM-GPG-KEY-ap
 check "and the entries of the earlier key still serve it" "0|" "$(bi_cache)|$(rc_builds)"
 touch "$RC/cp-corrupt"
 check "rpm-cache: copies that do not match SHA256SUMS are neither used nor stored" "0|system desktop kernel|yes|yes" \
-    "$(bi_cache)|$(rc_builds)|$(rc_said 'cannot copy to _build/rpms/apex; rebuilding')|$(rc_said "cannot write $(rc_entry apex-system ksys | sed "s|^$BIW/||").tmp")"
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'cannot copy to _build/rpms/apex; rebuilding')|$(rc_said "cannot write $(rc_entry apex-system ksys).tmp")"
 rm "$RC/cp-corrupt"
 check "and the entries still serve the next build" "0|" "$(bi_cache)|$(rc_builds)"
 E=$(rc_entry apex-system ksys)
-echo 'signed but edited' >"$E/system.rpm"
+cp "$(rc_entry apex-desktop kdesk2)/desktop.rpm" "$E/system.rpm"
+(cd "$E" && sha256sum -- *.rpm >SHA256SUMS) && rc_contents "$E"
+check "rpm-cache: another component's signed RPM in an entry, its sums and CONTENTS made to match, is built again" "0|system|yes" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'does not match its index; rebuilding')"
+rm "$(rc_index "$E")"
+check "rpm-cache: an entry without its index is built again" "0|system|yes" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'does not match its index; rebuilding')"
+printf 'signed but edited\nnvr apex-system 0:1-1.x86_64\n' >"$E/system.rpm" && rc_reindex "$E"
 check "rpm-cache: an RPM that no longer matches CONTENTS is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'does not match its CONTENTS; rebuilding')"
-echo stray >"$E/stray"
+echo stray >"$E/stray" && rc_reindex "$E"
 check "rpm-cache: a file that CONTENTS does not list is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'does not match its CONTENTS; rebuilding')"
-(cd "$E" && echo 'no signature' >system.rpm && sha256sum -- *.rpm >SHA256SUMS) && rc_contents "$E"
+(cd "$E" && printf 'no signature\nnvr apex-system 0:1-1.x86_64\n' >system.rpm && sha256sum -- *.rpm >SHA256SUMS) && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: an RPM the Apex key did not sign is built again, though its sums match" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'is not signed by image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex')"
-echo signed >"$E/extra.rpm" && rc_contents "$E"
+echo signed >"$E/extra.rpm" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: an RPM that SHA256SUMS does not list is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'does not match its SHA256SUMS; rebuilding')"
-sed -i 's/^key ksys$/key kother/' "$E/PREIMAGE" && rc_contents "$E"
+sed -i 's/^key ksys$/key kother/' "$E/PREIMAGE" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: an entry whose PREIMAGE is not this build's inputs is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'its inputs differ; rebuilding')"
-echo $(($(date +%s) - 8 * 24 * 3600)) >"$E/CREATED" && rc_contents "$E"
+sed -i "s/^created .*/created $(($(date +%s) - 8 * 24 * 3600))/" "$(rc_index "$E")"
 check "rpm-cache: an entry older than 7 days is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'older than 7 days')"
-echo kother >"$E/KEY" && rc_contents "$E"
+echo kother >"$E/KEY" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: an entry whose KEY is not the key is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'KEY is not ksys')"
 E=$(rc_entry libfprint "$KFP")
-echo libfprint-1.94.10-1.fc45-s999999999999 >"$E/key.txt" && rc_contents "$E"
+echo libfprint-1.94.10-1.fc45-s999999999999 >"$E/key.txt" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: libfprint whose key.txt is not its key is built again" "0|kernel|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said "key.txt libfprint-1.94.10-1.fc45-s999999999999 is not $KFP")"
-sed -i 's/tests=passed/tests=skipped/' "$E/manifest.txt" && rc_contents "$E"
+sed -i 's/tests=passed/tests=skipped/' "$E/manifest.txt" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: libfprint whose tests did not pass is built again" "0|kernel|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said "libfprint's tests did not pass")"
-n=$(find "$BIW/_build/rpm-cache/libfprint" -mindepth 1 -maxdepth 1 | wc -l)
+n=$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)
 echo libfprint-1.94.10-1.fc45-s111111111111 >"$RC/keys/kernel"
 echo libfprint-1.94.10-1.fc45-s222222222222 >"$RC/keys/kernel.built"
 check "rpm-cache: libfprint built from another key than it gave is used, and not stored" "0|kernel|$n|yes" \
-    "$(bi_cache)|$(rc_builds)|$(find "$BIW/_build/rpm-cache/libfprint" -mindepth 1 -maxdepth 1 | wc -l)|$(rc_said 'key.txt libfprint-1.94.10-1.fc45-s222222222222 is not libfprint-1.94.10-1.fc45-s111111111111')"
+    "$(bi_cache)|$(rc_builds)|$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)|$(rc_said 'key.txt libfprint-1.94.10-1.fc45-s222222222222 is not libfprint-1.94.10-1.fc45-s111111111111')"
 rm "$RC/keys/kernel.built"
 echo 1.94.9-1.fc45 >"$RC/fp-vr"
 check "rpm-cache: libfprint whose RPM is not its key's version-release is used, and not stored" "0|kernel|$n|yes" \
-    "$(bi_cache)|$(rc_builds)|$(find "$BIW/_build/rpm-cache/libfprint" -mindepth 1 -maxdepth 1 | wc -l)|$(rc_said 'libfprint 1.94.9-1.fc45.apex1 is not 1.94.10-1.fc45.apexN')"
+    "$(bi_cache)|$(rc_builds)|$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)|$(rc_said 'libfprint 1.94.9-1.fc45.apex1 is not 1.94.10-1.fc45.apexN')"
 rm "$RC/fp-vr"
 echo skipped >"$RC/fp-tests"
 check "rpm-cache: libfprint whose tests were skipped is used, and not stored" "0|kernel|$n|yes" \
-    "$(bi_cache)|$(rc_builds)|$(find "$BIW/_build/rpm-cache/libfprint" -mindepth 1 -maxdepth 1 | wc -l)|$(rc_said "libfprint's tests did not pass")"
+    "$(bi_cache)|$(rc_builds)|$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)|$(rc_said "libfprint's tests did not pass")"
 rm "$RC/fp-tests"
 echo 3 >"$RC/libfprint-rc"
 check "rpm-cache: a degraded libfprint (exit 3) is never stored" "0|kernel|$n" \
-    "$(bi_cache)|$(rc_builds)|$(find "$BIW/_build/rpm-cache/libfprint" -mindepth 1 -maxdepth 1 | wc -l)"
+    "$(bi_cache)|$(rc_builds)|$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)"
 rm "$RC/libfprint-rc"
 echo "$KFP" >"$RC/keys/kernel"
 echo kdesk-moved >"$RC/keys/desktop"
 echo "$D2" >"$RC/digest.next"
 check "rpm-cache: a build during which fedora:45 moved is used, and not stored" "0|desktop|yes|no" \
-    "$(bi_cache)|$(rc_builds)|$(rc_said 'registry.fedoraproject.org/fedora:45 moved during the build')|$(grep -qx kdesk-moved "$BIW"/_build/rpm-cache/apex-desktop/*/KEY && echo yes || echo no)"
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'registry.fedoraproject.org/fedora:45 moved during the build')|$(grep -qx kdesk-moved "$RCE"/apex-desktop/*/KEY && echo yes || echo no)"
 echo "$D1" >"$RC/digest"
 echo kdesk2 >"$RC/keys/desktop"
 bi_cache >/dev/null
@@ -1536,7 +1557,7 @@ check "rpm-cache: an empty key is no key" "0|system|yes|$before" \
     "$(bi_cache)|$(rc_builds)|$(rc_said "apex-system gives no key ('' is not one)")|$(rc_cached)"
 echo ../x >"$RC/keys/system"
 check "rpm-cache: a key that is not a plain name is no key" "0|system|yes|$before|no x" \
-    "$(bi_cache)|$(rc_builds)|$(rc_said "apex-system gives no key ('../x' is not one)")|$(rc_cached)|$([[ -e $BIW/_build/rpm-cache/x ]] && echo x || echo 'no x')"
+    "$(bi_cache)|$(rc_builds)|$(rc_said "apex-system gives no key ('../x' is not one)")|$(rc_cached)|$([[ -e $RCE/x ]] && echo x || echo 'no x')"
 echo ksys >"$RC/keys/system"
 rm "$RC/digest"
 check "rpm-cache: with fedora:45's digest unknown, every component builds and nothing is stored" "0|system desktop kernel|yes|$before" \
@@ -1548,6 +1569,7 @@ for k in kdesk3 kdesk4 kdesk5; do
     bi_cache >/dev/null
 done
 check "rpm-cache: each component keeps its 3 newest entries" "kdesk3 kdesk4 kdesk5" "$(rc_keys apex-desktop)"
+check "and a dropped entry's index goes with it" 3 "$(find "$RC/cache/fedora-45/index/apex-desktop" -type f | wc -l)"
 echo stray >"$(rc_entry apex-desktop kdesk5)/stray"
 check "and the entry a build replaces is not one of the others" "0|desktop|kdesk3 kdesk4 kdesk5" "$(bi_cache)|$(rc_builds)|$(rc_keys apex-desktop)"
 echo kdesk3 >"$RC/keys/desktop"
@@ -1556,10 +1578,10 @@ check "rpm-cache: a reused entry counts as new" "0|" "$(bi_cache)|$(rc_builds)"
 echo kdesk6 >"$RC/keys/desktop"
 sleep 0.02
 check "and outlives older ones it was stored before" "0|desktop|kdesk3 kdesk5 kdesk6" "$(bi_cache)|$(rc_builds)|$(rc_keys apex-desktop)"
-n=$(find "$BIW/_build/rpm-cache" -mindepth 2 -maxdepth 2 -type d | wc -l)
+n=$(find "$RCE" -mindepth 2 -maxdepth 2 -type d | wc -l)
 echo $(((30 + (n - 1) * 5) * 1024 * 1024)) >"$RC/avail"
 echo kdesk7 >"$RC/keys/desktop"
-oldest=$(find "$BIW/_build/rpm-cache" -mindepth 2 -maxdepth 2 -type d ! -path '*/apex-desktop/*' ! -path "$(rc_entry apex-system ksys)" \
+oldest=$(find "$RCE" -mindepth 2 -maxdepth 2 -type d ! -path '*/apex-desktop/*' ! -path "$(rc_entry apex-system ksys)" \
     ! -path "$(rc_entry libfprint "$KFP")" -printf '%T@ %p\n' | sort -n | head -n 1 | cut -d' ' -f2-)
 check "rpm-cache: under 30 GiB free after storing, the oldest entry this build does not use goes" "0|desktop|1|gone|kdesk3 kdesk6 kdesk7|0|" \
     "$(bi_cache)|$(rc_builds)|$(grep -c 'under 30 GiB free; dropping' "$RC/out")|$([[ -e $oldest ]] && echo kept || echo gone)|$(rc_keys apex-desktop)|$(bi_cache)|$(rc_builds)"
@@ -1568,13 +1590,19 @@ echo kdesk8 >"$RC/keys/desktop"
 check "rpm-cache: when even every older entry would not leave 30 GiB, none goes and nothing is stored" "0|desktop|0|yes|kdesk6 kdesk7" \
     "$(bi_cache)|$(rc_builds)|$(grep -c 'under 30 GiB free; dropping' "$RC/out")|$(rc_said 'under 30 GiB after storing; not stored')|$(rc_keys apex-desktop)"
 touch -d 2001-01-01 "$(rc_entry libfprint "$KFP")"
-n=$(find "$BIW/_build/rpm-cache" -mindepth 2 -maxdepth 2 -type d | wc -l)
+n=$(find "$RCE" -mindepth 2 -maxdepth 2 -type d | wc -l)
 echo $(((30 + n * 5) * 1024 * 1024)) >"$RC/avail"
 echo kdesk9 >"$RC/keys/desktop"
 check "rpm-cache: the room a store makes never comes from an entry a later step of this build uses" "0|desktop|1|yes" \
     "$(bi_cache)|$(rc_builds)|$(grep -c 'under 30 GiB free; dropping' "$RC/out")|$([[ -d $(rc_entry libfprint "$KFP") ]] && echo yes)"
 echo $((1000 * 1024 * 1024)) >"$RC/avail"
-rm -rf "$BIW/_build"
+mkdir -p "$RCE/apex-system/0123.tmp"
+check "rpm-cache: a store that died leaves no .tmp behind the next build" "0|gone" \
+    "$(bi_cache)|$([[ -e $RCE/apex-system/0123.tmp ]] && echo kept || echo gone)"
+before=$(rc_cached)
+check "rpm-cache: dev-override components take no key, reuse nothing and store nothing" "0|system desktop kernel|0|yes|$before" \
+    "$(RC_COMPONENTS=dev-override bi_cache)|$(rc_builds)|$(grep -c ' key$' "$RC/steps.log")|$(rc_said 'components are dev-override, not pinned; nothing is cached or reused')|$(rc_cached)"
+rm -rf "$BIW/_build" "$RC/cache"
 
 bi_sources() {
     rm -f "$BI/steps.log"

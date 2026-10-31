@@ -92,9 +92,13 @@ cannot be made counts as failed):
 - the image is the one in `_build/g2/latest/result.txt` or the last `gate` row's;
 - the image is less than 72 hours old.
 
-The signed RPMs of apex-system, apex-desktop and libfprint are cached in
-`_build/rpm-cache/COMPONENT/ENTRY`, so a build that changes none of their inputs skips
-their builds. ENTRY hashes the component's own content key (`rpms.sh key`,
+With pinned components (`APEX_COMPONENTS=pinned`), the signed RPMs of apex-system,
+apex-desktop and libfprint are cached in `~/apex-rpm-cache/fedora-N/entries` (set
+`APEX_RPM_CACHE` to move the root), so a build that changes none of their inputs skips
+their builds. The cache is outside the checkout and `_build`, which every component
+container mounts, so no build code can reach it. A dev-override build takes no key and
+neither reads nor writes it: a key hashes the commit, a dev-override builds its working
+tree. An entry is named by a hash of the component's own content key (`rpms.sh key`,
 `libfprint.sh key`, run in its fedora:45 with git-core), the fedora:45 digest,
 `lane.sh`'s tool id, `RPM-GPG-KEY-apex` and the build's environment, all taken before
 the first build. A component that gives no valid key is built and never cached: the
@@ -103,18 +107,21 @@ current pin is one: its `rpms.sh key` calls a `cmd_key` it lacks. ci.yml's contr
 job runs each pinned component's key script and fails when apex-desktop or libfprint
 gives none.
 
-An entry is reused only when it is under 7 days old, its `PREIMAGE`, `CONTENTS` and
-`SHA256SUMS` hold, the key it states matches (`KEY`; for libfprint `key.txt`, the RPM's
-version-release with `.apexN` and `manifest.txt`'s `tests=passed`), and each RPM's
-signature by the committed `RPM-GPG-KEY-apex` (`rpmkeys --checksig` in a scratch rpmdb)
-checks out; any mismatch rebuilds. A hit restores `KEY`, `key.txt` and `manifest.txt`
-with the RPMs, as image.sh reads them. `rpms.sh build` gets the key and fails if it
-moved. A set is stored only when its stated key matches, fedora:45 did not move during
-the build and the copy matches `SHA256SUMS`; a degraded libfprint never is. Each
-component keeps its 3 newest entries, and the oldest entries the build does not use go
-until `_build` keeps 30 GiB free after storing (the VM's disk is a 120G qcow2); when
-that cannot be reached, nothing is stored and nothing goes. Delete `_build/rpm-cache` to
-start over.
+Each entry has an index in `fedora-N/index`, written only by build-image.sh: the
+digests of the entry's `PREIMAGE`, `SHA256SUMS` and `CONTENTS`, each RPM's NEVRA, and
+when it was stored. An entry is reused only when it matches its index and is under 7
+days old by it, its `PREIMAGE`, `CONTENTS` and `SHA256SUMS` hold, the key it states
+matches (`KEY`; for libfprint `key.txt`, the RPM's version-release with `.apexN` and
+`manifest.txt`'s `tests=passed`), and each RPM's signature by the committed
+`RPM-GPG-KEY-apex` (`rpmkeys --checksig` in a scratch rpmdb) checks out; any mismatch
+rebuilds. A hit restores `KEY`, `key.txt` and `manifest.txt` with the RPMs, as image.sh
+reads them. `rpms.sh build` gets the key and fails if it moved. A set is stored only
+when its stated key matches, fedora:45 did not move during the build and the copy
+matches `SHA256SUMS`; a degraded libfprint never is. Each component keeps its 3 newest
+entries, and the oldest entries the build does not use go until the cache's disk keeps
+30 GiB free after storing (the VM's disk is a 120G qcow2); when that cannot be reached,
+nothing is stored and nothing goes. A store that died leaves `ENTRY.tmp`, which the
+next build deletes. Delete `~/apex-rpm-cache` to start over.
 
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
