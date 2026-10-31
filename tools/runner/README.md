@@ -321,7 +321,8 @@ full gate run, with G4 due whatever its last pass) or `g4` (the qualify-only run
 when its conditions fail). It goes to the VM as `ci-build <sha> gate` or `g4`, and
 `lane.sh promote` never runs for `g4`. The daily run builds only when its hosted
 `daily-due` job finds no other `vm.yml` run queued, waiting or running and no build of
-`main`'s head that started in the last 20 h and passed or failed; it says why in a notice,
+`main`'s head that started in the last 20 h and gave a verdict (it passed, or failed after
+G2 or G4 ran: its step "A gate gave its verdict" ran); it says why in a notice,
 and builds whenever the Actions API cannot answer.
 
 The build step calls `ssh apex-builder ci-build <sha>`, with workflow commands stopped
