@@ -181,37 +181,71 @@ log "contracts: every copy of a component's file equals the pinned original"
 
 # A component's new copy of a shipped file is caught here, not only when someone adds its row above.
 readonly COPIES_ALLOWED=${APEX_COPIES_ALLOWED:-$APEX_ROOT/.github/scripts/copies-allowed.txt}
-python3 - "$COPIES_ALLOWED" "${#copies[@]}" "${copies[@]}" apex-system "$APEX_SYSTEM_SRC" packaging/apex.spec \
-    apex-desktop "$APEX_DESKTOP_SRC" packaging/apex-desktop.spec apex-gnome "$APEX_GNOME_SRC" - \
-    apex-kernel "${APEX_KERNEL_SRC:-}" - <<'EOF' || die "contracts: see above"
+python3 - "$COPIES_ALLOWED" "${#copies[@]}" "${copies[@]}" \
+    apex-system "$APEX_SYSTEM_SRC" packaging/apex.spec Makefile \
+    apex-desktop "$APEX_DESKTOP_SRC" packaging/apex-desktop.spec - \
+    apex-gnome "$APEX_GNOME_SRC" - - apex-kernel "${APEX_KERNEL_SRC:-}" - - <<'EOF' || die "contracts: see above"
 import os
+import re
+import shlex
 import sys
 
 allowed_file, n, *rest = sys.argv[1:]
 listed, rest = {os.path.realpath(p) for p in rest[: int(n)]}, rest[int(n) :]
-trees = [(rest[i], rest[i + 1], rest[i + 2]) for i in range(0, len(rest), 3) if rest[i + 1]]
+trees = [tuple(rest[i : i + 4]) for i in range(0, len(rest), 4) if rest[i + 1]]
 SKIP = {".git", "_build", "node_modules", "target"}
+SECTIONS = ("%files", "%changelog", "%check", "%install", "%prep", "%build", "%description", "%package")
 problems, shipped = [], {}
-for name, root, spec in trees:
-    if spec == "-":
-        continue
+
+
+def logical(path):
     try:
-        lines = open(f"{root}/{spec}", encoding="utf-8").read().splitlines()
+        return open(path, encoding="utf-8").read().replace("\\\n", " ").splitlines()
     except OSError as e:
         sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
+
+
+def sources(words):
+    words = iter(words)
+    for w in words:
+        if w == "-t":
+            next(words, None)
+        elif not w.startswith("-") and "buildroot" not in w and "DESTDIR" not in w and "$(1)" not in w and "*" not in w:
+            yield w
+
+
+for name, root, spec, makefile in trees:
+    if spec == "-":
+        continue
     section = None
-    for line in lines:
-        if line.startswith("%") and line.split()[0] in ("%files", "%changelog", "%check", "%install", "%prep", "%build"):
-            section = line.split()[0]
-            continue
+    for line in logical(f"{root}/{spec}"):
         words = line.split()
-        if section != "%files" or not words or words[0] in ("%license", "%doc", "%dir") or line.startswith("#"):
-            continue
-        path = words[-1]
-        if not path.endswith("/") and "*" not in path:
-            shipped.setdefault(os.path.basename(path), (name, path))
+        if words and words[0] in SECTIONS:
+            section = words[0]
+        elif section == "%files" and words and words[0] not in ("%license", "%doc", "%dir") and words[0][0] != "#":
+            if not words[-1].endswith("/") and "*" not in words[-1]:
+                shipped.setdefault(os.path.basename(words[-1]), (name, words[-1]))
+        elif section == "%install" and words[:1] == ["install"]:
+            for src in sources(shlex.split(line)[1:]):
+                shipped.setdefault(os.path.basename(src), (name, f"{src} (installed by {spec})"))
     if not any(owner == name for owner, _ in shipped.values()):
         problems.append(f"{root}/{spec} ships no file in its %files")
+    if makefile == "-":
+        continue
+    lines = logical(f"{root}/{makefile}")
+    found = 0
+    variables = dict(m.groups() for m in (re.match(r"(\w+)\s*[:?]?=\s*(\S*)", l) for l in lines) if m)
+    for line in lines:
+        if "$(INSTALL)" not in line:
+            continue
+        for src in sources(line.split("$(INSTALL)", 1)[1].replace("'", " ").split()):
+            for _ in range(5):
+                src = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m[1], m[0]), src)
+            if "$(" not in os.path.basename(src):
+                found += 1
+                shipped.setdefault(os.path.basename(src), (name, f"{src} (installed by {makefile})"))
+    if not found:
+        problems.append(f"{root}/{makefile} installs no file with $(INSTALL)")
 allowed = {}
 for number, line in enumerate(open(allowed_file, encoding="utf-8"), 1):
     words = line.split("#", 1)[0].split(None, 2)
@@ -222,7 +256,7 @@ for number, line in enumerate(open(allowed_file, encoding="utf-8"), 1):
         continue
     allowed[words[0], words[1]] = number
 seen = set()
-for name, root, _ in trees:
+for name, root, *_ in trees:
     for top, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP)
         for f in sorted(files):
