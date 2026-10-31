@@ -2551,13 +2551,17 @@ h_base=$(h_key)
 check "g4-key: the image's key and one harness line" \
     "harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64" \
     "$(paste -sd'|' <<<"$h_base")"
-for h_file in qualify.sh lib.sh qualify-allowed-failures.txt ci-host.sh; do
+for h_file in qualify.sh lib.sh qualify-allowed-failures.txt; do
     cp "$H/.github/scripts/$h_file" "$H/$h_file.orig"
     echo '# a changed row' >>"$H/.github/scripts/$h_file"
     check_false "g4-key: a changed $h_file changes the key" test "$(h_key)" = "$h_base"
     cp "$H/$h_file.orig" "$H/.github/scripts/$h_file"
 done
-check "and the same four files give the same key" "$h_base" "$(h_key)"
+cp "$H/.github/scripts/ci-host.sh" "$H/ci-host.sh.orig"
+echo '# a changed runner step' >>"$H/.github/scripts/ci-host.sh"
+check "g4-key: a changed ci-host.sh, which G4 never runs, leaves the key" "$h_base" "$(h_key)"
+cp "$H/ci-host.sh.orig" "$H/.github/scripts/ci-host.sh"
+check "and the same three files give the same key" "$h_base" "$(h_key)"
 key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-a.key"
 echo 'harness aaaa' >>"$G4_DIR/harness-a.key"
 record_pass "$G4_DIR/harness-a.key" "$(date -u -d '-1 day' +%FT%TZ)"
@@ -3058,8 +3062,11 @@ check "vm paths: a script vm.yml runs that no path covers" 1 \
 check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:15: reads .github/scripts/daily.sh" "$VP.err"
 check "vm paths: a dynamic path outside every path" 1 \
     "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.env\"\n' >>.github/scripts/helper.sh")"
+check_true "names each file it can be" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env, which no" "$VP.err"
+check "vm paths: a dynamic path that names no file, outside every path" 1 \
+    "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.conf\"\n' >>.github/scripts/helper.sh")"
 check_true "is unresolvable" grep -qF \
-    "error: .github/scripts/helper.sh:3: unresolvable path 'tools/conf/\$NAME.env': its static part tools/conf is not under a" "$VP.err"
+    "error: .github/scripts/helper.sh:3: unresolvable path 'tools/conf/\$NAME.conf': its static part tools/conf is not under a" "$VP.err"
 printf -v VP_ALLOW '%s\n' '.github/scripts/helper.sh tools/conf/a.env  read for the log only'
 check "vm paths: an allowed uncovered read" 0 \
     "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh; printf '%s' '$VP_ALLOW' >>.github/scripts/vm-paths-allowed.txt")"
@@ -3117,6 +3124,25 @@ check_true "names the stale line" grep -qF "g4-harness-allowed.txt:3: .github/sc
 check "g4 harness: a digest that hashes a file the checkout lacks" 1 "$(hc4 "rm .github/scripts/helper.sh")"
 check_true "names it" grep -qF "g4_harness hashes .github/scripts/helper.sh, which is not in the checkout" "$HC4.err"
 check "g4 harness: a qualify.sh without g4_harness" 1 "$(hc4 "sed -i '/^g4_harness()/,/^}/d' .github/scripts/qualify.sh")"
+check "g4 harness: a templated file name is each file it can name" 1 \
+    "$(hc4 "printf 'cat \"\$APEX_ROOT/.github/scripts/rows-\$n.txt\"\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows-a.txt")"
+check_true "names the file" grep -qF "qualify.sh:8: reads .github/scripts/rows-a.txt, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a directory's allow line excuses its one read" 1 \
+    "$(hc4 "printf 'ls \"\$APEX_ROOT/.github/scripts\"\n' >>.github/scripts/qualify.sh")"
+check_true "not a second" grep -qF "qualify.sh:8: reads .github/scripts again; its allow line excuses only .github/scripts/qualify.sh:6" "$HC4.err"
+check "g4 harness: the host expands an unquoted heredoc" 1 \
+    "$(hc4 "printf 'cat <<EOF\n\$(cat \"\$APEX_ROOT/.github/scripts/rows.txt\")\nEOF\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "so its reads count" grep -qF "qualify.sh:9: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: but not a quoted one" 0 \
+    "$(hc4 "printf 'cat <<'\"'\"'EOF'\"'\"'\n\$APEX_ROOT/.github/scripts/rows.txt\nEOF\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check "g4 harness: a multi-line \$(...) reads on its last line" 1 \
+    "$(hc4 "printf 'rows=\$(sort\n    \"\$APEX_ROOT/.github/scripts/rows.txt\")\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "names that line" grep -qF "qualify.sh:9: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: a case pattern is not a read" 0 \
+    "$(hc4 "printf 'case \$1 in\n    .github/scripts/rows.txt) ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check "g4 harness: a Python script G4 runs is walked too" 1 \
+    "$(hc4 "sed -i 's/ helper.sh)/ helper.sh tool.py)/' .github/scripts/qualify.sh; printf 'python3 \"\$APEX_ROOT/.github/scripts/tool.py\"\n' >>.github/scripts/qualify.sh; printf 'open(\".github/scripts/rows.txt\")\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "naming its line" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {

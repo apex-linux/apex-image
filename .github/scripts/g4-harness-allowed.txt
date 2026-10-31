@@ -1,6 +1,7 @@
 # Files G4 reads that its harness digest leaves out, one per line: READER PATH REASON. Exact paths
 # only; g4-harness-check.sh fails on a line that no longer matches a read.
 .github/scripts/qualify.sh .github/scripts  g4_harness's own cd: each file it then hashes is checked here
+.github/scripts/qualify.sh .github/scripts/ci-host.sh  host-setup's alone, which refuses to run off GitHub Actions: G4 runs on the builder VM
 .github/scripts/qualify.sh image/system_files  the key's file lines hash each /usr file of it as the image under test carries it
 .github/scripts/qualify.sh image/variants/pair  the key's file lines hash each of its files that the image under test carries
 .github/scripts/lib.sh image/Containerfile  an image input: G4 is due when the image's keyed packages or files change (ADR 0016), not on every compose input
