@@ -1705,7 +1705,10 @@ vm_ssh() {
         "grub2-editenv /boot/grub2/grubenv list") echo apex_ok=0 ;;
         *"org.gnome.ScreenSaver.GetActive"*) printf '(%s,)\n' "$(from active)" ;;
         "pgrep -u 1000 -x gnome-shell") from pid ;;
-        "date +%s") echo 1000 ;;
+        "date +%s")
+            n=$(from clock)
+            echo "${n:-1000}"
+            [[ ! -e $STATE/clock-advances ]] || echo $((${n:-1000} + 5)) >"$STATE/clock" ;;
         "journalctl -b _UID=1000 --since @999 -o short-monotonic --no-pager") from journal ;;
         "test -e /run/user/1000/$CRASH_GUARD_MARKER") [[ -e $STATE/marker ]] ;;
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
@@ -1723,7 +1726,7 @@ vm_ssh() {
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
         "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
         "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
-        "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
+        "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") [[ -e $STATE/no-cursor ]] || echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
@@ -1731,7 +1734,11 @@ vm_ssh() {
         *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
         "$DRM_OUTPUTS")
             if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; elif [[ -e $STATE/drm-outputs ]]; then from drm-outputs; else echo 'Virtual-1 On'; fi ;;
-        "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
+        "journalctl -b --since @"*" -o cat --no-pager")
+            c=${cmd#*--since }
+            echo "${c%% *}" >"$STATE/drm-since"
+            printf 'gnome-shell[1234]: Screen blanked\n'
+            from drm-errors ;;
         *"PowerSaveMode i 3")
             echo 3 >"$STATE/power-save"
             : >"$STATE/display-off"
@@ -1792,7 +1799,12 @@ vm_ssh() {
             conversations 0 ;;
         "systemctl -q is-active user@1000.service") [[ -e $STATE/manager-active ]] ;;
         "id -u $TEST_USER") echo 1000 ;;
-        "cat /proc/sys/kernel/random/boot_id") n=$(from boot-id); echo "${n:-boot-1}" ;;
+        "cat /proc/sys/kernel/random/boot_id")
+            [[ ! -e $STATE/boot-id-unreadable ]] || return 1
+            [[ ! -e $STATE/woken-boot-unreadable || ! -e $STATE/boot-id-read ]] || return 1
+            : >"$STATE/boot-id-read"
+            n=$(from boot-id)
+            echo "${n:-boot-1}" ;;
         "uname -r") echo 7.2.11-200.fc45.x86_64 ;;
         "cat /sys/power/mem_sleep") echo 's2idle [deep]' ;;
         "echo N >/sys/module/printk/parameters/console_suspend;"*) : >"$STATE/pm-debug" ;;
@@ -2175,6 +2187,22 @@ check "blank-wake: a second connected output still off fails" 1 "$(guest lock_ma
 display_fails second-output 'PowerSaveMode 0; outputs Virtual-1 On,Virtual-2 Off; DRM and atomic errors since the blank: none'
 lock_matrix_fails psm-stays-3 local-lock-blank-wake
 display_fails psm-stays-3 'PowerSaveMode 3; outputs Virtual-1 On; DRM and atomic errors since the blank: none'
+display_state_fails() { # NAME OUTPUTS: with these connected outputs after PowerSaveMode 0, blank-wake fails naming them
+    apex_locked_in
+    printf '%s' "$2" >"$GUEST_DIR/state/drm-outputs"
+    check "blank-wake: $1 fails" 1 "$(guest lock_matrix local 1000)"
+    display_fails "$1" "PowerSaveMode 0; outputs $3; DRM and atomic errors since the blank: none"
+}
+display_state_fails 'no connected output' '' none
+display_state_fails 'a second output in standby' $'Virtual-1 On\nVirtual-2 Standby\n' 'Virtual-1 On,Virtual-2 Standby'
+display_state_fails 'a second output suspended' $'Virtual-1 On\nVirtual-2 Suspend\n' 'Virtual-1 On,Virtual-2 Suspend'
+apex_locked_in
+: >"$GUEST_DIR/state/display-stays-off"
+: >"$GUEST_DIR/state/clock-advances"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "blank-wake alone, on a guest clock that moves on" 1 \
+    "$(guest eval 'wait_session t user apexqa; matrix_blank_wake local "$(shell_pid 1000)" "$(password_conversations)"')"
+check "the DRM errors are read from the blank on, not from the row's start" @1004 "$(cat "$GUEST_DIR/state/drm-since")"
 apex_locked_in
 : >"$GUEST_DIR/state/display-stays-off"
 for i in $(seq 2000); do echo "kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence $i"; done >"$GUEST_DIR/state/drm-errors"
@@ -2189,8 +2217,10 @@ for c in card0-Virtual-1:connected:On card0-Virtual-2:disconnected:Off card0-HDM
 done
 mkdir -p "$DRMFS/card0"
 # shellcheck disable=SC2016 # expanded by qualify.sh's shell
+DRM_FAKE=$(qualify_fn eval 'echo "$DRM_OUTPUTS"' | sed "s#/sys/class/drm#$DRMFS#")
 check "DRM_OUTPUTS: each connected connector with its DPMS, none disconnected" "HDMI-A-1 Off|Virtual-1 On" \
-    "$(sh -c "$(qualify_fn eval 'echo "$DRM_OUTPUTS"' | sed "s#/sys/class/drm#$DRMFS#")" | paste -sd'|')"
+    "$(sh -c "$DRM_FAKE" | paste -sd'|')"
+check "and exits 0 though the last connector is disconnected: vm_ssh's status is the read's" 0 "$(rc_of sh -c "$DRM_FAKE")"
 # The lock's blank and the nudge's wake log both lines before the test blanks the screen.
 lock_logged_both() {
     apex_locked_in
@@ -2247,6 +2277,22 @@ check "the journal tap and the heartbeat ran on ttyS0, and stopped after the row
     "$(paste -sd' ' "$GUEST_DIR/state/taps"):$([[ -e $GUEST_DIR/state/taps-stopped ]] && echo stopped)"
 check_true "and the environment line names the guest's kernel and sleep state" \
     grep -q 'guest kernel 7.2.11-200.fc45.x86_64; .*guest mem_sleep s2idle \[deep\]' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+apex_locked_in
+mkdir -p "$GUEST_DIR/sysfs/module/kvm_intel/parameters"
+echo Y >"$GUEST_DIR/sysfs/module/kvm_intel/parameters/nested"
+QUALIFY_SYSFS="$GUEST_DIR/sysfs" guest lock_matrix local 1000 >/dev/null
+check_true "and the host's nested KVM, from whichever vendor's module is loaded" grep -q '; nested Y;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+# shellcheck disable=SC2016 # expanded by the fake guest
+suspend_only() { guest eval 'wait_session t user apexqa; matrix_suspend local "$(shell_pid 1000)" "$(password_conversations)"'; }
+suspend_read_fails() { # FLAG DETAIL: with FLAG set, matrix_suspend alone fails saying DETAIL
+    apex_locked_in
+    : >"$GUEST_DIR/state/$1"
+    check "suspend: $1 fails the row" 1 "$(suspend_only)"
+    check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2 (the screen at the failure" "$GUEST_DIR/out/results.md"
+}
+suspend_read_fails boot-id-unreadable "cannot read the guest's boot_id"
+suspend_read_fails woken-boot-unreadable "cannot read the guest's boot_id after the wake"
+suspend_read_fails no-cursor "cannot read the user journal's cursor"
 suspend_fails() { # FLAG DETAIL: with FLAG set, the suspend row fails saying DETAIL
     lock_matrix_fails "$1" local-lock-suspend
     check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2" "$GUEST_DIR/out/results.md"
@@ -2900,6 +2946,12 @@ check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build 
 check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
 
 # --- guest-lint.sh: the code qualify.sh runs in the guest parses on hosted CI ---------------
+# guest-lint stubs a readonly script passed as "$NAME"; each still parses as the guest's sh.
+for gs in SUSPEND_HEARTBEAT SLEEP_OFFSET WAKEUP_IRQ_LINE; do
+    # shellcheck disable=SC2016 # expanded by qualify.sh's shell
+    check "guest code: $gs parses with dash and shellcheck" 0 \
+        "$(rc_of bash -c '. "$1"; dash -n -c "${!2}" && printf "%s\n" "${!2}" | shellcheck -s sh -' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$gs")"
+done
 check "guest code: this checkout's qualify.sh parses" 0 \
     "$(rc_of "$APEX_ROOT/.github/scripts/guest-lint.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/guest-lint-allowed.txt")"
 GL=$TMP/guest-lint
@@ -3503,6 +3555,21 @@ sed 's/-device VGA /-device VGA -device bochs-display /' "${QP_REAL[0]}" >"$QP/q
 check "g4 display: a second display device named display fails" 1 "$(gd_rc "$QP/qualify-bochs-display.sh")"
 { cat "${QP_REAL[0]}"; printf '    # -device virtio-vga: a comment\n'; } >"$QP/qualify-display-comment.sh"
 check "g4 display: a comment naming a device is not a QEMU line" 0 "$(gd_rc "$QP/qualify-display-comment.sh")"
+gd_form() { # NAME SED EXPECTED: g4_display on qualify.sh edited by SED exits EXPECTED
+    sed "$2" "${QP_REAL[0]}" >"$QP/qualify-$1.sh"
+    check "g4 display: $1" "$3" "$(gd_rc "$QP/qualify-$1.sh")"
+}
+gd_form vga-option 's/-device VGA /-device VGA -vga virtio /' 1
+check_true "named as -vga" grep -qF "QEMU display device(s) 'VGA -vga virtio'" "$QP/err"
+gd_form vga-none 's/-device VGA /-device VGA -vga none /' 0
+gd_form double-dash 's/-device VGA /-device VGA --device virtio-vga /' 1
+gd_form driver-key 's/-device VGA /-device VGA -device driver=virtio-vga,id=g /' 1
+check_true "by its driver" grep -qF "QEMU display device(s) 'VGA virtio-vga'" "$QP/err"
+gd_form split-line 's/-device VGA /-device VGA -device \\\n        virtio-vga /' 1
+gd_form single-quoted "s/-device VGA /-device VGA -device 'virtio-vga' /" 1
+gd_form single-quoted-vga "s/-device VGA /-device 'VGA' /" 0
+gd_form no-display 's/-device VGA //' 1
+check_true "named as none at all" grep -qF "QEMU display device(s) '', expected VGA alone" "$QP/err"
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers
@@ -5166,7 +5233,7 @@ qv_cleanup() { # RC [luks|nojournal]: cleanup after a run that exits RC, its gue
             case $1 in
                 losetup) [[ $2 == --detach ]] || echo /dev/loop9 ;;
                 sh) [[ $mode == nojournal ]] || echo "$QV/out/mnt-v-journal/ostree/deploy/default/var/log/journal" ;;
-                journalctl) echo "the guest journal, off its disk" ;;
+                journalctl) [[ $mode != unreadable ]] || return 1; echo "the guest journal, off its disk" ;;
             esac
         }
         trap cleanup EXIT
@@ -5187,6 +5254,8 @@ check_true "luks: the root is opened read-only" grep -qx 'cryptsetup open --read
 check_true "and /var's subvolume mounted read-only" grep -qx "mount -o ro,subvol=var,rescue=nologreplay /dev/mapper/apex-qualify-v-journal $QV/out/mnt-v-journal" "$QV/calls"
 check_true "its journal read" grep -qx "journalctl -D $QV/out/mnt-v-journal/log/journal -o short-monotonic --no-pager" "$QV/calls"
 check_true "and the mapping closed" grep -qx 'cryptsetup close apex-qualify-v-journal' "$QV/calls"
+qv_cleanup 3 unreadable
+check_true "a journal the host's journalctl cannot read is said so" grep -qF "cannot read the journal off $QV/out/v.raw" "$QV/err"
 
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"

@@ -1643,7 +1643,7 @@ s2idle_gap() {
 suspend_environment() {
     local test=$1 qemu nested='' f cpu kernel mem_sleep line
     qemu=$(rpm -qf "$(command -v qemu-system-x86_64)" 2>/dev/null || qemu-system-x86_64 --version 2>/dev/null | head -n 1) || qemu=
-    for f in /sys/module/kvm_amd/parameters/nested /sys/module/kvm_intel/parameters/nested; do
+    for f in "${QUALIFY_SYSFS:-/sys}"/module/kvm_{amd,intel}/parameters/nested; do
         if [[ -r $f ]]; then nested=$(<"$f") && break; fi
     done
     cpu=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -n 1) || cpu=
