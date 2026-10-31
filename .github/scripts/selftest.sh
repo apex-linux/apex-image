@@ -1025,10 +1025,13 @@ check "a run with no plan asked for still promotes" "0|promote" "$(ci_request "c
 rm "$CI_DIR/no-plan"
 cp "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-d.sh"
 sed -i '/APEX_CI_MODE/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
-rm -f "$CI_DIR/ci-mode" "$CI_DIR/build-ran"
-check "g4 for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
-    "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run g4|no build|no build-image line" \
-    "$(ci_request "ci-build $CI_SHA g4")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -q '^build-image ' && echo 'build-image line' || echo 'no build-image line')"
+# gate too: an old build-image.sh would run its own plan, and a skipped G4 would read as not due.
+for mode in g4 gate; do
+    rm -f "$CI_DIR/ci-mode" "$CI_DIR/build-ran"
+    check "$mode for a commit whose build-image.sh predates APEX_CI_MODE: refused before it builds" \
+        "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run $mode|no build|no build-image line" \
+        "$(ci_request "ci-build $CI_SHA $mode")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -q '^build-image ' && echo 'build-image line' || echo 'no build-image line')"
+done
 mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
