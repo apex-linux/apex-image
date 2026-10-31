@@ -1635,11 +1635,37 @@ login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-
 local_flow_stubs() {
     ensure_key() { :; }
     install_disk() { :; }
-    start_vm() { # a power-cycle brings a lost guest back to its greeter, unless it stays dead
-        [[ -e $STATE/unreachable && ! -e $STATE/stays-dead ]] || return 0
-        rm "$STATE/unreachable"
-        echo "$2" >"$STATE/power-cycled"
-        vm_reboot
+    start_vm() { # -loadvm starts the guest as local-diag saved it
+        echo "$*" >>"$STATE/started"
+        [[ $* == *"-loadvm $DIAG_SNAPSHOT" ]] || return 0
+        snapshot_restore
+    }
+    hmp() {
+        case $1 in
+            "savevm $DIAG_SNAPSHOT")
+                if [[ -e $STATE/savevm-fails ]]; then echo "Error: Device 'pflash1' is writable but does not support snapshots"; return 0; fi
+                rm -rf "$STATE.snap"
+                cp -a "$STATE" "$STATE.snap" ;;
+            "loadvm $DIAG_SNAPSHOT")
+                if [[ -e $STATE/loadvm-fails ]]; then echo "Error: Snapshot '$DIAG_SNAPSHOT' does not exist"; return 0; fi
+                snapshot_restore ;;
+            *) echo "unexpected hmp: $1" ;;
+        esac
+    }
+    snapshot_restore() { # the guest as saved; the run's controls and the host's own records stay
+        local f
+        rm -rf "$STATE.keep"
+        mkdir "$STATE.keep"
+        for f in serial qmp disk-calls started loaded clock-steps stays-dead loadvm-fails load-skew clock-stuck loads-locked; do
+            [[ ! -e $STATE/$f ]] || cp -a "$STATE/$f" "$STATE.keep/"
+        done
+        rm -rf "$STATE"
+        cp -a "$STATE.snap" "$STATE"
+        cp -a "$STATE.keep/." "$STATE/"
+        echo loaded >>"$STATE/loaded"
+        [[ ! -e $STATE/stays-dead ]] || : >"$STATE/unreachable"
+        [[ ! -e $STATE/load-skew ]] || cp "$STATE/load-skew" "$STATE/clock-skew"
+        if [[ -e $STATE/loads-locked ]]; then echo yes >"$STATE/locked"; echo true >"$STATE/active"; fi
     }
     stop_vm() { :; }
     drop_disk() { echo "drop $1" >>"$STATE/disk-calls"; }
@@ -1699,6 +1725,10 @@ vm_ssh() {
         *"org.gnome.ScreenSaver.GetActive"*) printf '(%s,)\n' "$(from active)" ;;
         "pgrep -u 1000 -x gnome-shell") from pid ;;
         "date +%s") echo 1000 ;;
+        "date +%s.%N") awk -v n="$(date +%s.%N)" -v s="$(from clock-skew)" 'BEGIN { printf "%.3f\n", n + s }' ;;
+        "date -s @"*)
+            echo "${cmd#date -s @}" >>"$STATE/clock-steps"
+            [[ -e $STATE/clock-stuck ]] || rm -f "$STATE/clock-skew" ;;
         "journalctl -b _UID=1000 --since @999 -o short-monotonic --no-pager") from journal ;;
         "test -e /run/user/1000/$CRASH_GUARD_MARKER") [[ -e $STATE/marker ]] ;;
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
@@ -1772,6 +1802,7 @@ vm_ssh() {
             fi
             : >"$STATE/unlocked-once"
             if [[ -e $STATE/lose-guest ]]; then rm "$STATE/lose-guest"; : >"$STATE/unreachable"; fi
+            if [[ -e $STATE/lose-qemu ]]; then rm "$STATE/lose-qemu"; : >"$STATE/unreachable"; : >"$STATE/vm-dead"; fi
             if [[ -e $STATE/drop-session ]]; then
                 rm -f "$STATE/drop-session" "$STATE/session" "$STATE/manager-active" "$STATE/asking"
                 echo 'c1 60578 wayland' >"$STATE/greeter"
@@ -2617,10 +2648,11 @@ diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$G
 check "but every unit after it still runs, each with its own verdict" \
     "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
     "$(diag_units)"
-check_true "the suspends run last, deep S3 after s2idle, after the reset gave its login the layer back: no apex.safe=1, a fresh login" \
-    test "$(grep -c '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "1: local-lock-suspend-s3 "
+check_true "the suspends run last, deep S3 after s2idle, each unit after the first from the post-login snapshot: no apex.safe=1, no fresh login" \
+    test "$(grep -c '^| local-diag-reset-greeter-login |' "$GUEST_DIR/out/results.md"):$(wc -l <"$GUEST_DIR/state/loaded"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "0:11: local-lock-suspend-s3 "
+check_true "saved once, after the first login" grep -q '^| local-diag-snapshot | PASS | saved the guest after its first login as diag0 |' "$GUEST_DIR/out/results.md"
 check_false "and the safe karg is gone" test -e "$GUEST_DIR/state/karg"
-check_true "and the reset closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
+check_true "and the snapshot closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
     grep -q '^| crash-guard | PASS | local-crash-guard PASS' "$GUEST_DIR/out/diag.md"
 check_true "the Esc unit quotes its first failure" \
     grep -q '^| lock-esc | FAIL | Esc did not end the password conversation' "$GUEST_DIR/out/diag.md"
@@ -2647,36 +2679,45 @@ rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/drop-session"
 check "local-diag: a session lost between two units fails local-diag" 1 \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
-check "the unit before the loss fails, and the next runs after a fresh login" \
+check "the unit before the loss fails, and the next runs from the post-login snapshot" \
     "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
 check_true "naming the lost session" \
     grep -q '^| login-lock-unlock | FAIL | passed, but before the next unit session 4 of apexqa was gone |$' "$GUEST_DIR/out/diag.md"
-check_true "the fresh login went through the greeter" grep -q '^| local-diag-reset-greeter-login | PASS |' "$GUEST_DIR/out/results.md"
+check "in the snapshot's session, with no fresh login" "0:1" \
+    "$(grep -c '^| local-diag-reset-greeter-login |' "$GUEST_DIR/out/results.md"):$(wc -l <"$GUEST_DIR/state/loaded")"
 
-# A guest that stops answering ssh between units is power-cycled once on the same disk.
+# A guest that stops answering ssh between units is loaded from the snapshot.
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/lose-guest"
 check "local-diag: a guest lost between two units fails local-diag" 1 \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
-check "the unit before the loss fails, and the next runs on the power-cycled guest" \
+check "the unit before the loss fails, and the next runs on the loaded guest" \
     "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
 check_true "naming the lost guest" grep -qF \
-    '| login-lock-unlock | FAIL | passed, but guest lost after login-lock-unlock: it stopped answering ssh, and local-diag power-cycled it on the same disk |' \
+    '| login-lock-unlock | FAIL | passed, but guest lost after login-lock-unlock: it stopped answering ssh, and local-diag loaded its post-login snapshot |' \
     "$GUEST_DIR/out/diag.md"
-check "on the same disk, with its own serial log" local-diag-recovered "$(cat "$GUEST_DIR/state/power-cycled")"
+check "through QMP, its QEMU still running" "1:0" \
+    "$(wc -l <"$GUEST_DIR/state/loaded"):$(grep -c -- -loadvm "$GUEST_DIR/state/started")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-qemu"
+check "local-diag: a guest whose QEMU exited between two units fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build')"
+check "the next runs on a QEMU started from the snapshot" "login-lock-unlock FAIL|lock-wrong-password PASS" "$(diag_units)"
+check "on the same disk, with its own serial log" "local local-diag-recovered -loadvm diag0" "$(tail -n 1 "$GUEST_DIR/state/started")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/lose-guest"
 : >"$GUEST_DIR/state/stays-dead"
-check "local-diag: when the power-cycle does not bring the guest back, the rest is BLOCKED" \
+check "local-diag: when the snapshot does not bring the guest back, the rest is BLOCKED" \
     "login-lock-unlock FAIL|lock-wrong-password BLOCKED|lock-esc BLOCKED" \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; diag_units)"
 check_true "the next unit names the failed recovery" grep -qF \
-    '| lock-wrong-password | BLOCKED | the reset before it failed: the guest still does not answer ssh after a power-cycle |' \
+    '| lock-wrong-password | BLOCKED | the reset before it failed: the guest does not answer ssh 2s after loadvm diag0 |' \
     "$GUEST_DIR/out/diag.md"
 check_true "and the ones after it are not tried again" grep -qF \
-    '| lock-esc | BLOCKED | the guest was lost after login-lock-unlock, and a power-cycle did not bring it back |' \
+    '| lock-esc | BLOCKED | the guest was lost after login-lock-unlock, and loading its post-login snapshot did not bring it back |' \
     "$GUEST_DIR/out/diag.md"
 
 # 4. a lock unit with the layer off is not a test of the Apex lock
@@ -2698,12 +2739,49 @@ check_true "saying so" grep -qF '| lock-esc | BLOCKED | this login runs in safe 
 # 5. a reset that cannot unlock blocks the next unit
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
-: >"$GUEST_DIR/state/stays-locked"
+: >"$GUEST_DIR/state/loads-locked"
 check "local-diag: a reset that never sees the unlock blocks the next unit" \
     "login-lock-unlock PASS|lock-wrong-password BLOCKED" \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
 check_true "saying the session stayed locked" \
-    grep -q '^| lock-wrong-password | BLOCKED | the reset before it failed: session 4 still locked' "$GUEST_DIR/out/diag.md"
+    grep -q '^| lock-wrong-password | BLOCKED | the reset before it failed: session 4 still locked 2s after loadvm diag0' "$GUEST_DIR/out/diag.md"
+
+# 6. the snapshot: saved once, loaded before each unit after the first, its clock the host's
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/savevm-fails"
+check "local-diag: a guest that cannot be saved fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock localhost/apex:build')"
+check_true "naming QEMU's refusal" grep -qF \
+    "| local-diag-snapshot | FAIL | savevm diag0: Error: Device 'pflash1' is writable but does not support snapshots |" "$GUEST_DIR/out/results.md"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/loadvm-fails"
+check "local-diag: a snapshot that does not load blocks the next unit" "login-lock-unlock PASS|lock-wrong-password BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
+check_true "naming QEMU's refusal" grep -qF \
+    "| lock-wrong-password | BLOCKED | the reset before it failed: loadvm diag0: Error: Snapshot 'diag0' does not exist |" "$GUEST_DIR/out/diag.md"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo 90 >"$GUEST_DIR/state/load-skew"
+check "local-diag: a loaded guest 90 s behind the host is stepped once" "login-lock-unlock PASS|lock-wrong-password PASS" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
+check "to the host's clock" 1 "$(grep -cE '^[0-9]+\.[0-9]+$' "$GUEST_DIR/state/clock-steps")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo 0.4 >"$GUEST_DIR/state/load-skew"
+check "a guest within 1 s of the host is not stepped" "login-lock-unlock PASS|lock-wrong-password PASS" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
+check_false "at all" test -e "$GUEST_DIR/state/clock-steps"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo -90 >"$GUEST_DIR/state/load-skew"
+: >"$GUEST_DIR/state/clock-stuck"
+check "a clock one step does not bring within 1 s blocks the next unit" "login-lock-unlock PASS|lock-wrong-password BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
+check_true "naming the skew" grep -qE \
+    "^\| lock-wrong-password \| BLOCKED \| the reset before it failed: the guest's clock is still -(89|90)\.[0-9]{3} s off the host's after one step \|$" "$GUEST_DIR/out/diag.md"
+check "stepped once, not again" 1 "$(wc -l <"$GUEST_DIR/state/clock-steps")"
 
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
@@ -2719,6 +2797,60 @@ check "local-diag: an unknown unit is refused" 1 \
 # shellcheck disable=SC2016 # expanded by the inner bash
 check "local-diag refuses G4's QUALIFY_OUT" 1 \
     "$(rc_of bash -c '. "$1"; QUALIFY_OUT=$APEX_ROOT/_build/qualify; diag_refuse_g4_out' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
+
+# --- local-diag's drives: qcow2 overlays on the disk and the vars, folded back for a journal ---
+QO="$TMP/diag-overlays"
+mkdir -p "$QO/bin" "$QO/out/logs" "$QO/out/qmp"
+cat >"$QO/bin/qemu-system-x86_64" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$QEMU_ARGS"
+while (($#)); do [[ $1 != -pidfile ]] || echo $$ >"$2"; shift; done
+EOF
+cat >"$QO/bin/qemu-img" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$QEMU_IMG_LOG"
+case $1 in
+    create) : >"${*: -1}" ;;
+    commit) [[ -z ${QEMU_IMG_FAILS:-} ]] ;;
+esac
+EOF
+chmod +x "$QO/bin/qemu-system-x86_64" "$QO/bin/qemu-img"
+: >"$QO/code.fd"
+: >"$QO/vars.fd"
+qo() { # DIAG CODE: CODE run in qualify.sh with DIAG set as given, QEMU and qemu-img as fakes
+    rm -f "$QO/args" "$QO/img.log"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$QO/bin:$PATH" QEMU_ARGS="$QO/args" QEMU_IMG_LOG="$QO/img.log" QUALIFY_OUT="$QO/out" \
+        OVMF_CODE="$QO/code.fd" OVMF_VARS="$QO/vars.fd" QEMU_IMG_FAILS=${QEMU_IMG_FAILS:-} \
+        bash -c '. "$1"; require_kvm() { :; }; as_root() { return 1; }; DIAG=$2; eval "$3"' _ \
+        "$APEX_ROOT/.github/scripts/qualify.sh" "$1" "$2" >/dev/null 2>&1 || true
+}
+qo_drives() { grep -E '^(if=pflash,format=[a-z0-9]+,unit=1|file=)' "$QO/args" | paste -sd'|'; }
+: >"$QO/out/d.raw"
+qo '' 'start_vm d'
+check "start_vm: G4's guest writes to the raw disk and the vars" \
+    "if=pflash,format=raw,unit=1,file=$QO/out/d.vars|file=$QO/out/d.raw,format=raw,if=virtio,cache=writeback,discard=unmap" "$(qo_drives)"
+check_false "with no overlay" test -e "$QO/img.log"
+qo 1 'start_vm d'
+check "start_vm: local-diag's guest writes to qcow2 overlays, which savevm needs" \
+    "if=pflash,format=qcow2,unit=1,file=$QO/out/d.vars.qcow2|file=$QO/out/d.raw.qcow2,format=qcow2,if=virtio,cache=writeback,discard=unmap" "$(qo_drives)"
+check "on the installed disk and the vars, which stay as they were" \
+    "create -q -f qcow2 -b $QO/out/d.raw -F raw $QO/out/d.raw.qcow2|create -q -f qcow2 -b $QO/out/d.vars -F raw $QO/out/d.vars.qcow2" \
+    "$(paste -sd'|' "$QO/img.log")"
+qo 1 'start_vm d d-recovered -loadvm diag0'
+check "a QEMU started again from the snapshot keeps the overlays" "file=$QO/out/d.raw.qcow2,format=qcow2,if=virtio,cache=writeback,discard=unmap|-loadvm|diag0" \
+    "$(grep -E '^(-loadvm|diag0|file=)' "$QO/args" | paste -sd'|')"
+check_false "and makes none" test -e "$QO/img.log"
+QEMU_IMG_FAILS=1 qo 1 'save_disk_journal d'
+check "save_disk_journal: an overlay that does not fold back keeps its writes" "commit -q $QO/out/d.raw.qcow2|kept" \
+    "$(cat "$QO/img.log")|$([[ -e $QO/out/d.raw.qcow2 ]] && echo kept)"
+qo 1 'save_disk_journal d'
+check "save_disk_journal: local-diag's writes are folded into the raw disk before its journal is read" "commit -q $QO/out/d.raw.qcow2" \
+    "$(cat "$QO/img.log")"
+check "and the overlays are gone" "" "$(compgen -G "$QO/out/d.*.qcow2" || true)"
+qo 1 'start_vm d'
+qo 1 'drop_disk d'
+check "drop_disk: the disk, the vars and both overlays" "" "$(for f in d.raw d.vars d.raw.qcow2 d.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done)"
 
 # boot_metrics is warning-only: whatever the journal lacks, G4 goes on to the login steps.
 boot_then_login() { # MONO_LINES...: boot_metrics, then login_lock_unlock, as the local flow runs them

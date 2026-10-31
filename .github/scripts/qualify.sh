@@ -107,7 +107,8 @@ Environment (all optional):
   QUALIFY_LOGIN_TIMEOUT seconds to wait for GDM's greeter, for the login through it, and
                         for the user's gnome-shell to answer (default 300)
   QUALIFY_RESUME_TIMEOUT  seconds the suspended guest may take, after its wake (the
-                        wake key, or QMP's system_wakeup), to answer ssh again (default 300)
+                        wake key, or QMP's system_wakeup), to answer ssh again, and
+                        local-diag's guest after it loads its snapshot (default 300)
   QUALIFY_SUSPEND_HOLD  seconds the guest is held in s2idle before the wake key; it must
                         have slept at least as long (default 10)
   QUALIFY_LOCK_TIMEOUT  seconds loginctl lock-session and unlock-session may take to show
@@ -205,6 +206,7 @@ QUALIFY_ERRLOG=
 # cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
     polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
+readonly DIAG_SNAPSHOT=diag0
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -454,7 +456,12 @@ EOF
 }
 
 drop_disk() {
-    [[ ${QUALIFY_KEEP_DISKS:-0} == 1 ]] || rm -f "$QUALIFY_OUT/$1.raw" "$QUALIFY_OUT/$1.vars"
+    [[ ${QUALIFY_KEEP_DISKS:-0} == 1 ]] ||
+        rm -f "$QUALIFY_OUT/$1.raw" "$QUALIFY_OUT/$1.vars" "$QUALIFY_OUT/$1.raw.qcow2" "$QUALIFY_OUT/$1.vars.qcow2"
+}
+
+diag_overlay() {
+    [[ -f $1.qcow2 ]] || qemu-img create -q -f qcow2 -b "$1" -F "$2" "$1.qcow2" || die "cannot make the overlay $1.qcow2"
 }
 
 unmount_all() {
@@ -469,9 +476,16 @@ unmount_all() {
 start_vm() {
     local name=$1 log=${2:-$1}
     shift "$(($# < 2 ? $# : 2))"
-    local disk="$QUALIFY_OUT/$name.raw" vars="$QUALIFY_OUT/$name.vars"
+    local disk="$QUALIFY_OUT/$name.raw" vars="$QUALIFY_OUT/$name.vars" disk_format=raw vars_format
     find_ovmf
     [[ -f $vars ]] || cp "$OVMF_VARS" "$vars"
+    vars_format=$OVMF_FORMAT
+    # savevm needs every writable drive in qcow2: local-diag writes to overlays on both.
+    if [[ -n $DIAG ]]; then
+        diag_overlay "$disk" raw
+        diag_overlay "$vars" "$OVMF_FORMAT"
+        disk+=.qcow2 vars+=.qcow2 disk_format=qcow2 vars_format=qcow2
+    fi
     require_kvm
     VM_NAME=$name
     VM_SERIAL="$QUALIFY_OUT/logs/$log.serial.log"
@@ -485,8 +499,8 @@ start_vm() {
     qemu-system-x86_64 -name "apex-$name" -machine q35,accel=kvm,vmport=off -cpu host \
         -m "$QUALIFY_MEM" -smp "$QUALIFY_SMP" \
         -drive "if=pflash,format=$OVMF_FORMAT,unit=0,readonly=on,file=$OVMF_CODE" \
-        -drive "if=pflash,format=$OVMF_FORMAT,unit=1,file=$vars" \
-        -drive "file=$disk,format=raw,if=virtio,cache=writeback,discard=unmap" \
+        -drive "if=pflash,format=$vars_format,unit=1,file=$vars" \
+        -drive "file=$disk,format=$disk_format,if=virtio,cache=writeback,discard=unmap" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$QUALIFY_SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 -device virtio-rng-pci \
         -device VGA -display none -global ICH9-LPC.disable_s3=0 \
@@ -1106,7 +1120,7 @@ with open(sys.argv[2], "a", buffering=1) as out:
 readonly QMP_QUERY='
 import json, socket, sys
 with socket.socket(socket.AF_UNIX) as s:
-    s.settimeout(30)
+    s.settimeout(float(sys.argv[3]))
     s.connect(sys.argv[1])
     stream = s.makefile("rw")
     json.loads(stream.readline())
@@ -1120,10 +1134,10 @@ with socket.socket(socket.AF_UNIX) as s:
     print(json.dumps(reply.get("return", reply)))
 '
 
-# One QMP command whose answer is printed: the VM's run state, say.
-qmp_query() { python3 -c "$QMP_QUERY" "$QMP_SOCKET" "$1"; }
+# One QMP command whose answer is printed: the VM's run state, say. SECONDS bounds the wait.
+qmp_query() { python3 -c "$QMP_QUERY" "$QMP_SOCKET" "$1" "${2:-30}"; }
 
-hmp() { qmp_query "$(jq -cn --arg c "$1" '{execute: "human-monitor-command", arguments: {"command-line": $c}}')" | jq -r .; }
+hmp() { qmp_query "$(jq -cn --arg c "$1" '{execute: "human-monitor-command", arguments: {"command-line": $c}}')" "${2:-30}" | jq -r .; }
 
 vm_run_state() { qmp_query '{"execute":"query-status"}' | jq -r '.status // empty'; }
 
@@ -2318,15 +2332,15 @@ diag_save_state() {
 # A unit runs in a subshell: what the next one needs comes back through this file, and
 # whoever reads a value checks it is there.
 diag_load_state() {
-    local key value
-    [[ -f $QUALIFY_OUT/diag.state ]] || return 0
+    local key value file=${1:-$QUALIFY_OUT/diag.state}
+    [[ -f $file ]] || return 0
     while IFS='=' read -r key value; do
         case $key in
             SESSION_ID | SESSION_UID | SESSION_TYPE | DIAG_LOGIN_SINCE | DIAG_SHELL_PID | DIAG_LOST | VM_SERIAL)
                 printf -v "$key" '%s' "$value"
                 ;;
         esac
-    done <"$QUALIFY_OUT/diag.state"
+    done <"$file"
 }
 
 diag_need_login() {
@@ -2399,64 +2413,78 @@ conversations_settled() {
     [[ $(password_conversations) == "$before" ]]
 }
 
-# safe-karg-lock leaves apex.safe=1 and crash-guard layer-enabled false: a lock unit after
-# them would test upstream's lock. Sets the caller's relogin when it rebooted.
-diag_restore_layer() {
-    local test=$1 uid=$2 changed=''
-    if [[ -n $uid && $(user_setting "$uid" "$APEX_SCHEMA" layer-enabled 2>/dev/null) == false ]]; then
-        user_run "$uid" gsettings set "$APEX_SCHEMA" layer-enabled true || fail "$test" "cannot turn the layer back on"
-        changed=1
-    fi
-    if vm_ssh "grep -qw $APEX_SAFE_KARG /proc/cmdline"; then
-        vm_ssh "rpm-ostree kargs --delete=$APEX_SAFE_KARG" >/dev/null || fail "$test" "rpm-ostree kargs --delete=$APEX_SAFE_KARG failed"
-        changed=1
-    fi
-    [[ -n $changed ]] || return 0
-    vm_reboot
-    relogin=1
+# The post-login guest, RAM and disks, which every unit after the first starts from. Its
+# session is diag.snapshot.state's.
+diag_snapshot_save() {
+    local test=$1 out
+    out=$(hmp "savevm $DIAG_SNAPSHOT" 600) || fail "$test" "QMP's savevm did not answer"
+    [[ -z $out ]] || fail "$test" "savevm $DIAG_SNAPSHOT: $out"
+    cp "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag.snapshot.state"
+    result "$test" PASS "saved the guest after its first login as $DIAG_SNAPSHOT"
 }
 
-# PREVIOUS NEXT: keeps PREVIOUS's session and gnome-shell, unlocked and without a pkexec
-# dialog. What is gone is named in DIAG_LOST, then replaced by a fresh login.
+diag_snapshot_load() {
+    local test=$1 out started=$SECONDS deadline
+    if vm_alive; then
+        out=$(hmp "loadvm $DIAG_SNAPSHOT" 600) || fail "$test" "QMP's loadvm did not answer"
+        [[ -z $out ]] || fail "$test" "loadvm $DIAG_SNAPSHOT: $out"
+    else
+        start_vm local local-diag-recovered -loadvm "$DIAG_SNAPSHOT"
+    fi
+    [[ $(vm_run_state) == running ]] || qmp '{"execute":"cont"}' >/dev/null || fail "$test" "QMP's cont did not answer"
+    deadline=$((SECONDS + QUALIFY_RESUME_TIMEOUT))
+    until vm_answers; do
+        ((SECONDS < deadline)) || fail "$test" "the guest does not answer ssh ${QUALIFY_RESUME_TIMEOUT}s after loadvm $DIAG_SNAPSHOT"
+        sleep "$QUALIFY_POLL"
+    done
+    diag_clock "$test"
+    log "local-diag: loaded $DIAG_SNAPSHOT in $((SECONDS - started)) s"
+}
+
+# The guest's clock minus the host's, in seconds.
+diag_skew() {
+    local guest
+    guest=$(vm_ssh 'date +%s.%N') || return 1
+    awk -v g="$guest" -v h="$(date +%s.%N)" 'BEGIN { printf "%.3f\n", g - h }'
+}
+
+# The snapshot's clock is the save's: rows read the guest's clock and its journal --since.
+diag_clock() {
+    local test=$1 skew now
+    skew=$(diag_skew) || fail "$test" "cannot read the guest's clock"
+    awk -v s="$skew" 'BEGIN { exit !(s >= -1 && s <= 1) }' && return 0
+    now=$(date +%s.%N)
+    vm_ssh "date -s @$now" >/dev/null || fail "$test" "cannot step the guest's clock, ${skew} s off the host's"
+    skew=$(diag_skew) || fail "$test" "cannot read the guest's clock"
+    awk -v s="$skew" 'BEGIN { exit !(s >= -1 && s <= 1) }' ||
+        fail "$test" "the guest's clock is still ${skew} s off the host's after one step"
+}
+
+# PREVIOUS: names in DIAG_LOST what PREVIOUS left of its session and gnome-shell, then loads
+# the post-login snapshot, so the next unit starts from that login, unlocked, layer on.
 diag_reset() {
-    local test=local-diag-reset previous=$1 next=$2 found='' id='' uid='' type='' pid='' relogin=''
+    local test=local-diag-reset previous=$1 found='' id='' uid='' pid='' lost
     DIAG_LOST=
-    if ! vm_ssh true; then
-        DIAG_LOST="guest lost after $previous: it stopped answering ssh, and local-diag power-cycled it on the same disk"
-        stop_vm
-        start_vm local local-diag-recovered
-        wait_ssh
-        vm_ssh true || fail "$test" "the guest still does not answer ssh after a power-cycle"
-        relogin=1
+    if ! vm_alive || ! vm_answers; then
+        DIAG_LOST="guest lost after $previous: it stopped answering ssh, and local-diag loaded its post-login snapshot"
     elif found=$(active_session user "$TEST_USER"); then
-        read -r id uid type <<<"$found"
+        read -r id uid _ <<<"$found"
         pid=$(shell_pid "$uid") || pid=
         if [[ $id != "$SESSION_ID" ]]; then
             DIAG_LOST="before the next unit session ${SESSION_ID:-none} was gone, session $id in its place"
         elif [[ $pid != "$DIAG_SHELL_PID" ]]; then
             DIAG_LOST="before the next unit gnome-shell ${DIAG_SHELL_PID:-none} of session $id was gone, ${pid:-none} in its place"
         fi
-        if [[ -n $DIAG_LOST ]]; then
-            log_out "$test" "$uid"
-            uid='' relogin=1
-        fi
     else
         DIAG_LOST="before the next unit session ${SESSION_ID:-none} of $TEST_USER was gone"
-        relogin=1
     fi
-    [[ $next != lock-* ]] || diag_restore_layer "$test" "$uid"
-    if [[ -n $relogin ]]; then
-        DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
-        greeter_login "$test"
-        diag_layer_active "$test"
-    else
-        SESSION_ID=$id SESSION_UID=$uid SESSION_TYPE=$type
-        user_run "$SESSION_UID" systemctl --user stop "$PKEXEC_UNIT.service" >/dev/null 2>&1 || true
-        vm_ssh "loginctl unlock-session $SESSION_ID" || fail "$test" "loginctl unlock-session $SESSION_ID failed"
-    fi
-    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "session $SESSION_ID still locked ${QUALIFY_LOCK_TIMEOUT}s after loginctl unlock-session" \
+    diag_snapshot_load "$test"
+    lost=$DIAG_LOST
+    diag_load_state "$QUALIFY_OUT/diag.snapshot.state"
+    DIAG_LOST=$lost
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "session $SESSION_ID still locked ${QUALIFY_LOCK_TIMEOUT}s after loadvm $DIAG_SNAPSHOT" \
         lockedhint_and_screensaver_agree "$SESSION_ID" "$SESSION_UID" no
-    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after pkexec stopped" polkit_quiet
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "a polkit conversation still runs after loadvm $DIAG_SNAPSHOT" polkit_quiet
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the password conversations did not settle" conversations_settled
 }
 
@@ -2537,6 +2565,8 @@ cmd_local_diag() {
         die "$image is not in local container storage (build it with image.sh build)"
     ensure_key
     install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
+    # Overlays a kept earlier run left are on another install.
+    rm -f "$QUALIFY_OUT/local.raw.qcow2" "$QUALIFY_OUT/local.vars.qcow2"
     start_vm local
     wait_ssh
     assert_green local-install "$digest"
@@ -2550,6 +2580,7 @@ cmd_local_diag() {
     DIAG_LOGIN_SINCE=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
     greeter_login local
     diag_save_state
+    diag_snapshot_save local-diag-snapshot
 
     for unit in "${DIAG_RUN[@]}"; do
         if [[ -n $gone ]]; then
@@ -2560,7 +2591,7 @@ cmd_local_diag() {
         fi
         if [[ -n $previous ]]; then
             from=$(wc -l <"$QUALIFY_OUT/results.md")
-            diag_run diag_reset "$previous" "$unit"
+            diag_run diag_reset "$previous"
             if [[ -n $DIAG_LOST ]]; then
                 if [[ ${DIAG_STATUS[$previous]} == PASS ]]; then
                     DIAG_STATUS[$previous]=FAIL
@@ -2574,7 +2605,7 @@ cmd_local_diag() {
                 DIAG_STATUS[$unit]=BLOCKED
                 DIAG_DETAIL[$unit]="the reset before it failed: ${DIAG_DETAIL[$unit]}"
                 [[ $DIAG_LOST != "guest lost after "* ]] ||
-                    gone="the guest was lost after $previous, and a power-cycle did not bring it back"
+                    gone="the guest was lost after $previous, and loading its post-login snapshot did not bring it back"
                 DIAG_LOST=
                 diag_table
                 continue
@@ -2691,6 +2722,11 @@ save_disk_journal() {
     local name=$1 disk=$QUALIFY_OUT/$1.raw mnt=$QUALIFY_OUT/mnt-$1-journal mapper=apex-qualify-$1-journal
     local loop dev opts=ro journal='' rc=1
     [[ -f $disk ]] || return 0
+    # local-diag's writes are in its overlay: fold them in, so the raw disk holds the run's journal.
+    if [[ -f $disk.qcow2 ]]; then
+        qemu-img commit -q "$disk.qcow2" || return 1
+        rm -f "$disk.qcow2" "$QUALIFY_OUT/$name.vars.qcow2"
+    fi
     loop=$(as_root losetup --find --show --partscan --read-only "$disk") || return 1
     dev=${loop}p3
     if [[ -n $LUKS_PASSPHRASE ]]; then
@@ -2734,7 +2770,7 @@ cleanup() {
     close_mappers
     local l
     for l in "${LOOPS[@]}"; do as_root losetup --detach "$l" 2>/dev/null || true; done
-    if [[ ${QUALIFY_KEEP_DISKS:-0} != 1 ]]; then rm -f "$QUALIFY_OUT"/*.raw; fi
+    if [[ ${QUALIFY_KEEP_DISKS:-0} != 1 ]]; then rm -f "$QUALIFY_OUT"/*.raw "$QUALIFY_OUT"/*.qcow2; fi
     publish_results
     exit "$rc"
 }
@@ -2754,6 +2790,7 @@ main() {
     require qemu-system-x86_64 ssh ssh-keygen jq openssl skopeo podman truncate sfdisk \
         losetup mkfs.vfat mkfs.ext4 mkfs.btrfs comm
     [[ $QUALIFY_LAYOUT != luks ]] || require cryptsetup btrfs blkid
+    [[ $cmd != local_diag ]] || require qemu-img
     mkdir -p "$QUALIFY_OUT"
     rm -rf "$QUALIFY_OUT/logs.previous"
     if [[ -d $QUALIFY_OUT/logs ]]; then mv "$QUALIFY_OUT/logs" "$QUALIFY_OUT/logs.previous"; fi
