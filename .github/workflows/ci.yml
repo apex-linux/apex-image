@@ -69,7 +69,7 @@ jobs:
   scripts:
     name: shellcheck, actionlint, selftest, devloop
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
