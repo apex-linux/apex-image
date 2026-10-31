@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: stage-spike
+
+# A draft PR that is never merged: G4's candidate staging, containers-storage against a registry.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/stage-spike.yml
+      - .github/spike/**
+  workflow_dispatch:
+    inputs:
+      image:
+        description: The image to install and stage on (default quay.io/fedora/fedora-bootc:45)
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  stage:
+    name: staging from containers-storage and from a registry, under KVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk
+        run: .github/scripts/ci-host.sh free-disk
+
+      - name: ci-host.sh kvm
+        run: .github/scripts/ci-host.sh kvm
+
+      - name: qualify.sh host-setup
+        run: .github/scripts/qualify.sh host-setup
+
+      - name: Both staging paths on fresh installs
+        env:
+          SPIKE_IMAGE: ${{ inputs.image }}
+        run: SPIKE_IMAGE=${SPIKE_IMAGE:-quay.io/fedora/fedora-bootc:45} .github/spike/stage-spike.sh
+
+      - name: Logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stage-spike-logs
+          path: ${{ runner.temp }}/stage-spike/logs
+          retention-days: 7
+          if-no-files-found: ignore
