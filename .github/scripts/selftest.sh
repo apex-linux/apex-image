@@ -3240,6 +3240,16 @@ ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.gith
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
     "$CT/gnome/tests/layer/fixtures/"
+CT_UPDATE1=io.github.apex_linux.Apex.Update1.xml
+mkdir -p "$CT/gnome/desktop/control-center/panels/apex" "$CT/system/crates/apex-dbus/data" \
+    "$CT/system/crates/apex-session-agent/tests/data"
+printf '<node/>\n' >"$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
+cp "$CT/system/crates/apex-dbus/data/$CT_UPDATE1" "$CT/gnome/desktop/control-center/panels/apex/"
+cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/system/crates/apex-session-agent/tests/data/"
+ct_errors() { # contracts.sh's output, for the line that names what failed
+    PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
+        APEX_GNOME_SRC="$CT/gnome" "$APEX_ROOT/.github/scripts/contracts.sh" 2>&1
+}
 ct_run() {
     PATH="$CT/bin:$PATH" CT_PROVIDES="$CT/provides" APEX_SYSTEM_SRC="$CT/system" APEX_DESKTOP_SRC="$CT/desktop" \
         APEX_GNOME_SRC="$CT/gnome" rc_of "$APEX_ROOT/.github/scripts/contracts.sh"
@@ -3267,18 +3277,25 @@ rm "$CT/gnome/tests/layer/fixtures/$CT_SCHEMA"
 check "contracts: apex-gnome's schema copy is missing" 1 "$(ct_run)"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/gnome/tests/layer/fixtures/"
 check "contracts: copies equal again" 0 "$(ct_run)"
-mkdir -p "$CT/system/crates/apex-session-agent/tests/data"
+rm "$CT/system/crates/apex-session-agent/tests/data/$CT_SCHEMA"
 check "contracts: the session agent without its schema copy" 1 "$(ct_run)"
+check_true "names the missing copy" grep -qF \
+    "error: $CT/system/crates/apex-session-agent/tests/data/$CT_SCHEMA is missing: copy it from the pinned original $CT/desktop/desktop/schemas/$CT_SCHEMA" \
+    <(ct_errors)
+rm -r "$CT/system/crates/apex-session-agent"
+check "contracts: an apex-system without the session agent's crate" 1 "$(ct_run)"
+mkdir -p "$CT/system/crates/apex-session-agent/tests/data"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/system/crates/apex-session-agent/tests/data/"
 check "contracts: the session agent with its schema copy" 0 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 check "contracts: an apexctl that accepts every degraded name" 0 "$(ct_run)"
-CT_UPDATE1=io.github.apex_linux.Apex.Update1.xml
-mkdir -p "$CT/gnome/desktop/control-center/panels/apex" "$CT/system/crates/apex-dbus/data"
-printf '<node/>\n' >"$CT/system/crates/apex-dbus/data/$CT_UPDATE1"
-check "contracts: no Update1 copy in apex-gnome yet" 0 "$(ct_run)"
+rm "$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1"
+check "contracts: apex-gnome without Settings' Update1 copy" 1 "$(ct_run)"
+check_true "names the missing copy" grep -qF \
+    "error: $CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1 is missing: copy it from the pinned original $CT/system/crates/apex-dbus/data/$CT_UPDATE1" \
+    <(ct_errors)
 printf '<node></node>\n' >"$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1"
 check "contracts: Settings' Update1 copy differs from apex-system's" 1 "$(ct_run)"
 cp "$CT/system/crates/apex-dbus/data/$CT_UPDATE1" "$CT/gnome/desktop/control-center/panels/apex/"
