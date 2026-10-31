@@ -2628,6 +2628,59 @@ check_true "names the stale line" grep -qF "allowed:2: ci.yml build contents:wri
 check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build contents:write\n' >>allowed")"
 check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
 
+# --- guest-lint.sh: the code qualify.sh runs in the guest parses on hosted CI ---------------
+check "guest code: this checkout's qualify.sh parses" 0 \
+    "$(rc_of "$APEX_ROOT/.github/scripts/guest-lint.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/guest-lint-allowed.txt")"
+GL=$TMP/guest-lint
+gl() { # EDIT: the check's exit on a fresh fixture qualify.sh after EDIT ran in $GL, its errors in $GL.err
+    local rc=0
+    rm -rf "$GL" && mkdir -p "$GL"
+    cat >"$GL/qualify.sh" <<'GL_EOF'
+readonly PKGS=(a '$k' b)
+readonly QMP_X='
+import sys
+print(sys.argv)
+'
+vm_ssh() { ssh x -- "$@"; }
+listing_script() {
+    cat <<'EOF'
+for i in 1 2; do echo "$i"; done
+EOF
+}
+rows() {
+    vm_ssh bash -s < <(listing_script)
+    vm_ssh "test -e $DIR/x && k=y && echo ${PKGS[*]}"
+    vm_ssh 'date +%s'
+    vm_ssh true
+    python3 -c "$QMP_X"
+}
+GL_EOF
+    printf '# FUNCTION SCnnnn REASON\n' >"$GL/allowed"
+    (cd "$GL" && eval "$1")
+    "$APEX_ROOT/.github/scripts/guest-lint.sh" "$GL/qualify.sh" "$GL/allowed" >"$GL.out" 2>"$GL.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "guest code: a fixture whose guest code parses" 0 "$(gl :)"
+check_true "and counts what it read" grep -qF "guest code: 4 vm_ssh commands, 1 fed scripts and the python3 -c strings" "$GL.out"
+check "guest code: a fed script that does not parse" 1 "$(gl "sed -i 's/; done$//' qualify.sh")"
+check_true "names the function" grep -qF "qualify.sh:13 (listing_script): bash -n:" "$GL.err"
+check "guest code: a python3 -c string that does not compile" 1 "$(gl "sed -i 's/^print(sys.argv)$/print(sys.argv/' qualify.sh")"
+check_true "names it" grep -qF "qualify.sh: QMP_X, its line" "$GL.err"
+check "guest code: a remote command with an unbalanced quote" 1 "$(gl "sed -i \"s/vm_ssh 'date +%s'/vm_ssh \\\"echo 'oops\\\"/\" qualify.sh")"
+check_true "names its line" grep -qF "qualify.sh:15: bash -n:" "$GL.err"
+check "guest code: a quoted command with no end on its line" 1 "$(gl "sed -i 's/vm_ssh true/vm_ssh \"true/' qualify.sh")"
+check_true "says so" grep -qF "qualify.sh:16: cannot find the end of vm_ssh's quoted command" "$GL.err"
+check "guest code: a command built at run time" 1 "$(gl "sed -i 's/vm_ssh true/vm_ssh \$cmd/' qualify.sh")"
+check_true "says it cannot be checked" grep -qF "qualify.sh:16: vm_ssh's command is built at run time (\$cmd): it cannot be checked" "$GL.err"
+check "guest code: bash -s with no script fed from a function" 1 "$(gl "sed -i 's/vm_ssh true/vm_ssh bash -s <<<x/' qualify.sh")"
+check "guest code: a shellcheck finding in a fed script" 1 "$(gl "sed -i 's/^for i in 1 2; do echo \"\$i\"; done$/&\nread -r line; echo \$line/' qualify.sh")"
+check_true "names the function and the code" grep -qF "qualify.sh listing_script(), its line 2: SC2086:" "$GL.err"
+check "guest code: an allowed shellcheck finding" 0 \
+    "$(gl "sed -i 's/^for i in 1 2; do echo \"\$i\"; done$/&\nread -r line; echo \$line/' qualify.sh; printf 'listing_script SC2086  the words must split\n' >>allowed")"
+check "guest code: an allow line that no longer fires" 1 "$(gl "printf 'listing_script SC2086  the words must split\n' >>allowed")"
+check_true "names the stale line" grep -qF "allowed:2: listing_script SC2086 no longer fires" "$GL.err"
+check "guest code: an allow line without a reason" 1 "$(gl "printf 'listing_script SC2086\n' >>allowed")"
+
 # --- g4-fixtures-check.sh: every G4 fixture listed, read and scrubbed ---------------------
 G4C=$TMP/g4-fixtures-check
 g4c() { # EDIT: the check's exit on a fresh copy of g4-fixtures/ after EDIT ran in it, its errors in $G4C.err
