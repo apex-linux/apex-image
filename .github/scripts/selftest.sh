@@ -3169,6 +3169,16 @@ check_true "is the directory's second read" grep -qF "qualify.sh:8: reads .githu
 check "g4 harness: and of a directory nothing excuses" 1 \
     "$(hc4 "printf 'ls \"\$APEX_ROOT/tools/conf/\"\n' >>.github/scripts/helper.sh; mkdir -p tools/conf; : >tools/conf/a.env")"
 check_true "names the directory" grep -qF "error: .github/scripts/helper.sh:2: reads tools/conf, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a templated directory read with a trailing slash" 1 \
+    "$(hc4 "printf 'ls \"\$APEX_ROOT/.github/scripts/\$sub/\"\n' >>.github/scripts/qualify.sh")"
+check_true "is each file it can name" grep -qF "qualify.sh:8: reads .github/scripts/g4-harness-allowed.txt, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: modules a Python script imports on one line, dotted or not" 1 \
+    "$(hc4 "$HC4_PY; printf 'import json, rowsmod\nfrom pkg.rows import r\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py; mkdir .github/scripts/pkg; : >.github/scripts/pkg/rows.py")"
+check_true "are reads, each" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rowsmod.py" "$HC4.err"
+check_true "the dotted one too" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/pkg/rows.py" "$HC4.err"
+check "g4 harness: a __file__ use the walk cannot follow" 1 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nopen(os.path.join(HERE, \"rows.txt\"))\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "fails by name" grep -qF "error: .github/scripts/tool.py:1: cannot tell what 'HERE = os.path.dirname(__file__)' reads: join a string to __file__ on that line" "$HC4.err"
 check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line" 1 \
     "$(hc4 "printf 'case \$1 in\n    x)\n        rows=\$(sort\n            \"\$APEX_ROOT/.github/scripts/rows.txt\")\n        ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
 check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
@@ -3973,8 +3983,11 @@ ch() { # SUBCOMMAND [PATH_KEY=BYTES...]: ci-host.sh's exit on Actions behind the
 }
 CH_G=$((1024 * 1024 * 1024))
 for c in free-disk storage podman-conf kvm qualify; do
-    check "ci-host $c refuses to run off GitHub Actions" 1 \
-        "$(PATH="$HC/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/ci-host.sh" "$c")"
+    : >"$HC/sudo"
+    hc_rc=0
+    PATH="$HC/bin:$PATH" GITHUB_ACTIONS='' FAKE_SUDO="$HC/sudo" "$APEX_ROOT/.github/scripts/ci-host.sh" "$c" >"$HC/out" 2>&1 || hc_rc=$?
+    check "ci-host $c refuses to run off GitHub Actions, before it runs anything as root" \
+        "1|1|" "$hc_rc|$(grep -c "ci-host.sh $c changes the host" "$HC/out")|$(paste -sd'|' "$HC/sudo")"
 done
 check "ci-host podman-conf" 0 "$(ch podman-conf)"
 check "writes the sqlite drop-in with temp in the store" \

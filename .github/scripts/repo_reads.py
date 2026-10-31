@@ -44,7 +44,7 @@ REF = re.compile(rf"(?:(?<=[\s\"'=<(;|&`]){PREFIX}?|{PREFIX}|^)({TOP})")
 MESSAGE = re.compile(r"""^\s*(?:echo|printf|die|log|warn|note|notice|usage|flunk|fail|diag_block|error|info)\b|::(?:error|warning|notice)""")
 BESIDE = re.compile(r"\$\(dirname[^)]*\)\"?/((?:\.\./)*[\w.-][\w./-]*)")
 CASE = re.compile(r"^\s*[^()#]*[^(]\)\s*(?:;;|return\b|$)")
-IMPORT = re.compile(r"^\s*(?:from\s+(\w+)|import\s+(\w+))")
+IMPORT = re.compile(r"^\s*(?:from\s+(\.*[\w.]*)\s+import\s+(.+)|import\s+(.+))")
 HERE = re.compile(
     r"""(?:os\.path\.dirname\((?:os\.path\.(?:abs|real)path\()?__file__\)?\)|Path\(__file__\)(?:\.resolve\(\))?\.parent)"""
     r"""\s*[,/]\s*["']([^"']+)["']"""
@@ -79,11 +79,7 @@ def references(path, numbered):
         if pattern:
             continue
         if not shell:
-            m = IMPORT.match(line)
-            if m:
-                yield number, os.path.join(os.path.dirname(path), (m[1] or m[2]) + ".py")
-            for m in HERE.finditer(text):
-                yield number, os.path.normpath(os.path.join(os.path.dirname(path), m[1]))
+            yield from python_reads(path, number, line, text)
         for m in REF.finditer(text):
             yield number, m[1].rstrip(".,;:)\"'")
         for m in BESIDE.finditer(text):
@@ -92,6 +88,29 @@ def references(path, numbered):
             near = os.path.normpath(os.path.join(os.path.dirname(path), m[1].rstrip(".,;:)\"'")))
             if near not in (".", "") and not near.startswith(".."):
                 yield number, near
+
+
+UNRESOLVED = "\0"
+
+
+def python_reads(path, number, line, text):
+    """Modules beside PATH that LINE imports, files it joins to __file__, and __file__ uses it cannot."""
+    here = os.path.dirname(path)
+    m = IMPORT.match(line)
+    if m:
+        modules = [m[1].lstrip(".")] if m[1] is not None else []
+        if m[1] is not None and not modules[0]:
+            modules = m[2].split(",")
+        for name in modules if modules else m[3].split(","):
+            name = name.split(" as ")[0].strip().replace(".", "/")
+            if re.fullmatch(r"[\w/]+", name):
+                yield number, os.path.join(here, name + ".py")
+                yield number, os.path.join(here, name, "__init__.py")
+    joins = list(HERE.finditer(text))
+    for m in joins:
+        yield number, os.path.normpath(os.path.join(here, m[1]))
+    if not joins and "__file__" in re.sub(r"\"[^\"]*\"|'[^']*'", "", text):
+        yield number, UNRESOLVED + line.strip()
 
 
 TEMPLATE = re.compile(r"\$\{[^}]*\}|\$\w+|\*|\[[^\]]*\]|\{[^}]*\}")
@@ -110,9 +129,11 @@ def walk(repo, queue, covered, allowed, covers, under, problems):
     while queue:
         token, where = queue.pop(0)
         reader = where.split(":")[0]
+        if token.startswith(UNRESOLVED):
+            problems.append(f"{where}: cannot tell what {token[1:]!r} reads: join a string to __file__ on that line")
+            continue
+        token = token.rstrip("/") or token
         static = re.split(r"[$*\[{]", token)[0]
-        if static == token and token.endswith("/"):
-            token = static = token.rstrip("/")
         if token in repo.tracked:
             if token not in seen:
                 seen[token] = where
