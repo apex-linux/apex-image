@@ -149,6 +149,29 @@ if ((${#dead[@]})); then
 fi
 log "contracts: every dock favourite of $desktop is in the image or preinstalled"
 
+# The compose dnf-installs these lists from the same repositories; a name that stopped resolving
+# would fail the VM's build two hours in, so it fails here, and Fedora, not the PR, moved.
+where=$(printf '%s\n' "${repos[@]}" | sed -n 's/^--repo=//p' | paste -sd+)
+gone=()
+for list in base gnome; do
+    file=$APEX_ROOT/image/packages/$list.txt
+    mapfile -t names < <(sed 's/#.*//; s/[[:space:]]//g' "$file")
+    wanted=()
+    for name in "${names[@]}"; do [[ -z $name ]] || wanted+=("$name"); done
+    ((${#wanted[@]})) || die "contracts: image/packages/$list.txt lists no package"
+    found=$("${APEX_DNF:-dnf5}" -q repoquery "${repos[@]}" --qf '%{name}\n' -- "${wanted[@]}" | sort -u) ||
+        die "contracts: dnf5 repoquery of image/packages/$list.txt failed"
+    for i in "${!names[@]}"; do
+        [[ -z ${names[i]} ]] || grep -qxF -- "${names[i]}" <<<"$found" ||
+            gone+=("$list.txt:$((i + 1)) '${names[i]}' no longer resolves in $where (a Fedora change, not this PR's, unless it added the line)")
+    done
+done
+if ((${#gone[@]})); then
+    printf 'error: image/packages/%s\n' "${gone[@]}" >&2
+    die "contracts: the compose would not find every package base.txt and gnome.txt list"
+fi
+log "contracts: every package of base.txt and gnome.txt resolves in $where"
+
 # Copies of one component's files that another keeps, by explicit path, so a moved copy
 # fails too: COPY ORIGINAL pairs.
 readonly SCHEMA=io.github.apex_linux.Apex.Desktop.gschema.xml
