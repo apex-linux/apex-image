@@ -101,6 +101,8 @@ Environment (all optional):
   QUALIFY_POLL          seconds between checks while waiting for QEMU (default 5)
   QUALIFY_LOGIN_TIMEOUT seconds to wait for GDM's greeter, for the login through it, and
                         for the user's gnome-shell to answer (default 300)
+  QUALIFY_RESUME_TIMEOUT  seconds the suspended guest may take, after QMP's
+                        system_wakeup, to answer ssh again (default 300)
   QUALIFY_LOCK_TIMEOUT  seconds loginctl lock-session and unlock-session may take to show
                         in gnome-shell's state (default 60)
   QUALIFY_G4_RECORD     the G4 key of the last local pass (default _build/g4-passed.txt)
@@ -123,6 +125,7 @@ EOF
 : "${QUALIFY_POLL:=5}"
 : "${QUALIFY_LOGIN_TIMEOUT:=300}"
 : "${QUALIFY_LOCK_TIMEOUT:=60}"
+: "${QUALIFY_RESUME_TIMEOUT:=300}"
 : "${QUALIFY_G4_RECORD:=$APEX_ROOT/_build/g4-passed.txt}"
 
 readonly STRICT_POLICY=/usr/share/apex/containers/policy.json
@@ -468,7 +471,7 @@ start_vm() {
     # and QMP runs commands as the QEMU user.
     install -d -m 0700 "$QUALIFY_OUT/qmp"
     QMP_SOCKET=$QUALIFY_OUT/qmp/$name.sock
-    rm -f "$QUALIFY_OUT/$name.pid" "$QMP_SOCKET"
+    rm -f "$QUALIFY_OUT/$name.pid" "$QMP_SOCKET" "$QUALIFY_OUT/qmp/$name.events.sock"
     # vmport=off: the guest's vmmouse would take only absolute events, and drop a 'rel' move.
     qemu-system-x86_64 -name "apex-$name" -machine q35,accel=kvm,vmport=off -cpu host \
         -m "$QUALIFY_MEM" -smp "$QUALIFY_SMP" \
@@ -479,9 +482,19 @@ start_vm() {
         -device virtio-net-pci,netdev=net0 -device virtio-rng-pci \
         -device virtio-vga -display none -global ICH9-LPC.disable_s3=0 \
         -serial "file:$VM_SERIAL" -monitor none \
-        -qmp "unix:$QMP_SOCKET,server=on,wait=off" \
+        -qmp "unix:$QMP_SOCKET,server=on,wait=off" -qmp "unix:$QUALIFY_OUT/qmp/$name.events.sock,server=on,wait=off" \
+        -debugcon "file:$QUALIFY_OUT/logs/$log.ovmf.log" -global isa-debugcon.iobase=0x402 \
         -pidfile "$QUALIFY_OUT/$name.pid" -daemonize "$@"
+    python3 -c "$QMP_EVENTS" "$QUALIFY_OUT/qmp/$name.events.sock" "$QUALIFY_OUT/logs/$log.qmp-events" \
+        </dev/null >/dev/null 2>&1 &
     log "started VM $name (pid $(cat "$QUALIFY_OUT/$name.pid"))${*:+ with $*}; console: $VM_SERIAL"
+}
+
+# Bounded: QEMU's user network accepts the connection while the guest's sshd is gone.
+vm_answers() {
+    timeout 20 ssh -i "$QUALIFY_OUT/key" -p "$QUALIFY_SSH_PORT" -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 \
+        root@127.0.0.1 true 2>/dev/null
 }
 
 vm_alive() {
@@ -500,12 +513,14 @@ stop_vm() {
     vm_alive || { VM_NAME=; return 0; }
     local pid
     pid=$(cat "$QUALIFY_OUT/$VM_NAME.pid")
-    vm_ssh 'systemctl poweroff' >/dev/null 2>&1 || true
     local i
-    for ((i = 0; i < 60; i++)); do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 2
-    done
+    if vm_answers; then
+        vm_ssh 'systemctl poweroff' >/dev/null 2>&1 || true
+        for ((i = 0; i < 60; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 2
+        done
+    fi
     if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" 2>/dev/null || true
         for ((i = 0; i < 10; i++)); do
@@ -1054,6 +1069,31 @@ with socket.socket(socket.AF_UNIX) as s:
 # On stdin, so that no key of the password reaches a process's arguments.
 qmp() { printf '%s\n' "$@" | python3 -c "$QMP_CLIENT" "$QMP_SOCKET"; }
 
+# Every run-state event QEMU sends, with the host's time: the guest may log nothing.
+readonly QMP_EVENTS='
+import datetime, json, socket, sys, time
+WANTED = {"SUSPEND", "WAKEUP", "RESET", "SHUTDOWN", "POWERDOWN", "STOP", "RESUME", "GUEST_PANICKED"}
+s = socket.socket(socket.AF_UNIX)
+for _ in range(50):
+    try:
+        s.connect(sys.argv[1])
+        break
+    except OSError:
+        time.sleep(0.1)
+else:
+    sys.exit(1)
+stream = s.makefile("rw")
+stream.readline()
+stream.write("{\"execute\":\"qmp_capabilities\"}\n")
+stream.flush()
+with open(sys.argv[2], "a", buffering=1) as out:
+    for line in stream:
+        message = json.loads(line)
+        if message.get("event") in WANTED:
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+            out.write("%s %s %s\n" % (now, message["event"], json.dumps(message.get("data", {}))))
+'
+
 readonly QMP_QUERY='
 import json, socket, sys
 with socket.socket(socket.AF_UNIX) as s:
@@ -1073,6 +1113,8 @@ with socket.socket(socket.AF_UNIX) as s:
 
 # One QMP command whose answer is printed: the VM's run state, say.
 qmp_query() { python3 -c "$QMP_QUERY" "$QMP_SOCKET" "$1"; }
+
+hmp() { qmp_query "$(jq -cn --arg c "$1" '{execute: "human-monitor-command", arguments: {"command-line": $c}}')" | jq -r .; }
 
 vm_run_state() { qmp_query '{"execute":"query-status"}' | jq -r '.status // empty'; }
 
@@ -1356,12 +1398,12 @@ lock_failure_detail() {
 }
 
 lock_session() {
-    local test=$1
+    local test=$1 dump=${2:-$1}
     vm_ssh "loginctl lock-session $SESSION_ID" || fail "$test" "loginctl lock-session $SESSION_ID failed"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" \
         "session $SESSION_ID not locked ${QUALIFY_LOCK_TIMEOUT}s after loginctl lock-session" \
         lockedhint_and_screensaver_agree "$SESSION_ID" "$SESSION_UID" yes
-    screendump "$test"
+    screendump "$dump"
 }
 
 assert_unlocked() {
@@ -1536,22 +1578,136 @@ matrix_blank_wake() {
 
 vm_suspended() { [[ $(vm_run_state) == suspended ]]; }
 
+# shellcheck disable=SC2016 # expanded by the guest's shell
+readonly SUSPEND_HEARTBEAT='while :; do printf "heartbeat %s\n" "$(cat /proc/uptime)"; ip -br -4 a; nmcli -t general; sleep 5; done'
+
+# The suspend has failed only in a VM so far: name the host, QEMU, firmware and guest kernel.
+suspend_environment() {
+    local test=$1 qemu nested='' f cpu kernel mem_sleep line
+    qemu=$(rpm -qf "$(command -v qemu-system-x86_64)" 2>/dev/null || qemu-system-x86_64 --version 2>/dev/null | head -n 1) || qemu=
+    for f in /sys/module/kvm_amd/parameters/nested /sys/module/kvm_intel/parameters/nested; do
+        if [[ -r $f ]]; then nested=$(<"$f") && break; fi
+    done
+    cpu=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -n 1) || cpu=
+    kernel=$(vm_ssh 'uname -r' 2>/dev/null) || kernel=
+    mem_sleep=$(vm_ssh 'cat /sys/power/mem_sleep' 2>/dev/null) || mem_sleep=
+    line="QEMU ${qemu:-unknown}; OVMF ${OVMF_CODE:-unknown}; guest kernel ${kernel:-unknown}; nested ${nested:-unknown}"
+    line+="; host CPU ${cpu:-unknown}; guest mem_sleep ${mem_sleep:-unknown}"
+    printf '%s\n' "$line" >"$QUALIFY_OUT/logs/$test.env.txt"
+    log "$test: $line"
+}
+
+# PM messages on the console through the suspend, and the guest's journal and network on
+# ttyS0 every 5 s: the serial log is all that is left when ssh does not come back.
+suspend_diagnostics() {
+    local test=$1 heartbeat
+    vm_ssh 'echo N >/sys/module/printk/parameters/console_suspend; echo 1 >/sys/power/pm_debug_messages; echo 1 >/sys/power/pm_print_times; dmesg -n 7' ||
+        warn "$test: cannot turn on the PM debug messages"
+    vm_ssh 'systemd-run --quiet --unit=apex-qualify-tap -p StandardOutput=tty -p TTYPath=/dev/ttyS0 journalctl -f -o short-monotonic --no-pager' ||
+        warn "$test: cannot tap the journal to ttyS0"
+    heartbeat=$(printf '%q' "$SUSPEND_HEARTBEAT")
+    vm_ssh "systemd-run --quiet --unit=apex-qualify-heartbeat -p StandardOutput=tty -p TTYPath=/dev/ttyS0 sh -c $heartbeat" ||
+        warn "$test: cannot start the heartbeat on ttyS0"
+}
+
+suspend_serial_after_wake() {
+    local test=$1 wake_line=$2
+    tail -n "+$((wake_line + 1))" "$VM_SERIAL" >"$QUALIFY_OUT/logs/$test.serial-after-wake.log" 2>/dev/null || true
+}
+
+# Before a resume timeout's fail(): where QEMU's vCPUs are, and whether slirp sees the probe.
+resume_timeout_dump() {
+    local test=$1 i probe
+    {
+        echo '## query-status'
+        qmp_query '{"execute":"query-status"}'
+        echo '## info cpus'
+        hmp 'info cpus'
+        for i in 1 2 3; do
+            echo "## info registers -a ($i)"
+            hmp 'info registers -a'
+            sleep 1
+        done
+        vm_answers &
+        probe=$!
+        sleep 2
+        echo '## info usernet, an ssh probe in flight'
+        hmp 'info usernet'
+        wait "$probe" || true
+    } >"$QUALIFY_OUT/logs/$test.resume-timeout.txt" 2>&1 || true
+}
+
+# After system_wakeup: QEMU's run state on every pass, then one ssh probe. Nothing is sent
+# to the guest, so what it does on its own is what the row sees.
+wait_resumed() {
+    local test=$1 wake_line=$2 deadline=$((SECONDS + QUALIFY_RESUME_TIMEOUT)) state='' seen=''
+    while :; do
+        if ! vm_alive; then
+            suspend_serial_after_wake "$test" "$wake_line"
+            fail "$test" "the VM exited after system_wakeup (QEMU run states: ${seen:-none})"
+        fi
+        state=$(vm_run_state 2>/dev/null) || state=
+        [[ -z $state || " $seen " == *" $state "* ]] || seen+=${seen:+ }$state
+        if [[ $state == suspended ]]; then
+            suspend_serial_after_wake "$test" "$wake_line"
+            fail "$test" "the guest suspended again after system_wakeup"
+        fi
+        if [[ $state == running ]] && vm_answers; then return 0; fi
+        if ((SECONDS >= deadline)); then
+            suspend_serial_after_wake "$test" "$wake_line"
+            resume_timeout_dump "$test"
+            fail "$test" "no ssh ${QUALIFY_RESUME_TIMEOUT}s after system_wakeup (QEMU run state ${state:-unknown}; seen: ${seen:-none}; logs/$test.resume-timeout.txt)"
+        fi
+        sleep "$QUALIFY_POLL"
+    done
+}
+
+# PATTERN since SINCE, in this boot's journal of the process COMM. A journal it cannot read
+# fails TEST: no read is no proof that a line is absent.
+journal_since_has() {
+    local test=$1 since=$2 comm=$3 pattern=$4 log
+    log=$(vm_ssh "journalctl -b _COMM=$comm --since @$((since - 1)) -o cat --no-pager") ||
+        fail "$test" "cannot read $comm's journal since the row began"
+    grep -qE -- "$pattern" <<<"$log"
+}
+
 matrix_suspend() {
-    local test=$1-lock-suspend pid=$2 base=$3 since
+    local test=$1-lock-suspend pid=$2 base=$3 since boot_id woken_boot cursor wake_line
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     lock_row "$test" "$since"
-    lock_session "$test"
+    boot_id=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id"
+    log "$test: boot $boot_id; serial console $VM_SERIAL"
+    suspend_environment "$test"
+    lock_session "$test" "$test-locked"
+    cursor=$(user_journal_cursor) || true
+    [[ -n $cursor ]] || fail "$test" "cannot read the user journal's cursor"
+    suspend_diagnostics "$test"
     vm_ssh 'systemd-run --quiet --on-active=2 systemctl suspend' || fail "$test" "cannot schedule systemctl suspend"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the VM did not suspend (QMP query-status)" vm_suspended
+    wake_line=$(serial_lines)
     qmp '{"execute":"system_wakeup"}' || fail "$test" "QEMU took no system_wakeup"
-    wait_ssh
+    sleep "$QUALIFY_POLL"
+    screendump "$test-woken"
+    wait_resumed "$test" "$wake_line"
+    suspend_serial_after_wake "$test" "$wake_line"
+    woken_boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id after the wake"
+    [[ $woken_boot == "$boot_id" ]] || fail "$test" "the guest rebooted instead of resuming (boot $boot_id -> $woken_boot)"
     # The guest's first S3: its PM lines and the virtio devices' resume, kept whatever follows.
     vm_ssh "journalctl -k -b --since @$((since - 1)) -o short-monotonic --no-pager" >"$QUALIFY_OUT/logs/$test.kernel.txt" 2>&1 ||
         warn "$test: cannot save the kernel journal since the row began"
     screendump "$test-resumed"
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "logind logged no \"Operation 'suspend' finished.\" after the wake" \
+        journal_since_has "$test" "$since" systemd-logind "Operation .suspend. finished"
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "NetworkManager logged no wake after the suspend" \
+        journal_since_has "$test" "$since" NetworkManager "sleep: wake requested"
+    ! journal_since_has "$test" "$since" systemd-logind "Power key pressed" ||
+        fail "$test" "logind logged a power key press: the wake reached the guest as a power button"
     wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the session is not locked after resume" still_locked
+    wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "no '$APEX_LOCK_REBUILT' after the resume" \
+        user_journal_after "$cursor" "$APEX_LOCK_REBUILT"
+    vm_ssh 'systemctl stop apex-qualify-tap.service apex-qualify-heartbeat.service' >/dev/null 2>&1 || true
     type_password_after_enter "$test" "the lock screen after resume" "$base"
-    assert_unlocked "$test" "$pid" "$since" "suspend (QMP: suspended) and system_wakeup while locked, still locked after resume, then the password"
+    assert_unlocked "$test" "$pid" "$since" "suspend (QMP: suspended) and system_wakeup while locked; logind finished the suspend, NetworkManager woke, no power key; still locked, prompt rebuilt, then the password"
 }
 
 matrix_reduce_motion() {
@@ -2333,8 +2489,9 @@ cmd_local_diag() {
     done
     save_journal final
     stop_vm
-    drop_disk local
     for unit in "${DIAG_RUN[@]}"; do [[ ${DIAG_STATUS[$unit]} == PASS ]] || failed=$((failed + 1)); done
+    ((failed == 0)) || save_disk_journal local || warn "cannot read the journal off $QUALIFY_OUT/local.raw"
+    drop_disk local
     ((failed == 0)) || die "local-diag: $failed of ${#DIAG_RUN[@]} unit(s) did not pass ($QUALIFY_OUT/diag.md)"
     log "local-diag: all ${#DIAG_RUN[@]} unit(s) passed ($QUALIFY_OUT/diag.md)"
 }
@@ -2427,9 +2584,50 @@ qualify_errexit() {
     [[ -z $QUALIFY_ERRLOG ]] || printf 'line %s: %s exited %s\n' "$2" "$3" "$1" >>"$QUALIFY_ERRLOG"
 }
 
+# A failed run's guest may not answer ssh: its journal comes off the disk, read-only. Under
+# QUALIFY_LAYOUT=luks /var is the btrfs subvolume var inside the LUKS2 root.
+save_disk_journal() {
+    local name=$1 disk=$QUALIFY_OUT/$1.raw mnt=$QUALIFY_OUT/mnt-$1-journal mapper=apex-qualify-$1-journal
+    local loop dev opts=ro journal='' rc=1
+    [[ -f $disk ]] || return 0
+    loop=$(as_root losetup --find --show --partscan --read-only "$disk") || return 1
+    dev=${loop}p3
+    if [[ -n $LUKS_PASSPHRASE ]]; then
+        if printf '%s' "$LUKS_PASSPHRASE" | as_root cryptsetup open --readonly --key-file - "$dev" "$mapper"; then
+            dev=/dev/mapper/$mapper opts=ro,subvol=var
+        else
+            dev=
+        fi
+    fi
+    mkdir -p "$mnt"
+    if [[ -n $dev ]] && { as_root mount -o "$opts,rescue=nologreplay" "$dev" "$mnt" 2>/dev/null || as_root mount -o "$opts" "$dev" "$mnt"; }; then
+        if [[ -n $LUKS_PASSPHRASE ]]; then
+            ! as_root test -d "$mnt/log/journal" || journal=$mnt/log/journal
+        else
+            # shellcheck disable=SC2016 # expanded by the root shell
+            journal=$(as_root sh -c 'ls -d "$1"/ostree/deploy/*/var/log/journal 2>/dev/null' sh "$mnt" | head -n 1) || journal=
+        fi
+        if [[ -n $journal ]] &&
+            as_root journalctl -D "$journal" -o short-monotonic --no-pager >"$QUALIFY_OUT/logs/$name.disk-journal.txt" 2>&1; then
+            rc=0
+        fi
+        as_root umount "$mnt" || as_root umount -l "$mnt" || true
+    fi
+    [[ $dev != /dev/mapper/* ]] || as_root cryptsetup close "$mapper" || true
+    as_root losetup --detach "$loop" || true
+    return "$rc"
+}
+
 cleanup() {
-    local rc=$?
-    if ((rc != 0)) && vm_alive; then save_journal failure; fi
+    local rc=$? vm=$VM_NAME
+    if ((rc != 0)) && vm_alive; then
+        if vm_answers; then save_journal failure; fi
+        qmp '{"execute":"quit"}' >/dev/null 2>&1 || true
+        wait_vm_exit 30 || true
+    fi
+    if ((rc != 0)) && [[ -n $vm ]]; then
+        save_disk_journal "$vm" || warn "cannot read the journal off $QUALIFY_OUT/$vm.raw"
+    fi
     stop_vm || true
     unmount_all
     close_mappers
