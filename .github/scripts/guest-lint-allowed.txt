@@ -1,0 +1,4 @@
+# shellcheck findings in qualify.sh's guest scripts, one per line: FUNCTION SCnnnn REASON.
+# guest-lint.sh fails on a line that no longer fires; a directive in the script beats a line here.
+find_session_script SC2015  grep && grep && grep || continue skips a session that fails any test, as meant
+g4_key_script SC2086  $kernel holds one package name or several, so it must split
