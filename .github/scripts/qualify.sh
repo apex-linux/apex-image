@@ -790,8 +790,8 @@ stage_candidate() {
     result "$test" PASS "staged $digest download-only under the strict policy"
 }
 
-# Apply arms only when a different image is staged and the booted one is neither armed nor
-# named by health-failure.json, all of which a fresh install meets.
+# Apply arms unless nothing is booted, nothing is staged, or the stage is the booted image
+# (arming_precondition). A booted image health-failure.json names only pins its rollback first.
 apply_candidate() {
     local test=$1 digest=$2 fixture=$3
     vm_ssh "apexctl update apply --digest $digest" || fail "$test" "apexctl update apply failed"

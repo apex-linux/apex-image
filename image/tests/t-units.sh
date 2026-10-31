@@ -52,9 +52,24 @@ unit_run() {
         /sys/module/nvidia/version="$T/nvidia-version"
 }
 
+# apex-boot-assess's own decision lines, from its decision table as t-bootloader reads them,
+# so a change to their format fails here too.
+SNAPSHOT=$APEX_SYSTEM_SRC/crates/apex-boot/src/snapshots/apex_boot__decide__tests__decision_table_snapshot.snap
+DIGEST=sha256:$(printf 'a%.0s' $(seq 64))
+logged_decision() {
+    sed -n 's/^.* => //p' "$SNAPSHOT" | sed "s/\\bT\\b/$DIGEST/g; s/\\bP\\b/$DIGEST/g" | grep -m 1 "^$1" | sed 's/^/ INFO decision: /'
+}
+GREEN_DECISION=$(logged_decision 'green (report green sha256:')
+RED_DECISION=$(logged_decision 'red-armed-session (report red sha256:')
+if [ -n "$GREEN_DECISION" ] && [ -n "$RED_DECISION" ]; then
+    ok "apex-boot's decision table logs a green and a red decision"
+else
+    not_ok "apex-boot's decision table logs a green and a red decision ($SNAPSHOT)"
+fi
+
 FAKE_METERED='' FAKE_GETENT_FAIL='' FAKE_INSTALL_FAIL=''
 GREEN='ActiveState=active ExecMainStatus=0 Result=success'
-FAKE_ASSESS=$GREEN FAKE_DECISION='apex-boot-assess: decision: keep (report green)'
+FAKE_ASSESS=$GREEN FAKE_DECISION=$GREEN_DECISION
 export FAKE_METERED FAKE_GETENT_FAIL FAKE_INSTALL_FAIL FAKE_ASSESS FAKE_DECISION
 
 for unit in apex-flatpak-preinstall.service apex-flatpak-update.service; do
@@ -148,13 +163,13 @@ no_uninstall "but keeps the stale ones"
 expect_out "and says why" 'has not judged this boot green: stale GL.nvidia extensions stay'
 FAKE_ASSESS=$GREEN
 
-FAKE_DECISION='apex-boot-assess: decision: roll back (report red)'
+FAKE_DECISION=$RED_DECISION
 gl_step
 no_uninstall "a red decision keeps the stale ones"
 FAKE_DECISION=''
 gl_step
 no_uninstall "no decision in the journal keeps them too"
-FAKE_DECISION='apex-boot-assess: decision: keep (report green)'
+FAKE_DECISION=$GREEN_DECISION
 
 FAKE_INSTALL_FAIL=1
 gl_step
