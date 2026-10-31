@@ -4489,7 +4489,10 @@ NEXT_REPORT='Next lane report'
 next_job=$(awk '/^  next-compose:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
 check_true "next-compose runs only on the schedule, with APEX_NEXT_COMPOSE on" \
     grep -q "github.event_name == 'schedule' && vars.APEX_NEXT_COMPOSE == 'on'" <<<"$next_job"
-check_true "after the 45 build, whatever its result" grep -qx '    needs: build' <<<"$next_job"
+check_true "after the 45 build, whatever its result, and only when the daily is due" \
+    grep -qx '    needs: \[build, daily-due\]' <<<"$next_job"
+check_true "and a daily-due that said due=false skips it" \
+    grep -qF "&& (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')" <<<"$next_job"
 check "and no step of it exits non-zero on its own" 0 "$(grep -cE '^\s+exit [1-9"$]' <<<"$next_job")"
 vm_reset
 : >"$V/old-host"
@@ -4521,6 +4524,112 @@ check "report: their logs go to the next-logs artifact" "logs=$V/temp/next/next/
 vm_reset
 check "report: no results warn, and never fail the job" "0|1" \
     "$(vm_run "$NEXT_REPORT")|$(grep -c 'returned no results' "$V/log")"
+
+# --- vm.yml's daily-due: the daily builds only when no run is active and main's head is unbuilt ---
+DD="$TMP/daily-due"
+mkdir -p "$DD"
+DD_NOW=1793404800 DD_RUN=900 DD_SHA=$CI_SHA
+dd_iso() { date -u -d "@$((DD_NOW - $1 * 3600))" +%Y-%m-%dT%H:%M:%SZ; } # HOURS ago
+dd_runs() { # [ID:STATUS:EVENT...]: the runs list, this run in_progress first
+    local r
+    {
+        printf '{"workflow_runs":[{"id":%s,"status":"in_progress","event":"schedule","head_sha":"%s"}' "$DD_RUN" "$DD_SHA"
+        for r in "$@"; do
+            IFS=: read -r id st ev <<<"$r"
+            printf ',{"id":%s,"status":"%s","event":"%s","head_sha":"%s"}' "$id" "$st" "$ev" "$DD_SHA"
+        done
+        printf ']}\n'
+    } >"$DD/runs.json"
+}
+dd_jobs() { # [RUN:NAME:HOURS|-:CONCLUSION:SHA...]: the jobs list
+    local j run name h concl sha started sep=''
+    {
+        printf '{"jobs":['
+        for j in "$@"; do
+            IFS=: read -r run name h concl sha <<<"$j"
+            if [[ $h == - ]]; then started=null; else started="\"$(dd_iso "$h")\""; fi
+            printf '%s{"run_id":%s,"name":"%s","head_sha":"%s","started_at":%s,"conclusion":%s}' \
+                "$sep" "$run" "$name" "${sha:-$DD_SHA}" "$started" "$([[ $concl == - ]] && echo null || echo "\"$concl\"")"
+            sep=,
+        done
+        printf ']}\n'
+    } >"$DD/jobs.json"
+}
+dd() { "$APEX_ROOT/.github/scripts/daily-due.sh" "$DD/runs.json" "$DD/jobs.json" "$DD_RUN" "$DD_SHA" "$DD_NOW" 2>&1 | cut -d: -f1; }
+BJ='builder VM build and gates'
+dd_runs
+dd_jobs
+check "daily-due: no other run and no build of main's head is due" due "$(dd)"
+for st in queued waiting pending in_progress; do
+    dd_runs "901:$st:push"
+    check "daily-due: another run $st skips it" skip "$(dd)"
+done
+check_true "and says which run" grep -q 'skip: vm.yml run 901 (push, aaaaaaaaaaaa) is in_progress' \
+    <("$APEX_ROOT/.github/scripts/daily-due.sh" "$DD/runs.json" "$DD/jobs.json" "$DD_RUN" "$DD_SHA" "$DD_NOW")
+dd_runs "901:completed:push"
+dd_jobs "901:$BJ:3:success"
+check "daily-due: a build of main's head 3 h ago that passed skips it" skip "$(dd)"
+dd_jobs "901:$BJ:3:failure"
+check "daily-due: one that failed does too" skip "$(dd)"
+dd_jobs "901:$BJ:3:cancelled"
+check "daily-due: a cancelled build of it is due" due "$(dd)"
+dd_jobs "901:$BJ:-:failure"
+check "daily-due: a build that never started (runner offline) is due" due "$(dd)"
+dd_jobs "901:$BJ:21:success"
+check "daily-due: a build 21 h ago is due" due "$(dd)"
+dd_jobs "901:$BJ:3:success:$(printf 'b%.0s' {1..40})"
+check "daily-due: a build of another commit is due" due "$(dd)"
+dd_jobs "901:daily run due:3:success"
+check "daily-due: another job of that run is no build" due "$(dd)"
+dd_jobs "$DD_RUN:$BJ:3:success"
+check "daily-due: and this run's own build is not counted" due "$(dd)"
+: >"$DD/runs.json"
+check "daily-due: an unread runs list is due" due "$(dd)"
+dd_runs
+: >"$DD/jobs.json"
+check "daily-due: an unread jobs list is due" due "$(dd)"
+cat >"$V/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ ! -e $FAKE_VM/gh-fails ]] || exit 1
+case $2 in
+    */workflows/vm.yml/runs*) cat "$FAKE_VM/gh-runs.json" ;;
+    */runs/*/jobs*)
+        id=${2%/jobs*}
+        id=${id##*/}
+        [[ ! -e $FAKE_VM/gh-jobs-$id.fails ]] || exit 1
+        cat "$FAKE_VM/gh-jobs-$id.json" ;;
+esac
+EOF
+chmod +x "$V/bin/gh"
+DAILY_DUE='Is the daily due'
+dd_runs "901:completed:push" "902:completed:push"
+cp "$DD/runs.json" "$V/gh-runs.json"
+dd_jobs "901:$BJ:3:success"
+cp "$DD/jobs.json" "$V/gh-jobs-901.json"
+dd_jobs "902:$BJ:21:success"
+cp "$DD/jobs.json" "$V/gh-jobs-902.json"
+dd_jobs
+cp "$DD/jobs.json" "$V/gh-jobs-$DD_RUN.json"
+vm_reset
+check "daily-due step: main's head built 3 h ago gives due=false, with a notice" "0|due=false|1" \
+    "$(cd "$APEX_ROOT" && vm_run "$DAILY_DUE" GITHUB_REPOSITORY=apex-linux/apex-image RUN_ID=$DD_RUN)|$(cat "$V/output")|$(grep -c '^::notice::daily skip: ' "$V/log")"
+: >"$V/gh-fails"
+vm_reset
+check "daily-due step: an API error gives due=true" "0|due=true|1" \
+    "$(cd "$APEX_ROOT" && vm_run "$DAILY_DUE" GITHUB_REPOSITORY=apex-linux/apex-image RUN_ID=$DD_RUN)|$(cat "$V/output")|$(grep -c '^::notice::daily due: ' "$V/log")"
+rm "$V/gh-fails"
+: >"$V/gh-jobs-902.fails"
+vm_reset
+check "daily-due step: one run's jobs unread gives due=true, though an earlier one's show the build" "0|due=true" \
+    "$(cd "$APEX_ROOT" && vm_run "$DAILY_DUE" GITHUB_REPOSITORY=apex-linux/apex-image RUN_ID=$DD_RUN)|$(cat "$V/output")"
+rm "$V/gh-jobs-902.fails" "$V/bin/gh"
+dd_job=$(awk '/^  daily-due:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
+build_job=$(awk '/^  build:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
+check_true "daily-due runs only on the schedule" grep -q "&& github.event_name == 'schedule'$" <<<"$dd_job"
+check "daily-due may only read Actions" "actions: read" "$(awk '/^    permissions:$/ { p = 1; next } p && /^      / { print $1, $2; next } p { exit }' <<<"$dd_job")"
+check_true "build waits for daily-due" grep -qx '    needs: \[dispatch-approval, daily-due\]' <<<"$build_job"
+check_true "and only a daily-due that ran and said due=false skips it" \
+    grep -qF "&& (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')" <<<"$build_job"
 
 # --- S4's budget: qualify.sh's boot phases and metrics.sh's rows, history and warnings -------
 bp() { bash -c '. "$1"; boot_phases' _ "$APEX_ROOT/.github/scripts/qualify.sh" | paste -sd' '; }

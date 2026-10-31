@@ -64,16 +64,56 @@ jobs:
           SHA: ${{ inputs.sha }}
         run: echo "vm-dispatch approved a build of $SHA"
 
+  # A daily that fires while the laptop is off holds the vm group for hours; it goes ahead only
+  # when no other vm.yml run is active and main's head has no build from the last 20 h.
+  daily-due:
+    name: daily run due
+    if: >-
+      github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
+      && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      due: ${{ steps.due.outputs.due }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Is the daily due
+        id: due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          api="repos/$GITHUB_REPOSITORY/actions" runs=$RUNNER_TEMP/runs.json jobs=$RUNNER_TEMP/jobs.json read=1
+          gh api "$api/workflows/vm.yml/runs?per_page=100" >"$runs" || : >"$runs"
+          ids=$(jq -r --arg sha "$GITHUB_SHA" '.workflow_runs[]? | select(.head_sha == $sha) | .id' "$runs" 2>/dev/null) || ids=
+          : >"$jobs.ndjson"
+          for id in $ids; do
+            gh api "$api/runs/$id/jobs?per_page=100" >>"$jobs.ndjson" || { read=0; break; }
+          done
+          # An unread jobs list is an empty file, which daily-due.sh answers with due.
+          if ((read)); then jq -s '{jobs: map(.jobs[])}' "$jobs.ndjson" >"$jobs" || : >"$jobs"; else : >"$jobs"; fi
+          verdict=$(.github/scripts/daily-due.sh "$runs" "$jobs" "$RUN_ID" "$GITHUB_SHA" "$(date +%s)") ||
+            verdict="due: daily-due.sh failed, so the daily builds"
+          echo "::notice::daily ${verdict}"
+          if [[ $verdict == skip:* ]]; then echo "due=false" >>"$GITHUB_OUTPUT"; else echo "due=true" >>"$GITHUB_OUTPUT"; fi
+
   build:
     name: builder VM build and gates
-    needs: dispatch-approval
-    # Skipped approval: no inputs to approve. A rejected or failed one stops the build.
+    needs: [dispatch-approval, daily-due]
+    # Skipped approval: no inputs to approve. A rejected or failed one stops the build. Only a
+    # daily-due that ran and said due=false skips it.
     if: >-
       github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
       && !cancelled()
       && (needs.dispatch-approval.result == 'success'
           || (needs.dispatch-approval.result == 'skipped'
               && (github.event_name != 'workflow_dispatch' || inputs.sha == '')))
+      && (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')
     runs-on: [self-hosted, apex-kvm]
     timeout-minutes: 420
     permissions: {}
@@ -244,10 +284,11 @@ jobs:
   # result stands alone. Off until the repository variable APEX_NEXT_COMPOSE is "on".
   next-compose:
     name: next lane compose (report-only)
-    needs: build
+    needs: [build, daily-due]
     if: >-
       github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
       && !cancelled() && github.event_name == 'schedule' && vars.APEX_NEXT_COMPOSE == 'on'
+      && (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')
     runs-on: [self-hosted, apex-kvm]
     timeout-minutes: 420
     permissions: {}
