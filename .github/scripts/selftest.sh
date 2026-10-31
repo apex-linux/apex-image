@@ -2579,6 +2579,61 @@ check_true "naming the blank line, with no JS ERROR in its real lines" grep -q \
     "$GUEST_DIR/out/results.md"
 rm -rf "$GUEST_DIR/state"
 
+# --- g4-fixtures-check.sh: every G4 fixture listed, read and scrubbed ---------------------
+G4C=$TMP/g4-fixtures-check
+g4c() { # EDIT: the check's exit on a fresh copy of g4-fixtures/ after EDIT ran in it, its errors in $G4C.err
+    local rc=0
+    rm -rf "$G4C" && cp -r "$G4F" "$G4C" && (cd "$G4C" && eval "$1")
+    "$APEX_ROOT/.github/scripts/g4-fixtures-check.sh" "$G4C" "$APEX_ROOT/.github/scripts/selftest.sh" \
+        >/dev/null 2>"$G4C.err" || rc=$?
+    printf '%s' "$rc"
+}
+check "g4 fixtures: the committed ones are listed, read and scrubbed" 0 "$(g4c :)"
+check "g4 fixtures: a file README.md does not list" 1 "$(g4c ": >run99-extra.journal")"
+check_true "is named" grep -qF "run99-extra.journal: has no row in README.md's table" "$G4C.err"
+check "g4 fixtures: a README.md row for a file that is gone" 1 "$(g4c "rm run11-login.journal")"
+check_true "is named" grep -qF "README.md: lists run11-login.journal, which is not in" "$G4C.err"
+G4C_UNREAD=run$$.journal
+check "g4 fixtures: a listed file that selftest never reads" 1 \
+    "$(g4c ": >$G4C_UNREAD; printf '| \`$G4C_UNREAD\` | 99 | x | | x |\n' >>README.md")"
+check_true "is named" grep -qF "$G4C_UNREAD: is read by none of" "$G4C.err"
+while IFS='|' read -r rule line; do
+    check "g4 fixtures: a $rule fails: $line" 1 "$(g4c "printf '%s\n' $(printf '%q' "$line") >>run11-login.journal")"
+    check_true "naming its line" grep -qF "run11-login.journal:32: $rule: " "$G4C.err"
+done <<'EOF'
+host name|pam: hostname=laptop addr=?
+host name|dhcp: lease for apex-builder
+host name|resolved: myhost.local answered
+user name|session opened for user alice by (uid=0)
+user name|op=login acct="alice" exe=x
+user name|cd /home/alice
+user name|LOGNAME=alice
+user name|pam: user alice(uid=1001) logged in
+machine or boot ID|machine 5944da07fb22b6d631b5ede59484c304
+filesystem or device UUID|re-mounted 333f66d6-3eba-4e9d-90a5-1e0a6b8eb248 r/w.
+IPv4 address|addr=10.0.2.15
+IPv6 address|inet6 fe80::5054:ff:fe12:3456
+MAC address|link 52:54:00:12:34:56
+email address|from alice@example.invalid
+serial number|DMI: Serial Number: PF3ABC12
+serial number|udev: ID_SERIAL=WDC_WD10EZEX_WD-WCC6Y0000000
+serial number|smartd: S/N WD-WCC6Y0000000
+EOF
+check "g4 fixtures: a user name hidden in an audit proctitle" 1 \
+    "$(g4c "printf 'audit: PROCTITLE proctitle=%s\n' $(printf 'ls /home/alice' | od -An -tx1 | tr -d ' \n' | tr a-f A-F) >>run11-login.journal")"
+check_true "is decoded and named" grep -qF "run11-login.journal:32 (proctitle): user name: '/home/alice'" "$G4C.err"
+check "g4 fixtures: a line past the cut's 300 characters" 1 "$(g4c "printf '%0301d\n' 0 >>run11-login.journal")"
+check_true "is named" grep -qF "run11-login.journal:32: longer than the cut's 300 characters (301)" "$G4C.err"
+check "g4 fixtures: a manager line from another host" 1 \
+    "$(g4c "printf '[    9.000001] laptop systemd[1]: x\n' >>run16-greeter.manager")"
+check_true "is named" grep -qF "run16-greeter.manager:87: host name: 'laptop'" "$G4C.err"
+check "g4 fixtures: what the cut keeps passes" 0 "$(g4c "printf '%s\n' \
+    'image sha256:5944da07fb22b6d631b5ede59484c304a0d2b29d897651a3bd95c61bc91783ac' \
+    'boot 00000000000000000000000000000000 on 00000000-0000-0000-0000-000000000000' \
+    'hostname=guest addr=192.0.2.1 lo 127.0.0.1 ::1 link 02:00:00:00:00:00' \
+    'cipher aes256-gcm@openssh.com for user root, user root(uid=0), user@1000.service' \
+    'oo7_daemon::service started, AccountsService.User::password-mode, serial-getty@ttyS0' >>run11-login.journal")"
+
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
     local ga_reached=$1 allowlist=$2
