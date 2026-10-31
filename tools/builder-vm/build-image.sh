@@ -46,25 +46,33 @@ tools/components.sh fetch and env run before the first build step: each RPM is b
 from its pinned component (the apex RPM from apex-system, apex-desktop from
 apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECIPES).
 
+Each component runs as root in its own fedora:45. To give its key it sees only its
+checkout, read-only; to build, its checkout with .git read-only and its own output
+directory, emptied first. No container mounts the rest of _build.
+
 Signed RPMs of pinned components (APEX_COMPONENTS=pinned) are cached in
-~/apex-rpm-cache/fedora-N/entries/COMPONENT/ENTRY (APEX_RPM_CACHE moves the root): outside
-the checkout and _build, so no build container reaches them. A dev-override build takes
-no key and neither reads nor writes the cache. ENTRY hashes the component's own content
-key (rpms.sh key, libfprint.sh key, run in its fedora:45 with git-core), the fedora:45
-digest, lane.sh's tool id, RPM-GPG-KEY-apex and the build's environment, all taken
-before the first build. A component that gives no valid key is built and never cached.
-Each entry has an index beside the entries, written only here: the digests of its
-PREIMAGE, SHA256SUMS and CONTENTS, each RPM's NEVRA, and when it was stored. An entry is
-reused only when it matches its index, is under 7 days old by it, its PREIMAGE, CONTENTS
-and SHA256SUMS hold, the key it states matches (KEY; for libfprint key.txt, the RPM's
+~/apex-rpm-cache/fedora-N/entries/COMPONENT/ENTRY (APEX_RPM_CACHE moves the root). That
+is outside every container's mounts; it is as safe as the build user's files, and a
+store takes what the component's own output held when it was signed. A dev-override
+build takes no key and neither reads nor writes the cache. ENTRY hashes the component's
+own content key (rpms.sh key, libfprint.sh key, run in its fedora:45 with git-core),
+the fedora:45 digest, lane.sh's tool id, RPM-GPG-KEY-apex and the build's environment,
+all taken before the first build. A component that gives no valid key is built and
+never cached. Each entry has an index beside the entries, written by this script at
+store time: the digests of its PREIMAGE, SHA256SUMS and CONTENTS, each RPM's NEVRA, and
+when it was stored. An entry is reused only when it matches its index, is under 7 days
+old by it, its PREIMAGE, CONTENTS and SHA256SUMS hold, its RPMs, SHA256SUMS and key
+files are plain files, the key it states matches (KEY; for libfprint key.txt, the RPM's
 version-release with .apexN and manifest.txt's tests=passed), and each RPM is signed by
 the committed RPM-GPG-KEY-apex (rpmkeys --checksig, in a scratch rpmdb); anything else
 rebuilds. rpms.sh build gets the key and fails if it moved. A set is stored only when
-its stated key matches, fedora:45 did not move during the build and the copy matches
-SHA256SUMS; a degraded libfprint (exit 3) never is. Each component keeps its 3 newest
-entries, and the oldest entries this build does not use go until the cache's disk keeps
-30 GiB free after storing; when that cannot be reached, nothing is stored. A store that
-died leaves ENTRY.tmp, which the next build deletes first.
+components.sh verify finds the component's clone still clean at its pin with no config
+that runs code, its files are plain, its stated key matches, fedora:45 did not move
+during the build and the copy matches SHA256SUMS; a degraded libfprint (exit 3) never
+is. After a store, each component keeps its 3 newest entries; before it, the oldest
+entries this build does not use go until the cache's disk keeps 30 GiB free after
+storing, and when that cannot be reached, nothing is stored and nothing goes. A store
+that died leaves ENTRY.tmp, which the next build deletes first.
 
 --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
 or image/ changes), and only says whether G4 is due.
@@ -96,7 +104,7 @@ if [[ ${APEX_FEDORA:-45} != 45 ]]; then
     BUILD=_build/next
 fi
 readonly LANE_LOCK=$STORE/rpms.lock.next IMAGE BUILD
-# Outside the checkout and _build, which the component containers mount: only this host script writes it.
+# Outside every container's mounts: as safe as the build user's own files, no more.
 readonly CACHE_ROOT=${APEX_RPM_CACHE:-$HOME/apex-rpm-cache}/fedora-${APEX_FEDORA:-45}
 readonly RPM_CACHE=$CACHE_ROOT/entries CACHE_INDEX=$CACHE_ROOT/index
 readonly APEX_RPM_KEY=image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex
@@ -122,18 +130,22 @@ G4_VERDICT=
 # lane.sh's tool id, an input of every cache entry; the entry and fedora:45 digest of this component.
 LANE_TOOL='' CACHE_ENTRY='' CACHE_DIGEST=''
 
-# Each component builds its own RPMs, in its checkout, as root in a fresh fedora:45. It sees its
-# checkout and the /build/... directory it is given, never the rest of _build: others' sources and RPMs.
+# Each component runs as root in a fresh fedora:45 that sees its own checkout and nothing else of
+# _build: read-only to give its key; to build, with .git read-only and an emptied /build/... output.
 in_component() {
-    local src=$1 rc=0 a
-    local -a mounts=(-v "$src:/component:z")
+    local src=$1 rc=0 a out=''
+    local -a mounts=(-v "$src:/component:ro,z")
     shift
     for a in "$@"; do
         [[ $a == /build/* ]] || continue
-        [[ $a != *..* ]] || { echo "in_component: $a leaves /build" >&2; return 2; }
-        mkdir -p -- "$PWD/$BUILD/${a#/build/}"
-        mounts+=(-v "$PWD/$BUILD/${a#/build/}:$a:z")
+        [[ -z $out && $a != *..* ]] || { echo "in_component: $a: one output, inside /build" >&2; return 2; }
+        out=$a
     done
+    if [[ -n $out ]]; then
+        sudo rm -rf -- "$PWD/$BUILD/${out#/build/}"
+        mkdir -p -- "$PWD/$BUILD/${out#/build/}"
+        mounts=(-v "$src:/component:z" -v "$src/.git:/component/.git:ro,z" -v "$PWD/$BUILD/${out#/build/}:$out:z")
+    fi
     sudo podman run --rm --pull=newer "${mounts[@]}" -w /component \
         "${COMPONENT_ENV[@]}" "$FEDORA" "$@" || rc=$?
     sudo chown -R "$(id -u):$(id -g)" -- "$src"
@@ -253,7 +265,18 @@ key_holds() {
 }
 
 # SRC DST: the key files a component's build left beside its RPMs.
-copy_key_files() { local f; for f in KEY key.txt manifest.txt; do [[ ! -e $1/$f ]] || cp -- "$1/$f" "$2/" || return 1; done; }
+key_files() { if [[ $1 == libfprint ]]; then echo key.txt manifest.txt; else echo KEY; fi; }
+
+# NAME DIR: whether DIR's RPMs, SHA256SUMS and the component's key files are plain files, never links.
+plain_files() {
+    local f
+    for f in "$2"/*.rpm "$2/SHA256SUMS" $(key_files "$1" | sed "s|^|$2/|; s| | $2/|g"); do
+        [[ -f $f && ! -L $f ]] || { cache_note "$1: ${f#"$2"/} is not a regular file; not used"; return 1; }
+    done
+}
+
+# NAME SRC DST: the component's own key files, copied as they are.
+copy_key_files() { local f; for f in $(key_files "$1"); do cp -P -- "$2/$f" "$3/" || return 1; done; }
 
 # apex-kernel's lib.sh oci_tag: how libfprint.sh key turns build.sh's key into its own.
 oci_tag() {
@@ -296,17 +319,14 @@ cache_room() {
 cache_rpms() {
     local name=$1 dir=$2 key=$3 entry=$CACHE_ENTRY old created
     local tmp=$entry.tmp
+    plain_files "$name" "$dir" || return 1
     key_holds "$name" "$dir" "$key" || return 1
     [[ $(fedora_digest) == "$CACHE_DIGEST" ]] || { cache_note "$FEDORA moved during the build"; return 1; }
-    while IFS= read -r old; do
-        cache_note "dropping ${old#"$RPM_CACHE"/}, beyond the $CACHE_KEEP newest of $name"
-        drop_entry "$old"
-    done < <(by_age "$RPM_CACHE/$name" 1 | unkept | tail -n +"$CACHE_KEEP")
     cache_room "$dir" || return 1
     if ! { rm -rf -- "$tmp" && mkdir -p -- "$tmp" &&
-        cp -- "$dir"/*.rpm "$dir/SHA256SUMS" "$tmp/" &&
+        cp -P -- "$dir"/*.rpm "$dir/SHA256SUMS" "$tmp/" &&
         (cd "$tmp" && sha256sum --quiet --strict -c SHA256SUMS) &&
-        copy_key_files "$dir" "$tmp" &&
+        copy_key_files "$name" "$dir" "$tmp" &&
         cache_preimage "$name" "$key" "$CACHE_DIGEST" >"$tmp/PREIMAGE" &&
         (cd "$tmp" && sha256sum -- * >CONTENTS) &&
         drop_entry "$entry" && mv -- "$tmp" "$entry"; }; then
@@ -318,6 +338,10 @@ cache_rpms() {
     write_index "$entry" "$created" || { cache_note "cannot index $entry; not stored"; drop_entry "$entry"; return 1; }
     CACHE_KEPT+=("$entry")
     echo "rpm-cache: stored $name $key as ${entry#"$RPM_CACHE"/}"
+    while IFS= read -r old; do
+        cache_note "dropping ${old#"$RPM_CACHE"/}, beyond the $CACHE_KEEP newest of $name"
+        drop_entry "$old"
+    done < <(by_age "$RPM_CACHE/$name" 1 | unkept | tail -n +"$CACHE_KEEP")
 }
 
 # NAME DIR KEY: DIR from the entry, never trusted as stored: its inputs, age and contents, the
@@ -346,7 +370,10 @@ reuse_rpms() {
     [[ $(find "$entry" -maxdepth 1 -name '*.rpm' -printf '%f\n' | sort) == \
         "$(sed 's/^[0-9a-f]* [ *]//' "$entry/SHA256SUMS" 2>/dev/null | sort)" ]] ||
         { cache_note "$at does not match its SHA256SUMS; rebuilding"; return 1; }
-    key_holds "$name" "$entry" "$key" || { cache_note "$at: rebuilding"; return 1; }
+    if ! { plain_files "$name" "$entry" && key_holds "$name" "$entry" "$key"; }; then
+        cache_note "$at: rebuilding"
+        return 1
+    fi
     db=$(mktemp -d) || { cache_note "$at: no scratch rpmdb; rebuilding"; return 1; }
     if ! { rpm --dbpath "$db" --initdb && rpmkeys --dbpath "$db" --import "$APEX_RPM_KEY"; }; then
         cache_note "$at: no scratch rpmdb; rebuilding"
@@ -361,8 +388,8 @@ reuse_rpms() {
         }
     done
     rm -rf -- "$db" "$dir.tmp"
-    if ! { mkdir -p -- "$dir.tmp" && cp -- "$entry"/*.rpm "$entry/SHA256SUMS" "$dir.tmp/" &&
-        copy_key_files "$entry" "$dir.tmp" &&
+    if ! { mkdir -p -- "$dir.tmp" && cp -P -- "$entry"/*.rpm "$entry/SHA256SUMS" "$dir.tmp/" &&
+        copy_key_files "$name" "$entry" "$dir.tmp" &&
         (cd "$dir.tmp" && sha256sum --quiet --strict -c SHA256SUMS) && rm -rf -- "$dir" && mv -- "$dir.tmp" "$dir"; }; then
         cache_note "$at: cannot copy to $dir; rebuilding"
         rm -rf -- "$dir.tmp"
@@ -380,7 +407,7 @@ cache_sweep() {
     fi
 }
 
-declare -A CACHE_KEYS=() CACHE_ENTRIES=()
+declare -A CACHE_KEYS=() CACHE_SRCS=() CACHE_ENTRIES=()
 # NAME SRC SCRIPT: the component's key and entry, all taken before any build so no store prunes an entry this run uses.
 resolve_entry() {
     local key
@@ -392,6 +419,7 @@ resolve_entry() {
     fi
     [[ -z $key ]] || cache_entry "$1" "$key"
     CACHE_KEYS[$1]=$key
+    CACHE_SRCS[$1]=$2
     CACHE_ENTRIES[$1]=$CACHE_ENTRY
     [[ -z $CACHE_ENTRY ]] || CACHE_KEPT+=("$CACHE_ENTRY")
 }
@@ -404,9 +432,15 @@ reused() {
 }
 
 # NAME OUT: OUT's freshly signed RPMs into the component's cache entry, when it has one.
+# The clone must still be as components.sh fetched it: a build that changed it made RPMs no commit holds.
 store() {
     CACHE_ENTRY=${CACHE_ENTRIES[$1]-}
-    [[ -z $CACHE_ENTRY ]] || cache_rpms "$1" "$BUILD/$2" "${CACHE_KEYS[$1]}" || cache_note "$1 not stored"
+    [[ -n $CACHE_ENTRY ]] || return 0
+    if ! tools/components.sh verify "${CACHE_SRCS[$1]}"; then
+        cache_note "$1: its clone is not as fetched; not stored"
+        return 0
+    fi
+    cache_rpms "$1" "$BUILD/$2" "${CACHE_KEYS[$1]}" || cache_note "$1 not stored"
 }
 
 # NAME SRC OUT: a component's signed RPMs, from its cache entry or built.

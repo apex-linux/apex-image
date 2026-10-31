@@ -1168,6 +1168,32 @@ co_lock "apex-system $CO/apex-system.git $CO_SYS" "apex-desktop $CO/apex-desktop
 check "a new pin moves the clone and cleans it" "0:$CO_SYS:clean" \
     "$(components fetch):$(git -C "$CO/work/_build/components/apex-system" rev-parse HEAD):$([[ -e $CO/work/_build/components/apex-system/stray ]] && echo stray || echo clean)"
 
+CS=$CO/work/_build/components/apex-system
+co_said() { local re=$1; shift; (cd "$CO/work" && { tools/components.sh "$@" 2>&1 || true; } | grep -q -- "$re") && echo yes; }
+check "verify: a pinned clone at its pin, clean" 0 "$(components verify "$CS")"
+check "verify: a path that is no component of the last fetch" 1 "$(components verify "$CO/work")"
+echo dirt >>"$CS/a"
+check "verify: a clone with a change refuses, by name" "1|yes" \
+    "$(components verify "$CS")|$(co_said 'apex-system: the clone of .* is not clean' verify "$CS")"
+git -C "$CS" checkout -q -- a
+git -C "$CS" config filter.x.smudge 'touch '"$CO"'/smudged'
+check "verify: a clone whose config names a filter refuses, by name" "1|yes" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/config sets filter.x.smudge' verify "$CS")"
+echo '* filter=x' >"$CS/.gitattributes"
+check "fetch clones afresh over a planted filter, and never runs it" "0|no smudge|0" \
+    "$(components fetch)|$([[ -e $CO/smudged ]] && echo smudged || echo 'no smudge')|$(components verify "$CS")"
+for key in core.fsmonitor core.hooksPath include.path; do
+    git -C "$CS" config "$key" "$CO/x"
+    check "verify: $key in a clone's config refuses" 1 "$(components verify "$CS")"
+    git -C "$CS" config --unset "$key"
+done
+git -C "$CS" -c advice.detachedHead=false checkout -q HEAD~1
+check "verify: a clone moved off its pin refuses" 1 "$(components verify "$CS")"
+check "and fetch puts it back" "0|0" "$(components fetch)|$(components verify "$CS")"
+check "verify: a dev-override is no pinned clone" 1 \
+    "$(cd "$CO/work" && APEX_SRC_APEX_SYSTEM=../src/apex-system tools/components.sh fetch >/dev/null 2>&1; components verify "$CO/src/apex-system")"
+components fetch >/dev/null
+
 mkdir -p "$CO/bin"
 cat >"$CO/bin/find" <<'FIND'
 #!/bin/bash
@@ -1287,6 +1313,11 @@ cp "$APEX_CONTAINERFILE" "$BIW/image/"
 cp "$APEX_TESTING_ALLOWLIST" "$BIW/image/packages/"
 cat >"$BIW/tools/components.sh" <<'EOF'
 #!/usr/bin/env bash
+if [[ $1 == verify ]]; then
+    echo "verify $2" >>"$FAKE/verify.log"
+    [[ ! -e $FAKE/unverified-${2##*/} ]] || { echo "components: error: ${2##*/}: the clone is not clean" >&2; exit 1; }
+    exit 0
+fi
 echo "$1" >>"$FAKE/components.log"
 [[ $1 != env ]] || printf 'export APEX_%s_SRC=/pinned/%s\n' SYSTEM system DESKTOP desktop KERNEL kernel
 EOF
@@ -1335,8 +1366,10 @@ check "apex-desktop: apex-desktop's rpms.sh" " registry.fedoraproject.org/fedora
 check "libfprint: apex-kernel's libfprint.sh" " registry.fedoraproject.org/fedora:45 .github/scripts/libfprint.sh build /build/libfprint" \
     "$(bi_podman /pinned/kernel)"
 bi_mounts() { grep "^podman run .* -v $1:/component:z " "$BI/steps.log" | sed 's/.* --pull=newer \(.*\) -w \/component .*/\1/'; }
-check "a component's container mounts its checkout and its own output, none of the rest of _build" \
-    "-v /pinned/system:/component:z -v $BIW/_build/rpms/apex:/build/rpms/apex:z|-v /pinned/desktop:/component:z -v $BIW/_build/rpms/desktop:/build/rpms/desktop:z|-v /pinned/kernel:/component:z -v $BIW/_build/libfprint:/build/libfprint:z" \
+check "a component's build mounts its checkout, its .git read-only and its own output, none of the rest of _build" \
+    "$(for c in system:rpms/apex desktop:rpms/desktop kernel:libfprint; do
+        printf -- '-v /pinned/%s:/component:z -v /pinned/%s/.git:/component/.git:ro,z -v %s:/build/%s:z|' "${c%%:*}" "${c%%:*}" "$BIW/_build/${c#*:}" "${c#*:}"
+    done | sed 's/|$//')" \
     "$(bi_mounts /pinned/system)|$(bi_mounts /pinned/desktop)|$(bi_mounts /pinned/kernel)"
 # shellcheck disable=SC2016 # expanded by the inner bash
 check "an output outside /build is refused before any container runs" "2|" \
@@ -1372,7 +1405,7 @@ cat >"$RC/bin/df" <<'EOF'
 #!/usr/bin/env bash
 n=$(find "$FAKE/cache/fedora-45/entries" -mindepth 2 -maxdepth 2 -type d ! -name '*.tmp' 2>/dev/null | wc -l)
 # The cache's own disk: any other path is full, so the room must be measured where the entries go.
-[[ ${*: -1} == "$FAKE/cache/"* ]] || n=1000000
+[[ ${*: -1} == "$FAKE/cache/"* || ${*: -1} == */apex-rpm-cache/* ]] || n=1000000
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nx 1 1 %s 1%% /\n' "$(($(cat "$FAKE/avail") - n * 5242880))"
 EOF
 cat >"$RC/bin/cp" <<'EOF'
@@ -1393,18 +1426,21 @@ KFP=libfprint-1.94.10-1.fc45-s0123456789ab
 RCE=$RC/cache/fedora-45/entries
 bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints its exit
     local rc=0
+    local -a where=(APEX_RPM_CACHE="$RC/cache")
+    [[ -z ${RC_HOME:-} ]] || where=(HOME="$RC_HOME")
     rm -f "$RC/steps.log" "$RC/rpmkeys.log" "$BI/steps.log"
     # shellcheck disable=SC2016 # expanded by the inner bash
     (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
-        APEX_KERNEL_SRC=/pinned/kernel APEX_RPM_CACHE=$RC/cache APEX_COMPONENTS=${RC_COMPONENTS:-pinned} bash -c '
+        APEX_KERNEL_SRC=/pinned/kernel APEX_COMPONENTS=${RC_COMPONENTS:-pinned} env "${where[@]}" bash -c '
         . "$1"
         sudo() {
+            [[ $1 != rm ]] || { command "$@"; return; }
             [[ $1 == podman ]] || return 0
             [[ $2 != image ]] || { cat "$FAKE/digest" 2>/dev/null; return; }
             local a out src name d k vr
             for a in "$@"; do
                 [[ $a != /build/* ]] || out=$a
-                [[ $a != *:/component:z ]] || src=${a%%:*}
+                [[ $a != *:/component:z && $a != *:/component:ro,z ]] || src=${a%%:*}
             done
             name=${src##*/}
             printf "%s\n" "$*" >>"$FAKE/steps.log"
@@ -1423,6 +1459,7 @@ bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints 
                 printf "%s\n" "$k" >"$d/key.txt"
                 printf "signed kernel\nnvr libfprint %s.apex1\n" "$vr" >"$d/libfprint.rpm"
                 printf "# key=%s tests=%s\n" "$k" "$(cat "$FAKE/fp-tests" 2>/dev/null || echo passed)" >"$d/manifest.txt"
+                [[ ! -e $FAKE/fp-symlink ]] || { mv "$d/manifest.txt" "$FAKE/elsewhere" && ln -s "$FAKE/elsewhere" "$d/manifest.txt"; }
                 return "$(cat "$FAKE/libfprint-rc" 2>/dev/null || echo 0)"
             fi
             printf "signed %s\nnvr apex-%s 0:1-1.x86_64\n" "$name" "$name" >"$d/$name.rpm"
@@ -1594,7 +1631,7 @@ echo kdesk6 >"$RC/keys/desktop"
 sleep 0.02
 check "and outlives older ones it was stored before" "0|desktop|kdesk3 kdesk5 kdesk6" "$(bi_cache)|$(rc_builds)|$(rc_keys apex-desktop)"
 n=$(find "$RCE" -mindepth 2 -maxdepth 2 -type d | wc -l)
-echo $(((30 + (n - 1) * 5) * 1024 * 1024)) >"$RC/avail"
+echo $(((30 + n * 5) * 1024 * 1024)) >"$RC/avail"
 echo kdesk7 >"$RC/keys/desktop"
 oldest=$(find "$RCE" -mindepth 2 -maxdepth 2 -type d ! -path '*/apex-desktop/*' ! -path "$(rc_entry apex-system ksys)" \
     ! -path "$(rc_entry libfprint "$KFP")" -printf '%T@ %p\n' | sort -n | head -n 1 | cut -d' ' -f2-)
@@ -1602,7 +1639,7 @@ check "rpm-cache: under 30 GiB free after storing, the oldest entry this build d
     "$(bi_cache)|$(rc_builds)|$(grep -c 'under 30 GiB free; dropping' "$RC/out")|$([[ -e $oldest ]] && echo kept || echo gone)|$(rc_keys apex-desktop)|$(bi_cache)|$(rc_builds)"
 echo $((10 * 1024 * 1024)) >"$RC/avail"
 echo kdesk8 >"$RC/keys/desktop"
-check "rpm-cache: when even every older entry would not leave 30 GiB, none goes and nothing is stored" "0|desktop|0|yes|kdesk6 kdesk7" \
+check "rpm-cache: when even every older entry would not leave 30 GiB, none goes and nothing is stored" "0|desktop|0|yes|kdesk3 kdesk6 kdesk7" \
     "$(bi_cache)|$(rc_builds)|$(grep -c 'under 30 GiB free; dropping' "$RC/out")|$(rc_said 'under 30 GiB after storing; not stored')|$(rc_keys apex-desktop)"
 touch -d 2001-01-01 "$(rc_entry libfprint "$KFP")"
 n=$(find "$RCE" -mindepth 2 -maxdepth 2 -type d | wc -l)
@@ -1617,7 +1654,41 @@ check "rpm-cache: a store that died leaves no .tmp behind the next build" "0|gon
 before=$(rc_cached)
 check "rpm-cache: dev-override components take no key, reuse nothing and store nothing" "0|system desktop kernel|0|yes|$before" \
     "$(RC_COMPONENTS=dev-override bi_cache)|$(rc_builds)|$(grep -c ' key$' "$RC/steps.log")|$(rc_said 'components are dev-override, not pinned; nothing is cached or reused')|$(rc_cached)"
-rm -rf "$BIW/_build" "$RC/cache"
+bi_cache >/dev/null
+check "rpm-cache: each key is taken in a container that mounts its checkout read-only and no /build" "3|0" \
+    "$(grep ' key$' "$RC/steps.log" | grep -c -- ' -v /pinned/[a-z]*:/component:ro,z -w /component ')|$(grep ' key$' "$RC/steps.log" | grep -c /build)"
+mkdir -p "$BIW/_build/rpms/desktop"
+printf 'signed planted\nnvr apex-desktop 0:1-1.x86_64\n' >"$BIW/_build/rpms/desktop/planted.rpm"
+echo kdesk-p >"$RC/keys/desktop"
+check "rpm-cache: an RPM planted in a component's output before its build is never signed or stored" "0|desktop|no|no|no" \
+    "$(bi_cache)|$(rc_builds)|$(grep -q planted "$RC/steps.log" && echo signed || echo no)|$([[ -e $BIW/_build/rpms/desktop/planted.rpm ]] && echo kept || echo no)|$(find "$RCE" -name planted.rpm | grep -q . && echo stored || echo no)"
+touch "$RC/unverified-desktop"
+echo kdesk-d >"$RC/keys/desktop"
+check "rpm-cache: a component whose clone is no longer as fetched is built and not stored, by name" "0|desktop|yes|yes|no" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'apex-desktop: its clone is not as fetched; not stored')|$(rc_said 'desktop: the clone is not clean')|$(grep -qx kdesk-d "$RCE"/apex-desktop/*/KEY && echo stored || echo no)"
+rm "$RC/unverified-desktop"
+touch "$RC/fp-symlink"
+echo libfprint-1.94.10-1.fc45-s5555aaaa5555 >"$RC/keys/kernel"
+check "rpm-cache: a key file that is a link is never stored" "0|desktop kernel|yes|no" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'libfprint: manifest.txt is not a regular file; not used')|$(grep -lq s5555aaaa5555 "$RCE"/libfprint/*/key.txt 2>/dev/null && echo stored || echo no)"
+rm "$RC/fp-symlink"
+echo "$KFP" >"$RC/keys/kernel"
+rm -rf "$RC/cache/fedora-45/index/apex-desktop"
+: >"$RC/cache/fedora-45/index/apex-desktop"
+echo kdesk-i >"$RC/keys/desktop"
+check "rpm-cache: an entry whose index cannot be written is dropped" "0|desktop|yes|no" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'not stored')|$(grep -qx kdesk-i "$RCE"/apex-desktop/*/KEY 2>/dev/null && echo kept || echo no)"
+rm "$RC/cache/fedora-45/index/apex-desktop"
+mkdir -p "$RC/cache/fedora-45/index/apex-system"
+: >"$RC/cache/fedora-45/index/apex-system/0123.tmp"
+check "rpm-cache: an index a store died writing is swept too" "0|gone" \
+    "$(bi_cache)|$([[ -e $RC/cache/fedora-45/index/apex-system/0123.tmp ]] && echo kept || echo gone)"
+rm -rf "$BIW/_build" "$BI/home-default"
+rc_names() { find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' '; }
+check "rpm-cache: by default the cache is ~/apex-rpm-cache/fedora-45, and _build holds only the outputs" \
+    "0|apex-desktop apex-system libfprint|apex-desktop apex-system libfprint|libfprint rpms" \
+    "$(RC_HOME=$BI/home-default bi_cache)|$(rc_names "$BI/home-default/apex-rpm-cache/fedora-45/entries")|$(rc_names "$BI/home-default/apex-rpm-cache/fedora-45/index")|$(rc_names "$BIW/_build")"
+rm -rf "$BIW/_build" "$RC/cache" "$BI/home-default"
 
 bi_sources() {
     rm -f "$BI/steps.log"
