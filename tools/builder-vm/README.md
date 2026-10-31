@@ -235,9 +235,11 @@ just vm-qualify
   to stay up;
 - `bootloader-update.service` run after the assessment of every green boot, and in no
   red one;
-- the counted rollback: the guest derives a newer image from the booted one (its
-  manifest version plus `.1`), stages it, forces it red and applies it; it must reboot
-  itself 3 times, GRUB must fall back, and the image under test must roll it back;
+- the counted rollback: the builder VM builds a newer image from the image under test
+  (the booted manifest's version plus `.1`) and serves it from a throwaway `registry:2`;
+  the guest stages it from there, fetching only the layer it lacks, then forces it red
+  and applies it; it must reboot itself 3 times, GRUB must fall back, and the image
+  under test must roll it back;
 - GDM's greeter, once the user `apexqa` exists (made only in the guest);
 - the login of `apexqa` through GDM's greeter: its password, made for the run, is typed
   over QEMU's QMP socket (a Unix socket in `_build/qualify/qmp/`); the Apex layer arms
