@@ -33,8 +33,7 @@ on:
         description: "Seconds to wait for SSH after the wake (G4 waits 900)"
         default: "90"
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: g4-suspend-repro-${{ github.ref }}
@@ -49,6 +48,8 @@ jobs:
     name: local-lock-suspend under KVM (${{ matrix.set }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     # A pull_request run splits the default trials by GPU, one runner each, inside the 25 minutes.
     strategy:
       fail-fast: false
