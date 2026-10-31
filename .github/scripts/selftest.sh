@@ -1034,6 +1034,12 @@ for mode in g4 gate; do
         "2|plan refused: $CI_SHA predates APEX_CI_MODE, so it cannot run $mode|no build|no build-image line" \
         "$(ci_request "ci-build $CI_SHA $mode")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep -q '^build-image ' && echo 'build-image line' || echo 'no build-image line')"
 done
+for mode in '' daily; do
+    rm -f "$CI_DIR/build-ran"
+    check "${mode:-no plan} for a commit whose build-image.sh predates APEX_CI_MODE: it builds, as that build-image.sh chooses" \
+        "0|build|build-image 0" \
+        "$(ci_request "ci-build $CI_SHA${mode:+ $mode}")|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^build-image ')"
+done
 mv "$CI_DIR/build-image-d.sh" "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
 echo 1 >"$CI_DIR/build-rc"
 check "after a failed build the report still runs, and the build's status stands" "1:report" \
