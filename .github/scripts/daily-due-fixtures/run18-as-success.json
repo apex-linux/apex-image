@@ -1,0 +1,85 @@
+{
+ "jobs": [
+  {
+   "id": 124295535434,
+   "run_id": 41123395071,
+   "name": "builder VM build and gates",
+   "workflow_name": "vm",
+   "status": "completed",
+   "conclusion": "success",
+   "head_branch": "main",
+   "head_sha": "d5f8d79a37c925d4cbc097c1c67a58f0b0c3b9b8",
+   "html_url": "https://github.com/apex-linux/apex-image/actions/runs/41123395071/job/124295535434",
+   "run_attempt": 1,
+   "runner_id": 355,
+   "runner_name": "apex-kvm-20261030185335-32152",
+   "runner_group_id": 3,
+   "runner_group_name": "apex-kvm",
+   "labels": [
+    "self-hosted",
+    "apex-kvm"
+   ],
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-10-30T20:27:53Z",
+     "completed_at": "2026-10-30T20:27:55Z"
+    },
+    {
+     "name": "Commit",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-10-30T20:27:55Z",
+     "completed_at": "2026-10-30T20:27:55Z"
+    },
+    {
+     "name": "Components, RPMs, lane, image, G4 when due, G2 twice, gates, promote (builder VM)",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 3,
+     "started_at": "2026-10-30T20:27:55Z",
+     "completed_at": "2026-10-30T22:53:37Z"
+    },
+    {
+     "name": "Gates file",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 4,
+     "started_at": "2026-10-30T22:53:37Z",
+     "completed_at": "2026-10-30T22:53:37Z"
+    },
+    {
+     "name": "A gate gave its verdict",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 5,
+     "started_at": "2026-10-30T22:53:37Z",
+     "completed_at": "2026-10-30T22:53:37Z"
+    },
+    {
+     "name": "G4's screendumps, journals and serial logs, the absorption report and the metrics",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 6,
+     "started_at": "2026-10-30T22:53:37Z",
+     "completed_at": "2026-10-30T22:53:45Z"
+    },
+    {
+     "name": "Complete job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 7,
+     "started_at": "2026-10-30T22:53:45Z",
+     "completed_at": "2026-10-30T22:53:45Z"
+    }
+   ],
+   "created_at": "2026-10-30T20:27:47Z",
+   "started_at": "2026-10-30T20:27:51Z",
+   "completed_at": "2026-10-30T22:53:55Z"
+  }
+ ]
+}

@@ -1,0 +1,61 @@
+{
+ "jobs": [
+  {
+   "id": 122770272439,
+   "run_id": 40674776728,
+   "name": "builder VM build and gates",
+   "workflow_name": "vm",
+   "status": "completed",
+   "conclusion": "failure",
+   "head_branch": "main",
+   "head_sha": "519737179b9737babcc625014774f309bb60394a",
+   "html_url": "https://github.com/apex-linux/apex-image/actions/runs/40674776728/job/122770272439",
+   "run_attempt": 1,
+   "runner_id": 350,
+   "runner_name": "apex-kvm-20261028103912-5263",
+   "runner_group_id": 3,
+   "runner_group_name": "apex-kvm",
+   "labels": [
+    "self-hosted",
+    "apex-kvm"
+   ],
+   "steps": [
+    {
+     "name": "Set up job",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 1,
+     "started_at": "2026-10-28T10:46:42Z",
+     "completed_at": "2026-10-28T10:46:45Z"
+    },
+    {
+     "name": "Commit",
+     "status": "completed",
+     "conclusion": "success",
+     "number": 2,
+     "started_at": "2026-10-28T10:46:45Z",
+     "completed_at": "2026-10-28T10:46:45Z"
+    },
+    {
+     "name": "Components, RPMs, lane, image, G2 twice, G4 when due, gates, promote (builder VM)",
+     "status": "in_progress",
+     "number": 3,
+     "started_at": "2026-10-28T10:46:45Z"
+    },
+    {
+     "name": "Gates file",
+     "status": "pending",
+     "number": 4
+    },
+    {
+     "name": "G4's screendumps, journals and serial logs, the absorption report and the metrics",
+     "status": "pending",
+     "number": 5
+    }
+   ],
+   "created_at": "2026-10-28T10:46:36Z",
+   "started_at": "2026-10-28T10:46:39Z",
+   "completed_at": "2026-10-28T11:28:52Z"
+  }
+ ]
+}
