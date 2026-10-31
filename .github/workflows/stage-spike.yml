@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: The image to install and stage on (default quay.io/fedora/fedora-bootc:45)
+        description: The image to install and stage on (default registry.fedoraproject.org/fedora-bootc:45)
         type: string
         required: false
         default: ""
@@ -45,7 +45,7 @@ jobs:
       - name: Both staging paths on fresh installs
         env:
           SPIKE_IMAGE: ${{ inputs.image }}
-        run: SPIKE_IMAGE=${SPIKE_IMAGE:-quay.io/fedora/fedora-bootc:45} .github/spike/stage-spike.sh
+        run: .github/spike/stage-spike.sh
 
       - name: Logs
         if: ${{ !cancelled() }}

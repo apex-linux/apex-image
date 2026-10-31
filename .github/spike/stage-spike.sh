@@ -4,7 +4,7 @@
 # (today) against a switch from a registry on the host, on two fresh installs of one image.
 set -euo pipefail
 
-readonly IMAGE=${SPIKE_IMAGE:-quay.io/fedora/fedora-bootc:45}
+readonly IMAGE=${SPIKE_IMAGE:-registry.fedoraproject.org/fedora-bootc:45}
 readonly REGISTRY_IMAGE=docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
 readonly CANDIDATE=localhost/apex-candidate:g4 SERVED=127.0.0.1:5000/apex-candidate:g4 GUEST_REF=10.0.2.2:5000/apex-candidate:g4
 SPIKE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
