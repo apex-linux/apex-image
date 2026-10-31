@@ -193,6 +193,8 @@ import sys
 allowed_file, n, *rest = sys.argv[1:]
 listed, rest = {os.path.realpath(p) for p in rest[: int(n)]}, rest[int(n) :]
 trees = [tuple(rest[i : i + 4]) for i in range(0, len(rest), 4) if rest[i + 1]]
+# apex-image is not scanned: its lane fixtures copy apex-gnome's recipes, frozen so the lane's
+# tests don't move with the pin, and no spec ships a recipe, so an allow line for one would be stale.
 SKIP = {".git", "_build", "node_modules", "target"}
 SECTIONS = ("%files", "%changelog", "%check", "%install", "%prep", "%build", "%description", "%package")
 problems, shipped = [], {}
