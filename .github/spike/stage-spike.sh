@@ -29,7 +29,7 @@ fresh_guest() { # NAME
 }
 
 mkdir -p "$QUALIFY_OUT/logs"
-trap 'stop_vm || true; unmount_all; as_root podman rm -f spike-registry >/dev/null 2>&1 || true' EXIT
+trap 'stop_vm || true; unmount_all; as_root podman rm -f spike-registry >/dev/null 2>&1 || true; [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || cat "$GITHUB_STEP_SUMMARY"' EXIT
 ensure_key
 podman_pull "$IMAGE"
 size=$(as_root podman image inspect --format '{{.Size}}' "$IMAGE")
@@ -65,9 +65,9 @@ timed "registry: bootc switch --download-only (guest)" vm_ssh "timeout 3600 env 
     CONTAINERS_POLICY_JSON=/run/apex-qualify/policy.json bootc switch --download-only $GUEST_REF"
 registry_digest=$(staged_digest)
 as_root podman logs --since "$since" spike-registry >"$QUALIFY_OUT/logs/registry.log" 2>&1 || true
-blobs=$(grep -c 'GET /v2/apex-candidate/blobs/' "$QUALIFY_OUT/logs/registry.log" || true)
-bytes=$(grep 'GET /v2/apex-candidate/blobs/' "$QUALIFY_OUT/logs/registry.log" | grep -o 'http.response.written=[0-9]*' |
-    cut -d= -f2 | awk '{ s += $1 } END { print s + 0 }')
+fetches() { grep -o '"GET /v2/apex-candidate/blobs/[^"]*" [0-9]* [0-9]*' "$QUALIFY_OUT/logs/registry.log" || true; }
+blobs=$(fetches | grep -c . || true)
+bytes=$(fetches | awk '{ s += $NF } END { print s + 0 }')
 served=$(as_root podman image inspect --format '{{.Digest}}' "$CANDIDATE")
 layers=$(as_root podman image inspect --format '{{len .RootFS.Layers}}' "$CANDIDATE")
 stop_vm
