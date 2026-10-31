@@ -1559,10 +1559,23 @@ s2idle_wakes() {
     fi
     if [[ ! -e $STATE/no-pm-lines ]]; then
         printf '[%s] guest kernel: %s\n' "$now" 'PM: suspend-to-idle' "$now" 'PM: resume from suspend-to-idle' >>"$STATE/kernel"
-        jq -cn --arg t "$start" '{MESSAGE: "PM: suspend-to-idle", _SOURCE_MONOTONIC_TIMESTAMP: ($t | tonumber * 1e6 | floor | tostring)}' >>"$STATE/kmsg"
-        jq -cn --arg t "$end" '{MESSAGE: "PM: resume from suspend-to-idle", _SOURCE_MONOTONIC_TIMESTAMP: ($t | tonumber * 1e6 | floor | tostring)}' >>"$STATE/kmsg"
+        kmsg_line 'PM: suspend-to-idle' "$start" >>"$STATE/kmsg"
+        kmsg_line 'PM: resume from suspend-to-idle' "$end" >>"$STATE/kmsg"
     fi
     rm -f "$STATE/frozen"
+}
+# MESSAGE TIME: a kmsg record as journalctl -o json gives it. With boottime-differs the BOOTTIME
+# field carries TIME and MONOTONIC a stale 1 s; with kmsg-no-time the suspend line has neither.
+kmsg_line() {
+    local us
+    us=$(awk -v t="$2" 'BEGIN { printf "%d", t * 1e6 }')
+    if [[ -e $STATE/kmsg-no-time && $1 == 'PM: suspend-to-idle' ]]; then
+        jq -cn --arg m "$1" '{MESSAGE: $m}'
+    elif [[ -e $STATE/boottime-differs ]]; then
+        jq -cn --arg m "$1" --arg t "$us" '{MESSAGE: $m, _SOURCE_BOOTTIME_TIMESTAMP: $t, _SOURCE_MONOTONIC_TIMESTAMP: "1000000"}'
+    else
+        jq -cn --arg m "$1" --arg t "$us" '{MESSAGE: $m, _SOURCE_MONOTONIC_TIMESTAMP: $t}'
+    fi
 }
 qmp() {
     local cmd keys
@@ -1689,7 +1702,7 @@ vm_ssh() {
         "pgrep -c -f 'pam/gdm-fingerprin[t]'") n=$(from fingerprints); echo "${n:-0}"; ((${n:-0} > 0)) ;;
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
         "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
-        "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
+        "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
         "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
@@ -2205,6 +2218,11 @@ suspend_fails two-suspends 'suspend_stats/success went from 0 to 2, not up by on
 suspend_fails short-sleep "the guest slept 0.000s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
 suspend_fails sleeps-0.96 "the guest slept 0.960s by the kernel's clock (frozen timekeeping +0.000s) of a 1s hold"
 suspend_fails no-pm-lines "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+suspend_fails kmsg-no-time "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
+apex_locked_in
+: >"$GUEST_DIR/state/boottime-differs"
+check "suspend: the BOOTTIME field is read first" 0 "$(guest lock_matrix local 1000)"
+check_true "its gap is the sleep" grep -qE '\| local-lock-suspend \| PASS \| .*slept [3-9]\.[0-9]{3}s by the kernel' "$GUEST_DIR/out/results.md"
 apex_locked_in
 : >"$GUEST_DIR/state/resuspends"
 rm -f "$GUEST_DIR/state/woken"

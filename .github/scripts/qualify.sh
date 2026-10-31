@@ -1594,11 +1594,12 @@ readonly SLEEP_OFFSET='awk '\''FNR == NR { b = $1; next } /^now at/ { printf "%.
 # shellcheck disable=SC2016 # expanded by the guest's shell
 readonly WAKEUP_IRQ_LINE='irq=$(cat /sys/power/pm_wakeup_irq) && grep -E "^ *$irq:" /proc/interrupts'
 
-# Printk's clock (_SOURCE_MONOTONIC_TIMESTAMP, µs) from 'PM: suspend-to-idle' to its resume line, in
-# journalctl -o json: journald, frozen in between, stamps both at the thaw.
+# Printk's clock (_SOURCE_BOOTTIME_TIMESTAMP, else _SOURCE_MONOTONIC_TIMESTAMP, µs) from 'PM: suspend-to-idle'
+# to its resume line: journald, frozen in between, stamps both at the thaw. A line without one is no line.
 s2idle_gap() {
     jq -r 'select(.MESSAGE == "PM: suspend-to-idle" or .MESSAGE == "PM: resume from suspend-to-idle")
-        | "\(._SOURCE_MONOTONIC_TIMESTAMP) \(.MESSAGE)"' "$1" |
+        | (._SOURCE_BOOTTIME_TIMESTAMP // ._SOURCE_MONOTONIC_TIMESTAMP) as $t
+        | select($t | type == "string" and test("^[0-9]+$")) | "\($t) \(.MESSAGE)"' "$1" |
         awk '$3 == "suspend-to-idle" { start = $1; next }
             $3 == "resume" && start != "" { printf "%.6f\n", ($1 - start) / 1e6; found = 1; exit }
             END { exit !found }'
@@ -1750,7 +1751,7 @@ matrix_suspend() {
         irq=$(vm_ssh "$WAKEUP_IRQ_LINE" | tr -s ' ') || irq=
         [[ $irq =~ ^\ ?1:.*i8042 ]] || fail "$test" "the wake IRQ is not the i8042 keyboard's (pm_wakeup_irq: ${irq:-none})"
         clock=$(vm_ssh "$SLEEP_OFFSET") || fail "$test" "cannot read the guest's BOOTTIME and MONOTONIC clocks after the wake"
-        vm_ssh "journalctl -k -b --since @$((since - 1)) -o json --output-fields=MESSAGE,_SOURCE_MONOTONIC_TIMESTAMP --no-pager" \
+        vm_ssh "journalctl -k -b --since @$((since - 1)) -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager" \
             >"$QUALIFY_OUT/logs/$test.kernel.json" || fail "$test" "cannot read the kernel's journal since the row began"
         gap=$(s2idle_gap "$QUALIFY_OUT/logs/$test.kernel.json") ||
             fail "$test" "no 'PM: suspend-to-idle' then 'PM: resume from suspend-to-idle' in the kernel's journal since the row began"
