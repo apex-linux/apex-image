@@ -1640,6 +1640,7 @@ local_flow_stubs() {
         [[ $* == *"-loadvm $DIAG_SNAPSHOT" ]] || return 0
         snapshot_restore
     }
+    diag_free_mib() { echo 1048576; }
     hmp() {
         case $1 in
             "savevm $DIAG_SNAPSHOT")
@@ -2797,6 +2798,20 @@ check "local-diag: an unknown unit is refused" 1 \
 # shellcheck disable=SC2016 # expanded by the inner bash
 check "local-diag refuses G4's QUALIFY_OUT" 1 \
     "$(rc_of bash -c '. "$1"; QUALIFY_OUT=$APEX_ROOT/_build/qualify; diag_refuse_g4_out' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
+
+# --- local-diag's space: the guest's RAM and the overlays' growth, before the install ---
+space() { # QUALIFY_MEM FREE_MIB: diag_space_check's exit, its message in $TMP/space.err
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (QUALIFY_MEM=$1 QUALIFY_OUT=$TMP rc_of bash -c '. "$1"; fake_free=$2; diag_free_mib() { echo "$fake_free"; }; diag_space_check 2>"$3"' _ \
+        "$APEX_ROOT/.github/scripts/qualify.sh" "$2" "$TMP/space.err")
+}
+check "local-diag: 6G of RAM and the overlays fit in 8 GiB free" 0 "$(space 6G 8192)"
+check "but not in 7" 1 "$(space 6G 7168)"
+check_true "naming what it needs, before any install" grep -qF \
+    "local-diag needs 8 GiB free in QUALIFY_OUT ($TMP) for its snapshot and overlays: 7 GiB is" "$TMP/space.err"
+check "QUALIFY_MEM in MiB, with M or without" "0:0:1" "$(space 4096M 6144):$(space 4096 6144):$(space 4096 6143)"
+check "a QUALIFY_MEM it cannot count is refused by name" 1 "$(space 6.5G 99999)"
+check_true "saying what it wants" grep -qF "QUALIFY_MEM=6.5G: local-diag wants MiB, or a whole number with M or G" "$TMP/space.err"
 
 # --- local-diag's drives: qcow2 overlays on the disk and the vars, folded back for a journal ---
 QO="$TMP/diag-overlays"

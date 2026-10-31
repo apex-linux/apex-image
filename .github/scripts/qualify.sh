@@ -207,6 +207,7 @@ QUALIFY_ERRLOG=
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
     polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
 readonly DIAG_SNAPSHOT=diag0
+readonly DIAG_OVERLAY_MIB=2048
 declare -a LOOPS=() MOUNTS=() MAPPERS=()
 # The layer feature that gates each row, as results.md's fourth column names it.
 declare -A ROW_GATE=()
@@ -2413,6 +2414,22 @@ conversations_settled() {
     [[ $(password_conversations) == "$before" ]]
 }
 
+diag_free_mib() { df --output=avail -BM "$QUALIFY_OUT" | tail -n 1 | tr -dc 0-9; }
+
+# savevm writes the guest's RAM into an overlay, and the units' writes grow the disk's.
+diag_space_check() {
+    local mem=${QUALIFY_MEM^^} need free
+    [[ $mem =~ ^[0-9]+[MG]?$ ]] || die "QUALIFY_MEM=$QUALIFY_MEM: local-diag wants MiB, or a whole number with M or G"
+    case $mem in
+        *G) need=$((${mem%G} * 1024)) ;;
+        *) need=${mem%M} ;;
+    esac
+    need=$(((need + DIAG_OVERLAY_MIB + 1023) / 1024))
+    free=$(($(diag_free_mib) / 1024))
+    ((free >= need)) ||
+        die "local-diag needs $need GiB free in QUALIFY_OUT ($QUALIFY_OUT) for its snapshot and overlays: $free GiB is"
+}
+
 # The post-login guest, RAM and disks, which every unit after the first starts from. Its
 # session is diag.snapshot.state's.
 diag_snapshot_save() {
@@ -2546,6 +2563,7 @@ cmd_local_diag() {
     for unit in "${asked[@]}"; do
         [[ " ${DIAG_UNITS[*]} " == *" $unit "* ]] || die "no local-diag unit '$unit' (${DIAG_UNITS[*]})"
     done
+    diag_space_check
     DIAG=1
     QUALIFY_ERRLOG=$QUALIFY_OUT/diag-errexit.txt
     declare -gA DIAG_STATUS=() DIAG_DETAIL=()
