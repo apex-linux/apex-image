@@ -18,7 +18,7 @@ packages=(
     zstd xz tar findutils          # artifacts and layers
     just                           # repository recipes
     qemu-kvm-core edk2-ovmf        # qualify.sh: nested KVM boots with OVMF
-    qemu-device-display-virtio-vga # qualify.sh -device virtio-vga (a separate module on Fedora)
+    qemu-device-display-virtio-vga # desktop-vm.sh APEX_DESKTOP_GL=off (qualify.sh runs the built-in VGA)
     qemu-img                       # desktop-disk.sh: the desktop VM disk, raw to qcow2
     dosfstools btrfs-progs         # qualify.sh: ESP and root of the test disk
     openssh-clients openssl        # qualify.sh: ssh into the guest, key checks

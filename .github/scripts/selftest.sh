@@ -2832,6 +2832,10 @@ check "g4 display: virtio-vga (qualify.sh before the switch) fails" 1 "$(gd_rc "
 check_true "and says why" grep -q "qualify-virtio.sh: QEMU display device(s) 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
 sed 's/-device VGA /-device VGA -device virtio-gpu-pci /' "${QP_REAL[0]}" >"$QP/qualify-two-gpus.sh"
 check "g4 display: a second display device fails" 1 "$(gd_rc "$QP/qualify-two-gpus.sh")"
+sed 's/-device VGA /-device VGA -device bochs-display /' "${QP_REAL[0]}" >"$QP/qualify-bochs-display.sh"
+check "g4 display: a second display device named display fails" 1 "$(gd_rc "$QP/qualify-bochs-display.sh")"
+{ cat "${QP_REAL[0]}"; printf '    # -device virtio-vga: a comment\n'; } >"$QP/qualify-display-comment.sh"
+check "g4 display: a comment naming a device is not a QEMU line" 0 "$(gd_rc "$QP/qualify-display-comment.sh")"
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers
