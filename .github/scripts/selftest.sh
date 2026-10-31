@@ -1334,6 +1334,14 @@ check "apex-desktop: apex-desktop's rpms.sh" " registry.fedoraproject.org/fedora
     "$(bi_podman /pinned/desktop)"
 check "libfprint: apex-kernel's libfprint.sh" " registry.fedoraproject.org/fedora:45 .github/scripts/libfprint.sh build /build/libfprint" \
     "$(bi_podman /pinned/kernel)"
+bi_mounts() { grep "^podman run .* -v $1:/component:z " "$BI/steps.log" | sed 's/.* --pull=newer \(.*\) -w \/component .*/\1/'; }
+check "a component's container mounts its checkout and its own output, none of the rest of _build" \
+    "-v /pinned/system:/component:z -v $BIW/_build/rpms/apex:/build/rpms/apex:z|-v /pinned/desktop:/component:z -v $BIW/_build/rpms/desktop:/build/rpms/desktop:z|-v /pinned/kernel:/component:z -v $BIW/_build/libfprint:/build/libfprint:z" \
+    "$(bi_mounts /pinned/system)|$(bi_mounts /pinned/desktop)|$(bi_mounts /pinned/kernel)"
+# shellcheck disable=SC2016 # expanded by the inner bash
+check "an output outside /build is refused before any container runs" "2|" \
+    "$(cd "$BIW" && FAKE=$BI bash -c '. "$1"; sudo() { printf "%s\n" "$*" >>"$FAKE/escape.log"; }
+        in_component /pinned/system x build /build/../home' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >/dev/null 2>&1; echo $?)|$(cat "$BI/escape.log" 2>/dev/null)"
 check "libfprint gets this image's GA_REACHED and updates-testing allowlist" \
     "-e GA_REACHED=$(ga_reached) -e TESTING_INCLUDEPKGS=$(testing_includepkgs)" \
     "$(grep -o -- '-e GA_REACHED=.* registry' "$BI/steps.log" | sed 's/ registry$//')"
@@ -1646,8 +1654,8 @@ rm -f "$BI/steps.log" "$BI/next-gates"
     gate_g4() { echo g4 >>"$FAKE/next-gates"; }
     record_gates() { echo record >>"$FAKE/next-gates"; }
     main' _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >"$BI/next-out" 2>&1 || true
-check "next: every component builds in 46.env's REPOS_BASE" 3 \
-    "$(grep -c "^podman run .* -v $BIW/_build/next:/build:z .* $NEXT_REPOS_BASE " "$BI/steps.log")"
+check "next: every component builds in 46.env's REPOS_BASE, into its own output under _build/next" 3 \
+    "$(grep -c "^podman run .* -v $BIW/_build/next/\(rpms/apex\|rpms/desktop\|libfprint\):/build/\1:z .* $NEXT_REPOS_BASE " "$BI/steps.log")"
 check "next: its RPMs are signed in _build/next, its lane builds" \
     "sign _build/next/rpms/apex/x.rpm|sign _build/next/rpms/desktop/x.rpm|sign _build/next/libfprint/x.rpm|build all" \
     "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"

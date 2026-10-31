@@ -122,11 +122,19 @@ G4_VERDICT=
 # lane.sh's tool id, an input of every cache entry; the entry and fedora:45 digest of this component.
 LANE_TOOL='' CACHE_ENTRY='' CACHE_DIGEST=''
 
-# Each component builds its own RPMs, in its checkout, as root in a fresh fedora:45.
+# Each component builds its own RPMs, in its checkout, as root in a fresh fedora:45. It sees its
+# checkout and the /build/... directory it is given, never the rest of _build: others' sources and RPMs.
 in_component() {
-    local src=$1 rc=0
+    local src=$1 rc=0 a
+    local -a mounts=(-v "$src:/component:z")
     shift
-    sudo podman run --rm --pull=newer -v "$src:/component:z" -v "$PWD/$BUILD:/build:z" -w /component \
+    for a in "$@"; do
+        [[ $a == /build/* ]] || continue
+        [[ $a != *..* ]] || { echo "in_component: $a leaves /build" >&2; return 2; }
+        mkdir -p -- "$PWD/$BUILD/${a#/build/}"
+        mounts+=(-v "$PWD/$BUILD/${a#/build/}:$a:z")
+    done
+    sudo podman run --rm --pull=newer "${mounts[@]}" -w /component \
         "${COMPONENT_ENV[@]}" "$FEDORA" "$@" || rc=$?
     sudo chown -R "$(id -u):$(id -g)" -- "$src"
     return "$rc"
