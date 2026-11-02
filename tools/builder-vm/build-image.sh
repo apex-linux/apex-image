@@ -163,12 +163,12 @@ use_components() {
     eval "$(tools/components.sh env)"
 }
 
-# DIR: a build container's output, taken only as plain, plainly named RPMs and key files.
+# DIR: a build container's output, taken only as plain, plainly named RPMs and key files, each its only link.
 output_plain() {
     local f n
     while IFS= read -r -d '' f; do
         n=${f##*/}
-        [[ -f $f && ! -L $f ]] && { [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._+~^-]*\.rpm$ ]] ||
+        [[ -f $f && ! -L $f && $(stat -c %h -- "$f") == 1 ]] && { [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._+~^-]*\.rpm$ ]] ||
             [[ $n == SHA256SUMS || $n == KEY || $n == key.txt || $n == manifest.txt ]]; } && continue
         echo "sign: $1 holds '${n//[^[:print:]]/?}', which is no plain RPM or key file; nothing is signed" >&2
         return 1

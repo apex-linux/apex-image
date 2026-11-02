@@ -203,11 +203,9 @@ jobs:
             fprint=$(component_key libfprint "$APEX_KERNEL_SRC" .github/scripts/libfprint.sh)
             COMPONENT_ENV=()
             system=$(component_key apex-system "$APEX_SYSTEM_SRC" .github/scripts/rpms.sh)
-            for k in "apex-desktop $desktop" "libfprint $fprint"; do
+            for k in "apex-system $system" "apex-desktop $desktop" "libfprint $fprint"; do
               given "${k#* }" && echo "${k%% *}: ${k#* }" || { echo "::error::${k#* }"; fail=1; }
             done
-            # apex-system 70fa599 dispatches key to a cmd_key it lacks: built uncached until a pin has one.
-            given "$system" && echo "apex-system: $system" || echo "::warning::$system"
             exit "$fail"'
 
       - name: The journal lines G4 waits for, against the current Fedora sources (qualify-markers.txt)

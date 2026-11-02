@@ -28,9 +28,10 @@ blank lines and lines starting with # are skipped.
               changing only paths that X changes; 1 otherwise
   verify PATH exit 0 when PATH is a pinned clone of the last fetch that is still at its
               pin, clean, a plain single repository (no commondir, gitdir, worktrees),
-              and whose .git/config holds only what fetch writes (core, remote.origin,
-              branch keys); 1, naming what is wrong, otherwise. build-image.sh asks
-              before it caches RPMs built from PATH, and before the lane builds from it
+              and whose .git/config holds only what fetch writes (core and extensions
+              keys with fetch's values, remote.origin and branch keys); 1, naming what
+              is wrong, otherwise. build-image.sh asks before it caches RPMs built from
+              PATH, and before the lane builds from it
 
 APEX_SRC_<NAME> (NAME upper-cased, - as _; APEX_SRC_APEX_DESKTOP for apex-desktop)
 points at a sibling checkout to use instead of the pinned clone, relative to this
@@ -57,22 +58,35 @@ git_in() {
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directory="$dir" -C "$dir" "$@"
 }
 
-# The only config a pinned clone has once fetch made it; anything else may run code or point elsewhere.
-readonly SAFE_CONFIG='^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase)|remote\.origin\.(url|fetch|tagopt)|branch\..+\.(remote|merge))$'
+# NAME VALUE: whether a pinned clone's .git/config may hold it, as fetch writes it.
+config_allowed() {
+    case $1 in
+        core.repositoryformatversion) [[ $2 == 0 || $2 == 1 ]] ;;
+        core.filemode | core.logallrefupdates) [[ $2 == true ]] ;;
+        core.bare) [[ $2 == false ]] ;;
+        extensions.refstorage) [[ $2 == files || $2 == reftable ]] ;;
+        extensions.objectformat) [[ $2 == sha1 || $2 == sha256 ]] ;;
+        remote.origin.url | remote.origin.fetch | remote.origin.tagopt | branch.*.remote | branch.*.merge) true ;;
+        *) false ;;
+    esac
+}
 
 # DIR: why its clone is no plain single repository with only fetch's config, or nothing. The
 # config is read as a file, never through git's include handling or another repository's.
 unsafe_config() {
-    local f keys
+    local f entry name bad=''
     [[ -d $1/.git && ! -L $1/.git ]] || { echo ".git is not a directory"; return; }
     for f in commondir gitdir worktrees config.worktree; do
         [[ ! -e $1/.git/$f && ! -L $1/.git/$f ]] || { echo ".git/$f makes it no plain single repository"; return; }
     done
     f=$1/.git/config
     [[ -f $f && ! -L $f ]] || { echo ".git/config is not a regular file"; return; }
-    keys=$(git config --file "$f" --no-includes --name-only --list 2>/dev/null | grep -viE "$SAFE_CONFIG" | sort -u | paste -sd' ') ||
-        true
-    [[ -z $keys ]] || echo ".git/config sets $keys"
+    while IFS= read -r -d '' entry; do
+        name=${entry%%$'\n'*}
+        [[ $entry == *$'\n'* ]] || entry+=$'\n'
+        config_allowed "${name,,}" "${entry#*$'\n'}" || bad+=" $name=${entry#*$'\n'}"
+    done < <(git config --file "$f" --no-includes --null --list 2>/dev/null)
+    [[ -z $bad ]] || echo ".git/config sets${bad//[^[:print:]]/?}"
 }
 
 lock_sha256() {

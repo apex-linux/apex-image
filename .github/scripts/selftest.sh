@@ -1194,6 +1194,26 @@ echo "$CO/elsewhere/.git" >"$CS/.git/commondir"
 check "verify: a .git/commondir refuses, by name" "1|yes" \
     "$(components verify "$CS")|$(co_said 'apex-system: .git/commondir makes it no plain single repository' verify "$CS")"
 check "and fetch clones afresh over it" "0|0" "$(components fetch)|$(components verify "$CS")"
+echo "$CO/elsewhere/.git" >"$CS/.git/gitdir"
+check "verify: a .git/gitdir refuses; fetch clones afresh" "1|0|0" "$(components verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" worktree add -q --detach "$CO/worktree" HEAD
+check "verify: a clone with a worktree refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/worktrees makes it no plain single repository' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+: >"$CS/.git/config.worktree"
+check "verify: a .git/config.worktree refuses; fetch clones afresh" "1|0|0" "$(components verify "$CS")|$(components fetch)|$(components verify "$CS")"
+mv "$CS/.git/config" "$CO/config" && ln -s "$CO/config" "$CS/.git/config"
+check "verify: a .git/config that is a link refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/config is not a regular file' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config core.bare true
+check "verify: core.bare=true refuses, by value; fetch clones afresh rather than die" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/config sets core.bare=true' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config core.filemode false
+check "verify: core.filemode=false, which hides a chmod, refuses" 1 "$(components verify "$CS")"
+git -C "$CS" config core.filemode true
+git -C "$CS" config core.repositoryformatversion 1
+git -C "$CS" config extensions.objectformat sha1
+check "verify: a format-1 clone with extensions.objectformat=sha1, as git may write, is plain" 0 "$(components verify "$CS")"
+components fetch >/dev/null
 git -C "$CS" -c advice.detachedHead=false checkout -q HEAD~1
 check "verify: a clone moved off its pin refuses" 1 "$(components verify "$CS")"
 check "and fetch puts it back" "0|0" "$(components fetch)|$(components verify "$CS")"
@@ -1472,6 +1492,8 @@ bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints 
             printf "signed %s\nnvr apex-%s 0:1-1.x86_64\n" "$name" "$name" >"$d/$name.rpm"
             [[ $name != desktop || ! -e $FAKE/plant-link ]] || ln -s "$FAKE/victim" "$d/SHA256SUMS"
             [[ $name != desktop || ! -e $FAKE/plant-hardlink ]] || ln "$FAKE/victim" "$d/SHA256SUMS"
+            [[ $name != desktop || ! -e $FAKE/plant-hardrpm ]] || ln "$FAKE/victim" "$d/extra.rpm"
+            [[ $name != desktop || ! -e $FAKE/plant-norpm ]] || rm -f "$d/$name.rpm"
             [[ $name != desktop || ! -e $FAKE/plant-name ]] || : >"$d/odd"$'"'"'\n'"'"'"name.rpm"
             if [[ ${*: -1} == /build/* ]]; then echo unkeyed >"$d/KEY"; else printf "%s\n" "${*: -1}" >"$d/KEY"; fi
         }
@@ -1668,6 +1690,7 @@ check "rpm-cache: a store that died leaves no .tmp behind the next build" "0|gon
 before=$(rc_cached)
 check "rpm-cache: dev-override components take no key, reuse nothing and store nothing" "0|system desktop kernel|0|yes|$before" \
     "$(RC_COMPONENTS=dev-override bi_cache)|$(rc_builds)|$(grep -c ' key$' "$RC/steps.log")|$(rc_said 'components are dev-override, not pinned; nothing is cached or reused')|$(rc_cached)"
+check "and verifies no clone, before a store or the lane" "" "$(cat "$RC/verify.log" 2>/dev/null)"
 bi_cache >/dev/null
 check "rpm-cache: each key is taken in a container that mounts its checkout read-only and no /build" "3|0" \
     "$(grep ' key$' "$RC/steps.log" | grep -c -- ' -v /pinned/[a-z]*:/component:ro,z -w /component ')|$(grep ' key$' "$RC/steps.log" | grep -c /build)"
@@ -1694,17 +1717,27 @@ check "sign: a SHA256SUMS link a build left stops the build; nothing is written 
 rm "$RC/plant-link"
 touch "$RC/plant-hardlink"
 echo kdesk-h >"$RC/keys/desktop"
-check "sign: SHA256SUMS is written afresh, never through a file a build left there" "0|victim" \
-    "$(bi_cache)|$(cat "$RC/victim")"
+check "sign: a SHA256SUMS hard link a build left stops the build; nothing is written through it" "1|victim|yes" \
+    "$(bi_cache)|$(cat "$RC/victim")|$(rc_said "sign: _build/rpms/desktop holds 'SHA256SUMS', which is no plain RPM or key file")"
 rm "$RC/plant-hardlink"
+touch "$RC/plant-hardrpm"
+check "sign: an RPM with a second link stops the build before signing" "1|no|yes" \
+    "$(bi_cache)|$(grep -q 'lane.sh sign _build/rpms/desktop' "$RC/steps.log" && echo signed || echo no)|$(rc_said "holds 'extra.rpm'")"
+rm "$RC/plant-hardrpm"
+touch "$RC/plant-norpm"
+check "sign: an output with no RPM stops the build" "1|yes" "$(bi_cache)|$(rc_said 'sign: _build/rpms/desktop holds no RPM')"
+rm "$RC/plant-norpm"
 touch "$RC/plant-name"
 echo kdesk-n >"$RC/keys/desktop"
 check "sign: an RPM name with a newline stops the build before signing" "1|no|yes" \
     "$(bi_cache)|$(grep -q 'lane.sh sign _build/rpms/desktop' "$RC/steps.log" && echo signed || echo no)|$(rc_said "holds 'odd?name.rpm'")"
 rm "$RC/plant-name"
+# shellcheck disable=SC2016 # expanded by bi_cache's inner bash
+LANE_MARK='eval "$(declare -f lane_sources_as_fetched | sed 1s/lane_sources_as_fetched/real_lane_sources/)"
+    lane_sources_as_fetched() { echo MARK >>"$FAKE/verify.log"; real_lane_sources; }'
 check "lane: with pinned components it builds only after the kernel and recipe clones verify, not this checkout" \
     "0|verify /pinned/kernel verify /pinned/gnome|yes" \
-    "$(bi_cache)|$(grep -E 'verify /pinned/(kernel|gnome)$|verify '"$BIW"'$' "$RC/verify.log" | tail -n 2 | paste -sd' ')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo yes)"
+    "$(bi_cache "$LANE_MARK")|$(sed -n '/^MARK$/,$p' "$RC/verify.log" | grep -v '^MARK$' | paste -sd' ')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo yes)"
 touch "$RC/unverified-gnome"
 check "lane: a recipe clone no longer as fetched stops the build before the lane" "1|yes|no" \
     "$(bi_cache)|$(rc_said 'lane: /pinned/gnome is no longer as fetched; the lane does not build from it')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo lane || echo no)"
