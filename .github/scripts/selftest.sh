@@ -3628,7 +3628,7 @@ qo() { # DIAG CODE: CODE run in qualify.sh with DIAG set as given, QEMU and qemu
     # shellcheck disable=SC2016 # expanded by the inner bash
     PATH="$QO/bin:$PATH" QEMU_ARGS="$QO/args" QEMU_IMG_LOG="$QO/img.log" QUALIFY_OUT="$QO/out" \
         OVMF_CODE="$QO/code.fd" OVMF_VARS="$QO/vars.fd" QEMU_IMG_FAILS=${QEMU_IMG_FAILS:-} \
-        bash -c '. "$1"; require_kvm() { :; }; as_root() { return 1; }; DIAG=$2; eval "$3"' _ \
+        bash -c '. "$1"; require_kvm() { :; }; as_root() { return 1; }; assert_display() { :; }; DIAG=$2; eval "$3"' _ \
         "$APEX_ROOT/.github/scripts/qualify.sh" "$1" "$2" >/dev/null 2>&1 || true
 }
 qo_drives() { grep -E '^(if=pflash,format=[a-z0-9]+,unit=1|file=)' "$QO/args" | paste -sd'|'; }
