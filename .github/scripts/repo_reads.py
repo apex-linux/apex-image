@@ -8,6 +8,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import warnings
 
 
 class Repo:
@@ -288,7 +289,7 @@ class Python:
                 if isinstance(node, ast.ImportFrom) and any(a.name == "__file__" for a in node.names):
                     yield self.unresolved(node, "__file__")
                 continue
-            if isinstance(node, ast.Call) and self.qual(node.func) in LOADS and node.args:
+            if isinstance(node, ast.Call) and self.qual(node.func) in LOADS:
                 yield from self.loads(node)
             if id(node) in done:
                 continue
@@ -327,7 +328,12 @@ class Python:
 
     def loads(self, node):
         """importlib.import_module, __import__ and runpy: what they load, by a constant name or path."""
-        called, arg = self.qual(node.func), node.args[0]
+        called = self.qual(node.func)
+        named = [k.value for k in node.keywords if k.arg in ("name", "mod_name", "path_name")]
+        arg = node.args[0] if node.args else named[0] if named else None
+        if arg is None:
+            yield self.unresolved(node, "__import__")
+            return
         name, built = text(arg), self.value(arg)
         if called == "runpy.run_path" and built is not None:
             yield node.lineno, built
@@ -353,7 +359,9 @@ def python_reads(path, lines, tracked, source_of, seen, run="file", offset=0):
     where = path if run == "file" else f"the Python at {path}:{offset + 1}"
     first = "\n".join(lines) if run == "file" else next((line.strip() for line in lines if line.strip()), "")
     try:
-        tree = ast.parse(source_of(path) if run == "file" else "\n".join(lines), path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source_of(path) if run == "file" else "\n".join(lines), path)
         reads = list(Python(path, lines, tracked, source_of, run, seen).reads(tree))
     except (SyntaxError, ValueError) as e:
         why = f"{where} does not parse on Python {sys.version.split()[0]} ({getattr(e, 'msg', e)})"
@@ -497,10 +505,10 @@ def python_piece(source, rest, at, number, script, sourced, lines, starts):
             defs = script.blocks[name]
             before = [d for d in defs if d[0] < number]
             first, code = before[-1] if before else defs[0]
-            return "c", first, code.split("\n"), at + m.end()
+            return "c", first, LINES.split(code), at + m.end()
         theirs = [s for s in sourced if name in s.blocks]
         if theirs and script.readable(name) and theirs[-1].readable(name):
-            return "c", number, theirs[-1].blocks[name][-1][1].split("\n"), at + m.end()
+            return "c", number, LINES.split(theirs[-1].blocks[name][-1][1]), at + m.end()
         return None
     m = BY_LITERAL.match(rest)
     if m:
@@ -508,7 +516,7 @@ def python_piece(source, rest, at, number, script, sourced, lines, starts):
         end = source.find("'", opened)
         if end < 0 or source.startswith("\\'", end + 1):
             return None
-        return "c", number, source[opened:end].split("\n"), end + 1
+        return "c", number, LINES.split(source[opened:end]), end + 1
     m = BY_HEREDOC.match(rest)
     if m:
         first = source.count("\n", 0, at) + 2

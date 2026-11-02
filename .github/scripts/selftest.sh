@@ -4389,6 +4389,14 @@ for row in "9 a definition inside a one-line body" "10 a sudo prefix" "11 a prog
 done
 check "(( x << n )) is no heredoc, and command -v python3 runs nothing" 0 "$(grep -cE 'helper\.sh:(8|15):' "$HC4.err")"
 check_true "a script ending in a redirect with no newline is still read" grep -qF "error: .github/scripts/helper.sh:16: reads .github/scripts/rowsu.py" "$HC4.err"
+printf "CRCODE='import rowsw\rprint(rowsw.__file__)'\n" >"$HC4_PYF/crlib.sh"
+check "g4 harness: a module named by keyword, and a CR inside a sourced NAME" 1 \
+    "$(hc4 "printf '%s\n' \"python3 - <<'PY'\" 'import importlib' 'importlib.import_module(name=\"rowsv\")' 'PY' 'python3 -c \"\$CRCODE\"' >>.github/scripts/helper.sh
+        cat '$HC4_PYF/crlib.sh' >>.github/scripts/lib.sh; printf '. \"\$(dirname \"\${BASH_SOURCE[0]}\")/lib.sh\"\n' >>.github/scripts/helper.sh
+        : >.github/scripts/rowsv.py; : >.github/scripts/rowsw.py")"
+check_true "reads the module import_module(name=...) names" grep -qF "error: .github/scripts/helper.sh:4: reads .github/scripts/rowsv.py" "$HC4.err"
+check_true "and splits a sourced NAME's code at a CR, as Python does" grep -qF "error: .github/scripts/helper.sh:6: reads .github/scripts/rowsw.py" "$HC4.err"
+check "with no traceback" 0 "$(grep -c Traceback "$HC4.err")"
 check "g4 harness: a script over 4 MiB that mentions python fails closed" 1 \
     "$(hc4 "{ echo '#!/usr/bin/env bash'; echo 'python3 -c \"\$X\"'; head -c 5000000 /dev/zero | tr '\\0' '#'; } >.github/scripts/helper.sh")"
 check_true "naming its size" grep -qF "helper.sh, over 4 MiB" "$HC4.err"
