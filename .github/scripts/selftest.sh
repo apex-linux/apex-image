@@ -2551,8 +2551,7 @@ check_true "naming the count" grep -qF "| local-crash-guard | FAIL | a failure i
 
 # shellcheck disable=SC2016 # expanded by the fake guest
 late() { guest eval 'wait_session t user apexqa; crash_guard_late local'; }
-late_login() { logged_in; rm -f "$GUEST_DIR/state/marker"; } # its 60 s window has closed
-late_login
+logged_in
 check "DESK-1: two late aborts, the first counted and the second tripping" 0 "$(late)"
 check_true "the first counts 1 on the booted deployment, checksum and serial" grep -qF \
     "| local-crash-guard-late | PASS | gnome-shell aborted past its 60 s window: apex-shell-safe.service ran, the layer stayed on, ~/$TRIPS counts '$DEPLOYMENT 1'" \
@@ -2561,7 +2560,7 @@ check "the second trips and zeroes it" 1 "$(row local-crash-guard-late-trip PASS
 check "and the row leaves a fresh login with the layer on" "1:no tripped:no trips" \
     "$(row local-crash-guard-late-reset-greeter-login PASS):$([[ -e $GUEST_DIR/state/tripped ]] && echo tripped || echo no tripped):$([[ -e $GUEST_DIR/state/trips ]] && echo trips || echo no trips)"
 late_fails() { # FLAG ROW DETAIL: with FLAG set, crash_guard_late fails at ROW saying DETAIL
-    late_login
+    logged_in
     : >"$GUEST_DIR/state/$1"
     check "DESK-1: $1 fails" 1 "$(late)"
     check_true "$1: at $2, saying so" grep -qF "| $2 | FAIL | $3" "$GUEST_DIR/out/results.md"
