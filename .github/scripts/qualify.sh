@@ -2032,17 +2032,27 @@ polkit_actions() {
     result "$test" PASS "pkaction --verbose names vendor $POLKIT_VENDOR for the ${#ids[@]} actions of $POLKIT_ACTIONS: ${ids[*]}"
 }
 
-# A registry this run did not start may be another run's, on another port or this one.
+# A running registry this run did not start is another run's. A stopped one is a crashed
+# run's, and left there it would refuse every later run.
 start_candidate_registry() {
+    local running
+    if running=$(as_root podman container inspect --format '{{.State.Running}}' "$CANDIDATE_REGISTRY" 2>/dev/null); then
+        [[ $running == false ]] || return 1
+        as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null || return 1
+    fi
     as_root podman run -d --rm --name "$CANDIDATE_REGISTRY" -p "127.0.0.1:$QUALIFY_REGISTRY_PORT:5000" \
         "$CANDIDATE_REGISTRY_IMAGE" >/dev/null || return 1
     CANDIDATE_REGISTRY_STARTED=1
 }
 
+# Until the container is gone this run still owns it, so cleanup() tries again.
 stop_candidate_registry() {
     [[ -n $CANDIDATE_REGISTRY_STARTED ]] || return 0
-    as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1 || true
-    CANDIDATE_REGISTRY_STARTED=
+    if as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1; then
+        CANDIDATE_REGISTRY_STARTED=
+    else
+        warn "cannot remove $CANDIDATE_REGISTRY; remove it with: podman rm -f -v $CANDIDATE_REGISTRY"
+    fi
 }
 
 # Apply arms only for another digest whose manifest version is higher. Built on the host on

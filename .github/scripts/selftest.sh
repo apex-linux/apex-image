@@ -1479,7 +1479,9 @@ as_root() {
     case "$*" in
         "podman image inspect --format {{.Id}} localhost/apex:build") echo cafe ;;
         "podman image inspect --format {{.Digest}} $LOCAL_CANDIDATE") from local-digest ;;
-        "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rm -f -v $CANDIDATE_REGISTRY" | "podman rmi $LOCAL_CANDIDATE") ;;
+        "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rmi $LOCAL_CANDIDATE") ;;
+        "podman container inspect --format {{.State.Running}} $CANDIDATE_REGISTRY") from registry-left | grep . ;;
+        "podman rm -f -v $CANDIDATE_REGISTRY") [[ ! -e $STATE/rm-fails ]] && rm -f "$STATE/registry-left" ;;
         "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] ;;
         "podman push --tls-verify=false --digestfile $QUALIFY_OUT/candidate/pushed $LOCAL_CANDIDATE 127.0.0.1:5000/apex-qualify:candidate")
             [[ ! -e $STATE/push-fails ]] && from pushed >"$QUALIFY_OUT/candidate/pushed" ;;
@@ -1652,7 +1654,7 @@ login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-
 # the login through the greeter on, what they run is the real code against this guest.
 local_flow_stubs() {
     ensure_key() { :; }
-    install_disk() { :; }
+    install_disk() { : >"$STATE/retagged"; }
     start_vm() { # a power-cycle brings a lost guest back to its greeter, unless it stays dead
         [[ -e $STATE/unreachable && ! -e $STATE/stays-dead ]] || return 0
         rm "$STATE/unreachable"
@@ -1665,7 +1667,12 @@ local_flow_stubs() {
     save_journal() { :; }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
-    as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
+    as_root() { # the install retags the image: its ID is the one read before it
+        case "$*" in
+            *'{{.Digest}}'*) echo sha256:feed ;;
+            *'{{.Id}}'*) if [[ -e $STATE/retagged ]]; then echo dead; else echo cafe; fi ;;
+        esac
+    }
     assert_green() { result "$1" PASS "green on sha256:feed"; }
     stage_local_candidate() { echo "$3" >"$STATE/stage-base"; LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
     counted_rollback() { result "$1-fallback" PASS "back on $2"; }
@@ -2070,7 +2077,23 @@ check_true "naming its container and port" grep -qF \
     "| local-stage | FAIL | cannot start apex-qualify-registry-5000 (docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373) on 127.0.0.1:5000: another run's, or the port taken? |" \
     "$GUEST_DIR/out/results.md"
 check "and qualify.sh's exit then leaves that container alone" "" "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
-rm "$GUEST_DIR/state/registry-fails" "$GUEST_DIR/state/vm-dead"
+rm "$GUEST_DIR/state/registry-fails"
+echo false >"$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/host-calls"
+check "a stopped registry a crashed run left is removed, and the stage goes on" 0 "$(stage)"
+check "before this run starts its own" "podman rm -f -v apex-qualify-registry-5000|podman run -d --rm --name apex-qualify-registry-5000" \
+    "$(grep -oE '^podman (rm -f -v|run -d --rm --name) apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls" | head -n 2 | paste -sd'|')"
+echo true >"$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/host-calls"
+check "a running one is another run's: the stage fails" 1 "$(stage)"
+check "without touching it" "" "$(grep -E '^podman (rm|run) ' "$GUEST_DIR/state/host-calls")"
+rm -f "$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/rm-fails"
+: >"$GUEST_DIR/state/host-calls"
+check "a registry that will not go: the stage still passes" 0 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "and qualify.sh's exit tries again" 2 "$(grep -c '^podman rm -f -v apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls")"
+check_true "saying how to remove it" grep -qF "cannot remove apex-qualify-registry-5000; remove it with: podman rm -f -v apex-qualify-registry-5000" "$GUEST_DIR/stderr"
+rm "$GUEST_DIR/state/rm-fails" "$GUEST_DIR/state/vm-dead"
 : >"$GUEST_DIR/state/pushed"
 check "a push that wrote no digest fails" 1 "$(stage)"
 echo "$D1" >"$GUEST_DIR/state/pushed"
