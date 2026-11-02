@@ -1976,7 +1976,9 @@ as_root() {
         "podman image inspect --format {{.Digest}} $LOCAL_CANDIDATE") from local-digest ;;
         "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rmi $LOCAL_CANDIDATE") ;;
         "podman container inspect --format {{.State.Running}} $CANDIDATE_REGISTRY") from registry-left | grep . ;;
-        "podman rm -v $CANDIDATE_REGISTRY") [[ ! -e $STATE/came-alive ]] && rm -f "$STATE/registry-left" ;;
+        "podman rm -v $CANDIDATE_REGISTRY")
+            [[ ! -e $STATE/came-alive ]] || { echo "Error: cannot remove container $CANDIDATE_REGISTRY as it is paused" >&2; return 2; }
+            rm -f "$STATE/registry-left" ;;
         "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] && echo f00d ;;
         "podman rm -f -v f00d") [[ ! -e $STATE/rm-fails ]] || { echo "Error: cannot remove container f00d: device busy" >&2; return 125; } ;;
         "podman container exists f00d") [[ ! -e $STATE/registry-gone ]] ;;
@@ -2200,13 +2202,15 @@ local_flow_stubs() {
     }
     qemu-img() { # convert writes its last argument, which the run must remove
         echo "qemu-img $*" >>"$STATE/disk-calls"
-        [[ $1 != convert ]] || : >"${*: -1}"
+        [[ $1 != convert ]] || { [[ ! -e $STATE/convert-fails ]] && : >"${*: -1}"; }
     }
     diag_disk_mib() { echo 4096; }
     declare -F guest_qmp_query >/dev/null || eval "$(declare -f qmp_query | sed '1s/qmp_query/guest_qmp_query/')"
     qmp_query() { # and the disk-only snapshot diag_keep_disk takes
         case $1 in
-            '{"execute":"query-block"}') printf '[{"device":"virtio0","inserted":{"file":"%s/local.raw.qcow2"}}]\n' "$QUALIFY_OUT" ;;
+            '{"execute":"query-block"}')
+                [[ ! -e $STATE/qmp-silent ]] || return 1
+                if [[ -e $STATE/no-drive ]]; then echo '[]'; else printf '[{"device":"virtio0","inserted":{"file":"%s/local.raw.qcow2"}}]\n' "$QUALIFY_OUT"; fi ;;
             *blockdev-snapshot-internal-sync*)
                 echo "$1" | jq -r '"\(.execute) \(.arguments.device) \(.arguments.name)"' >>"$STATE/disk-calls"
                 echo '{}' ;;
@@ -2657,7 +2661,9 @@ check "before this run starts its own, and without force" "podman rm -v apex-qua
 echo false >"$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/host-calls"
 check "a crashed run's registry that came back to life before its removal fails the stage" 1 "$(stage)"
-check_true "saying so" grep -qF "| local-stage | FAIL | a crashed run's apex-qualify-registry-5000 was stopped, but podman rm -v refused it: running again, so another run's? |" "$GUEST_DIR/out/results.md"
+check_true "with podman's reason, and how to remove it if no run is live" grep -qF \
+    "| local-stage | FAIL | a crashed run's apex-qualify-registry-5000 was stopped, but podman rm -v refused it (Error: cannot remove container apex-qualify-registry-5000 as it is paused); if no run is live, remove it with: podman rm -f -v apex-qualify-registry-5000 |" \
+    "$GUEST_DIR/out/results.md"
 check "and starts no registry of its own" "" "$(grep '^podman run ' "$GUEST_DIR/state/host-calls")"
 rm "$GUEST_DIR/state/came-alive"
 echo true >"$GUEST_DIR/state/registry-left"
@@ -3441,6 +3447,35 @@ check "local-diag: with no room for a lost guest's raw copy, its journal is not 
     "$(grep '^qemu-img convert' "$GUEST_DIR/state/disk-calls")"
 check_true "saying what it needs" grep -qF \
     "no room to read the journal of snapshot lost-after-login-lock-unlock: its raw copy needs 1048577 MiB, QUALIFY_OUT has 1048576 MiB free" "$GUEST_DIR/stderr"
+check "and keeps it as unread" lost-after-login-lock-unlock "$(cat "$GUEST_DIR/out/diag-unread.txt" 2>/dev/null)"
+check_true "naming the overlay and how to read it" grep -qF \
+    "read its journal with: qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw" \
+    "$GUEST_DIR/stderr"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/convert-fails"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check "local-diag: a lost guest's snapshot that does not convert is kept as unread too" lost-after-login-lock-unlock \
+    "$(cat "$GUEST_DIR/out/diag-unread.txt" 2>/dev/null)"
+rm "$GUEST_DIR/state/convert-fails"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/qmp-silent"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check_true "local-diag: a QMP that does not answer query-block is named as such" grep -qF \
+    "cannot keep the lost guest's disk as lost-after-login-lock-unlock: QMP did not answer query-block" "$GUEST_DIR/stderr"
+check "and no snapshot it did not take is read" "" "$(grep '^qemu-img convert' "$GUEST_DIR/state/disk-calls")"
+rm "$GUEST_DIR/state/qmp-silent"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/no-drive"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check_true "local-diag: a QEMU with no drive on the overlay says so" grep -qF \
+    "cannot keep the lost guest's disk as lost-after-login-lock-unlock: QEMU names no drive on local.raw.qcow2: []" "$GUEST_DIR/stderr"
+rm "$GUEST_DIR/state/no-drive"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 echo lost-after-an-earlier-run >"$GUEST_DIR/out/diag-lost.txt"
@@ -3507,6 +3542,17 @@ check_true "naming QEMU's refusal" grep -qF \
     "| local-diag-snapshot | FAIL | savevm diag0: Error: Device 'pflash1' is writable but does not support snapshots |" "$GUEST_DIR/out/results.md"
 check_true "and diag.md says why no unit ran" grep -qF \
     '| login-lock-unlock | NOT-RUN | local-diag could not save its post-login snapshot |' "$GUEST_DIR/out/diag.md"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "local-diag: a guest whose boot_id cannot be read after the login fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; eval "$(declare -f greeter_login | sed "1s/greeter_login/real_greeter_login/")"
+        greeter_login() { real_greeter_login "$@"; : >"$STATE/boot-id-unreadable"; }
+        cmd_local_diag login-lock-unlock localhost/apex:build')"
+check_true "naming the read" grep -qF "| local-diag-snapshot | FAIL | cannot read the guest's boot_id |" "$GUEST_DIR/out/results.md"
+check_true "and diag.md says why no unit ran" grep -qF \
+    '| login-lock-unlock | NOT-RUN | local-diag could not save its post-login snapshot |' "$GUEST_DIR/out/diag.md"
+rm -f "$GUEST_DIR/state/boot-id-unreadable"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/loadvm-fails"
@@ -3669,6 +3715,18 @@ check "cleanup: without QUALIFY_KEEP_DISKS the overlays go with the disk" "" \
 qo 1 'start_vm d'
 qo 1 'drop_disk d'
 check "drop_disk: the disk, the vars and both overlays" "" "$(for f in d.raw d.vars d.raw.qcow2 d.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done)"
+qo_local() { for f in local.raw local.raw.qcow2 local.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done | paste -sd'|'; }
+: >"$QO/out/local.raw"
+qo 1 'start_vm local'
+echo lost-after-x >"$QO/out/diag-unread.txt"
+qo 1 'save_disk_journal local'
+check "save_disk_journal: an overlay holding a snapshot whose journal was not read is not folded back" "|local.raw|local.raw.qcow2|local.vars.qcow2" \
+    "$(cat "$QO/img.log" 2>/dev/null)|$(qo_local)"
+qo 1 'drop_disk local'
+check "drop_disk: nor dropped, with the disk under it" "local.raw|local.raw.qcow2" "$(qo_local)"
+qo 1 'false || cleanup'
+check "cleanup: nor removed at the exit" "local.raw|local.raw.qcow2" "$(qo_local)"
+rm -f "$QO/out/diag-unread.txt" "$QO/out"/local.*
 
 # boot_metrics is warning-only: whatever the journal lacks, G4 goes on to the login steps.
 boot_then_login() { # MONO_LINES...: boot_metrics, then login_lock_unlock, as the local flow runs them

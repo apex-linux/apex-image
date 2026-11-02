@@ -207,6 +207,7 @@ DIAG_LOST=
 DIAG_RC=0
 QUALIFY_ERRLOG=
 CANDIDATE_REGISTRY_ID=
+CANDIDATE_REGISTRY_ERR=
 # cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
     polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
@@ -461,9 +462,13 @@ EOF
 }
 
 drop_disk() {
-    [[ ${QUALIFY_KEEP_DISKS:-0} == 1 ]] ||
-        rm -f "$QUALIFY_OUT/$1.raw" "$QUALIFY_OUT/$1.vars" "$QUALIFY_OUT/$1.raw.qcow2" "$QUALIFY_OUT/$1.vars.qcow2"
+    [[ ${QUALIFY_KEEP_DISKS:-0} != 1 ]] || return 0
+    rm -f "$QUALIFY_OUT/$1.vars" "$QUALIFY_OUT/$1.vars.qcow2"
+    diag_unread || rm -f "$QUALIFY_OUT/$1.raw" "$QUALIFY_OUT/$1.raw.qcow2"
 }
+
+# Snapshots whose journal was not read live in local.raw.qcow2: folding it back would drop them.
+diag_unread() { [[ -n $DIAG && -s $QUALIFY_OUT/diag-unread.txt ]]; }
 
 diag_overlay() {
     [[ -f $1.qcow2 ]] || qemu-img create -q -f qcow2 -b "$1" -F "$2" "$1.qcow2" || die "cannot make the overlay $1.qcow2"
@@ -2123,7 +2128,7 @@ start_candidate_registry() {
     local running
     if running=$(as_root podman container inspect --format '{{.State.Running}}' "$CANDIDATE_REGISTRY" 2>/dev/null); then
         [[ $running == false ]] || return 2
-        as_root podman rm -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1 || return 3
+        CANDIDATE_REGISTRY_ERR=$(as_root podman rm -v "$CANDIDATE_REGISTRY" 2>&1 >/dev/null) || return 3
     fi
     CANDIDATE_REGISTRY_ID=$(as_root podman run -d --rm --name "$CANDIDATE_REGISTRY" -p "127.0.0.1:$QUALIFY_REGISTRY_PORT:5000" \
         "$CANDIDATE_REGISTRY_IMAGE") || CANDIDATE_REGISTRY_ID=
@@ -2166,7 +2171,7 @@ stage_local_candidate() {
     case $started in
         0) ;;
         2) fail "$test" "$CANDIDATE_REGISTRY is running, so another run's; if no run is live, remove it with: podman rm -f -v $CANDIDATE_REGISTRY" ;;
-        3) fail "$test" "a crashed run's $CANDIDATE_REGISTRY was stopped, but podman rm -v refused it: running again, so another run's?" ;;
+        3) fail "$test" "a crashed run's $CANDIDATE_REGISTRY was stopped, but podman rm -v refused it (${CANDIDATE_REGISTRY_ERR:-no reason given}); if no run is live, remove it with: podman rm -f -v $CANDIDATE_REGISTRY" ;;
         *) fail "$test" "cannot start $CANDIDATE_REGISTRY ($CANDIDATE_REGISTRY_IMAGE) on 127.0.0.1:$QUALIFY_REGISTRY_PORT: another run's, or the port taken?" ;;
     esac
     # The pushed manifest's digest: the push rewrites the local one that podman image inspect names.
@@ -2564,13 +2569,18 @@ diag_space_check() {
 # The post-login guest, RAM and disks, which every unit after the first starts from. Its
 # session is diag.snapshot.state's.
 diag_snapshot_save() {
-    local test=$1 out unit boot at
-    boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id"
-    at=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
-    if ! out=$(hmp "savevm $DIAG_SNAPSHOT" 600) || [[ -n $out ]]; then
+    local test=$1 out='' unit boot at why=''
+    if ! boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id'); then
+        why="cannot read the guest's boot_id"
+    elif ! at=$(vm_ssh 'date +%s'); then
+        why="cannot read the guest's clock"
+    elif ! out=$(hmp "savevm $DIAG_SNAPSHOT" 600) || [[ -n $out ]]; then
+        why="savevm $DIAG_SNAPSHOT: ${out:-QMP did not answer}"
+    fi
+    if [[ -n $why ]]; then
         for unit in "${DIAG_RUN[@]}"; do DIAG_DETAIL[$unit]="local-diag could not save its post-login snapshot"; done
         diag_table
-        fail "$test" "savevm $DIAG_SNAPSHOT: ${out:-QMP did not answer}"
+        fail "$test" "$why"
     fi
     cp "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag.snapshot.state"
     printf '%s %s\n' "$boot" "$at" >"$QUALIFY_OUT/diag.snapshot.boot"
@@ -2617,10 +2627,11 @@ diag_clock() {
 
 # The disk alone, as qemu-img snapshot -c keeps it once QEMU has exited: no RAM image to find room for.
 diag_keep_disk() {
-    local lost=$1 device out
-    device=$(qmp_query '{"execute":"query-block"}' |
-        jq -r --arg f "$QUALIFY_OUT/local.raw.qcow2" '.[]? | select(.inserted.file == $f) | .device') || device=
-    [[ -n $device ]] || { echo "QEMU names no drive on local.raw.qcow2"; return 1; }
+    local lost=$1 blocks device out
+    blocks=$(qmp_query '{"execute":"query-block"}') || { echo "QMP did not answer query-block"; return 1; }
+    device=$(jq -r --arg f "$QUALIFY_OUT/local.raw.qcow2" \
+        'if type == "array" then .[] | select(.inserted.file? == $f) | .device else empty end' <<<"$blocks") || device=
+    [[ -n $device ]] || { echo "QEMU names no drive on local.raw.qcow2: $blocks"; return 1; }
     out=$(qmp_query "$(jq -cn --arg d "$device" --arg n "$lost" \
         '{execute: "blockdev-snapshot-internal-sync", arguments: {device: $d, name: $n}}')" 600) || return 1
     [[ $out == '{}' ]] || { echo "$out"; return 1; }
@@ -2647,11 +2658,17 @@ diag_keep_journal() {
         return 0
     fi
     if vm_alive; then
-        out=$(diag_keep_disk "$lost") || warn "$test: cannot keep the lost guest's disk as $lost: ${out:-QMP did not answer}"
+        out=$(diag_keep_disk "$lost") || { warn "$test: cannot keep the lost guest's disk as $lost: ${out:-QMP did not answer}"; return 0; }
     else
-        qemu-img snapshot -c "$lost" "$QUALIFY_OUT/local.raw.qcow2" || warn "$test: cannot keep the lost guest's disk as $lost"
+        qemu-img snapshot -c "$lost" "$QUALIFY_OUT/local.raw.qcow2" || { warn "$test: cannot keep the lost guest's disk as $lost"; return 0; }
     fi
     echo "$lost" >>"$QUALIFY_OUT/diag-lost.txt"
+}
+
+diag_keep_unread() {
+    echo "$1" >>"$QUALIFY_OUT/diag-unread.txt"
+    warn "kept $QUALIFY_OUT/local.raw.qcow2 and its local.raw for snapshot $1; read its journal with:" \
+        "qemu-img convert -l snapshot.name=$1 -O raw $QUALIFY_OUT/local.raw.qcow2 $QUALIFY_OUT/$1.raw"
 }
 
 # Each snapshot's journal is read off a raw copy, one at a time: at most the disk's data.
@@ -2663,11 +2680,13 @@ diag_lost_journals() {
         free=$(diag_free_mib) || free=
         if [[ -z $need || -z $free ]] || ((free < need)); then
             warn "no room to read the journal of snapshot $lost: its raw copy needs ${need:-?} MiB, QUALIFY_OUT has ${free:-?} MiB free"
+            diag_keep_unread "$lost"
             continue
         fi
         if ! qemu-img convert -l "snapshot.name=$lost" -O raw "$QUALIFY_OUT/local.raw.qcow2" "$QUALIFY_OUT/$lost.raw" ||
             ! save_disk_journal "$lost"; then
             warn "cannot read the journal of snapshot $lost"
+            diag_keep_unread "$lost"
         fi
         rm -f "$QUALIFY_OUT/$lost.raw"
     done <"$QUALIFY_OUT/diag-lost.txt"
@@ -2772,7 +2791,8 @@ cmd_local_diag() {
         DIAG_STATUS[$unit]=NOT-RUN
         DIAG_DETAIL[$unit]="local-diag did not reach the login"
     done
-    rm -f "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag-lost.txt" "$QUALIFY_OUT/diag-kept.txt" "$QUALIFY_OUT/diag.snapshot.boot"
+    rm -f "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag-lost.txt" "$QUALIFY_OUT/diag-kept.txt" "$QUALIFY_OUT/diag.snapshot.boot" \
+        "$QUALIFY_OUT/diag-unread.txt"
     diag_table
 
     digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
@@ -2929,6 +2949,10 @@ save_disk_journal() {
     [[ -f $disk ]] || return 0
     # local-diag writes to overlays: folded in, the raw disk holds the last unit's journal.
     if [[ -n $DIAG && -f $disk.qcow2 ]]; then
+        if diag_unread; then
+            warn "not folding $disk.qcow2 back: it holds snapshots whose journal was not read ($(paste -sd' ' "$QUALIFY_OUT/diag-unread.txt"))"
+            return 0
+        fi
         qemu-img commit -q "$disk.qcow2" || return 1
         [[ ! -f $QUALIFY_OUT/$name.vars.qcow2 ]] || qemu-img commit -q "$QUALIFY_OUT/$name.vars.qcow2" || return 1
         rm -f "$disk.qcow2" "$QUALIFY_OUT/$name.vars.qcow2"
@@ -2977,7 +3001,11 @@ cleanup() {
     close_mappers
     local l
     for l in "${LOOPS[@]}"; do as_root losetup --detach "$l" 2>/dev/null || true; done
-    if [[ ${QUALIFY_KEEP_DISKS:-0} != 1 ]]; then rm -f "$QUALIFY_OUT"/*.raw "$QUALIFY_OUT"/*.qcow2; fi
+    if [[ ${QUALIFY_KEEP_DISKS:-0} != 1 ]]; then
+        for l in "$QUALIFY_OUT"/*.raw "$QUALIFY_OUT"/*.qcow2; do
+            if [[ $l != "$QUALIFY_OUT"/local.raw* ]] || ! diag_unread; then rm -f "$l"; fi
+        done
+    fi
     publish_results
     exit "$rc"
 }
