@@ -1976,8 +1976,12 @@ as_root() {
         "podman image inspect --format {{.Digest}} $LOCAL_CANDIDATE") from local-digest ;;
         "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rmi $LOCAL_CANDIDATE") ;;
         "podman container inspect --format {{.State.Running}} $CANDIDATE_REGISTRY") from registry-left | grep . ;;
-        "podman rm -f -v $CANDIDATE_REGISTRY") [[ ! -e $STATE/rm-fails ]] && rm -f "$STATE/registry-left" ;;
-        "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] ;;
+        "podman rm -v $CANDIDATE_REGISTRY")
+            [[ ! -e $STATE/came-alive ]] || { echo "Error: cannot remove container $CANDIDATE_REGISTRY as it is paused" >&2; return 2; }
+            rm -f "$STATE/registry-left" ;;
+        "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] && echo f00d ;;
+        "podman rm -f -v f00d") [[ ! -e $STATE/rm-fails ]] || { echo "Error: cannot remove container f00d: device busy" >&2; return 125; } ;;
+        "podman container exists f00d") [[ ! -e $STATE/registry-gone ]] ;;
         "podman push --tls-verify=false --digestfile $QUALIFY_OUT/candidate/pushed $LOCAL_CANDIDATE 127.0.0.1:5000/apex-qualify:candidate")
             [[ ! -e $STATE/push-fails ]] && from pushed >"$QUALIFY_OUT/candidate/pushed" ;;
         *) return 1 ;;
@@ -2172,7 +2176,6 @@ local_flow_stubs() {
             "loadvm $DIAG_SNAPSHOT")
                 if [[ -e $STATE/loadvm-fails ]]; then echo "Error: Snapshot '$DIAG_SNAPSHOT' does not exist"; return 0; fi
                 snapshot_restore ;;
-            "savevm lost-after-"*) echo "$1" >>"$STATE/disk-calls" ;;
             *) echo "unexpected hmp: $1" ;;
         esac
     }
@@ -2194,8 +2197,26 @@ local_flow_stubs() {
     stop_vm() { :; }
     drop_disk() { echo "drop $1" >>"$STATE/disk-calls"; }
     save_disk_journal() { echo "journal $1" >>"$STATE/disk-calls"; }
-    save_journal() { echo "$1" >>"$STATE/journals"; }
-    qemu-img() { echo "qemu-img $*" >>"$STATE/disk-calls"; }
+    save_journal() { # the loads before it, and the entries it asked for if not this boot's
+        echo "$1 $(cat "$STATE/loaded" 2>/dev/null | wc -l)${2:+ $2}" >>"$STATE/journals"
+    }
+    qemu-img() { # convert writes its last argument, which the run must remove
+        echo "qemu-img $*" >>"$STATE/disk-calls"
+        [[ $1 != convert ]] || { [[ ! -e $STATE/convert-fails ]] && : >"${*: -1}"; }
+    }
+    diag_disk_mib() { echo 4096; }
+    declare -F guest_qmp_query >/dev/null || eval "$(declare -f qmp_query | sed '1s/qmp_query/guest_qmp_query/')"
+    qmp_query() { # and the disk-only snapshot diag_keep_disk takes
+        case $1 in
+            '{"execute":"query-block"}')
+                [[ ! -e $STATE/qmp-silent ]] || return 1
+                if [[ -e $STATE/no-drive ]]; then echo '[]'; else printf '[{"device":"virtio0","inserted":{"file":"%s/local.raw.qcow2"}}]\n' "$QUALIFY_OUT"; fi ;;
+            *blockdev-snapshot-internal-sync*)
+                echo "$1" | jq -r '"\(.execute) \(.arguments.device) \(.arguments.name)"' >>"$STATE/disk-calls"
+                echo '{}' ;;
+            *) guest_qmp_query "$@" ;;
+        esac
+    }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
     as_root() { # the install retags the image: its ID is the one read before it
@@ -2597,8 +2618,8 @@ check "the guest reaches the host's registry over plain HTTP" '[[registry]]|loca
 check "and trusts that registry alone, for the one switch" \
     '{"default":[{"type":"reject"}],"transports":{"docker":{"10.0.2.2:5000":[{"type":"insecureAcceptAnything"}]}}}' \
     "$(jq -c . "$GUEST_DIR/state/policy.json")"
-check "the registry runs from its pinned digest, stops after the switch, and the candidate is removed" \
-    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v apex-qualify-registry-5000|podman rmi localhost/apex-qualify:candidate" \
+check "the registry runs from its pinned digest, stops after the switch by the ID it started, and the candidate is removed" \
+    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v f00d|podman rmi localhost/apex-qualify:candidate" \
     "$(grep -E '^podman (run|rm|rmi) |^switch$' "$GUEST_DIR/state/host-calls" | paste -sd'|')"
 check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged 10.0.2.2:5000/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
 echo "$D2" >"$GUEST_DIR/state/pushed"
@@ -2620,7 +2641,7 @@ check "a failed push fails" 1 "$(stage)"
 : >"$GUEST_DIR/state/host-calls"
 : >"$GUEST_DIR/state/vm-dead"
 check "and qualify.sh's exit after it" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
-check "stops the registry this run started" "podman rm -f -v apex-qualify-registry-5000" \
+check "stops the registry this run started, by its ID" "podman rm -f -v f00d" \
     "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
 rm "$GUEST_DIR/state/push-fails"
 : >"$GUEST_DIR/state/registry-fails"
@@ -2634,18 +2655,36 @@ rm "$GUEST_DIR/state/registry-fails"
 echo false >"$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/host-calls"
 check "a stopped registry a crashed run left is removed, and the stage goes on" 0 "$(stage)"
-check "before this run starts its own" "podman rm -f -v apex-qualify-registry-5000|podman run -d --rm --name apex-qualify-registry-5000" \
-    "$(grep -oE '^podman (rm -f -v|run -d --rm --name) apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls" | head -n 2 | paste -sd'|')"
+check "before this run starts its own, and without force" "podman rm -v apex-qualify-registry-5000|podman run -d --rm --name apex-qualify-registry-5000" \
+    "$(grep -oE '^podman (rm -f -v|rm -v|run -d --rm --name) apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls" | head -n 2 | paste -sd'|')"
+: >"$GUEST_DIR/state/came-alive"
+echo false >"$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/host-calls"
+check "a crashed run's registry that came back to life before its removal fails the stage" 1 "$(stage)"
+check_true "with podman's reason, and how to remove it if no run is live" grep -qF \
+    "| local-stage | FAIL | a crashed run's apex-qualify-registry-5000 was stopped, but podman rm -v refused it (Error: cannot remove container apex-qualify-registry-5000 as it is paused); if no run is live, remove it with: podman rm -f -v apex-qualify-registry-5000 |" \
+    "$GUEST_DIR/out/results.md"
+check "and starts no registry of its own" "" "$(grep '^podman run ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/came-alive"
 echo true >"$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/host-calls"
 check "a running one is another run's: the stage fails" 1 "$(stage)"
 check "without touching it" "" "$(grep -E '^podman (rm|run) ' "$GUEST_DIR/state/host-calls")"
+check_true "saying how to remove it if no run is live" grep -qF \
+    "| local-stage | FAIL | apex-qualify-registry-5000 is running, so another run's; if no run is live, remove it with: podman rm -f -v apex-qualify-registry-5000 |" "$GUEST_DIR/out/results.md"
 rm -f "$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/rm-fails"
 : >"$GUEST_DIR/state/host-calls"
 check "a registry that will not go: the stage still passes" 0 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
-check "and qualify.sh's exit tries again" 2 "$(grep -c '^podman rm -f -v apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls")"
-check_true "saying how to remove it" grep -qF "cannot remove apex-qualify-registry-5000; remove it with: podman rm -f -v apex-qualify-registry-5000" "$GUEST_DIR/stderr"
+check "and qualify.sh's exit tries again, by its ID" 2 "$(grep -c '^podman rm -f -v f00d$' "$GUEST_DIR/state/host-calls")"
+check_true "saying why, and how to remove it" grep -qF \
+    "cannot remove apex-qualify-registry-5000 (f00d): Error: cannot remove container f00d: device busy; remove it with: podman rm -f -v f00d" "$GUEST_DIR/stderr"
+: >"$GUEST_DIR/state/registry-gone"
+: >"$GUEST_DIR/state/host-calls"
+check "a removal that fails on a registry already gone: the stage passes" 0 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "and qualify.sh's exit does not try again" 1 "$(grep -c '^podman rm -f -v f00d$' "$GUEST_DIR/state/host-calls")"
+check "nor warns" "" "$(grep -F 'cannot remove apex-qualify-registry-5000' "$GUEST_DIR/stderr")"
+rm "$GUEST_DIR/state/registry-gone"
 rm "$GUEST_DIR/state/rm-fails" "$GUEST_DIR/state/vm-dead"
 : >"$GUEST_DIR/state/pushed"
 check "a push that wrote no digest fails" 1 "$(stage)"
@@ -3395,9 +3434,53 @@ check_true "naming the lost guest" grep -qF \
     "$GUEST_DIR/out/diag.md"
 check "through QMP, its QEMU still running" "1:0" \
     "$(wc -l <"$GUEST_DIR/state/loaded"):$(grep -c -- -loadvm "$GUEST_DIR/state/started")"
-check "after keeping the lost guest's disk as a snapshot, whose journal the end of the run reads" \
-    "savevm lost-after-login-lock-unlock|qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw|journal lost-after-login-lock-unlock|journal local|drop local" \
+check "after keeping the lost guest's disk alone as a snapshot, whose journal the end of the run reads" \
+    "blockdev-snapshot-internal-sync virtio0 lost-after-login-lock-unlock|qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw|journal lost-after-login-lock-unlock|journal local|drop local" \
     "$(paste -sd'|' "$GUEST_DIR/state/disk-calls")"
+check_false "and the raw copy it read the journal off is gone" test -e "$GUEST_DIR/out/lost-after-login-lock-unlock.raw"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+guest eval 'local_flow_stubs; diag_disk_mib() { echo 1048577; }
+    cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check "local-diag: with no room for a lost guest's raw copy, its journal is not read" "" \
+    "$(grep '^qemu-img convert' "$GUEST_DIR/state/disk-calls")"
+check_true "saying what it needs" grep -qF \
+    "no room to read the journal of snapshot lost-after-login-lock-unlock: its raw copy needs 1048577 MiB, QUALIFY_OUT has 1048576 MiB free" "$GUEST_DIR/stderr"
+check "and keeps it as unread" lost-after-login-lock-unlock "$(cat "$GUEST_DIR/out/diag-unread.txt" 2>/dev/null)"
+check_true "naming the overlay and how to read it" grep -qF \
+    "read its journal with: qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw" \
+    "$GUEST_DIR/stderr"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/convert-fails"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check "local-diag: a lost guest's snapshot that does not convert is kept as unread too" lost-after-login-lock-unlock \
+    "$(cat "$GUEST_DIR/out/diag-unread.txt" 2>/dev/null)"
+rm "$GUEST_DIR/state/convert-fails"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/qmp-silent"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check_true "local-diag: a QMP that does not answer query-block is named as such" grep -qF \
+    "cannot keep the lost guest's disk as lost-after-login-lock-unlock: QMP did not answer query-block" "$GUEST_DIR/stderr"
+check "and no snapshot it did not take is read" "" "$(grep '^qemu-img convert' "$GUEST_DIR/state/disk-calls")"
+rm "$GUEST_DIR/state/qmp-silent"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+: >"$GUEST_DIR/state/no-drive"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check_true "local-diag: a QEMU with no drive on the overlay says so" grep -qF \
+    "cannot keep the lost guest's disk as lost-after-login-lock-unlock: QEMU names no drive on local.raw.qcow2: []" "$GUEST_DIR/stderr"
+rm "$GUEST_DIR/state/no-drive"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo lost-after-an-earlier-run >"$GUEST_DIR/out/diag-lost.txt"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check "local-diag: an earlier run's diag-lost.txt names no snapshot to read" "" "$(grep '^qemu-img' "$GUEST_DIR/state/disk-calls")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/lose-qemu"
@@ -3461,6 +3544,17 @@ check_true "and diag.md says why no unit ran" grep -qF \
     '| login-lock-unlock | NOT-RUN | local-diag could not save its post-login snapshot |' "$GUEST_DIR/out/diag.md"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "local-diag: a guest whose boot_id cannot be read after the login fails local-diag" 1 \
+    "$(guest eval 'local_flow_stubs; eval "$(declare -f greeter_login | sed "1s/greeter_login/real_greeter_login/")"
+        greeter_login() { real_greeter_login "$@"; : >"$STATE/boot-id-unreadable"; }
+        cmd_local_diag login-lock-unlock localhost/apex:build')"
+check_true "naming the read" grep -qF "| local-diag-snapshot | FAIL | cannot read the guest's boot_id |" "$GUEST_DIR/out/results.md"
+check_true "and diag.md says why no unit ran" grep -qF \
+    '| login-lock-unlock | NOT-RUN | local-diag could not save its post-login snapshot |' "$GUEST_DIR/out/diag.md"
+rm -f "$GUEST_DIR/state/boot-id-unreadable"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/loadvm-fails"
 check "local-diag: a snapshot that does not load blocks the next unit" "login-lock-unlock PASS|lock-wrong-password BLOCKED" \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null; diag_units)"
@@ -3490,8 +3584,27 @@ check_true "naming the skew" grep -qE \
 check "stepped once, not again" 1 "$(wc -l <"$GUEST_DIR/state/clock-steps")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
-check "local-diag: each unit's journal is saved before the next load drops it" "after-login-lock-unlock|after-lock-wrong-password|final" \
+check "local-diag: each unit's journal is saved before the next load drops it" \
+    "after-login-lock-unlock 0|after-lock-wrong-password 1|final 2" \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; paste -sd'|' "$GUEST_DIR/state/journals")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo -90 >"$GUEST_DIR/state/load-skew"
+: >"$GUEST_DIR/state/clock-stuck"
+check "local-diag: after a failed reset that kept the guest, the next reset blocks too" \
+    "login-lock-unlock PASS|lock-wrong-password BLOCKED|lock-esc BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; diag_units)"
+check "but keeps the unit's journal once, not again off the loaded snapshot" "after-login-lock-unlock 0|final 2" \
+    "$(paste -sd'|' "$GUEST_DIR/state/journals")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "local-diag: a unit that rebooted the guest keeps every boot since the snapshot" \
+    "after-login-lock-unlock 0 --since @1000|after-lock-wrong-password 1|final 2" \
+    "$(guest eval 'local_flow_stubs; eval "$(declare -f diag_unit | sed "1s/diag_unit/real_diag_unit/")"
+        diag_unit() { real_diag_unit "$1"; [[ $1 != login-lock-unlock ]] || echo boot-2 >"$STATE/boot-id"; }
+        cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null
+        paste -sd'|' "$GUEST_DIR/state/journals")"
 logged_in
 cp -a "$GUEST_DIR/state" "$GUEST_DIR/state.snap"
 printf '%s\n' SESSION_ID=4 SESSION_UID=1000 SESSION_TYPE=wayland DIAG_LOGIN_SINCE=999 "DIAG_SHELL_PID=$(cat "$GUEST_DIR/state/pid")" \
@@ -3516,7 +3629,7 @@ check "local-diag: an unknown unit is refused" 1 \
 check "local-diag refuses G4's QUALIFY_OUT" 1 \
     "$(rc_of bash -c '. "$1"; QUALIFY_OUT=$APEX_ROOT/_build/qualify; diag_refuse_g4_out' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
 
-# --- local-diag's space: the guest's RAM and the overlays' growth, before the install ---
+# --- local-diag's space: the guest's RAM and the overlays' growth, after the install ------
 space() { # QUALIFY_MEM FREE_MIB: diag_space_check's exit, its message in $TMP/space.err
     # shellcheck disable=SC2016 # expanded by the inner bash
     (QUALIFY_MEM=$1 QUALIFY_OUT=$TMP rc_of bash -c '. "$1"; fake_free=$2; diag_free_mib() { echo "$fake_free"; }; diag_space_check 2>"$3"' _ \
@@ -3524,11 +3637,18 @@ space() { # QUALIFY_MEM FREE_MIB: diag_space_check's exit, its message in $TMP/s
 }
 check "local-diag: 6G of RAM and the overlays fit in 8 GiB free" 0 "$(space 6G 8192)"
 check "but not in 7" 1 "$(space 6G 7168)"
-check_true "naming what it needs, before any install" grep -qF \
+check_true "naming what it needs" grep -qF \
     "local-diag needs 8 GiB free in QUALIFY_OUT ($TMP) for its snapshot and overlays: 7 GiB is" "$TMP/space.err"
 check "QUALIFY_MEM in MiB, with M or without" "0:0:1" "$(space 4096M 6144):$(space 4096 6144):$(space 4096 6143)"
 check "a QUALIFY_MEM it cannot count is refused by name" 1 "$(space 6.5G 99999)"
 check_true "saying what it wants" grep -qF "QUALIFY_MEM=6.5G: local-diag wants MiB, or a whole number with M or G" "$TMP/space.err"
+local_ready
+rm -f "$GUEST_DIR/state/esc-ignored" "$GUEST_DIR/state/retagged" "$GUEST_DIR/state/started"
+check "local-diag: short of room for its snapshot, local-diag stops" 1 \
+    "$(guest eval 'local_flow_stubs; diag_free_mib() { echo 1024; }; cmd_local_diag login-lock-unlock localhost/apex:build')"
+check_true "naming what it needs" grep -qF "local-diag needs" "$GUEST_DIR/stderr"
+check "after the install, whose disk the overlays grow on, and before the guest starts" "installed:" \
+    "$([[ -e $GUEST_DIR/state/retagged ]] && echo installed):$(cat "$GUEST_DIR/state/started" 2>/dev/null)"
 
 # --- local-diag's drives: qcow2 overlays on the disk and the vars, folded back for a journal ---
 QO="$TMP/diag-overlays"
@@ -3554,7 +3674,7 @@ qo() { # DIAG CODE: CODE run in qualify.sh with DIAG set as given, QEMU and qemu
     # shellcheck disable=SC2016 # expanded by the inner bash
     PATH="$QO/bin:$PATH" QEMU_ARGS="$QO/args" QEMU_IMG_LOG="$QO/img.log" QUALIFY_OUT="$QO/out" \
         OVMF_CODE="$QO/code.fd" OVMF_VARS="$QO/vars.fd" QEMU_IMG_FAILS=${QEMU_IMG_FAILS:-} \
-        bash -c '. "$1"; require_kvm() { :; }; as_root() { return 1; }; DIAG=$2; eval "$3"' _ \
+        bash -c '. "$1"; require_kvm() { :; }; as_root() { return 1; }; assert_display() { :; }; DIAG=$2; eval "$3"' _ \
         "$APEX_ROOT/.github/scripts/qualify.sh" "$1" "$2" >/dev/null 2>&1 || true
 }
 qo_drives() { grep -E '^(if=pflash,format=[a-z0-9]+,unit=1|file=)' "$QO/args" | paste -sd'|'; }
@@ -3595,6 +3715,18 @@ check "cleanup: without QUALIFY_KEEP_DISKS the overlays go with the disk" "" \
 qo 1 'start_vm d'
 qo 1 'drop_disk d'
 check "drop_disk: the disk, the vars and both overlays" "" "$(for f in d.raw d.vars d.raw.qcow2 d.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done)"
+qo_local() { for f in local.raw local.raw.qcow2 local.vars.qcow2; do [[ ! -e $QO/out/$f ]] || echo "$f"; done | paste -sd'|'; }
+: >"$QO/out/local.raw"
+qo 1 'start_vm local'
+echo lost-after-x >"$QO/out/diag-unread.txt"
+qo 1 'save_disk_journal local'
+check "save_disk_journal: an overlay holding a snapshot whose journal was not read is not folded back" "|local.raw|local.raw.qcow2|local.vars.qcow2" \
+    "$(cat "$QO/img.log" 2>/dev/null)|$(qo_local)"
+qo 1 'drop_disk local'
+check "drop_disk: nor dropped, with the disk under it" "local.raw|local.raw.qcow2" "$(qo_local)"
+qo 1 'false || cleanup'
+check "cleanup: nor removed at the exit" "local.raw|local.raw.qcow2" "$(qo_local)"
+rm -f "$QO/out/diag-unread.txt" "$QO/out"/local.*
 
 # boot_metrics is warning-only: whatever the journal lacks, G4 goes on to the login steps.
 boot_then_login() { # MONO_LINES...: boot_metrics, then login_lock_unlock, as the local flow runs them
@@ -4050,6 +4182,48 @@ check_true "the dotted one too" grep -qF "error: .github/scripts/tool.py:2: read
 check "g4 harness: a __file__ use the walk cannot follow" 1 \
     "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nopen(os.path.join(HERE, \"rows.txt\"))\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
 check_true "fails by name" grep -qF "error: .github/scripts/tool.py:1: cannot tell what 'HERE = os.path.dirname(__file__)' reads: join a string to __file__ on that line" "$HC4.err"
+check_true "and says how to excuse it" grep -qF "or excuse this one use with the allow line '.github/scripts/tool.py __file__ REASON'" "$HC4.err"
+check "g4 harness: an import with a trailing comment, or after a ;" 1 \
+    "$(hc4 "$HC4_PY; printf 'import rowsmod  # noqa: E402\nimport json; import semi\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py; : >.github/scripts/semi.py")"
+check_true "is still a read" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rowsmod.py" "$HC4.err"
+check_true "and so is the one after the ;" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/semi.py" "$HC4.err"
+check "g4 harness: a module imported from its package" 1 \
+    "$(hc4 "$HC4_PY; printf 'from pkg import rows\nimport other.mod\n' >.github/scripts/tool.py; mkdir .github/scripts/pkg .github/scripts/other; : >.github/scripts/pkg/__init__.py; : >.github/scripts/pkg/rows.py; : >.github/scripts/other/__init__.py; : >.github/scripts/other/mod.py")"
+check_true "is a read of the module" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/pkg/rows.py" "$HC4.err"
+check_true "and of the __init__.py Python runs first" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/pkg/__init__.py" "$HC4.err"
+check_true "for a dotted import too" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/other/__init__.py" "$HC4.err"
+check "g4 harness: a parenthesized import over several lines" 1 \
+    "$(hc4 "$HC4_PY; printf 'from . import (\n    rowsa,\n    rowsb,\n)\n' >.github/scripts/tool.py; : >.github/scripts/rowsa.py; : >.github/scripts/rowsb.py")"
+check_true "reads each module it names" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rowsb.py" "$HC4.err"
+check "g4 harness: a file found beside the script in an f-string" 1 \
+    "$(hc4 "$HC4_PY; printf 'open(f\"{os.path.dirname(__file__)}/rows.txt\")\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "is a read of it" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: __file__ named in a docstring or a comment reads nothing" 0 \
+    "$(hc4 "$HC4_PY; printf '\"\"\"Finds its rows\nbeside __file__.\n\"\"\"\n# and __file__ here\n' >.github/scripts/tool.py")"
+check "g4 harness: an allow line for __file__ excuses its one use" 0 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; printf '.github/scripts/tool.py __file__  HERE only names the log directory\n' >>.github/scripts/g4-harness-allowed.txt")"
+check "g4 harness: not a second" 1 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nTHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; printf '.github/scripts/tool.py __file__  HERE only names the log directory\n' >>.github/scripts/g4-harness-allowed.txt")"
+check_true "naming the use it excuses" grep -qF "error: .github/scripts/tool.py:2: uses __file__ again; its allow line excuses only .github/scripts/tool.py:1" "$HC4.err"
+check "g4 harness: a Python script that does not parse" 1 \
+    "$(hc4 "$HC4_PY; printf 'def (:\n' >.github/scripts/tool.py")"
+check_true "fails, naming it" grep -qF "error: .github/scripts/tool.py:1: .github/scripts/tool.py does not parse (invalid syntax), so the walk cannot tell what it reads" "$HC4.err"
+check "g4 harness: another module's __file__" 1 \
+    "$(hc4 "$HC4_PY; printf 'import rowsmod\nprint(rowsmod.__file__)\nfrom rowsmod import __file__ as there\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py")"
+check_true "is a use the walk cannot follow" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'print(rowsmod.__file__)' reads" "$HC4.err"
+check_true "and so is one imported by name" grep -qF "error: .github/scripts/tool.py:3: cannot tell what 'from rowsmod import __file__ as there' reads" "$HC4.err"
+check "g4 harness: a package module's absolute imports" 1 \
+    "$(hc4 "$HC4_PY; printf 'from pkg import rows\n' >.github/scripts/tool.py; mkdir .github/scripts/pkg; : >.github/scripts/pkg/__init__.py; printf 'import common\nfrom pkg import sibling\n' >.github/scripts/pkg/rows.py; : >.github/scripts/common.py; : >.github/scripts/pkg/sibling.py")"
+check_true "reach a module beside the package" grep -qF "error: .github/scripts/pkg/rows.py:1: reads .github/scripts/common.py" "$HC4.err"
+check_true "and the package's own" grep -qF "error: .github/scripts/pkg/rows.py:2: reads .github/scripts/pkg/sibling.py" "$HC4.err"
+check "g4 harness: a long chain of + that parses is walked" 0 \
+    "$(hc4 "$HC4_PY; python3 -c 'print(\"x = \\\"a\\\"\" + \" + \\\"a\\\"\" * 1000)' >.github/scripts/tool.py")"
+check "g4 harness: one too deep to parse" 1 \
+    "$(hc4 "$HC4_PY; python3 -c 'print(\"x = \\\"a\\\"\" + \" + \\\"a\\\"\" * 20000)' >.github/scripts/tool.py")"
+check_true "fails, naming it" grep -qF "error: .github/scripts/tool.py:1: .github/scripts/tool.py nests too deeply for the walk, so the walk cannot tell what it reads" "$HC4.err"
+check "g4 harness: a BOM, a form feed and a U+2028 in a string" 1 \
+    "$(hc4 "$HC4_PY; printf '\xef\xbb\xbfs = \"a\x0cb\xe2\x80\xa8c\"\nHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py")"
+check_true "parse, and the use names its own line" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'HERE = os.path.dirname(__file__)' reads" "$HC4.err"
 check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line" 1 \
     "$(hc4 "printf 'case \$1 in\n    x)\n        rows=\$(sort\n            \"\$APEX_ROOT/.github/scripts/rows.txt\")\n        ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
 check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
