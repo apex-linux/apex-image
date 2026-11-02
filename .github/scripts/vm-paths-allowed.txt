@@ -1,5 +1,9 @@
 # Uncovered reads vm.yml need not run on, one per line: READER PATH REASON. Exact paths only;
 # vm-paths-check.sh fails on a line that no longer matches a read.
+
+# A __file__@, __python__@ or __syntax__@ key excuses one use, pinned to its line's text. One on a line that
+# only names a directory (HERE = ...) stays valid when reads are added through HERE: review those reads.
+
 .github/scripts/qualify.sh .github/scripts  g4_harness hashes qualify.sh, lib.sh and qualify-allowed-failures.txt there, each a listed path
 .github/workflows/vm.yml .github/scripts/daily-due.sh  it decides when the scheduled run starts, and reads nothing the build or gates read
 tools/builder-vm/build-image.sh tools/builder-vm/t2-enabled  the qualify-only switch: harness_path() counts it a harness change, so toggling it queues no full run
