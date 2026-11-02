@@ -279,6 +279,18 @@ check_false "health failure with no checks" health_failure_has "$D1" forced-red 
 # --- qualify.sh: counting the armed boots' self-reboots (fake QEMU and ssh) --------------
 Q="$TMP/qualify"
 mkdir -p "$Q/bin" "$Q/out/logs"
+# start_vm's display check reads QEMU 8.2's own answers (qmp-fixtures/) for $FAKE_DISPLAYS.
+QMP_FAKE=$TMP/qmp-fake.sh
+cat >"$QMP_FAKE" <<'EOF'
+qmp_query() {
+    local f="$APEX_ROOT/.github/scripts/qmp-fixtures/${FAKE_DISPLAYS:-vga}"
+    case $1 in
+        *query-pci*) cat "$f.query-pci.json" ;;
+        *'info qtree'*) jq -Rs . "$f.qtree.txt" ;;
+        *) return 1 ;;
+    esac
+}
+EOF
 cat >"$Q/bin/qemu-system-x86_64" <<'EOF'
 #!/usr/bin/env bash
 # Fake QEMU: records its arguments and "boots" the next line of $FAKE_QEMU_PLAN. reboot:
@@ -323,7 +335,7 @@ run_armed_attempts() {
     PATH="$Q/bin:$PATH" QUALIFY_OUT="$Q/out" QUALIFY_POLL=0.1 QUALIFY_ATTEMPT_TIMEOUT="$attempt_timeout" \
         OVMF_CODE="$Q/code.fd" OVMF_VARS="$Q/vars.fd" GITHUB_ACTIONS='' \
         FAKE_QEMU_LOG="$Q/qemu.log" FAKE_QEMU_PLAN="$Q/plan" FAKE_SSH_LOG="$Q/ssh.log" FAKE_LUKS=${FAKE_LUKS:-} \
-        bash -c '. "$1"; require_kvm() { :; }; fake=$2
+        QMP_FAKE="$QMP_FAKE" bash -c '. "$1"; . "$QMP_FAKE"; require_kvm() { :; }; fake=$2
             if [[ -n $FAKE_LUKS ]]; then
                 LUKS_PASSPHRASE=x
                 luks_unlock() { printf "%s %s %s\n" "$1" "$2" "${3:-}" >>"$fake/unlock.log"; }
@@ -1526,11 +1538,17 @@ pkexec_typed() {
     if [[ -e $STATE/wrong-ends-pkexec ]]; then echo 127 >"$STATE/pkexec.rc"; rm -f "$STATE/pkexec-running"; fi
     if [[ -e $STATE/no-retry ]]; then echo 0 >"$STATE/polkit"; fi
 }
-qmp_query() {
+qmp_query() { # QEMU 8.2's own answers (qmp-fixtures/) for the display devices of $STATE/displays
+    local fixture
     printf '%s\n' "$1" >>"$STATE/qmp"
-    if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi
+    fixture="$APEX_ROOT/.github/scripts/qmp-fixtures/$(cat "$STATE/displays" 2>/dev/null || echo vga)"
+    case $1 in
+        *query-pci*) cat "$fixture.query-pci.json" ;;
+        *'info qtree'*) jq -Rs . "$fixture.qtree.txt" ;;
+        *) if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi ;;
+    esac
 }
-wait_ssh() { :; }
+ssh_up() { :; }
 vm_alive() { [[ ! -e $STATE/vm-dead ]]; }
 vm_answers() { [[ ! -e $STATE/no-resume && ! -e $STATE/unreachable ]]; }
 vm_reboot() {
@@ -1732,6 +1750,8 @@ vm_ssh() {
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
         *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
+        "$DRM_DRIVERS") # a symlink into the bus's driver directory, per card
+            if [[ -e $STATE/drm-drivers ]]; then from drm-drivers; else echo ../../../bus/pci/drivers/bochs-drm; fi ;;
         "$DRM_OUTPUTS")
             if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; elif [[ -e $STATE/drm-outputs ]]; then from drm-outputs; else echo 'Virtual-1 On'; fi ;;
         "journalctl -b --since @"*" -o cat --no-pager")
@@ -2288,6 +2308,30 @@ mkdir -p "$GUEST_DIR/sysfs/module/kvm_amd/parameters"
 echo 1 >"$GUEST_DIR/sysfs/module/kvm_amd/parameters/nested"
 check "an AMD host's lock matrix runs" 0 "$(QUALIFY_SYSFS="$GUEST_DIR/sysfs" rc_of guest lock_matrix local 1000)"
 check_true "and its line reads kvm_amd's nested" grep -q '; nested 1;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+# G4's display, from QEMU (its 8.2 answers in qmp-fixtures/) and from the guest once ssh answers.
+display_rc() { echo "$1" >"$GUEST_DIR/state/displays"; rc_of guest assert_display t-display; }
+check "display: QEMU's std VGA alone passes" 0 "$(display_rc vga)"
+check "display: VGA plus a virtio-gpu fails" 1 "$(display_rc vga-virtio)"
+check_true "naming each display device by vendor:device, class and QOM type" grep -qF \
+    "| t-display | FAIL | QEMU built display device(s) '1234:1111 0300 VGA,1af4:1050 0380 virtio-gpu-pci', expected std VGA" "$GUEST_DIR/out/results.md"
+check "display: no display device fails" 1 "$(display_rc none)"
+check "display: bochs-display, std VGA's ids but the display class, fails" 1 "$(display_rc bochs)"
+check_true "named as such" grep -qF "QEMU built display device(s) '1234:1111 0380 bochs-display'" "$GUEST_DIR/out/results.md"
+check "display: another VGA-class device fails" 1 "$(display_rc cirrus)"
+check_true "named by its ids" grep -qF "QEMU built display device(s) '1013:00b8 0300 cirrus-vga'" "$GUEST_DIR/out/results.md"
+rm "$GUEST_DIR/state/displays"
+# shellcheck disable=SC2016 # expanded by the fake guest
+boot_rc() { rc_of guest eval 'VM_NAME=local; wait_ssh'; }
+check "display: the guest's card on bochs-drm passes once ssh answers" 0 "$(boot_rc)"
+echo ../../../bus/pci/drivers/virtio_gpu >"$GUEST_DIR/state/drm-drivers"
+check "display: a guest card on virtio_gpu fails the boot" 1 "$(boot_rc)"
+check_true "naming the driver" grep -qF "| local-guest-display | FAIL | the guest's DRM cards run 'virtio_gpu', expected bochs-drm" \
+    "$GUEST_DIR/out/results.md"
+printf '../../../bus/pci/drivers/%s\n' bochs-drm virtio_gpu >"$GUEST_DIR/state/drm-drivers"
+check "display: so does a second card on virtio_gpu" 1 "$(boot_rc)"
+: >"$GUEST_DIR/state/drm-drivers"
+check "display: and no DRM card at all" 1 "$(boot_rc)"
+rm "$GUEST_DIR/state/drm-drivers"
 # shellcheck disable=SC2016 # expanded by the fake guest
 suspend_only() { guest eval 'wait_session t user apexqa; matrix_suspend local "$(shell_pid 1000)" "$(password_conversations)"'; }
 suspend_read_fails() { # FLAG DETAIL: with FLAG set, matrix_suspend alone fails saying DETAIL
@@ -2953,7 +2997,7 @@ check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" 
 
 # --- guest-lint.sh: the code qualify.sh runs in the guest parses on hosted CI ---------------
 # guest-lint stubs a readonly script passed as "$NAME"; each still parses as the guest's sh.
-for gs in SUSPEND_HEARTBEAT SLEEP_OFFSET WAKEUP_IRQ_LINE DRM_OUTPUTS; do
+for gs in SUSPEND_HEARTBEAT SLEEP_OFFSET WAKEUP_IRQ_LINE DRM_OUTPUTS DRM_DRIVERS; do
     # shellcheck disable=SC2016 # expanded by qualify.sh's shell
     check "guest code: $gs parses with dash and shellcheck" 0 \
         "$(rc_of bash -c '. "$1"; dash -n -c "${!2}" && printf "%s\n" "${!2}" | shellcheck -s sh -' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$gs")"
@@ -3549,10 +3593,10 @@ gd_rc() { (set +e; g4_display "$1" 2>"$QP/err"; echo $?); }
 check "g4 display: main's qualify.sh runs std VGA" 0 "$(gd_rc "${QP_REAL[0]}")"
 sed 's/-device VGA /-device virtio-vga /' "${QP_REAL[0]}" >"$QP/qualify-virtio.sh"
 check "g4 display: virtio-vga (qualify.sh before the switch) fails" 1 "$(gd_rc "$QP/qualify-virtio.sh")"
-check_true "and says why" grep -q "qualify-virtio.sh: QEMU display device(s) 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
+check_true "and says why" grep -q "qualify-virtio.sh: display device(s) named in it 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
 sed 's/-device VGA /-device VGA -device virtio-gpu-pci /' "${QP_REAL[0]}" >"$QP/qualify-two-gpus.sh"
 check "g4 display: a second display device fails" 1 "$(gd_rc "$QP/qualify-two-gpus.sh")"
-check_true "naming each device in full" grep -qF "qualify-two-gpus.sh: QEMU display device(s) 'VGA virtio-gpu-pci'" "$QP/err"
+check_true "naming each device in full" grep -qF "qualify-two-gpus.sh: display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
 sed 's/-device VGA /-device VGA -device "virtio-vga" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-virtio.sh"
 check "g4 display: a quoted second device fails too" 1 "$(gd_rc "$QP/qualify-quoted-virtio.sh")"
 sed 's/-device VGA /-device "VGA" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-vga.sh"
@@ -3566,19 +3610,19 @@ gd_form() { # NAME SED EXPECTED: g4_display on qualify.sh edited by SED exits EX
     check "g4 display: $1" "$3" "$(gd_rc "$QP/qualify-$1.sh")"
 }
 gd_form vga-option 's/-device VGA /-device VGA -vga virtio /' 1
-check_true "named as -vga" grep -qF "QEMU display device(s) 'VGA -vga virtio'" "$QP/err"
+check_true "named as -vga" grep -qF "display device(s) named in it 'VGA -vga virtio'" "$QP/err"
 gd_form vga-none 's/-device VGA /-device VGA -vga none /' 0
 gd_form double-dash 's/-device VGA /-device VGA --device virtio-vga /' 1
 gd_form driver-key 's/-device VGA /-device VGA -device driver=virtio-vga,id=g /' 1
-check_true "by its driver" grep -qF "QEMU display device(s) 'VGA virtio-vga'" "$QP/err"
+check_true "by its driver" grep -qF "display device(s) named in it 'VGA virtio-vga'" "$QP/err"
 gd_form split-line 's/-device VGA /-device VGA -device \\\n        virtio-vga /' 1
 gd_form single-quoted "s/-device VGA /-device VGA -device 'virtio-vga' /" 1
 gd_form single-quoted-vga "s/-device VGA /-device 'VGA' /" 0
 gd_form no-display 's/-device VGA //' 1
-check_true "named as none at all" grep -qF "QEMU display device(s) '', expected VGA alone" "$QP/err"
+check_true "said to want the explicit -device VGA" grep -qF "no display device named, expected the explicit -device VGA (lint;" "$QP/err"
 gd_form driver-later 's/-device VGA /-device VGA -device id=g,driver=virtio-gpu-pci /' 1
 gd_form driver-after-bus 's/-device VGA /-device VGA -device bus=pcie.0,driver=virtio-gpu-pci /' 1
-check_true "named by its driver, wherever the key sits" grep -qF "QEMU display device(s) 'VGA virtio-gpu-pci'" "$QP/err"
+check_true "named by its driver, wherever the key sits" grep -qF "display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
 gd_form driver-quoted "s/-device VGA /-device VGA -device 'id=g,driver=virtio-vga' /" 1
 gd_form json "s/-device VGA /-device VGA -device '{\"driver\":\"virtio-gpu-pci\",\"id\":\"g\"}' /" 1
 gd_form quoted-option 's/-device VGA /-device VGA "-device" virtio-gpu-pci /' 1
@@ -3586,7 +3630,7 @@ gd_form ramfb 's/-device VGA /-device VGA -device ramfb /' 1
 gd_form vga-by-key 's/-device VGA /-device id=v0,driver=VGA /' 0
 gd_form vga-by-json "s/-device VGA /-device '{\"driver\":\"VGA\",\"id\":\"v0\"}' /" 0
 gd_form two-vgas 's/-device VGA /-device VGA -device id=v1,driver=VGA /' 1
-check_true "counting each std VGA" grep -qF "QEMU display device(s) 'VGA VGA'" "$QP/err"
+check_true "counting each std VGA" grep -qF "display device(s) named in it 'VGA VGA'" "$QP/err"
 gd_form two-vgas-json "s/-device VGA /-device VGA -device '{\"driver\":\"VGA\"}' /" 1
 # shellcheck disable=SC2016 # expanded by the fixture's shell
 { printf 'gpu=(\n    -device\n    virtio-gpu-pci\n)\n'; sed 's/-device VGA /-device VGA "${gpu[@]}" /' "${QP_REAL[0]}"; } >"$QP/qualify-array.sh"
@@ -3594,7 +3638,17 @@ check "g4 display: a device from a multi-line array fails" 1 "$(gd_rc "$QP/quali
 # shellcheck disable=SC2016 # expanded by the fixture's shell
 { printf 'GPU=virtio-gpu-pci\n'; sed 's/-device VGA /-device VGA -device "$GPU" /' "${QP_REAL[0]}"; } >"$QP/qualify-variable.sh"
 check "g4 display: a display driver named anywhere fails by name, here through a variable" 1 "$(gd_rc "$QP/qualify-variable.sh")"
-check_true "and names it" grep -qF "qualify-variable.sh: QEMU display device(s) 'virtio-gpu-pci VGA'" "$QP/err"
+check_true "and names it" grep -qF "qualify-variable.sh: display device(s) named in it 'virtio-gpu-pci VGA'" "$QP/err"
+gd_form split-line-vga 's/-device VGA /-device \\\n        VGA /' 0
+gd_form double-dash-vga 's/-device VGA /--device VGA /' 0
+gd_form split-name 's/-device VGA /-device VGA -device virtio-gpu\\\n-pci /' 1
+check_true "joined as bash joins a continuation" grep -qF "display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
+# shellcheck disable=SC2016 # a parameter expansion in the fixture's QEMU line
+gd_form default-value 's/-device VGA /-device VGA -device "${QUALIFY_GPU:-virtio-gpu-pci}" /' 1
+gd_form readconfig 's/-device VGA /-device VGA -readconfig gpu.cfg /' 1
+check_true "named as out of the lint's reach" grep -qF "display device(s) named in it 'VGA -readconfig'" "$QP/err"
+gd_form set-device 's/-device VGA /-device VGA -set device.v0.addr=04.0 /' 1
+gd_form trailing-comment 's/-device VGA /-device VGA # virtio-gpu-pci was #127 /' 0
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers
@@ -5206,9 +5260,17 @@ EOF
 chmod +x "$QV/bin/qemu-system-x86_64"
 : >"$QV/code.fd"
 : >"$QV/vars.fd"
-# shellcheck disable=SC2016 # expanded by the inner bash
-PATH="$QV/bin:$PATH" QEMU_ARGS="$QV/args" QUALIFY_OUT="$QV/out" OVMF_CODE="$QV/code.fd" OVMF_VARS="$QV/vars.fd" \
-    bash -c '. "$1"; require_kvm() { :; }; start_vm t' _ "$APEX_ROOT/.github/scripts/qualify.sh" >/dev/null 2>&1
+qv_start() { # DISPLAYS: start_vm t against fake QEMU and QEMU 8.2's QMP answers for DISPLAYS
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$QV/bin:$PATH" QEMU_ARGS="$QV/args" QUALIFY_OUT="$QV/out" OVMF_CODE="$QV/code.fd" OVMF_VARS="$QV/vars.fd" \
+        QMP_FAKE="$QMP_FAKE" FAKE_DISPLAYS="$1" GITHUB_ACTIONS='' \
+        bash -c '. "$1"; . "$QMP_FAKE"; require_kvm() { :; }; start_vm t' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$QV/start.log" 2>&1
+}
+check "start_vm: QEMU's own std VGA alone passes" 0 "$(rc_of qv_start vga)"
+check "start_vm: a virtio-gpu beside it fails the boot" 1 "$(rc_of qv_start vga-virtio)"
+check_true "naming each display device QEMU built" \
+    grep -qF "t-display: QEMU built display device(s) '1234:1111 0300 VGA,1af4:1050 0380 virtio-gpu-pci', expected std VGA (1234:1111, class 0300) alone" "$QV/start.log"
+qv_start vga
 check_true "start_vm: a second QMP socket for the event reader" grep -qx "unix:$QV/out/qmp/t.events.sock,server=on,wait=off" "$QV/args"
 check_true "OVMF's debug console in the row's logs" grep -qx "file:$QV/out/logs/t.ovmf.log" "$QV/args"
 check_true "at OVMF's debug port" grep -qx 'isa-debugcon.iobase=0x402' "$QV/args"

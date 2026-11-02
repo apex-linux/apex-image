@@ -352,23 +352,25 @@ qemu_parity() {
     return "$rc"
 }
 
-# g4_display FILE: FILE's QEMU runs one std VGA and no other display device; virtio-gpu's
-# control queue stalls after an s2idle resume and the shell hangs (apex-image#127).
+# g4_display FILE: a best-effort lint that FILE asks QEMU for std VGA alone (apex-image#127).
+# It catches honest edits; qualify.sh's QMP check of the running VM is the guarantee.
 g4_display() {
     local devices
     devices=$(python3 - "$1" <<'EOF'
 import re
 import sys
 
-text = "".join(l for l in open(sys.argv[1]) if not l.lstrip().startswith("#"))
-text = re.sub(r"\\\n", " ", text)
-W = r"(?<![A-Za-z0-9_.-])"
+lines = (l for l in open(sys.argv[1]) if not l.lstrip().startswith("#"))
+text = re.sub(r"\\\n", "", "".join(re.sub(r"\s#\s.*", "", l) for l in lines))
+W = r"(?<![A-Za-z0-9_])"
 E = r"(?![A-Za-z0-9_-])"
 # (a) a display-class driver named anywhere fails by name, whatever passes it to QEMU.
 CLASS = (r"virtio-vga[A-Za-z0-9-]*|virtio-gpu[A-Za-z0-9-]*|vhost-user-(?:vga|gpu)[A-Za-z0-9-]*"
          r"|qxl(?:-vga)?|bochs-display|secondary-vga|cirrus-vga|isa-[A-Za-z0-9-]*vga|ati-vga"
          r"|vmware-svga|ramfb")
 found = [(m.start(), m.group(0)) for m in re.finditer(W + "(?:" + CLASS + ")" + E, text)]
+# Devices from a config file or set by property are out of the lint's reach: they fail by name.
+found += [(m.start(), m.group(0)) for m in re.finditer(W + r"--?(?:readconfig|set\s+device\.\S*)", text)]
 
 
 def word(i):
@@ -407,7 +409,11 @@ print(" ".join(name for _, name in sorted(found)))
 EOF
     ) || return 1
     [[ $devices == VGA ]] && return 0
-    warn "$1: QEMU display device(s) '$devices', expected VGA alone: virtio-gpu's control queue stalls after an s2idle resume (apex-image#127)"
+    if [[ -z $devices ]]; then
+        warn "$1: no display device named, expected the explicit -device VGA (lint; qualify.sh's QMP check is the guarantee)"
+    else
+        warn "$1: display device(s) named in it '$devices', expected VGA alone: virtio-gpu's control queue stalls after an s2idle resume (apex-image#127; lint, qualify.sh's QMP check is the guarantee)"
+    fi
     return 1
 }
 
