@@ -793,7 +793,8 @@ fn the_signing_key_is_checked_before_the_container() {
         let err = t.vm(&fake, &c).build("demo").unwrap_err();
         assert_eq!(err.exit(), exit, "{err}");
         assert!(err.to_string().contains(wanted), "{err}");
-        assert!(fake.calls("podman").is_empty());
+        let podman = fake.calls("podman");
+        assert!(podman.is_empty(), "{podman:?}");
     }
 }
 
@@ -811,7 +812,8 @@ fn a_gnupg_home_without_the_secret_key_is_refused_before_the_container() {
             .contains(&format!("gnupg holds no secret key {FPR}")),
         "{err}"
     );
-    assert!(fake.calls("podman").is_empty());
+    let podman = fake.calls("podman");
+    assert!(podman.is_empty(), "{podman:?}");
 }
 
 #[test]
@@ -1408,7 +1410,8 @@ fn container_build_is_unchanged_when_the_key_is_stored() {
     let fake = container_fake(Tools::default());
     t.run(&Tools::default(), &fake).expect("unchanged");
     assert_eq!(t.out("unchanged"), format!("{key}\n"));
-    assert!(fake.calls("rpmbuild").is_empty());
+    let rpmbuild = fake.calls("rpmbuild");
+    assert!(rpmbuild.is_empty(), "{rpmbuild:?}");
 }
 
 #[test]
@@ -1656,7 +1659,8 @@ fn source1_must_be_staged() {
     let fake = container_fake(Tools::default());
     let err = t.run(&Tools::default(), &fake).expect_err("refused");
     assert_eq!(err.exit(), Exit::Usage);
-    assert!(fake.calls("dnf5").is_empty());
+    let dnf5 = fake.calls("dnf5");
+    assert!(dnf5.is_empty(), "{dnf5:?}");
 }
 
 #[test]

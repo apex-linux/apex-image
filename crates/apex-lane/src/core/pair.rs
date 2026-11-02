@@ -716,8 +716,10 @@ mod tests {
         let whole = b"family kernel-cachyos built K\nfamily demo built K\n";
         assert_eq!(newly_degraded(whole, degraded), ["kernel-cachyos"]);
         assert_eq!(newly_degraded(b"", degraded), ["kernel-cachyos"]);
-        assert!(newly_degraded(degraded, degraded).is_empty());
-        assert!(newly_degraded(degraded, whole).is_empty());
+        let same = newly_degraded(degraded, degraded);
+        assert!(same.is_empty(), "{same:?}");
+        let healed = newly_degraded(degraded, whole);
+        assert!(healed.is_empty(), "{healed:?}");
     }
 
     #[test]

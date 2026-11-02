@@ -1800,7 +1800,8 @@ fn a_pair_stored_before_the_source_set_is_named() {
         err.contains("the pair predates pair.sh's source set; build it again"),
         "{err}"
     );
-    assert!(source_checks(&t).is_empty());
+    let checks = source_checks(&t);
+    assert!(checks.is_empty(), "{checks:?}");
 }
 
 #[test]
@@ -1891,7 +1892,7 @@ fn a_45_pair_job_is_as_before_and_a_next_one_names_its_fedora_and_base() {
     let t = PairTest::new();
     t.with_good_pair();
     let jobs = pair_jobs(&t);
-    assert!(!jobs.is_empty());
+    assert!(!jobs.is_empty(), "no podman calls logged");
     for job in &jobs {
         assert!(!job.iter().any(|a| a.starts_with("FEDORA=")), "{job:?}");
         assert!(job.iter().any(|a| a.ends_with(
@@ -1909,7 +1910,7 @@ fn a_45_pair_job_is_as_before_and_a_next_one_names_its_fedora_and_base() {
         "the job takes fedora-46's pins"
     );
     let jobs = pair_jobs(&t);
-    assert!(!jobs.is_empty());
+    assert!(!jobs.is_empty(), "no podman calls logged");
     for job in &jobs {
         let fedora = job.windows(2).any(|w| w[0] == "-e" && w[1] == "FEDORA=46");
         assert!(fedora && job.iter().any(|a| a == NEXT_BASE), "{job:?}");
@@ -1970,7 +1971,8 @@ fn assert_pair_unavailable(t: &PairTest, why: &str) {
             && line.contains(&format!("reason=pair unavailable for Fedora 46: {why}")),
         "{line}"
     );
-    assert!(PairTest::rpm_lines(&t.next_lock()).is_empty());
+    let rpms = PairTest::rpm_lines(&t.next_lock());
+    assert!(rpms.is_empty(), "{rpms:?}");
     image_sh_accepts(&t.store.path().join("rpms.lock.next"));
 }
 
