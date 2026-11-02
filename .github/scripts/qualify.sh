@@ -206,7 +206,7 @@ DIAG_SHELL_PID=
 DIAG_LOST=
 DIAG_RC=0
 QUALIFY_ERRLOG=
-CANDIDATE_REGISTRY_STARTED=
+CANDIDATE_REGISTRY_ID=
 # cmd_local's order, but the suspend last: a guest it loses would block every unit after it.
 readonly DIAG_UNITS=(boot-metrics login-lock-unlock lock-wrong-password lock-esc lock-blank-wake lock-reduce-motion
     polkit-agent polkit-actions crash-guard safe-karg-lock lock-suspend lock-suspend-s3)
@@ -2045,33 +2045,39 @@ polkit_actions() {
     result "$test" PASS "pkaction --verbose names vendor $POLKIT_VENDOR for the ${#ids[@]} actions of $POLKIT_ACTIONS: ${ids[*]}"
 }
 
-# A running registry this run did not start is another run's. A stopped one is a crashed
-# run's, and left there it would refuse every later run.
+# A running registry this run did not start is another run's (2). A stopped one is a crashed
+# run's, and left there it would refuse every later run; one that came back to life fails (3).
 start_candidate_registry() {
     local running
     if running=$(as_root podman container inspect --format '{{.State.Running}}' "$CANDIDATE_REGISTRY" 2>/dev/null); then
-        [[ $running == false ]] || return 1
-        as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null || return 1
+        [[ $running == false ]] || return 2
+        as_root podman rm -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1 || return 3
     fi
-    as_root podman run -d --rm --name "$CANDIDATE_REGISTRY" -p "127.0.0.1:$QUALIFY_REGISTRY_PORT:5000" \
-        "$CANDIDATE_REGISTRY_IMAGE" >/dev/null || return 1
-    CANDIDATE_REGISTRY_STARTED=1
+    CANDIDATE_REGISTRY_ID=$(as_root podman run -d --rm --name "$CANDIDATE_REGISTRY" -p "127.0.0.1:$QUALIFY_REGISTRY_PORT:5000" \
+        "$CANDIDATE_REGISTRY_IMAGE") || CANDIDATE_REGISTRY_ID=
+    [[ -n $CANDIDATE_REGISTRY_ID ]]
 }
 
 # Until the container is gone this run still owns it, so cleanup() tries again.
 stop_candidate_registry() {
-    [[ -n $CANDIDATE_REGISTRY_STARTED ]] || return 0
-    if as_root podman rm -f -v "$CANDIDATE_REGISTRY" >/dev/null 2>&1; then
-        CANDIDATE_REGISTRY_STARTED=
+    local err exists=0
+    [[ -n $CANDIDATE_REGISTRY_ID ]] || return 0
+    if err=$(as_root podman rm -f -v "$CANDIDATE_REGISTRY_ID" 2>&1 >/dev/null); then
+        CANDIDATE_REGISTRY_ID=
+        return 0
+    fi
+    as_root podman container exists "$CANDIDATE_REGISTRY_ID" || exists=$?
+    if ((exists == 1)); then
+        CANDIDATE_REGISTRY_ID=
     else
-        warn "cannot remove $CANDIDATE_REGISTRY; remove it with: podman rm -f -v $CANDIDATE_REGISTRY"
+        warn "cannot remove $CANDIDATE_REGISTRY ($CANDIDATE_REGISTRY_ID): ${err:-podman rm said nothing}; remove it with: podman rm -f -v $CANDIDATE_REGISTRY_ID"
     fi
 }
 
 # Apply arms only for another digest whose manifest version is higher. Built on the host on
 # BASE, the image ID under test, the candidate costs the guest one layer, as an update does.
 stage_local_candidate() {
-    local test=$1 booted=$2 base=$3 manifest version status pushed dir=$QUALIFY_OUT/candidate
+    local test=$1 booted=$2 base=$3 manifest version status pushed started=0 dir=$QUALIFY_OUT/candidate
     local served=127.0.0.1:$QUALIFY_REGISTRY_PORT/apex-qualify:candidate
     local guest_ref=10.0.2.2:$QUALIFY_REGISTRY_PORT/apex-qualify:candidate
     manifest=$(vm_ssh "cat $MANIFEST") || fail "$test" "cannot read $MANIFEST"
@@ -2084,8 +2090,13 @@ stage_local_candidate() {
         >"$dir/Containerfile" || fail "$test" "cannot write $dir/Containerfile"
     as_root podman build --pull=never --tag "$LOCAL_CANDIDATE" "$dir" >"$QUALIFY_OUT/logs/$test.build.log" 2>&1 ||
         fail "$test" "podman build of $LOCAL_CANDIDATE failed: see logs/$test.build.log"
-    start_candidate_registry ||
-        fail "$test" "cannot start $CANDIDATE_REGISTRY ($CANDIDATE_REGISTRY_IMAGE) on 127.0.0.1:$QUALIFY_REGISTRY_PORT: another run's, or the port taken?"
+    start_candidate_registry || started=$?
+    case $started in
+        0) ;;
+        2) fail "$test" "$CANDIDATE_REGISTRY is running, so another run's; if no run is live, remove it with: podman rm -f -v $CANDIDATE_REGISTRY" ;;
+        3) fail "$test" "a crashed run's $CANDIDATE_REGISTRY was stopped, but podman rm -v refused it: running again, so another run's?" ;;
+        *) fail "$test" "cannot start $CANDIDATE_REGISTRY ($CANDIDATE_REGISTRY_IMAGE) on 127.0.0.1:$QUALIFY_REGISTRY_PORT: another run's, or the port taken?" ;;
+    esac
     # The pushed manifest's digest: the push rewrites the local one that podman image inspect names.
     as_root podman push --tls-verify=false --digestfile "$dir/pushed" "$LOCAL_CANDIDATE" "$served" \
         >"$QUALIFY_OUT/logs/$test.push.log" 2>&1 || fail "$test" "podman push to $served failed: see logs/$test.push.log"

@@ -1481,8 +1481,10 @@ as_root() {
         "podman image inspect --format {{.Digest}} $LOCAL_CANDIDATE") from local-digest ;;
         "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rmi $LOCAL_CANDIDATE") ;;
         "podman container inspect --format {{.State.Running}} $CANDIDATE_REGISTRY") from registry-left | grep . ;;
-        "podman rm -f -v $CANDIDATE_REGISTRY") [[ ! -e $STATE/rm-fails ]] && rm -f "$STATE/registry-left" ;;
-        "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] ;;
+        "podman rm -v $CANDIDATE_REGISTRY") [[ ! -e $STATE/came-alive ]] && rm -f "$STATE/registry-left" ;;
+        "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] && echo f00d ;;
+        "podman rm -f -v f00d") [[ ! -e $STATE/rm-fails ]] || { echo "Error: cannot remove container f00d: device busy" >&2; return 125; } ;;
+        "podman container exists f00d") [[ ! -e $STATE/registry-gone ]] ;;
         "podman push --tls-verify=false --digestfile $QUALIFY_OUT/candidate/pushed $LOCAL_CANDIDATE 127.0.0.1:5000/apex-qualify:candidate")
             [[ ! -e $STATE/push-fails ]] && from pushed >"$QUALIFY_OUT/candidate/pushed" ;;
         *) return 1 ;;
@@ -2082,8 +2084,8 @@ check "the guest reaches the host's registry over plain HTTP" '[[registry]]|loca
 check "and trusts that registry alone, for the one switch" \
     '{"default":[{"type":"reject"}],"transports":{"docker":{"10.0.2.2:5000":[{"type":"insecureAcceptAnything"}]}}}' \
     "$(jq -c . "$GUEST_DIR/state/policy.json")"
-check "the registry runs from its pinned digest, stops after the switch, and the candidate is removed" \
-    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v apex-qualify-registry-5000|podman rmi localhost/apex-qualify:candidate" \
+check "the registry runs from its pinned digest, stops after the switch by the ID it started, and the candidate is removed" \
+    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v f00d|podman rmi localhost/apex-qualify:candidate" \
     "$(grep -E '^podman (run|rm|rmi) |^switch$' "$GUEST_DIR/state/host-calls" | paste -sd'|')"
 check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged 10.0.2.2:5000/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
 echo "$D2" >"$GUEST_DIR/state/pushed"
@@ -2105,7 +2107,7 @@ check "a failed push fails" 1 "$(stage)"
 : >"$GUEST_DIR/state/host-calls"
 : >"$GUEST_DIR/state/vm-dead"
 check "and qualify.sh's exit after it" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
-check "stops the registry this run started" "podman rm -f -v apex-qualify-registry-5000" \
+check "stops the registry this run started, by its ID" "podman rm -f -v f00d" \
     "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
 rm "$GUEST_DIR/state/push-fails"
 : >"$GUEST_DIR/state/registry-fails"
@@ -2119,18 +2121,34 @@ rm "$GUEST_DIR/state/registry-fails"
 echo false >"$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/host-calls"
 check "a stopped registry a crashed run left is removed, and the stage goes on" 0 "$(stage)"
-check "before this run starts its own" "podman rm -f -v apex-qualify-registry-5000|podman run -d --rm --name apex-qualify-registry-5000" \
-    "$(grep -oE '^podman (rm -f -v|run -d --rm --name) apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls" | head -n 2 | paste -sd'|')"
+check "before this run starts its own, and without force" "podman rm -v apex-qualify-registry-5000|podman run -d --rm --name apex-qualify-registry-5000" \
+    "$(grep -oE '^podman (rm -f -v|rm -v|run -d --rm --name) apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls" | head -n 2 | paste -sd'|')"
+: >"$GUEST_DIR/state/came-alive"
+echo false >"$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/host-calls"
+check "a crashed run's registry that came back to life before its removal fails the stage" 1 "$(stage)"
+check_true "saying so" grep -qF "| local-stage | FAIL | a crashed run's apex-qualify-registry-5000 was stopped, but podman rm -v refused it: running again, so another run's? |" "$GUEST_DIR/out/results.md"
+check "and starts no registry of its own" "" "$(grep '^podman run ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/came-alive"
 echo true >"$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/host-calls"
 check "a running one is another run's: the stage fails" 1 "$(stage)"
 check "without touching it" "" "$(grep -E '^podman (rm|run) ' "$GUEST_DIR/state/host-calls")"
+check_true "saying how to remove it if no run is live" grep -qF \
+    "| local-stage | FAIL | apex-qualify-registry-5000 is running, so another run's; if no run is live, remove it with: podman rm -f -v apex-qualify-registry-5000 |" "$GUEST_DIR/out/results.md"
 rm -f "$GUEST_DIR/state/registry-left"
 : >"$GUEST_DIR/state/rm-fails"
 : >"$GUEST_DIR/state/host-calls"
 check "a registry that will not go: the stage still passes" 0 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
-check "and qualify.sh's exit tries again" 2 "$(grep -c '^podman rm -f -v apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls")"
-check_true "saying how to remove it" grep -qF "cannot remove apex-qualify-registry-5000; remove it with: podman rm -f -v apex-qualify-registry-5000" "$GUEST_DIR/stderr"
+check "and qualify.sh's exit tries again, by its ID" 2 "$(grep -c '^podman rm -f -v f00d$' "$GUEST_DIR/state/host-calls")"
+check_true "saying why, and how to remove it" grep -qF \
+    "cannot remove apex-qualify-registry-5000 (f00d): Error: cannot remove container f00d: device busy; remove it with: podman rm -f -v f00d" "$GUEST_DIR/stderr"
+: >"$GUEST_DIR/state/registry-gone"
+: >"$GUEST_DIR/state/host-calls"
+check "a removal that fails on a registry already gone: the stage passes" 0 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "and qualify.sh's exit does not try again" 1 "$(grep -c '^podman rm -f -v f00d$' "$GUEST_DIR/state/host-calls")"
+check "nor warns" "" "$(grep -F 'cannot remove apex-qualify-registry-5000' "$GUEST_DIR/stderr")"
+rm "$GUEST_DIR/state/registry-gone"
 rm "$GUEST_DIR/state/rm-fails" "$GUEST_DIR/state/vm-dead"
 : >"$GUEST_DIR/state/pushed"
 check "a push that wrote no digest fails" 1 "$(stage)"
