@@ -44,6 +44,11 @@ REF = re.compile(rf"(?:(?<=[\s\"'=<(;|&`]){PREFIX}?|{PREFIX}|^)({TOP})")
 MESSAGE = re.compile(r"""^\s*(?:echo|printf|die|log|warn|note|notice|usage|flunk|fail|diag_block|error|info)\b|::(?:error|warning|notice)""")
 BESIDE = re.compile(r"\$\(dirname[^)]*\)\"?/((?:\.\./)*[\w.-][\w./-]*)")
 CASE = re.compile(r"^\s*[^()#]*[^(]\)\s*(?:;;|return\b|$)")
+IMPORT = re.compile(r"^\s*(?:from\s+(\.*[\w.]*)\s+import\s+(.+)|import\s+(.+))")
+HERE = re.compile(
+    r"""(?:os\.path\.dirname\((?:os\.path\.(?:abs|real)path\()?__file__\)?\)|Path\(__file__\)(?:\.resolve\(\))?\.parent)"""
+    r"""\s*[,/]\s*["']([^"']+)["']"""
+)
 
 
 def strip(line):
@@ -53,18 +58,28 @@ def strip(line):
 
 
 def references(path, numbered):
-    heredoc = None
+    heredoc, quoted, cases, depth = None, False, 0, 0
+    shell = not path.endswith(".py")
     for number, line in numbered:
         if heredoc:
             if line.strip() == heredoc:
                 heredoc = None
-            continue
-        m = re.search(r"<<-?\s*'?\"?(\w+)'?\"?", line)
-        if m and not re.search(r"python3|bash|sh\b|awk|jq", line.split("<<")[0]):
-            heredoc = m[1]
+                continue
+            if quoted:
+                continue
+        elif shell:
+            m = re.search(r"(?<!<)<<(?!<)-?\s*(['\"]?)(\w+)\1", line)
+            if m and not re.search(r"python3|bash|sh\b|awk|jq", line.split("<<")[0]):
+                heredoc, quoted = m[2], bool(m[1])
         text = strip(line)
-        if CASE.match(text):
+        # A case pattern ends in ")", and so does a multi-line $(...)'s last line.
+        pattern = shell and cases > 0 and depth == 0 and CASE.match(text)
+        cases += len(re.findall(r"\bcase\b.*\bin\b", text)) - len(re.findall(r"\besac\b", text))
+        depth = max(0, depth + text.count("(") - text.count(")"))
+        if pattern:
             continue
+        if not shell:
+            yield from python_reads(path, number, line, text)
         for m in REF.finditer(text):
             yield number, m[1].rstrip(".,;:)\"'")
         for m in BESIDE.finditer(text):
@@ -75,31 +90,79 @@ def references(path, numbered):
                 yield number, near
 
 
+UNRESOLVED = "\0"
+
+
+def python_reads(path, number, line, text):
+    """Modules beside PATH that LINE imports, files it joins to __file__, and __file__ uses it cannot."""
+    here = os.path.dirname(path)
+    m = IMPORT.match(line)
+    if m:
+        modules = [m[1].lstrip(".")] if m[1] is not None else []
+        if m[1] is not None and not modules[0]:
+            modules = m[2].split(",")
+        for name in modules if modules else m[3].split(","):
+            name = name.split(" as ")[0].strip().replace(".", "/")
+            if re.fullmatch(r"[\w/]+", name):
+                yield number, os.path.join(here, name + ".py")
+                yield number, os.path.join(here, name, "__init__.py")
+    joins = list(HERE.finditer(text))
+    for m in joins:
+        yield number, os.path.normpath(os.path.join(here, m[1]))
+    if not joins and "__file__" in re.sub(r"\"[^\"]*\"|'[^']*'", "", text):
+        yield number, UNRESOLVED + line.strip()
+
+
+TEMPLATE = re.compile(r"\$\{[^}]*\}|\$\w+|\*|\[[^\]]*\]|\{[^}]*\}")
+
+
+def expand(repo, token):
+    """The tracked files a templated TOKEN can name: each template part stands for one path segment's text."""
+    parts = TEMPLATE.split(token)
+    pattern = re.compile("[^/]*".join(map(re.escape, parts)) + "(?:/.*)?")
+    return sorted(f for f in repo.tracked if pattern.fullmatch(f))
+
+
 def walk(repo, queue, covered, allowed, covers, under, problems):
-    """Follow QUEUE's (path, where) pairs; return {reached path: where} and the allow lines used."""
-    seen, used = {}, set()
+    """Follow QUEUE's (path, where) pairs; return {reached path: where} and {allow line used: its read}."""
+    seen, used = {}, {}
     while queue:
         token, where = queue.pop(0)
         reader = where.split(":")[0]
-        static = re.split(r"[$*\[{]", token)[0].rstrip("/")
+        if token.startswith(UNRESOLVED):
+            problems.append(f"{where}: cannot tell what {token[1:]!r} reads: join a string to __file__ on that line")
+            continue
+        token = token.rstrip("/") or token
+        static = re.split(r"[$*\[{]", token)[0]
         if token in repo.tracked:
             if token not in seen:
                 seen[token] = where
-                if token.endswith(".sh") or repo.read(token)[:1] and repo.read(token)[0].startswith("#!"):
-                    for number, ref in references(token, enumerate(repo.read(token), 1)):
+                lines = repo.read(token)
+                if token.endswith((".sh", ".py")) or lines[:1] and lines[0].startswith("#!"):
+                    for number, ref in references(token, enumerate(lines, 1)):
                         queue.append((ref, f"{token}:{number}"))
             ok = covered(token)
         elif static != token:
-            ok = covered(static) or (static not in repo.dirs and static not in repo.tracked)
+            matches = expand(repo, token)
+            if matches and (reader, token) not in allowed:
+                queue += [(m, where) for m in matches]
+                continue
+            base = static if static.endswith("/") else os.path.dirname(static)
+            base = base.rstrip("/")
+            ok = covered(base) or (base not in repo.dirs and base not in repo.tracked)
             if not ok and (reader, token) not in allowed:
-                problems.append(f"{where}: unresolvable path {token!r}: its static part {static} is not under {under}")
+                problems.append(f"{where}: unresolvable path {token!r}: its static part {base} is not under {under}")
                 continue
         elif token in repo.dirs:
             ok = covered(token)
+            # A directory's line excuses one read: a second one may list or read any file in it.
+            if (reader, token) in used and used[reader, token] != where:
+                problems.append(f"{where}: reads {token} again; its allow line excuses only {used[reader, token]}")
+                continue
         else:
             continue
         if (reader, token) in allowed:
-            used.add((reader, token))
+            used.setdefault((reader, token), where)
             continue
         if not ok:
             problems.append(f"{where}: reads {token}, which {covers}")
