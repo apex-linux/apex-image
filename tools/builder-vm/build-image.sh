@@ -180,7 +180,7 @@ output_plain() {
 sign_rpms() {
     local dir=$1
     sudo chown -R "$(id -u):$(id -g)" -- "$dir"
-    output_plain "$dir" || exit 1
+    output_plain "$dir" || { sudo rm -rf -- "$dir"; exit 1; }
     tools/builder-vm/lane.sh sign "$dir"/*.rpm
     rm -f -- "$dir/SHA256SUMS"
     (cd "$dir" && sha256sum -- *.rpm >SHA256SUMS)
@@ -557,6 +557,7 @@ build_inputs() {
                 store libfprint libfprint
             fi ;;
         3) echo "libfprint: patches do not apply; the image uses Fedora's libfprint (degraded=fingerprint)"
+           sudo rm -rf -- "$BUILD/libfprint"
            libfprint_args=() ;;
         *) echo "libfprint: build failed (exit $rc)" >&2; exit "$rc" ;;
     esac
@@ -799,7 +800,7 @@ qualify_only() {
 }
 
 main() {
-    local image_only=0 why=
+    local image_only=0 why='' out
     APEX_KERNEL=
     while (($#)); do
         case $1 in
@@ -862,6 +863,10 @@ main() {
     if ((image_only)); then
         echo "== 1/4 to 3/4 skipped (--image-only): reusing $BUILD/rpms, $BUILD/libfprint and $LANE_LOCK"
         [[ -d $BUILD/libfprint && -n $(ls -A "$BUILD/libfprint") ]] || libfprint_args=()
+        # What a full run left is checked again: a refused or unchecked output is never reused.
+        for out in "$BUILD/rpms/apex" "$BUILD/rpms/desktop" ${libfprint_args[@]:+"$BUILD/libfprint"}; do
+            output_plain "$out" || exit 1
+        done
     else
         build_inputs
     fi

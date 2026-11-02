@@ -1211,9 +1211,37 @@ git -C "$CS" config core.filemode false
 check "verify: core.filemode=false, which hides a chmod, refuses" 1 "$(components verify "$CS")"
 git -C "$CS" config core.filemode true
 git -C "$CS" config core.repositoryformatversion 1
-git -C "$CS" config extensions.objectformat sha1
-check "verify: a format-1 clone with extensions.objectformat=sha1, as git may write, is plain" 0 "$(components verify "$CS")"
+git -C "$CS" config extensions.refstorage reftable
+check "verify: a format-1 config with extensions.refstorage=reftable, as git may write, passes the config check; fetch clones afresh" "|0|0" \
+    "$(co_said '.git/config sets' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config core.repositoryformatversion 1
+git -C "$CS" config extensions.objectformat sha256
+check "verify: so does extensions.objectformat=sha256" "|0|0" \
+    "$(co_said '.git/config sets' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config --add remote.origin.fetch "+refs/heads/main:refs/replace/$(git -C "$CS" rev-parse HEAD)"
+check "verify: a refspec fetch never writes refuses, by value; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/config sets remote.origin.fetch=+refs/heads/main:refs/replace/' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config remote.origin.tagopt --tags
+check "verify: a tagopt other than --no-tags refuses" 1 "$(components verify "$CS")"
 components fetch >/dev/null
+git -C "$CS" update-ref "refs/replace/$(git -C "$CS" rev-parse HEAD)" "$(git -C "$CS" rev-parse HEAD~1)"
+check "verify: a refs/replace ref refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: it holds refs/replace' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+printf '[broken\n' >>"$CS/.git/config"
+check "verify: a .git/config git cannot read refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/config is not one git can read' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+mv "$CS/.git" "$CO/dotgit" && ln -s "$CO/dotgit" "$CS/.git"
+check "verify: a .git that links to a directory refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git is not a directory' verify "$CS")|$(components fetch)|$(components verify "$CS")"
+ln -s "$CO/nowhere" "$CS/.git/commondir"
+check "verify: a dangling .git/commondir link refuses; fetch clones afresh" "1|0|0" "$(components verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" remote set-url origin "$CO/apex-desktop.git"
+check "verify: an origin that is not components.lock's URL refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said "apex-system: its origin is not components.lock's URL" verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config remote.origin.url "$CO/apex-desktop.git"
+git -C "$CS" config --add remote.origin.url "$CO/apex-system.git"
+check "verify: a second origin URL after the one fetch uses refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said "apex-system: its origin is not components.lock's URL" verify "$CS")|$(components fetch)|$(components verify "$CS")"
 git -C "$CS" -c advice.detachedHead=false checkout -q HEAD~1
 check "verify: a clone moved off its pin refuses" 1 "$(components verify "$CS")"
 check "and fetch puts it back" "0|0" "$(components fetch)|$(components verify "$CS")"
@@ -1243,6 +1271,13 @@ check "files a killed root build left are taken back before the clean" \
     "$(co_sudo CO_FOREIGN=1):$(head -n 1 "$CO/sudo.log")"
 check "without sudo -n the fetch fails rather than build from an unclean checkout" 1 \
     "$(co_sudo CO_FOREIGN=1 CO_NO_SUDO=1)"
+cat >"$CO/bin/git" <<GIT
+#!/bin/bash
+[[ -z \${CO_STATUS_ERR:-} || " \$* " != *" status "* ]] || { echo 'error: object file is corrupt' >&2; exit 128; }
+exec $(command -v git) "\$@"
+GIT
+chmod +x "$CO/bin/git"
+check "fetch fails when git can answer its clean check only with an error" "1|0" "$(co_sudo CO_STATUS_ERR=1)|$(co_sudo)"
 
 rm -rf "$CO/work/_build/components/apex-system"
 git clone -q --depth 1 "file://$CO/apex-system.git" "$CO/work/_build/components/apex-system"
@@ -1627,6 +1662,7 @@ rm "$RC/fp-tests"
 echo 3 >"$RC/libfprint-rc"
 check "rpm-cache: a degraded libfprint (exit 3) is never stored" "0|kernel|$n" \
     "$(bi_cache)|$(rc_builds)|$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)"
+check_false "and what its container left is gone, so --image-only cannot take it" test -e "$BIW/_build/libfprint"
 rm "$RC/libfprint-rc"
 echo "$KFP" >"$RC/keys/kernel"
 echo kdesk-moved >"$RC/keys/desktop"
@@ -1714,6 +1750,7 @@ touch "$RC/plant-link"
 echo kdesk-l >"$RC/keys/desktop"
 check "sign: a SHA256SUMS link a build left stops the build; nothing is written through it or signed" "1|victim|no|yes" \
     "$(bi_cache)|$(cat "$RC/victim")|$(grep -q 'lane.sh sign _build/rpms/desktop' "$RC/steps.log" && echo signed || echo no)|$(rc_said "sign: _build/rpms/desktop holds 'SHA256SUMS', which is no plain RPM or key file; nothing is signed")"
+check_false "and the refused output is gone, so nothing reuses it" test -e "$BIW/_build/rpms/desktop"
 rm "$RC/plant-link"
 touch "$RC/plant-hardlink"
 echo kdesk-h >"$RC/keys/desktop"
@@ -1742,6 +1779,13 @@ touch "$RC/unverified-gnome"
 check "lane: a recipe clone no longer as fetched stops the build before the lane" "1|yes|no" \
     "$(bi_cache)|$(rc_said 'lane: /pinned/gnome is no longer as fetched; the lane does not build from it')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo lane || echo no)"
 rm "$RC/unverified-gnome"
+n=$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)
+touch "$RC/unverified-kernel"
+echo libfprint-1.94.10-1.fc45-s7777bbbb7777 >"$RC/keys/kernel"
+check "lane: a kernel clone no longer as fetched is never stored and stops the build before the lane" "1|yes|yes|no|$n" \
+    "$(bi_cache)|$(rc_said 'libfprint: its clone is not as fetched; not stored')|$(rc_said 'lane: /pinned/kernel is no longer as fetched')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo lane || echo no)|$(find "$RCE/libfprint" -mindepth 1 -maxdepth 1 | wc -l)"
+rm "$RC/unverified-kernel"
+echo "$KFP" >"$RC/keys/kernel"
 echo "$KFP" >"$RC/keys/kernel"
 rm -rf "$RC/cache/fedora-45/index/apex-desktop"
 : >"$RC/cache/fedora-45/index/apex-desktop"
@@ -1753,6 +1797,26 @@ mkdir -p "$RC/cache/fedora-45/index/apex-system"
 : >"$RC/cache/fedora-45/index/apex-system/0123.tmp"
 check "rpm-cache: an index a store died writing is swept too" "0|gone" \
     "$(bi_cache)|$([[ -e $RC/cache/fedora-45/index/apex-system/0123.tmp ]] && echo kept || echo gone)"
+bi_image_only() { # an --image-only run over what _build holds; prints its exit, whether the image step ran
+    local rc=0
+    mkdir -p "$BI/home/apex-store"
+    echo lock >"$BI/home/apex-store/rpms.lock.next"
+    rm -f "$BI/image-only.log"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    HOME=$BI/home FAKE=$BI bash -c '. "$1"; sudo() { :; }; build_image() { echo image >>"$FAKE/image-only.log"; }
+        gates() { :; }; main --image-only' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >"$BI/image-only.out" 2>&1 || rc=$?
+    printf '%s|%s' "$rc" "$([[ -s $BI/image-only.log ]] && echo image || echo 'no image')"
+}
+rm -rf "$BIW/_build"
+for c in apex desktop; do
+    mkdir -p "$BIW/_build/rpms/$c"
+    echo "$c" >"$BIW/_build/rpms/$c/$c.rpm"
+    (cd "$BIW/_build/rpms/$c" && sha256sum -- *.rpm >SHA256SUMS)
+done
+check "--image-only reuses a full run's plain outputs" "0|image" "$(bi_image_only)"
+ln -s "$RC/victim" "$BIW/_build/rpms/desktop/left.rpm"
+check "--image-only refuses an output no full run could have signed" "1|no image|yes" \
+    "$(bi_image_only)|$(grep -q "sign: _build/rpms/desktop holds 'left.rpm'" "$BI/image-only.out" && echo yes)"
 rm -rf "$BIW/_build" "$BI/home-default"
 rc_names() { find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd' '; }
 check "rpm-cache: by default the cache is ~/apex-rpm-cache/fedora-45, and _build holds only the outputs" \
