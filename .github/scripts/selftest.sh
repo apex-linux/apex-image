@@ -1673,7 +1673,6 @@ local_flow_stubs() {
             "loadvm $DIAG_SNAPSHOT")
                 if [[ -e $STATE/loadvm-fails ]]; then echo "Error: Snapshot '$DIAG_SNAPSHOT' does not exist"; return 0; fi
                 snapshot_restore ;;
-            "savevm lost-after-"*) echo "$1" >>"$STATE/disk-calls" ;;
             *) echo "unexpected hmp: $1" ;;
         esac
     }
@@ -1698,7 +1697,21 @@ local_flow_stubs() {
     save_journal() { # the loads before it, and the entries it asked for if not this boot's
         echo "$1 $(cat "$STATE/loaded" 2>/dev/null | wc -l)${2:+ $2}" >>"$STATE/journals"
     }
-    qemu-img() { echo "qemu-img $*" >>"$STATE/disk-calls"; }
+    qemu-img() { # convert writes its last argument, which the run must remove
+        echo "qemu-img $*" >>"$STATE/disk-calls"
+        [[ $1 != convert ]] || : >"${*: -1}"
+    }
+    diag_disk_mib() { echo 4096; }
+    declare -F guest_qmp_query >/dev/null || eval "$(declare -f qmp_query | sed '1s/qmp_query/guest_qmp_query/')"
+    qmp_query() { # and the disk-only snapshot diag_keep_disk takes
+        case $1 in
+            '{"execute":"query-block"}') printf '[{"device":"virtio0","inserted":{"file":"%s/local.raw.qcow2"}}]\n' "$QUALIFY_OUT" ;;
+            *blockdev-snapshot-internal-sync*)
+                echo "$1" | jq -r '"\(.execute) \(.arguments.device) \(.arguments.name)"' >>"$STATE/disk-calls"
+                echo '{}' ;;
+            *) guest_qmp_query "$@" ;;
+        esac
+    }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
     as_root() { # the install retags the image: its ID is the one read before it
@@ -2815,9 +2828,24 @@ check_true "naming the lost guest" grep -qF \
     "$GUEST_DIR/out/diag.md"
 check "through QMP, its QEMU still running" "1:0" \
     "$(wc -l <"$GUEST_DIR/state/loaded"):$(grep -c -- -loadvm "$GUEST_DIR/state/started")"
-check "after keeping the lost guest's disk as a snapshot, whose journal the end of the run reads" \
-    "savevm lost-after-login-lock-unlock|qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw|journal lost-after-login-lock-unlock|journal local|drop local" \
+check "after keeping the lost guest's disk alone as a snapshot, whose journal the end of the run reads" \
+    "blockdev-snapshot-internal-sync virtio0 lost-after-login-lock-unlock|qemu-img convert -l snapshot.name=lost-after-login-lock-unlock -O raw $GUEST_DIR/out/local.raw.qcow2 $GUEST_DIR/out/lost-after-login-lock-unlock.raw|journal lost-after-login-lock-unlock|journal local|drop local" \
     "$(paste -sd'|' "$GUEST_DIR/state/disk-calls")"
+check_false "and the raw copy it read the journal off is gone" test -e "$GUEST_DIR/out/lost-after-login-lock-unlock.raw"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+: >"$GUEST_DIR/state/lose-guest"
+guest eval 'local_flow_stubs; diag_disk_mib() { echo 1048577; }
+    cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check "local-diag: with no room for a lost guest's raw copy, its journal is not read" "" \
+    "$(grep '^qemu-img convert' "$GUEST_DIR/state/disk-calls")"
+check_true "saying what it needs" grep -qF \
+    "no room to read the journal of snapshot lost-after-login-lock-unlock: its raw copy needs 1048577 MiB, QUALIFY_OUT has 1048576 MiB free" "$GUEST_DIR/stderr"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo lost-after-an-earlier-run >"$GUEST_DIR/out/diag-lost.txt"
+guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password localhost/apex:build' >/dev/null
+check "local-diag: an earlier run's diag-lost.txt names no snapshot to read" "" "$(grep '^qemu-img' "$GUEST_DIR/state/disk-calls")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
 : >"$GUEST_DIR/state/lose-qemu"
@@ -2955,7 +2983,7 @@ check "local-diag: an unknown unit is refused" 1 \
 check "local-diag refuses G4's QUALIFY_OUT" 1 \
     "$(rc_of bash -c '. "$1"; QUALIFY_OUT=$APEX_ROOT/_build/qualify; diag_refuse_g4_out' _ "$APEX_ROOT/.github/scripts/qualify.sh")"
 
-# --- local-diag's space: the guest's RAM and the overlays' growth, before the install ---
+# --- local-diag's space: the guest's RAM and the overlays' growth, after the install ------
 space() { # QUALIFY_MEM FREE_MIB: diag_space_check's exit, its message in $TMP/space.err
     # shellcheck disable=SC2016 # expanded by the inner bash
     (QUALIFY_MEM=$1 QUALIFY_OUT=$TMP rc_of bash -c '. "$1"; fake_free=$2; diag_free_mib() { echo "$fake_free"; }; diag_space_check 2>"$3"' _ \
@@ -2963,11 +2991,18 @@ space() { # QUALIFY_MEM FREE_MIB: diag_space_check's exit, its message in $TMP/s
 }
 check "local-diag: 6G of RAM and the overlays fit in 8 GiB free" 0 "$(space 6G 8192)"
 check "but not in 7" 1 "$(space 6G 7168)"
-check_true "naming what it needs, before any install" grep -qF \
+check_true "naming what it needs" grep -qF \
     "local-diag needs 8 GiB free in QUALIFY_OUT ($TMP) for its snapshot and overlays: 7 GiB is" "$TMP/space.err"
 check "QUALIFY_MEM in MiB, with M or without" "0:0:1" "$(space 4096M 6144):$(space 4096 6144):$(space 4096 6143)"
 check "a QUALIFY_MEM it cannot count is refused by name" 1 "$(space 6.5G 99999)"
 check_true "saying what it wants" grep -qF "QUALIFY_MEM=6.5G: local-diag wants MiB, or a whole number with M or G" "$TMP/space.err"
+local_ready
+rm -f "$GUEST_DIR/state/esc-ignored" "$GUEST_DIR/state/retagged" "$GUEST_DIR/state/started"
+check "local-diag: short of room for its snapshot, local-diag stops" 1 \
+    "$(guest eval 'local_flow_stubs; diag_free_mib() { echo 1024; }; cmd_local_diag login-lock-unlock localhost/apex:build')"
+check_true "naming what it needs" grep -qF "local-diag needs" "$GUEST_DIR/stderr"
+check "after the install, whose disk the overlays grow on, and before the guest starts" "installed:" \
+    "$([[ -e $GUEST_DIR/state/retagged ]] && echo installed):$(cat "$GUEST_DIR/state/started" 2>/dev/null)"
 
 # --- local-diag's drives: qcow2 overlays on the disk and the vars, folded back for a journal ---
 QO="$TMP/diag-overlays"

@@ -2543,6 +2543,19 @@ diag_clock() {
         fail "$test" "the guest's clock is still ${skew} s off the host's after one step"
 }
 
+# The disk alone, as qemu-img snapshot -c keeps it once QEMU has exited: no RAM image to find room for.
+diag_keep_disk() {
+    local lost=$1 device out
+    device=$(qmp_query '{"execute":"query-block"}' |
+        jq -r --arg f "$QUALIFY_OUT/local.raw.qcow2" '.[]? | select(.inserted.file == $f) | .device') || device=
+    [[ -n $device ]] || { echo "QEMU names no drive on local.raw.qcow2"; return 1; }
+    out=$(qmp_query "$(jq -cn --arg d "$device" --arg n "$lost" \
+        '{execute: "blockdev-snapshot-internal-sync", arguments: {device: $d, name: $n}}')" 600) || return 1
+    [[ $out == '{}' ]] || { echo "$out"; return 1; }
+}
+
+diag_disk_mib() { du -m -c "$QUALIFY_OUT/local.raw" "$QUALIFY_OUT/local.raw.qcow2" 2>/dev/null | tail -n 1 | cut -f 1; }
+
 # A unit that rebooted the guest wrote to more than this boot: all of it is since the snapshot.
 diag_unit_journal() {
     local name=$1 boot saved='' at=''
@@ -2562,17 +2575,24 @@ diag_keep_journal() {
         return 0
     fi
     if vm_alive; then
-        if ! out=$(hmp "savevm $lost" 600) || [[ -n $out ]]; then warn "$test: savevm $lost failed: ${out:-QMP did not answer}"; fi
+        out=$(diag_keep_disk "$lost") || warn "$test: cannot keep the lost guest's disk as $lost: ${out:-QMP did not answer}"
     else
         qemu-img snapshot -c "$lost" "$QUALIFY_OUT/local.raw.qcow2" || warn "$test: cannot keep the lost guest's disk as $lost"
     fi
     echo "$lost" >>"$QUALIFY_OUT/diag-lost.txt"
 }
 
+# Each snapshot's journal is read off a raw copy, one at a time: at most the disk's data.
 diag_lost_journals() {
-    local lost
+    local lost need free
     [[ -f $QUALIFY_OUT/diag-lost.txt ]] || return 0
     while read -r lost; do
+        need=$(diag_disk_mib) || need=
+        free=$(diag_free_mib) || free=
+        if [[ -z $need || -z $free ]] || ((free < need)); then
+            warn "no room to read the journal of snapshot $lost: its raw copy needs ${need:-?} MiB, QUALIFY_OUT has ${free:-?} MiB free"
+            continue
+        fi
         if ! qemu-img convert -l "snapshot.name=$lost" -O raw "$QUALIFY_OUT/local.raw.qcow2" "$QUALIFY_OUT/$lost.raw" ||
             ! save_disk_journal "$lost"; then
             warn "cannot read the journal of snapshot $lost"
