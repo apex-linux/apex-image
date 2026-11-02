@@ -1695,7 +1695,9 @@ local_flow_stubs() {
     stop_vm() { :; }
     drop_disk() { echo "drop $1" >>"$STATE/disk-calls"; }
     save_disk_journal() { echo "journal $1" >>"$STATE/disk-calls"; }
-    save_journal() { echo "$1" >>"$STATE/journals"; }
+    save_journal() { # the loads before it, and the entries it asked for if not this boot's
+        echo "$1 $(cat "$STATE/loaded" 2>/dev/null | wc -l)${2:+ $2}" >>"$STATE/journals"
+    }
     qemu-img() { echo "qemu-img $*" >>"$STATE/disk-calls"; }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
@@ -2908,8 +2910,27 @@ check_true "naming the skew" grep -qE \
 check "stepped once, not again" 1 "$(wc -l <"$GUEST_DIR/state/clock-steps")"
 local_ready
 rm "$GUEST_DIR/state/esc-ignored"
-check "local-diag: each unit's journal is saved before the next load drops it" "after-login-lock-unlock|after-lock-wrong-password|final" \
+check "local-diag: each unit's journal is saved before the next load drops it" \
+    "after-login-lock-unlock 0|after-lock-wrong-password 1|final 2" \
     "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; paste -sd'|' "$GUEST_DIR/state/journals")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+echo -90 >"$GUEST_DIR/state/load-skew"
+: >"$GUEST_DIR/state/clock-stuck"
+check "local-diag: after a failed reset that kept the guest, the next reset blocks too" \
+    "login-lock-unlock PASS|lock-wrong-password BLOCKED|lock-esc BLOCKED" \
+    "$(guest eval 'local_flow_stubs; cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null; diag_units)"
+check "but keeps the unit's journal once, not again off the loaded snapshot" "after-login-lock-unlock 0|final 2" \
+    "$(paste -sd'|' "$GUEST_DIR/state/journals")"
+local_ready
+rm "$GUEST_DIR/state/esc-ignored"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "local-diag: a unit that rebooted the guest keeps every boot since the snapshot" \
+    "after-login-lock-unlock 0 --since @1000|after-lock-wrong-password 1|final 2" \
+    "$(guest eval 'local_flow_stubs; eval "$(declare -f diag_unit | sed "1s/diag_unit/real_diag_unit/")"
+        diag_unit() { real_diag_unit "$1"; [[ $1 != login-lock-unlock ]] || echo boot-2 >"$STATE/boot-id"; }
+        cmd_local_diag login-lock-unlock lock-wrong-password lock-esc localhost/apex:build' >/dev/null
+        paste -sd'|' "$GUEST_DIR/state/journals")"
 logged_in
 cp -a "$GUEST_DIR/state" "$GUEST_DIR/state.snap"
 printf '%s\n' SESSION_ID=4 SESSION_UID=1000 SESSION_TYPE=wayland DIAG_LOGIN_SINCE=999 "DIAG_SHELL_PID=$(cat "$GUEST_DIR/state/pid")" \

@@ -619,9 +619,9 @@ status_json() { vm_ssh 'bootc status --format=json --format-version=1'; }
 # bootupd creates grubenv at install, so a missing file means boot counting is broken.
 grubenv() { vm_ssh "grub2-editenv $GRUBENV list"; }
 
-save_journal() {
+save_journal() { # NAME [JOURNALCTL MATCH]: this boot's, unless told which entries
     vm_alive || return 0
-    vm_ssh 'journalctl -b --no-pager -o short-monotonic' >"$QUALIFY_OUT/logs/$VM_NAME-$1.journal.txt" 2>/dev/null || true
+    vm_ssh "journalctl ${2:--b} --no-pager -o short-monotonic" >"$QUALIFY_OUT/logs/$VM_NAME-$1.journal.txt" 2>/dev/null || true
     vm_ssh 'systemctl list-units --state=failed --no-pager; systemctl status --no-pager apex-boot-assess.service' \
         >"$QUALIFY_OUT/logs/$VM_NAME-$1.units.txt" 2>&1 || true
 }
@@ -2492,13 +2492,16 @@ diag_space_check() {
 # The post-login guest, RAM and disks, which every unit after the first starts from. Its
 # session is diag.snapshot.state's.
 diag_snapshot_save() {
-    local test=$1 out unit
+    local test=$1 out unit boot at
+    boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id"
+    at=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
     if ! out=$(hmp "savevm $DIAG_SNAPSHOT" 600) || [[ -n $out ]]; then
         for unit in "${DIAG_RUN[@]}"; do DIAG_DETAIL[$unit]="local-diag could not save its post-login snapshot"; done
         diag_table
         fail "$test" "savevm $DIAG_SNAPSHOT: ${out:-QMP did not answer}"
     fi
     cp "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag.snapshot.state"
+    printf '%s %s\n' "$boot" "$at" >"$QUALIFY_OUT/diag.snapshot.boot"
     result "$test" PASS "saved the guest after its first login as $DIAG_SNAPSHOT"
 }
 
@@ -2540,12 +2543,22 @@ diag_clock() {
         fail "$test" "the guest's clock is still ${skew} s off the host's after one step"
 }
 
-# The load drops what PREVIOUS's guest wrote: keep its journal, or, if it stopped answering,
-# its disk as snapshot lost-after-PREVIOUS, whose journal the end of the run reads.
+# A unit that rebooted the guest wrote to more than this boot: all of it is since the snapshot.
+diag_unit_journal() {
+    local name=$1 boot saved='' at=''
+    { read -r saved at <"$QUALIFY_OUT/diag.snapshot.boot"; } 2>/dev/null || :
+    boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || boot=
+    if [[ -z $at || $boot == "$saved" ]]; then save_journal "$name"; else save_journal "$name" "--since @$at"; fi
+}
+
+# The load drops what PREVIOUS's guest wrote: keep its journal, once, or, if it stopped
+# answering, its disk as snapshot lost-after-PREVIOUS, whose journal the end of the run reads.
 diag_keep_journal() {
     local test=$1 previous=$2 lost=lost-after-$2 out
+    ! grep -qxF "$previous" "$QUALIFY_OUT/diag-kept.txt" 2>/dev/null || return 0
+    echo "$previous" >>"$QUALIFY_OUT/diag-kept.txt"
     if vm_alive && vm_answers; then
-        save_journal "after-$previous"
+        diag_unit_journal "after-$previous"
         return 0
     fi
     if vm_alive; then
@@ -2667,7 +2680,7 @@ cmd_local_diag() {
         DIAG_STATUS[$unit]=NOT-RUN
         DIAG_DETAIL[$unit]="local-diag did not reach the login"
     done
-    rm -f "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag-lost.txt"
+    rm -f "$QUALIFY_OUT/diag.state" "$QUALIFY_OUT/diag-lost.txt" "$QUALIFY_OUT/diag-kept.txt" "$QUALIFY_OUT/diag.snapshot.boot"
     diag_table
 
     digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
@@ -2727,7 +2740,7 @@ cmd_local_diag() {
         diag_table
         log "local-diag: $unit ${DIAG_STATUS[$unit]}"
     done
-    save_journal final
+    if vm_alive && vm_answers; then diag_unit_journal final; fi
     stop_vm
     for unit in "${DIAG_RUN[@]}"; do [[ ${DIAG_STATUS[$unit]} == PASS ]] || failed=$((failed + 1)); done
     diag_lost_journals
