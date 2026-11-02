@@ -351,7 +351,7 @@ class Python:
 def python_reads(path, lines, tracked, source_of, seen, run="file", offset=0):
     """What Python LINES (PATH itself, or a piece of PATH from its line OFFSET + 1) reads."""
     where = path if run == "file" else f"the Python at {path}:{offset + 1}"
-    first = next((line.strip() for line in lines if line.strip()), "")
+    first = "\n".join(lines) if run == "file" else next((line.strip() for line in lines if line.strip()), "")
     try:
         tree = ast.parse(source_of(path) if run == "file" else "\n".join(lines), path)
         reads = list(Python(path, lines, tracked, source_of, run, seen).reads(tree))
@@ -363,303 +363,159 @@ def python_reads(path, lines, tracked, source_of, seen, run="file", offset=0):
     return list(dict.fromkeys((number + offset, token) for number, token in reads))
 
 
-class Word:
-    def __init__(self, line):
-        self.chars, self.line, self.quoted, self.dynamic, self.parts = [], line, False, False, 0
-        self.name = None
-
-    @property
-    def value(self):
-        return "".join(self.chars)
-
-
-SEPARATORS = set(";&|()\n")
-BLANKS, COMMENT = re.compile(r"[ \t]+"), re.compile(r"[^\n]*")
-SINGLE, DOUBLE, PLAIN = re.compile(r"[^']*"), re.compile(r'[^"\\$`]+'), re.compile(r"[^\s;&|()<>\\'\"$`]+")
-RESERVED = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "{", "}", "!", "time"}
-PREFIXES = {"exec", "command", "builtin", "nohup", "env", "nice", "timeout", "sudo", "as_root"}
+PROGRAM = r"(?:[\w./-]*/)?python[0-9.]*"
+MENTION = re.compile(rf"(?<![\w.-]){PROGRAM}(?![\w-])")
+RUNS_AT = re.compile(r"(?:^|[;|&({]|\$\()\s*$")
+LOOKS_UP = re.compile(r"(?:\bcommand\s+-v|\btype|\bhash|\bwhich)\s+$")
+FLAGS = r"(?:\s+-[A-Zabd-z]+)*"
+REDIRECTS = r"(?:\s+(?:-[A-Za-z]+|[0-9]*>>?\s*[\w./$\"{}-]+|[0-9]*>&[0-9]+|&>\s*[\w./$\"{}-]+))*"
+BY_NAME = re.compile(rf"{PROGRAM}{FLAGS}\s+-c\s+(?:\"\$\{{?(\w+)\}}?\"|\$\{{?(\w+)\}}?)(?=[\s;|&)]|$)")
+BY_LITERAL = re.compile(rf"{PROGRAM}{FLAGS}\s+-c\s+'")
+BY_HEREDOC = re.compile(rf"{PROGRAM}{REDIRECTS}\s+-(?:\s+[^<\n]*?)?\s*<<\s*(['\"])(\w+)\1")
+BY_SCRIPT = re.compile(rf"{PROGRAM}{FLAGS}\s+(?:\"?\$\{{?(?:APEX_ROOT|checkout|ROOT|root)\}}?/[\w./-]+\"?|[\w./-]+\.py)(?=[\s;|&)]|$)")
+BLOCK = re.compile(r"^[ \t]*(?:(?:readonly|local|export|declare(?:[ \t]+-\w+)*)[ \t]+)?(\w+)='", re.M)
+SOURCES = re.compile(r"^[ \t]*(?:\.|source)[ \t]+\S", re.M)
+LARGEST = 4 << 20
 
 
-class Shell:
-    """Commands of a shell script: words with quotes removed, heredocs and here-strings, $( ) inside."""
+class Script:
+    """A shell script's NAME='...' blocks, read the narrow way: one quote to the next, '\\'' unread."""
 
     def __init__(self, source):
-        self.s, self.p, self.line, self.commands = source, 0, 1, []
-
-    def peek(self, n=0):
-        return self.s[self.p + n] if self.p + n < len(self.s) else ""
-
-    def take(self):
-        c = self.peek()
-        self.p += 1
-        self.line += c == "\n"
-        return c
-
-    def run(self, pattern):
-        """The text PATTERN matches here, taken whole."""
-        m = pattern.match(self.s, self.p)
-        if not m or not m.group():
-            return ""
-        self.p = m.end()
-        self.line += m.group().count("\n")
-        return m.group()
-
-    def parse(self, until=None):
-        """Commands up to UNTIL (")" or "`" ending a substitution), or the end."""
-        command, heredocs, depth = None, [], 0
-
-        def finish():
-            nonlocal command
-            if command and command["words"]:
-                self.commands.append(command)
-            command = None
-
-        def new():
-            nonlocal command
-            if command is None:
-                command = {"words": [], "heredocs": [], "herestring": None}
-            return command
-
-        while self.p < len(self.s):
-            c = self.peek()
-            if until and c == until and depth == 0:
-                self.take()
+        self.source, self.blocks, self.starts, self.spans = source, {}, set(), []
+        for m in BLOCK.finditer(source):
+            if any(a <= m.start() < b for a, b in self.spans):
+                continue
+            end = source.find("'", m.end())
+            if end < 0:
                 break
-            if c == "\\" and self.peek(1) == "\n":
-                self.take(), self.take()
-            elif c in " \t":
-                self.run(BLANKS)
-            elif c == "#":
-                self.run(COMMENT)
-            elif c == "\n":
-                self.take()
-                finish()
-                for heredoc in heredocs:
-                    self.heredoc_body(heredoc)
-                heredocs = []
-            elif c in SEPARATORS:
-                self.take()
-                if c == "(":
-                    depth += 1
-                elif c == ")":
-                    depth = max(0, depth - 1)
-                finish()
-            elif c in "<>":
-                op = self.take()
-                while self.peek() in "<>&-":
-                    op += self.take()
-                while self.peek() in " \t":
-                    self.take()
-                target = self.word() if self.peek() not in SEPARATORS | {""} else None
-                cmd = new()
-                if op.startswith("<<<") and target:
-                    cmd["herestring"] = target
-                elif op.startswith("<<") and target:
-                    heredoc = {"delim": target.value, "quoted": target.quoted, "strip": op.endswith("-"), "body": None}
-                    cmd["heredocs"].append(heredoc)
-                    heredocs.append(heredoc)
-            else:
-                new()["words"].append(self.word())
-        finish()
+            self.spans.append((m.end(), end))
+            if not source.startswith("\\'", end + 1):
+                self.starts.add(m.start(1))
+                line = source.count("\n", 0, m.end()) + 1
+                self.blocks.setdefault(m[1], []).append((line, source[m.end():end]))
 
-    def heredoc_body(self, heredoc):
-        body, start = [], self.line
-        while self.p < len(self.s):
-            end = self.s.find("\n", self.p)
-            end = len(self.s) if end < 0 else end
-            raw = self.s[self.p:end]
-            self.p, self.line = min(end + 1, len(self.s)), self.line + (end < len(self.s))
-            line = raw.lstrip("\t") if heredoc["strip"] else raw
-            if line == heredoc["delim"]:
-                break
-            body.append(line)
-        heredoc["body"], heredoc["line"] = body, start
-
-    def substitution(self, word, until):
-        word.dynamic = True
-        self.parse(until)
-
-    def word(self):
-        word = Word(self.line)
-        start = self.p
-        while self.p < len(self.s):
-            c = self.peek()
-            if c in " \t\n" or c in SEPARATORS or c in "<>" and word.chars:
-                break
-            if c == "\\":
-                self.take()
-                nxt = self.take()
-                if nxt != "\n":
-                    word.chars.append(nxt)
-            elif c == "'":
-                self.take()
-                word.quoted = True
-                word.chars.append(self.run(SINGLE))
-                self.take()
-            elif c == '"':
-                self.take()
-                word.quoted = True
-                while self.p < len(self.s) and self.peek() != '"':
-                    d = self.peek()
-                    if d == "\\" and self.peek(1) in '$`"\\\n':
-                        self.take()
-                        nxt = self.take()
-                        if nxt != "\n":
-                            word.chars.append(nxt)
-                    elif d == "$" and self.peek(1) == "(":
-                        self.take(), self.take()
-                        self.substitution(word, ")")
-                    elif d == "`":
-                        self.take()
-                        self.substitution(word, "`")
-                    elif d == "$":
-                        self.expansion(word)
-                    else:
-                        word.chars.append(self.run(DOUBLE) or self.take())
-                self.take()
-            elif c == "$" and self.peek(1) == "(":
-                self.take(), self.take()
-                self.substitution(word, ")")
-            elif c == "`":
-                self.take()
-                self.substitution(word, "`")
-            elif c == "$":
-                self.expansion(word)
-            else:
-                word.chars.append(self.run(PLAIN) or self.take())
-        raw = self.s[start:self.p]
-        m = re.fullmatch(r"""(["']?)\$\{?(\w+)\}?\1""", raw)
-        if m and m[1] != "'":
-            word.name = m[2]
-        return word
-
-    def expansion(self, word):
-        word.dynamic = True
-        word.chars.append(self.take())
-        if self.peek() == "{":
-            while self.p < len(self.s) and self.peek() != "}":
-                word.chars.append(self.take())
-            word.chars.append(self.take())
-        else:
-            while re.match(r"\w", self.peek() or " "):
-                word.chars.append(self.take())
+    def readable(self, name):
+        """NAME is set only by blocks the walk read: no NAME+=, NAME="...", NAME=$(...) or one inside a line."""
+        assign = rf"(?<![\w$])(?:(?:local|readonly|export|declare(?:\s+-\w+)*)\s+)?(?P<n>{re.escape(name)})(\+?)="
+        return all(not m[2] and m.start("n") in self.starts for m in re.finditer(assign, self.source))
 
 
-def shell_commands(source):
-    shell = Shell(source)
-    shell.parse()
-    return shell.commands
-
-
-ASSIGN = re.compile(r"([A-Za-z_]\w*)=")
-
-
-def assignments(commands):
-    """(NAME, line, value word) for each NAME=... a command makes, readonly and local ones too."""
-    for command in commands:
-        words = command["words"]
-        if words and not words[0].quoted and words[0].value in ("readonly", "local", "declare", "typeset", "export"):
-            words = [w for w in words[1:] if not w.value.startswith("-")]
-        for word in words:
-            m = ASSIGN.match(word.value)
-            if not m:
-                break
-            yield m[1], word.line, word
-
-
-PYTHON = re.compile(r"(?:\S*/)?python[0-9.]*")
-
-
-def python_command(words):
-    """The words after the python a command runs, past env, timeout and the like, or None."""
-    while words and not words[0].quoted and (words[0].value in RESERVED or ASSIGN.match(words[0].value)):
-        words = words[1:]
-    while words and not words[0].quoted and words[0].value in PREFIXES:
-        words = words[1:]
-        while words and not words[0].quoted and (words[0].value.startswith("-") or ASSIGN.match(words[0].value)
-                                                  or re.fullmatch(r"[0-9.]+[smhd]?", words[0].value)):
-            words = words[1:]
-    if words and not words[0].quoted and not words[0].dynamic and PYTHON.fullmatch(words[0].value):
-        return words[0], words[1:]
-    return None
-
-
-def python_mode(args):
-    """How python's ARGS give it code: ("c", word), ("stdin", None), ("info", None) or ("script", None)."""
-    i = 0
-    while i < len(args):
-        word = args[i]
-        value = word.value
-        if word.quoted or word.dynamic or not value.startswith("-") or value == "-":
-            return ("stdin", None) if value == "-" and not word.quoted else ("script", None)
-        if value.startswith("--"):
-            if value in ("--version", "--help"):
-                return "info", None
+def where_in(line, col):
+    """"comment" or "quoted" if column COL of LINE is in one, by a one-line scan, else None."""
+    quote, i = None, 0
+    while i < col:
+        c = line[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c == "\\":
             i += 1
-            continue
-        flags = value[1:]
-        for j, flag in enumerate(flags):
-            if flag == "c":
-                rest = flags[j + 1:]
-                return ("c", None) if rest else ("c", args[i + 1] if i + 1 < len(args) else None)
-            if flag == "m":
-                return "script", None
-            if flag in "Vh?":
-                return "info", None
-            if flag in "WXQ":
-                i += 0 if flags[j + 1:] else 1
-                break
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or line[i - 1] in " \t;|&(){}"):
+            return "comment"
         i += 1
-    return None, None
+    return "quoted" if quote else None
 
 
-def embedded_python(path, source, sourced):
-    """Each piece of Python PATH's SOURCE runs: ("code", run, first line, lines), or ("lost", line) for one
-    whose code the walk cannot get. SOURCED(PATH, line) gives the assignments of the scripts PATH sources."""
-    commands = shell_commands(source)
-    defined = sorted(((line, name, word) for name, line, word in assignments(commands)), key=lambda d: d[0])
-    for command in commands:
-        found = python_command(command["words"])
-        if not found:
+def command_text(lines, number):
+    """The whole command on line NUMBER, its continuation lines too, and its last line."""
+    first = number
+    while first > 1 and lines[first - 2].endswith("\\"):
+        first -= 1
+    last = number
+    while last < len(lines) and lines[last - 1].endswith("\\"):
+        last += 1
+    return "\n".join(line.strip() for line in lines[first - 1:last]), last
+
+
+def shell_python(repo, path, lines, keys):
+    """What the Python a shell script runs reads, and a __python__@ use for each run the walk cannot read."""
+    source = "\n".join(lines)
+    if not MENTION.search(source):
+        return []
+    if len(source) > LARGEST:
+        return [(1, UNRESOLVED + line_key("__python__", source, keys) + UNRESOLVED + f"{path}, over {LARGEST >> 20} MiB")]
+    try:
+        return list(python_runs(repo, path, source, lines, keys))
+    except Exception as e:  # noqa: BLE001 - anything unforeseen fails closed, naming the script
+        said = f"{path} ({type(e).__name__}: {e})"
+        return [(1, UNRESOLVED + line_key("__python__", source, keys) + UNRESOLVED + said)]
+
+
+def python_runs(repo, path, source, lines, keys):
+    script, sourced = Script(source), []
+    for m in SOURCES.finditer(source):
+        number = source.count("\n", 0, m.start()) + 1
+        for _, ref in references(path, [(number, lines[number - 1])]):
+            if ref in repo.tracked and ref != path:
+                sourced.append(Script(repo.source(ref).decode("utf-8", "replace")))
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line) + 1)
+    done_to, lost = 0, set()
+    for m in MENTION.finditer(source):
+        at = m.start()
+        if at < done_to or any(a <= at < b for a, b in script.spans):
             continue
-        program, args = found
-        mode, code = python_mode(args)
-        if mode in ("info", "script"):
+        number = source.count("\n", 0, at) + 1
+        line, col = lines[number - 1], at - starts[number - 1]
+        where = where_in(line, col)
+        if where == "comment" or where is None and LOOKS_UP.search(line[:col]):
             continue
-        if mode != "c":
-            if command["herestring"]:
-                code = command["herestring"]
-            elif command["heredocs"]:
-                heredoc = command["heredocs"][-1]
-                body = heredoc["body"] or []
-                if not heredoc["quoted"] and any("$" in b or "`" in b for b in body):
-                    yield "lost", program.line
-                else:
-                    yield "code", "stdin", heredoc["line"], body
-                continue
-        if code is None:
-            yield "lost", program.line
+        command, last = command_text(lines, number)
+        piece = None
+        if where is None and RUNS_AT.search(line[:col]):
+            piece = python_piece(source, source[at:starts[last] - 1], at, number, script, sourced, lines, starts)
+        if piece is None:
+            if number not in lost:
+                lost.add(number)
+                yield number, UNRESOLVED + line_key("__python__", command, keys) + UNRESOLVED + command
             continue
-        start = None
-        if code.name and code.dynamic:
-            # A function runs after the whole script is read, so a later global is in sight too.
-            before = [d for d in defined if d[1] == code.name and d[0] < program.line]
-            after = [d for d in defined if d[1] == code.name and d[0] >= program.line]
-            if before or after:
-                code = (before[-1] if before else after[0])[2]
-            else:
-                outside = [w for name, w in sourced(path, program.line) if name == code.name]
-                code, start = (outside[-1], program.line) if outside else (None, None)
-            if code is None:
-                yield "lost", program.line
-                continue
-            value = ASSIGN.sub("", code.value, count=1)
-        else:
-            value = code.value
-        if code.dynamic:
-            yield "lost", program.line
+        run, first, code, done_to = piece
+        if run == "script":
             continue
-        yield "code", "c" if mode == "c" else "stdin", start or code.line, value.split("\n")
+        yield from python_reads(path, code, repo.tracked, repo.source, keys, run=run, offset=first - 1)
+
+
+def python_piece(source, rest, at, number, script, sourced, lines, starts):
+    """(run, first line, code lines, end offset) for the python run at offset AT, or None if it is not one of
+    the forms the walk reads: a repository script, which the line walk follows, -c "$NAME" with NAME='...',
+    -c '...', or - with a <<'TERM' heredoc."""
+    m = BY_SCRIPT.match(rest)
+    if m:
+        return "script", number, [], at + m.end()
+    m = BY_NAME.match(rest)
+    if m:
+        name = m[1] or m[2]
+        if name in script.blocks:
+            if not script.readable(name):
+                return None
+            defs = script.blocks[name]
+            before = [d for d in defs if d[0] < number]
+            first, code = before[-1] if before else defs[0]
+            return "c", first, code.split("\n"), at + m.end()
+        theirs = [s for s in sourced if name in s.blocks]
+        if theirs and script.readable(name) and theirs[-1].readable(name):
+            return "c", number, theirs[-1].blocks[name][-1][1].split("\n"), at + m.end()
+        return None
+    m = BY_LITERAL.match(rest)
+    if m:
+        opened = at + m.end()
+        end = source.find("'", opened)
+        if end < 0 or source.startswith("\\'", end + 1):
+            return None
+        return "c", number, source[opened:end].split("\n"), end + 1
+    m = BY_HEREDOC.match(rest)
+    if m:
+        first = source.count("\n", 0, at) + 2
+        for i in range(first - 1, len(lines)):
+            if lines[i] == m[2]:
+                return "stdin", first, lines[first - 1:i], starts[i + 1] if i + 1 < len(starts) else len(source)
+    return None
 
 
 TEMPLATE = re.compile(r"\$\{[^}]*\}|\$\w+|\*|\[[^\]]*\]|\{[^}]*\}")
@@ -686,41 +542,6 @@ def unread(mark, key, said, reader):
         return (f"cannot tell what Python {said!r} runs: give it as -c '...', as -c \"$NAME\" with NAME='...'"
                 f" set before it here or in a script this one sources, or as a heredoc; {excuse}")
     return f"cannot tell what {said!r} reads: join a string to __file__ on that line, {excuse}"
-
-
-def sourced_assignments(repo, path, seen=None):
-    """(NAME, word) for each assignment in the scripts PATH sources, theirs before PATH's own."""
-    seen = set() if seen is None else seen
-    if path in seen or path not in repo.tracked:
-        return []
-    seen.add(path)
-    source = repo.source(path).decode("utf-8", "replace")
-    lines, found = LINES.split(source), []
-    commands = shell_commands(source)
-    for command in commands:
-        words = command["words"]
-        if words and not words[0].quoted and words[0].value in (".", "source"):
-            for _, ref in references(path, [(words[0].line, lines[words[0].line - 1])]):
-                if ref in repo.tracked:
-                    found += sourced_assignments(repo, ref, seen)
-                    found += [(name, word) for name, _, word in assignments(shell_commands(repo.source(ref).decode("utf-8", "replace")))]
-    return found
-
-
-def shell_python(repo, path, lines, keys):
-    """What the Python a shell script runs reads, and a use for each piece whose code the walk cannot get."""
-    reads = []
-    if not re.search(r"\bpython", "\n".join(lines)):
-        return reads
-    sourced = lambda script, _line: sourced_assignments(repo, script)  # noqa: E731
-    for piece in embedded_python(path, "\n".join(lines), sourced):
-        if piece[0] == "lost":
-            said = lines[piece[1] - 1].strip()
-            reads.append((piece[1], UNRESOLVED + line_key("__python__", said, keys) + UNRESOLVED + said))
-        else:
-            _, run, start, code = piece
-            reads += python_reads(path, code, repo.tracked, repo.source, keys, run=run, offset=start - 1)
-    return reads
 
 
 def walk(repo, queue, covered, allowed, covers, under, problems):
