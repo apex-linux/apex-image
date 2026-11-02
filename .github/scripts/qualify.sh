@@ -515,6 +515,7 @@ start_vm() {
         -pidfile "$QUALIFY_OUT/$name.pid" -daemonize "$@"
     python3 -c "$QMP_EVENTS" "$QUALIFY_OUT/qmp/$name.events.sock" "$QUALIFY_OUT/logs/$log.qmp-events" \
         </dev/null >/dev/null 2>&1 &
+    assert_display "$log-display"
     log "started VM $name (pid $(cat "$QUALIFY_OUT/$name.pid"))${*:+ with $*}; console: $VM_SERIAL"
 }
 
@@ -576,7 +577,14 @@ vm_ssh() {
         root@127.0.0.1 -- "$@"
 }
 
+# wait_ssh and vm_reboot check each boot's DRM card once ssh answers (#127); a restart that
+# waits with vm_answers instead is not checked.
 wait_ssh() {
+    ssh_up "$@"
+    assert_guest_display "$VM_NAME-guest-display"
+}
+
+ssh_up() {
     local exit_hint=${1:-} deadline=$((SECONDS + QUALIFY_BOOT_TIMEOUT))
     while ((SECONDS < deadline)); do
         if ! vm_alive; then
@@ -597,6 +605,11 @@ wait_ssh() {
 }
 
 vm_reboot() {
+    reboot_wait
+    assert_guest_display "$VM_NAME-guest-display"
+}
+
+reboot_wait() {
     local before after deadline from
     before=$(vm_ssh cat /proc/sys/kernel/random/boot_id)
     from=$(serial_lines)
@@ -1513,6 +1526,62 @@ display_power() {
 # shellcheck disable=SC2016 # expanded by the guest's shell
 readonly DRM_OUTPUTS='for c in /sys/class/drm/card*-*; do [ "$(cat "$c/status")" = connected ] && echo "${c#*/card*-} $(cat "$c/dpms")"; done; true'
 
+# shellcheck disable=SC2016 # expanded by the guest's shell
+readonly DRM_DRIVERS='for d in /sys/class/drm/card*/device/driver; do [ -e "$d" ] && readlink "$d"; done; true'
+
+# QEMU's display devices from its device tree, which lists them all from the start (query-pci
+# skips a bridge's until the firmware numbers it): "vendor:device class type" or "non-PCI type".
+readonly VM_DISPLAYS='
+import re, sys
+CLASSES = {"VGA controller": "0300", "XGA controller": "0301", "3D controller": "0302", "Display controller": "0380"}
+drivers = re.compile(sys.argv[2])
+devs = []
+for line in sys.argv[1].splitlines():
+    indent = len(line) - len(line.lstrip())
+    m = re.match(r"\s*dev: ([^,]+),", line)
+    if m:
+        parent = next((i for i in reversed(range(len(devs))) if devs[i]["indent"] < indent), None)
+        devs.append({"indent": indent, "type": m.group(1), "parent": parent, "class": None})
+    m = re.match(r"\s*class (.*), addr [0-9a-f:.]+, pci id ([0-9a-f]{4}:[0-9a-f]{4})", line)
+    if m:
+        dev = next(d for d in reversed(devs) if d["indent"] == indent - 2)
+        desc = m.group(1)
+        dev["class"] = CLASSES.get(desc) or (desc[6:] if desc.startswith("Class ") else "pci")
+        dev["ids"] = m.group(2)
+def display(d):
+    return (d["class"] or "").startswith("03")
+def under_display(d):
+    while d["parent"] is not None:
+        d = devs[d["parent"]]
+        if display(d):
+            return True
+    return False
+for d in devs:
+    if display(d):
+        print(d["ids"], d["class"], d["type"])
+    elif d["class"] is None and drivers.fullmatch(d["type"]) and not under_display(d):
+        print("non-PCI", d["type"])
+'
+
+# G4's guarantee of std VGA alone, from QEMU itself; contracts.sh's g4_display is only a lint.
+assert_display() {
+    local test=$1 qtree displays
+    qtree=$(hmp 'info qtree') || qtree=
+    [[ -n $qtree ]] || fail "$test" "cannot read QEMU's device tree over QMP ($QMP_SOCKET)"
+    displays=$(python3 -c "$VM_DISPLAYS" "$qtree" "$DISPLAY_DRIVERS_RE") || fail "$test" "cannot read QEMU's device tree"
+    [[ $displays == '1234:1111 0300 VGA' ]] && return 0
+    fail "$test" "QEMU built display device(s) '$(paste -sd, - <<<"$displays")', expected std VGA (1234:1111, class 0300) alone: the virtio GPU's control queue stalls after an s2idle resume (apex-image#127)"
+}
+
+# One DRM card, on bochs-drm: simpledrm has handed over, and nothing else drives a display.
+assert_guest_display() {
+    local test=$1 drivers
+    drivers=$(vm_ssh "$DRM_DRIVERS" | sed 's#.*/##; s#^virtio-pci$#virtio-pci (a virtio GPU)#') ||
+        fail "$test" "cannot read the guest's DRM drivers"
+    [[ $drivers == bochs-drm ]] ||
+        fail "$test" "the guest's DRM cards run '$(paste -sd, - <<<"$drivers")', expected one, on bochs-drm (std VGA): #127's hang was a virtio GPU"
+}
+
 # Mutter's PowerSaveMode and the DPMS state of each connected DRM connector, on one line.
 display_state() {
     local mode outputs
@@ -1662,7 +1731,7 @@ s2idle_gap() {
 suspend_environment() {
     local test=$1 qemu nested='' f cpu kernel mem_sleep line
     qemu=$(rpm -qf "$(command -v qemu-system-x86_64)" 2>/dev/null || qemu-system-x86_64 --version 2>/dev/null | head -n 1) || qemu=
-    for f in /sys/module/kvm_amd/parameters/nested /sys/module/kvm_intel/parameters/nested; do
+    for f in "${QUALIFY_SYSFS:-/sys}"/module/kvm_{amd,intel}/parameters/nested; do
         if [[ -r $f ]]; then nested=$(<"$f") && break; fi
     done
     cpu=$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -n 1) || cpu=

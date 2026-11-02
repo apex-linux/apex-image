@@ -279,6 +279,17 @@ check_false "health failure with no checks" health_failure_has "$D1" forced-red 
 # --- qualify.sh: counting the armed boots' self-reboots (fake QEMU and ssh) --------------
 Q="$TMP/qualify"
 mkdir -p "$Q/bin" "$Q/out/logs"
+# start_vm's display check reads QEMU 8.2.2's own info qtree (qmp-fixtures/; G4 runs 11.1.2-1.fc45).
+QMP_FAKE=$TMP/qmp-fake.sh
+cat >"$QMP_FAKE" <<'EOF'
+qmp_query() {
+    local f="$APEX_ROOT/.github/scripts/qmp-fixtures/${FAKE_DISPLAYS:-vga}"
+    case $1 in
+        *'info qtree'*) jq -Rs . "$f.qtree.txt" ;;
+        *) return 1 ;;
+    esac
+}
+EOF
 cat >"$Q/bin/qemu-system-x86_64" <<'EOF'
 #!/usr/bin/env bash
 # Fake QEMU: records its arguments and "boots" the next line of $FAKE_QEMU_PLAN. reboot:
@@ -323,7 +334,7 @@ run_armed_attempts() {
     PATH="$Q/bin:$PATH" QUALIFY_OUT="$Q/out" QUALIFY_POLL=0.1 QUALIFY_ATTEMPT_TIMEOUT="$attempt_timeout" \
         OVMF_CODE="$Q/code.fd" OVMF_VARS="$Q/vars.fd" GITHUB_ACTIONS='' \
         FAKE_QEMU_LOG="$Q/qemu.log" FAKE_QEMU_PLAN="$Q/plan" FAKE_SSH_LOG="$Q/ssh.log" FAKE_LUKS=${FAKE_LUKS:-} \
-        bash -c '. "$1"; require_kvm() { :; }; fake=$2
+        QMP_FAKE="$QMP_FAKE" bash -c '. "$1"; . "$QMP_FAKE"; require_kvm() { :; }; fake=$2
             if [[ -n $FAKE_LUKS ]]; then
                 LUKS_PASSPHRASE=x
                 luks_unlock() { printf "%s %s %s\n" "$1" "$2" "${3:-}" >>"$fake/unlock.log"; }
@@ -2023,14 +2034,19 @@ pkexec_typed() {
     if [[ -e $STATE/wrong-ends-pkexec ]]; then echo 127 >"$STATE/pkexec.rc"; rm -f "$STATE/pkexec-running"; fi
     if [[ -e $STATE/no-retry ]]; then echo 0 >"$STATE/polkit"; fi
 }
-qmp_query() {
+qmp_query() { # QEMU 8.2.2's info qtree (qmp-fixtures/) for the display devices of $STATE/displays
+    local fixture
     printf '%s\n' "$1" >>"$STATE/qmp"
-    if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi
+    fixture="$APEX_ROOT/.github/scripts/qmp-fixtures/$(cat "$STATE/displays" 2>/dev/null || echo vga)"
+    case $1 in
+        *'info qtree'*) jq -Rs . "$fixture.qtree.txt" ;;
+        *) if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi ;;
+    esac
 }
-wait_ssh() { :; }
+ssh_up() { :; }
 vm_alive() { [[ ! -e $STATE/vm-dead ]]; }
 vm_answers() { [[ ! -e $STATE/no-resume && ! -e $STATE/unreachable ]]; }
-vm_reboot() {
+reboot_wait() {
     : >"$STATE/journal"
     : >"$STATE/syslog"
     rm -f "$STATE/session" "$STATE/asking" "$STATE/manager-active"
@@ -2236,7 +2252,10 @@ vm_ssh() {
         "grub2-editenv /boot/grub2/grubenv list") echo apex_ok=0 ;;
         *"org.gnome.ScreenSaver.GetActive"*) printf '(%s,)\n' "$(from active)" ;;
         "pgrep -u 1000 -x gnome-shell") from pid ;;
-        "date +%s") echo 1000 ;;
+        "date +%s")
+            n=$(from clock)
+            echo "${n:-1000}"
+            [[ ! -e $STATE/clock-advances ]] || echo $((${n:-1000} + 5)) >"$STATE/clock" ;;
         "date +%s.%N") awk -v n="$(date +%s.%N)" -v s="$(from clock-skew)" 'BEGIN { printf "%.3f\n", n + s }' ;;
         "date -s @\$(awk -v n=\$(date +%s.%N) -v s="*" 'BEGIN { printf \"%.9f\", n - s }')")
             s=${cmd#*-v s=}
@@ -2261,15 +2280,21 @@ vm_ssh() {
         "journalctl -b _UID=1000 --since @999 -o cat --no-pager") from journal ;;
         "journalctl -k -b --since @999 -o cat --no-pager" | "journalctl -k -b --since @999 -o short-monotonic --no-pager") from kernel ;;
         "journalctl -k -b --since @999 -o json --output-fields=MESSAGE,_SOURCE_BOOTTIME_TIMESTAMP,_SOURCE_MONOTONIC_TIMESTAMP --no-pager") from kmsg ;;
-        "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") echo "-- cursor: $(from journal | wc -l)" ;;
+        "journalctl -b _UID=1000 -n 1 -o cat --no-pager --show-cursor") [[ -e $STATE/no-cursor ]] || echo "-- cursor: $(from journal | wc -l)" ;;
         "journalctl -b _UID=1000 --after-cursor="*)
             c=${cmd#*--after-cursor=\'}
             from journal | tail -n "+$((${c%%\'*} + 1))" ;;
         "journalctl -b --since @999 -o cat --no-pager --grep 'authentication failure'") from syslog | grep . ;;
         *"DisplayConfig PowerSaveMode") n=$(from power-save); echo "i ${n:-0}" ;;
+        "$DRM_DRIVERS") # a symlink into the bus's driver directory, per card
+            if [[ -e $STATE/drm-drivers ]]; then from drm-drivers; else echo ../../../bus/pci/drivers/bochs-drm; fi ;;
         "$DRM_OUTPUTS")
             if [[ -e $STATE/display-off ]]; then echo 'Virtual-1 Off'; elif [[ -e $STATE/drm-outputs ]]; then from drm-outputs; else echo 'Virtual-1 On'; fi ;;
-        "journalctl -b --since @999 -o cat --no-pager") printf 'gnome-shell[1234]: Screen blanked\n'; from drm-errors ;;
+        "journalctl -b --since @"*" -o cat --no-pager")
+            c=${cmd#*--since }
+            echo "${c%% *}" >"$STATE/drm-since"
+            printf 'gnome-shell[1234]: Screen blanked\n'
+            from drm-errors ;;
         *"PowerSaveMode i 3")
             echo 3 >"$STATE/power-save"
             : >"$STATE/display-off"
@@ -2331,7 +2356,12 @@ vm_ssh() {
             conversations 0 ;;
         "systemctl -q is-active user@1000.service") [[ -e $STATE/manager-active ]] ;;
         "id -u $TEST_USER") echo 1000 ;;
-        "cat /proc/sys/kernel/random/boot_id") n=$(from boot-id); echo "${n:-boot-1}" ;;
+        "cat /proc/sys/kernel/random/boot_id")
+            [[ ! -e $STATE/boot-id-unreadable ]] || return 1
+            [[ ! -e $STATE/woken-boot-unreadable || ! -e $STATE/boot-id-read ]] || return 1
+            : >"$STATE/boot-id-read"
+            n=$(from boot-id)
+            echo "${n:-boot-1}" ;;
         "uname -r") echo 7.2.11-200.fc45.x86_64 ;;
         "cat /sys/power/mem_sleep") echo 's2idle [deep]' ;;
         "echo N >/sys/module/printk/parameters/console_suspend;"*) : >"$STATE/pm-debug" ;;
@@ -2774,6 +2804,22 @@ check "blank-wake: a second connected output still off fails" 1 "$(guest lock_ma
 display_fails second-output 'PowerSaveMode 0; outputs Virtual-1 On,Virtual-2 Off; DRM and atomic errors since the blank: none'
 lock_matrix_fails psm-stays-3 local-lock-blank-wake
 display_fails psm-stays-3 'PowerSaveMode 3; outputs Virtual-1 On; DRM and atomic errors since the blank: none'
+display_state_fails() { # NAME OUTPUTS: with these connected outputs after PowerSaveMode 0, blank-wake fails naming them
+    apex_locked_in
+    printf '%s' "$2" >"$GUEST_DIR/state/drm-outputs"
+    check "blank-wake: $1 fails" 1 "$(guest lock_matrix local 1000)"
+    display_fails "$1" "PowerSaveMode 0; outputs $3; DRM and atomic errors since the blank: none"
+}
+display_state_fails 'no connected output' '' none
+display_state_fails 'a second output in standby' $'Virtual-1 On\nVirtual-2 Standby\n' 'Virtual-1 On,Virtual-2 Standby'
+display_state_fails 'a second output suspended' $'Virtual-1 On\nVirtual-2 Suspend\n' 'Virtual-1 On,Virtual-2 Suspend'
+apex_locked_in
+: >"$GUEST_DIR/state/display-stays-off"
+: >"$GUEST_DIR/state/clock-advances"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "blank-wake alone, on a guest clock that moves on" 1 \
+    "$(guest eval 'wait_session t user apexqa; matrix_blank_wake local "$(shell_pid 1000)" "$(password_conversations)"')"
+check "the DRM errors are read from the blank on, not from the row's start" @1004 "$(cat "$GUEST_DIR/state/drm-since")"
 apex_locked_in
 : >"$GUEST_DIR/state/display-stays-off"
 for i in $(seq 2000); do echo "kernel: [drm] *ERROR* virtio_gpu response 0x1203 on fence $i"; done >"$GUEST_DIR/state/drm-errors"
@@ -2788,8 +2834,10 @@ for c in card0-Virtual-1:connected:On card0-Virtual-2:disconnected:Off card0-HDM
 done
 mkdir -p "$DRMFS/card0"
 # shellcheck disable=SC2016 # expanded by qualify.sh's shell
+DRM_FAKE=$(qualify_fn eval 'echo "$DRM_OUTPUTS"' | sed "s#/sys/class/drm#$DRMFS#")
 check "DRM_OUTPUTS: each connected connector with its DPMS, none disconnected" "HDMI-A-1 Off|Virtual-1 On" \
-    "$(sh -c "$(qualify_fn eval 'echo "$DRM_OUTPUTS"' | sed "s#/sys/class/drm#$DRMFS#")" | paste -sd'|')"
+    "$(sh -c "$DRM_FAKE" | paste -sd'|')"
+check "and exits 0 though the last connector is disconnected: vm_ssh's status is the read's" 0 "$(rc_of sh -c "$DRM_FAKE")"
 # The lock's blank and the nudge's wake log both lines before the test blanks the screen.
 lock_logged_both() {
     apex_locked_in
@@ -2846,6 +2894,67 @@ check "the journal tap and the heartbeat ran on ttyS0, and stopped after the row
     "$(paste -sd' ' "$GUEST_DIR/state/taps"):$([[ -e $GUEST_DIR/state/taps-stopped ]] && echo stopped)"
 check_true "and the environment line names the guest's kernel and sleep state" \
     grep -q 'guest kernel 7.2.11-200.fc45.x86_64; .*guest mem_sleep s2idle \[deep\]' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+apex_locked_in
+mkdir -p "$GUEST_DIR/sysfs/module/kvm_intel/parameters"
+echo Y >"$GUEST_DIR/sysfs/module/kvm_intel/parameters/nested"
+QUALIFY_SYSFS="$GUEST_DIR/sysfs" guest lock_matrix local 1000 >/dev/null
+check_true "and the host's nested KVM, from whichever vendor's module is loaded" grep -q '; nested Y;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+apex_locked_in
+rm -rf "$GUEST_DIR/sysfs" "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+mkdir -p "$GUEST_DIR/sysfs/module/kvm_amd/parameters"
+echo 1 >"$GUEST_DIR/sysfs/module/kvm_amd/parameters/nested"
+check "an AMD host's lock matrix runs" 0 "$(QUALIFY_SYSFS="$GUEST_DIR/sysfs" guest lock_matrix local 1000)"
+check_true "and its line reads kvm_amd's nested" grep -q '; nested 1;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+# G4's display, from QEMU (its 8.2.2 device trees in qmp-fixtures/) and from the guest once ssh answers.
+display_rc() { echo "$1" >"$GUEST_DIR/state/displays"; guest assert_display t-display; }
+check "display: QEMU's std VGA alone passes" 0 "$(display_rc vga)"
+check "display: VGA plus a virtio-gpu fails" 1 "$(display_rc vga-virtio)"
+check_true "naming each display device by vendor:device, class and QOM type" grep -qF \
+    "| t-display | FAIL | QEMU built display device(s) '1af4:1050 0380 virtio-gpu-pci,1234:1111 0300 VGA', expected std VGA" "$GUEST_DIR/out/results.md"
+check "display: no display device fails" 1 "$(display_rc none)"
+check "display: bochs-display, std VGA's ids but the display class, fails" 1 "$(display_rc bochs)"
+check_true "named as such" grep -qF "QEMU built display device(s) '1234:1111 0380 bochs-display'" "$GUEST_DIR/out/results.md"
+check "display: another VGA-class device fails" 1 "$(display_rc cirrus)"
+check_true "named by its ids" grep -qF "QEMU built display device(s) '1013:00b8 0300 cirrus-vga'" "$GUEST_DIR/out/results.md"
+display_named() { # FIXTURE NAMES: a second display QEMU 8.2.2 built beside VGA fails, named
+    check "display: $1 fails" 1 "$(display_rc "$1")"
+    check_true "$1: named as '$2'" grep -qF "QEMU built display device(s) '$2'" "$GUEST_DIR/out/results.md"
+}
+display_named rp-secondary '1234:1111 0380 secondary-vga,1234:1111 0300 VGA'
+display_named rp-bochs '1234:1111 0380 bochs-display,1234:1111 0300 VGA'
+display_named ramfb 'non-PCI ramfb,1234:1111 0300 VGA'
+display_named isa-cirrus '1234:1111 0300 VGA,non-PCI isa-cirrus-vga'
+rm "$GUEST_DIR/state/displays"
+# shellcheck disable=SC2016 # expanded by the fake guest
+boot_rc() { guest eval 'VM_NAME=local; wait_ssh'; }
+check "display: the guest's card on bochs-drm passes once ssh answers" 0 "$(boot_rc)"
+echo ../../../../bus/pci/drivers/virtio-pci >"$GUEST_DIR/state/drm-drivers"
+check "display: a guest card on a virtio GPU fails the boot" 1 "$(boot_rc)"
+check_true "naming the driver" grep -qF \
+    "| local-guest-display | FAIL | the guest's DRM cards run 'virtio-pci (a virtio GPU)', expected one, on bochs-drm" "$GUEST_DIR/out/results.md"
+printf '../../../bus/pci/drivers/bochs-drm\n../../../../bus/pci/drivers/virtio-pci\n' >"$GUEST_DIR/state/drm-drivers"
+check "display: so does a second card on a virtio GPU" 1 "$(boot_rc)"
+printf '../../../bus/pci/drivers/bochs-drm\n%.0s' 1 2 >"$GUEST_DIR/state/drm-drivers"
+check "display: and two cards both on bochs-drm" 1 "$(boot_rc)"
+check_true "listing both" grep -qF "the guest's DRM cards run 'bochs-drm,bochs-drm'" "$GUEST_DIR/out/results.md"
+: >"$GUEST_DIR/state/drm-drivers"
+check "display: and no DRM card at all" 1 "$(boot_rc)"
+echo ../../../../bus/pci/drivers/virtio-pci >"$GUEST_DIR/state/drm-drivers"
+# shellcheck disable=SC2016 # expanded by the fake guest
+check "display: a reboot, upgrade's candidate boot among them, is checked too" 1 "$(guest eval 'VM_NAME=upgrade; vm_reboot')"
+check_true "at its own row" grep -qF "| upgrade-guest-display | FAIL |" "$GUEST_DIR/out/results.md"
+rm "$GUEST_DIR/state/drm-drivers"
+# shellcheck disable=SC2016 # expanded by the fake guest
+suspend_only() { guest eval 'wait_session t user apexqa; matrix_suspend local "$(shell_pid 1000)" "$(password_conversations)"'; }
+suspend_read_fails() { # FLAG DETAIL: with FLAG set, matrix_suspend alone fails saying DETAIL
+    apex_locked_in
+    : >"$GUEST_DIR/state/$1"
+    check "suspend: $1 fails the row" 1 "$(suspend_only)"
+    check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2 (the screen at the failure" "$GUEST_DIR/out/results.md"
+}
+suspend_read_fails boot-id-unreadable "cannot read the guest's boot_id"
+suspend_read_fails woken-boot-unreadable "cannot read the guest's boot_id after the wake"
+suspend_read_fails no-cursor "cannot read the user journal's cursor"
 suspend_fails() { # FLAG DETAIL: with FLAG set, the suspend row fails saying DETAIL
     lock_matrix_fails "$1" local-lock-suspend
     check_true "$1: saying so" grep -qF "| local-lock-suspend | FAIL | $2" "$GUEST_DIR/out/results.md"
@@ -3653,6 +3762,12 @@ check "workflows: an allow line without a reason" 1 "$(wf "printf 'ci.yml build 
 check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" "$WF.err"
 
 # --- guest-lint.sh: the code qualify.sh runs in the guest parses on hosted CI ---------------
+# guest-lint stubs a readonly script passed as "$NAME"; each still parses as the guest's sh.
+for gs in SUSPEND_HEARTBEAT SLEEP_OFFSET WAKEUP_IRQ_LINE DRM_OUTPUTS DRM_DRIVERS; do
+    # shellcheck disable=SC2016 # expanded by qualify.sh's shell
+    check "guest code: $gs parses with dash and shellcheck" 0 \
+        "$(rc_of bash -c '. "$1"; dash -n -c "${!2}" && printf "%s\n" "${!2}" | shellcheck -s sh -' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$gs")"
+done
 check "guest code: this checkout's qualify.sh parses" 0 \
     "$(rc_of "$APEX_ROOT/.github/scripts/guest-lint.sh" "$APEX_ROOT/.github/scripts/qualify.sh" "$APEX_ROOT/.github/scripts/guest-lint-allowed.txt")"
 GL=$TMP/guest-lint
@@ -4298,10 +4413,10 @@ gd_rc() { (set +e; g4_display "$1" 2>"$QP/err"; echo $?); }
 check "g4 display: main's qualify.sh runs std VGA" 0 "$(gd_rc "${QP_REAL[0]}")"
 sed 's/-device VGA /-device virtio-vga /' "${QP_REAL[0]}" >"$QP/qualify-virtio.sh"
 check "g4 display: virtio-vga (qualify.sh before the switch) fails" 1 "$(gd_rc "$QP/qualify-virtio.sh")"
-check_true "and says why" grep -q "qualify-virtio.sh: QEMU display device(s) 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
+check_true "and says why" grep -q "qualify-virtio.sh: display device(s) named in it 'virtio-vga', expected VGA alone: virtio-gpu's control queue stalls" "$QP/err"
 sed 's/-device VGA /-device VGA -device virtio-gpu-pci /' "${QP_REAL[0]}" >"$QP/qualify-two-gpus.sh"
 check "g4 display: a second display device fails" 1 "$(gd_rc "$QP/qualify-two-gpus.sh")"
-check_true "naming each device in full" grep -qF "qualify-two-gpus.sh: QEMU display device(s) 'VGA virtio-gpu-pci'" "$QP/err"
+check_true "naming each device in full" grep -qF "qualify-two-gpus.sh: display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
 sed 's/-device VGA /-device VGA -device "virtio-vga" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-virtio.sh"
 check "g4 display: a quoted second device fails too" 1 "$(gd_rc "$QP/qualify-quoted-virtio.sh")"
 sed 's/-device VGA /-device "VGA" /' "${QP_REAL[0]}" >"$QP/qualify-quoted-vga.sh"
@@ -4310,6 +4425,50 @@ sed 's/-device VGA /-device VGA -device bochs-display /' "${QP_REAL[0]}" >"$QP/q
 check "g4 display: a second display device named display fails" 1 "$(gd_rc "$QP/qualify-bochs-display.sh")"
 { cat "${QP_REAL[0]}"; printf '    # -device virtio-vga: a comment\n'; } >"$QP/qualify-display-comment.sh"
 check "g4 display: a comment naming a device is not a QEMU line" 0 "$(gd_rc "$QP/qualify-display-comment.sh")"
+gd_form() { # NAME SED EXPECTED: g4_display on qualify.sh edited by SED exits EXPECTED
+    sed "$2" "${QP_REAL[0]}" >"$QP/qualify-$1.sh"
+    check "g4 display: $1" "$3" "$(gd_rc "$QP/qualify-$1.sh")"
+}
+gd_form vga-option 's/-device VGA /-device VGA -vga virtio /' 1
+check_true "named as -vga" grep -qF "display device(s) named in it 'VGA -vga virtio'" "$QP/err"
+gd_form vga-none 's/-device VGA /-device VGA -vga none /' 0
+gd_form double-dash 's/-device VGA /-device VGA --device virtio-vga /' 1
+gd_form driver-key 's/-device VGA /-device VGA -device driver=virtio-vga,id=g /' 1
+check_true "by its driver" grep -qF "display device(s) named in it 'VGA virtio-vga'" "$QP/err"
+gd_form split-line 's/-device VGA /-device VGA -device \\\n        virtio-vga /' 1
+gd_form single-quoted "s/-device VGA /-device VGA -device 'virtio-vga' /" 1
+gd_form single-quoted-vga "s/-device VGA /-device 'VGA' /" 0
+gd_form no-display 's/-device VGA //' 1
+check_true "said to want the explicit -device VGA" grep -qF "no display device named, expected the explicit -device VGA (lint;" "$QP/err"
+gd_form driver-later 's/-device VGA /-device VGA -device id=g,driver=virtio-gpu-pci /' 1
+gd_form driver-after-bus 's/-device VGA /-device VGA -device bus=pcie.0,driver=virtio-gpu-pci /' 1
+check_true "named by its driver, wherever the key sits" grep -qF "display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
+gd_form driver-quoted "s/-device VGA /-device VGA -device 'id=g,driver=virtio-vga' /" 1
+gd_form json "s/-device VGA /-device VGA -device '{\"driver\":\"virtio-gpu-pci\",\"id\":\"g\"}' /" 1
+gd_form quoted-option 's/-device VGA /-device VGA "-device" virtio-gpu-pci /' 1
+gd_form ramfb 's/-device VGA /-device VGA -device ramfb /' 1
+gd_form vga-by-key 's/-device VGA /-device id=v0,driver=VGA /' 0
+gd_form vga-by-json "s/-device VGA /-device '{\"driver\":\"VGA\",\"id\":\"v0\"}' /" 0
+gd_form two-vgas 's/-device VGA /-device VGA -device id=v1,driver=VGA /' 1
+check_true "counting each std VGA" grep -qF "display device(s) named in it 'VGA VGA'" "$QP/err"
+gd_form two-vgas-json "s/-device VGA /-device VGA -device '{\"driver\":\"VGA\"}' /" 1
+# shellcheck disable=SC2016 # expanded by the fixture's shell
+{ printf 'gpu=(\n    -device\n    virtio-gpu-pci\n)\n'; sed 's/-device VGA /-device VGA "${gpu[@]}" /' "${QP_REAL[0]}"; } >"$QP/qualify-array.sh"
+check "g4 display: a device from a multi-line array fails" 1 "$(gd_rc "$QP/qualify-array.sh")"
+# shellcheck disable=SC2016 # expanded by the fixture's shell
+{ printf 'GPU=virtio-gpu-pci\n'; sed 's/-device VGA /-device VGA -device "$GPU" /' "${QP_REAL[0]}"; } >"$QP/qualify-variable.sh"
+check "g4 display: a display driver named anywhere fails by name, here through a variable" 1 "$(gd_rc "$QP/qualify-variable.sh")"
+check_true "and names it" grep -qF "qualify-variable.sh: display device(s) named in it 'virtio-gpu-pci VGA'" "$QP/err"
+gd_form split-line-vga 's/-device VGA /-device \\\n        VGA /' 0
+gd_form double-dash-vga 's/-device VGA /--device VGA /' 0
+gd_form split-name 's/-device VGA /-device VGA -device virtio-gpu\\\n-pci /' 1
+check_true "joined as bash joins a continuation" grep -qF "display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
+# shellcheck disable=SC2016 # a parameter expansion in the fixture's QEMU line
+gd_form default-value 's/-device VGA /-device VGA -device "${QUALIFY_GPU:-virtio-gpu-pci}" /' 1
+gd_form readconfig 's/-device VGA /-device VGA -readconfig gpu.cfg /' 1
+check_true "named as out of the lint's reach" grep -qF "display device(s) named in it 'VGA -readconfig'" "$QP/err"
+gd_form set-device 's/-device VGA /-device VGA -set device.v0.addr=04.0 /' 1
+gd_form trailing-comment 's/-device VGA /-device VGA # virtio-gpu-pci was #127 /' 0
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers
@@ -5928,9 +6087,17 @@ EOF
 chmod +x "$QV/bin/qemu-system-x86_64"
 : >"$QV/code.fd"
 : >"$QV/vars.fd"
-# shellcheck disable=SC2016 # expanded by the inner bash
-PATH="$QV/bin:$PATH" QEMU_ARGS="$QV/args" QUALIFY_OUT="$QV/out" OVMF_CODE="$QV/code.fd" OVMF_VARS="$QV/vars.fd" \
-    bash -c '. "$1"; require_kvm() { :; }; start_vm t' _ "$APEX_ROOT/.github/scripts/qualify.sh" >/dev/null 2>&1
+qv_start() { # DISPLAYS: start_vm t against fake QEMU and QEMU 8.2.2's device tree for DISPLAYS
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PATH="$QV/bin:$PATH" QEMU_ARGS="$QV/args" QUALIFY_OUT="$QV/out" OVMF_CODE="$QV/code.fd" OVMF_VARS="$QV/vars.fd" \
+        QMP_FAKE="$QMP_FAKE" FAKE_DISPLAYS="$1" GITHUB_ACTIONS='' \
+        bash -c '. "$1"; . "$QMP_FAKE"; require_kvm() { :; }; start_vm t' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$QV/start.log" 2>&1
+}
+check "start_vm: QEMU's own std VGA alone passes" 0 "$(rc_of qv_start vga)"
+check "start_vm: a virtio-gpu beside it fails the boot" 1 "$(rc_of qv_start vga-virtio)"
+check_true "naming each display device QEMU built" \
+    grep -qF "t-display: QEMU built display device(s) '1af4:1050 0380 virtio-gpu-pci,1234:1111 0300 VGA', expected std VGA (1234:1111, class 0300) alone" "$QV/start.log"
+qv_start vga
 check_true "start_vm: a second QMP socket for the event reader" grep -qx "unix:$QV/out/qmp/t.events.sock,server=on,wait=off" "$QV/args"
 check_true "OVMF's debug console in the row's logs" grep -qx "file:$QV/out/logs/t.ovmf.log" "$QV/args"
 check_true "at OVMF's debug port" grep -qx 'isa-debugcon.iobase=0x402' "$QV/args"
@@ -5980,7 +6147,7 @@ qv_cleanup() { # RC [luks|nojournal]: cleanup after a run that exits RC, its gue
             case $1 in
                 losetup) [[ $2 == --detach ]] || echo /dev/loop9 ;;
                 sh) [[ $mode == nojournal ]] || echo "$QV/out/mnt-v-journal/ostree/deploy/default/var/log/journal" ;;
-                journalctl) echo "the guest journal, off its disk" ;;
+                journalctl) [[ $mode != unreadable ]] || return 1; echo "the guest journal, off its disk" ;;
             esac
         }
         trap cleanup EXIT
@@ -6001,6 +6168,8 @@ check_true "luks: the root is opened read-only" grep -qx 'cryptsetup open --read
 check_true "and /var's subvolume mounted read-only" grep -qx "mount -o ro,subvol=var,rescue=nologreplay /dev/mapper/apex-qualify-v-journal $QV/out/mnt-v-journal" "$QV/calls"
 check_true "its journal read" grep -qx "journalctl -D $QV/out/mnt-v-journal/log/journal -o short-monotonic --no-pager" "$QV/calls"
 check_true "and the mapping closed" grep -qx 'cryptsetup close apex-qualify-v-journal' "$QV/calls"
+qv_cleanup 3 unreadable
+check_true "a journal the host's journalctl cannot read is said so" grep -qF "cannot read the journal off $QV/out/v.raw" "$QV/err"
 
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
