@@ -270,7 +270,7 @@ cmd_verify() {
         [[ $mode == pinned ]] || die "$name: $path is a $mode, not a pinned clone"
         unsafe=$(unsafe_config "$path")
         [[ -z $unsafe ]] || die "$name: $unsafe"
-        [[ $(git config --file "$path/.git/config" --no-includes remote.origin.url) == "$(read_lock | awk -v n="$name" '$1 == n { print $2 }')" ]] ||
+        [[ $(git config --file "$path/.git/config" --no-includes --get-all remote.origin.url) == "$(read_lock | awk -v n="$name" '$1 == n { print $2 }')" ]] ||
             die "$name: its origin is not components.lock's URL"
         [[ $(git_in "$path" rev-parse HEAD 2>/dev/null) == "$sha" ]] || die "$name: HEAD is not its pin $sha"
         [[ -z $(git_in "$path" status --porcelain --ignored=no 2>&1) ]] || die "$name: the clone of $sha is not clean"

@@ -1238,6 +1238,10 @@ check "verify: a dangling .git/commondir link refuses; fetch clones afresh" "1|0
 git -C "$CS" remote set-url origin "$CO/apex-desktop.git"
 check "verify: an origin that is not components.lock's URL refuses, by name; fetch clones afresh" "1|yes|0|0" \
     "$(components verify "$CS")|$(co_said "apex-system: its origin is not components.lock's URL" verify "$CS")|$(components fetch)|$(components verify "$CS")"
+git -C "$CS" config remote.origin.url "$CO/apex-desktop.git"
+git -C "$CS" config --add remote.origin.url "$CO/apex-system.git"
+check "verify: a second origin URL after the one fetch uses refuses, by name; fetch clones afresh" "1|yes|0|0" \
+    "$(components verify "$CS")|$(co_said "apex-system: its origin is not components.lock's URL" verify "$CS")|$(components fetch)|$(components verify "$CS")"
 git -C "$CS" -c advice.detachedHead=false checkout -q HEAD~1
 check "verify: a clone moved off its pin refuses" 1 "$(components verify "$CS")"
 check "and fetch puts it back" "0|0" "$(components fetch)|$(components verify "$CS")"
