@@ -66,7 +66,9 @@ config_allowed() {
         core.bare) [[ $2 == false ]] ;;
         extensions.refstorage) [[ $2 == files || $2 == reftable ]] ;;
         extensions.objectformat) [[ $2 == sha1 || $2 == sha256 ]] ;;
-        remote.origin.url | remote.origin.fetch | remote.origin.tagopt | branch.*.remote | branch.*.merge) true ;;
+        remote.origin.fetch) [[ $2 == '+refs/heads/*:refs/remotes/origin/*' ]] ;;
+        remote.origin.tagopt) [[ $2 == --no-tags ]] ;;
+        remote.origin.url | branch.*.remote | branch.*.merge) true ;;
         *) false ;;
     esac
 }
@@ -74,19 +76,24 @@ config_allowed() {
 # DIR: why its clone is no plain single repository with only fetch's config, or nothing. The
 # config is read as a file, never through git's include handling or another repository's.
 unsafe_config() {
-    local f entry name bad=''
+    local f entry name refs bad=''
     [[ -d $1/.git && ! -L $1/.git ]] || { echo ".git is not a directory"; return; }
     for f in commondir gitdir worktrees config.worktree; do
         [[ ! -e $1/.git/$f && ! -L $1/.git/$f ]] || { echo ".git/$f makes it no plain single repository"; return; }
     done
     f=$1/.git/config
     [[ -f $f && ! -L $f ]] || { echo ".git/config is not a regular file"; return; }
+    git config --file "$f" --no-includes --list >/dev/null 2>&1 || { echo ".git/config is not one git can read"; return; }
     while IFS= read -r -d '' entry; do
         name=${entry%%$'\n'*}
         [[ $entry == *$'\n'* ]] || entry+=$'\n'
         config_allowed "${name,,}" "${entry#*$'\n'}" || bad+=" $name=${entry#*$'\n'}"
     done < <(git config --file "$f" --no-includes --null --list 2>/dev/null)
-    [[ -z $bad ]] || echo ".git/config sets${bad//[^[:print:]]/?}"
+    [[ -z $bad ]] || { echo ".git/config sets${bad//[^[:print:]]/?}"; return; }
+    git_in "$1" rev-parse -q --verify 'HEAD^{commit}' >/dev/null 2>&1 || { echo "git cannot read its HEAD commit"; return; }
+    # A replace ref swaps the tree a checkout writes for the pin's, under the same HEAD.
+    refs=$(git_in "$1" for-each-ref --format=x refs/replace 2>&1) || { echo "git cannot list its refs"; return; }
+    [[ -z $refs ]] || echo "it holds refs/replace, which swaps what its pin checks out"
 }
 
 lock_sha256() {
@@ -151,7 +158,7 @@ clone_pinned() {
     git_in "$dest" clean -q -ffdx
     [[ $(git_in "$dest" rev-parse HEAD) == "$sha" ]] || die "$name: HEAD is not $sha"
     [[ $(git_in "$dest" rev-parse --is-shallow-repository) == false ]] || die "$name: the clone is shallow"
-    [[ -z $(git_in "$dest" status --porcelain) ]] || die "$name: the checkout of $sha is not clean"
+    [[ -z $(git_in "$dest" status --porcelain 2>&1) ]] || die "$name: the checkout of $sha is not clean"
 }
 
 cmd_fetch() {
@@ -263,6 +270,8 @@ cmd_verify() {
         [[ $mode == pinned ]] || die "$name: $path is a $mode, not a pinned clone"
         unsafe=$(unsafe_config "$path")
         [[ -z $unsafe ]] || die "$name: $unsafe"
+        [[ $(git config --file "$path/.git/config" --no-includes remote.origin.url) == "$(read_lock | awk -v n="$name" '$1 == n { print $2 }')" ]] ||
+            die "$name: its origin is not components.lock's URL"
         [[ $(git_in "$path" rev-parse HEAD 2>/dev/null) == "$sha" ]] || die "$name: HEAD is not its pin $sha"
         [[ -z $(git_in "$path" status --porcelain --ignored=no 2>&1) ]] || die "$name: the clone of $sha is not clean"
     done <"$STATE"
