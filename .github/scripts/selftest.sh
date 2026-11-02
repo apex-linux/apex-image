@@ -5785,6 +5785,8 @@ esac
 EOF
 chmod +x "$V/bin/gh"
 DAILY_DUE='Is the daily due'
+# The step passes daily-due.sh the runner's clock, so its fixture's builds start hours before now.
+DD_NOW=$(date +%s)
 dd_runs "901:completed:push" "902:completed:push"
 cp "$DD/runs.json" "$V/gh-runs.json"
 dd_jobs "901:$BJ:3:success"
