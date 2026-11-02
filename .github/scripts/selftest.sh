@@ -1187,6 +1187,13 @@ for key in core.fsmonitor core.hooksPath include.path; do
     check "verify: $key in a clone's config refuses" 1 "$(components verify "$CS")"
     git -C "$CS" config --unset "$key"
 done
+git -C "$CS" config user.name planted
+check "verify: a key fetch never writes refuses, however harmless it looks" 1 "$(components verify "$CS")"
+git -C "$CS" config --unset user.name
+echo "$CO/elsewhere/.git" >"$CS/.git/commondir"
+check "verify: a .git/commondir refuses, by name" "1|yes" \
+    "$(components verify "$CS")|$(co_said 'apex-system: .git/commondir makes it no plain single repository' verify "$CS")"
+check "and fetch clones afresh over it" "0|0" "$(components fetch)|$(components verify "$CS")"
 git -C "$CS" -c advice.detachedHead=false checkout -q HEAD~1
 check "verify: a clone moved off its pin refuses" 1 "$(components verify "$CS")"
 check "and fetch puts it back" "0|0" "$(components fetch)|$(components verify "$CS")"
@@ -1426,9 +1433,9 @@ KFP=libfprint-1.94.10-1.fc45-s0123456789ab
 RCE=$RC/cache/fedora-45/entries
 bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints its exit
     local rc=0
-    local -a where=(APEX_RPM_CACHE="$RC/cache")
+    local -a where=(APEX_RPM_CACHE="$RC/cache" APEX_LANE_RECIPES="$BIW:/pinned/gnome")
     [[ -z ${RC_HOME:-} ]] || where=(HOME="$RC_HOME")
-    rm -f "$RC/steps.log" "$RC/rpmkeys.log" "$BI/steps.log"
+    rm -f "$RC/steps.log" "$RC/rpmkeys.log" "$BI/steps.log" "$RC/verify.log"
     # shellcheck disable=SC2016 # expanded by the inner bash
     (cd "$BIW" && PATH="$RC/bin:$PATH" FAKE=$RC APEX_SYSTEM_SRC=/pinned/system APEX_DESKTOP_SRC=/pinned/desktop \
         APEX_KERNEL_SRC=/pinned/kernel APEX_COMPONENTS=${RC_COMPONENTS:-pinned} env "${where[@]}" bash -c '
@@ -1463,6 +1470,9 @@ bi_cache() { # SCRIPT: build_inputs with keyed components; SCRIPT first; prints 
                 return "$(cat "$FAKE/libfprint-rc" 2>/dev/null || echo 0)"
             fi
             printf "signed %s\nnvr apex-%s 0:1-1.x86_64\n" "$name" "$name" >"$d/$name.rpm"
+            [[ $name != desktop || ! -e $FAKE/plant-link ]] || ln -s "$FAKE/victim" "$d/SHA256SUMS"
+            [[ $name != desktop || ! -e $FAKE/plant-hardlink ]] || ln "$FAKE/victim" "$d/SHA256SUMS"
+            [[ $name != desktop || ! -e $FAKE/plant-name ]] || : >"$d/odd"$'"'"'\n'"'"'"name.rpm"
             if [[ ${*: -1} == /build/* ]]; then echo unkeyed >"$d/KEY"; else printf "%s\n" "${*: -1}" >"$d/KEY"; fi
         }
         eval "$2"
@@ -1568,6 +1578,10 @@ echo kother >"$E/KEY" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: an entry whose KEY is not the key is built again" "0|system|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said 'KEY is not ksys')"
 E=$(rc_entry libfprint "$KFP")
+mv "$E/manifest.txt" "$RC/entry-manifest" && ln -s "$RC/entry-manifest" "$E/manifest.txt" && rc_contents "$E" && rc_reindex "$E"
+check "rpm-cache: an entry whose key file is a link is built again" "0|kernel|yes" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said 'libfprint: manifest.txt is not a regular file; not used')"
+E=$(rc_entry libfprint "$KFP")
 echo libfprint-1.94.10-1.fc45-s999999999999 >"$E/key.txt" && rc_contents "$E" && rc_reindex "$E"
 check "rpm-cache: libfprint whose key.txt is not its key is built again" "0|kernel|yes" \
     "$(bi_cache)|$(rc_builds)|$(rc_said "key.txt libfprint-1.94.10-1.fc45-s999999999999 is not $KFP")"
@@ -1669,9 +1683,32 @@ check "rpm-cache: a component whose clone is no longer as fetched is built and n
 rm "$RC/unverified-desktop"
 touch "$RC/fp-symlink"
 echo libfprint-1.94.10-1.fc45-s5555aaaa5555 >"$RC/keys/kernel"
-check "rpm-cache: a key file that is a link is never stored" "0|desktop kernel|yes|no" \
-    "$(bi_cache)|$(rc_builds)|$(rc_said 'libfprint: manifest.txt is not a regular file; not used')|$(grep -lq s5555aaaa5555 "$RCE"/libfprint/*/key.txt 2>/dev/null && echo stored || echo no)"
+check "sign: a key file a build left as a link stops the build before signing; nothing is stored" "1|desktop kernel|yes|no" \
+    "$(bi_cache)|$(rc_builds)|$(rc_said "sign: _build/libfprint holds 'manifest.txt', which is no plain RPM or key file")|$(grep -lq s5555aaaa5555 "$RCE"/libfprint/*/key.txt 2>/dev/null && echo stored || echo no)"
 rm "$RC/fp-symlink"
+echo victim >"$RC/victim"
+touch "$RC/plant-link"
+echo kdesk-l >"$RC/keys/desktop"
+check "sign: a SHA256SUMS link a build left stops the build; nothing is written through it or signed" "1|victim|no|yes" \
+    "$(bi_cache)|$(cat "$RC/victim")|$(grep -q 'lane.sh sign _build/rpms/desktop' "$RC/steps.log" && echo signed || echo no)|$(rc_said "sign: _build/rpms/desktop holds 'SHA256SUMS', which is no plain RPM or key file; nothing is signed")"
+rm "$RC/plant-link"
+touch "$RC/plant-hardlink"
+echo kdesk-h >"$RC/keys/desktop"
+check "sign: SHA256SUMS is written afresh, never through a file a build left there" "0|victim" \
+    "$(bi_cache)|$(cat "$RC/victim")"
+rm "$RC/plant-hardlink"
+touch "$RC/plant-name"
+echo kdesk-n >"$RC/keys/desktop"
+check "sign: an RPM name with a newline stops the build before signing" "1|no|yes" \
+    "$(bi_cache)|$(grep -q 'lane.sh sign _build/rpms/desktop' "$RC/steps.log" && echo signed || echo no)|$(rc_said "holds 'odd?name.rpm'")"
+rm "$RC/plant-name"
+check "lane: with pinned components it builds only after the kernel and recipe clones verify, not this checkout" \
+    "0|verify /pinned/kernel verify /pinned/gnome|yes" \
+    "$(bi_cache)|$(grep -E 'verify /pinned/(kernel|gnome)$|verify '"$BIW"'$' "$RC/verify.log" | tail -n 2 | paste -sd' ')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo yes)"
+touch "$RC/unverified-gnome"
+check "lane: a recipe clone no longer as fetched stops the build before the lane" "1|yes|no" \
+    "$(bi_cache)|$(rc_said 'lane: /pinned/gnome is no longer as fetched; the lane does not build from it')|$(grep -q '^lane.sh build all' "$RC/steps.log" && echo lane || echo no)"
+rm "$RC/unverified-gnome"
 echo "$KFP" >"$RC/keys/kernel"
 rm -rf "$RC/cache/fedora-45/index/apex-desktop"
 : >"$RC/cache/fedora-45/index/apex-desktop"

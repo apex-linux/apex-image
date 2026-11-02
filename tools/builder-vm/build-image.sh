@@ -48,7 +48,10 @@ apex-desktop, libfprint from apex-kernel, the lane's recipes from APEX_LANE_RECI
 
 Each component runs as root in its own fedora:45. To give its key it sees only its
 checkout, read-only; to build, its checkout with .git read-only and its own output
-directory, emptied first. No container mounts the rest of _build.
+directory, emptied first. No container mounts the rest of _build. Its output is signed
+only when it holds nothing but plain, plainly named RPMs and key files, and SHA256SUMS is
+written afresh. With pinned components, apex-kernel's clone and each APEX_LANE_RECIPES
+clone must still pass components.sh verify before the lane builds from them.
 
 Signed RPMs of pinned components (APEX_COMPONENTS=pinned) are cached in
 ~/apex-rpm-cache/fedora-N/entries/COMPONENT/ENTRY (APEX_RPM_CACHE moves the root). That
@@ -66,8 +69,8 @@ files are plain files, the key it states matches (KEY; for libfprint key.txt, th
 version-release with .apexN and manifest.txt's tests=passed), and each RPM is signed by
 the committed RPM-GPG-KEY-apex (rpmkeys --checksig, in a scratch rpmdb); anything else
 rebuilds. rpms.sh build gets the key and fails if it moved. A set is stored only when
-components.sh verify finds the component's clone still clean at its pin with no config
-that runs code, its files are plain, its stated key matches, fedora:45 did not move
+components.sh verify finds the component's clone still clean at its pin, a plain
+repository with only fetch's config, its stated key matches, fedora:45 did not move
 during the build and the copy matches SHA256SUMS; a degraded libfprint (exit 3) never
 is. After a store, each component keeps its 3 newest entries; before it, the oldest
 entries this build does not use go until the cache's disk keeps 30 GiB free after
@@ -160,11 +163,26 @@ use_components() {
     eval "$(tools/components.sh env)"
 }
 
+# DIR: a build container's output, taken only as plain, plainly named RPMs and key files.
+output_plain() {
+    local f n
+    while IFS= read -r -d '' f; do
+        n=${f##*/}
+        [[ -f $f && ! -L $f ]] && { [[ $n =~ ^[A-Za-z0-9][A-Za-z0-9._+~^-]*\.rpm$ ]] ||
+            [[ $n == SHA256SUMS || $n == KEY || $n == key.txt || $n == manifest.txt ]]; } && continue
+        echo "sign: $1 holds '${n//[^[:print:]]/?}', which is no plain RPM or key file; nothing is signed" >&2
+        return 1
+    done < <(find "$1" -mindepth 1 -maxdepth 1 -print0)
+    compgen -G "$1/*.rpm" >/dev/null || { echo "sign: $1 holds no RPM" >&2; return 1; }
+}
+
 # After the container exits, so the Apex RPM key never meets a build script.
 sign_rpms() {
     local dir=$1
     sudo chown -R "$(id -u):$(id -g)" -- "$dir"
+    output_plain "$dir" || exit 1
     tools/builder-vm/lane.sh sign "$dir"/*.rpm
+    rm -f -- "$dir/SHA256SUMS"
     (cd "$dir" && sha256sum -- *.rpm >SHA256SUMS)
 }
 
@@ -319,7 +337,6 @@ cache_room() {
 cache_rpms() {
     local name=$1 dir=$2 key=$3 entry=$CACHE_ENTRY old created
     local tmp=$entry.tmp
-    plain_files "$name" "$dir" || return 1
     key_holds "$name" "$dir" "$key" || return 1
     [[ $(fedora_digest) == "$CACHE_DIGEST" ]] || { cache_note "$FEDORA moved during the build"; return 1; }
     cache_room "$dir" || return 1
@@ -491,6 +508,21 @@ libfprint_env() {
     [[ $BUILD == _build ]] || COMPONENT_ENV+=(-e "FEDORA_KEY_FPR=$(lib release_arg FEDORA_KEY_FPR)")
 }
 
+# libfprint built in apex-kernel's checkout, and the lane builds the kernel from the recipe roots: with
+# pinned components, each must still be as fetched. This checkout is the build's own.
+lane_sources_as_fetched() {
+    local root
+    local -a roots
+    [[ ${APEX_COMPONENTS:-} == pinned ]] || return 0
+    IFS=: read -r -a roots <<<"${APEX_LANE_RECIPES:-}"
+    for root in "$APEX_KERNEL_SRC" "${roots[@]}"; do
+        [[ -n $root ]] || continue
+        [[ $root != "$PWD" ]] || continue
+        tools/components.sh verify "$root" ||
+            { echo "lane: $root is no longer as fetched; the lane does not build from it" >&2; exit 1; }
+    done
+}
+
 build_inputs() {
     echo "== the components' keys (rpm-cache)"
     # A key hashes the commit; a dev-override builds its working tree, so only pinned clean clones are cached.
@@ -531,6 +563,7 @@ build_inputs() {
     COMPONENT_ENV=()
 
     echo "== 3/4 rebuild lane"
+    lane_sources_as_fetched
     rc=0
     tools/builder-vm/lane.sh build all || rc=$?
     case $rc in

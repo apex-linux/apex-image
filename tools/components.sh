@@ -27,9 +27,10 @@ blank lines and lines starting with # are skipped.
               of a commit X on main, with a `(cherry picked from commit X)` trailer and
               changing only paths that X changes; 1 otherwise
   verify PATH exit 0 when PATH is a pinned clone of the last fetch that is still at its
-              pin, clean, and holds no git config that runs code (filters, fsmonitor,
-              hooks, includes); 1, naming what is wrong, otherwise. build-image.sh asks
-              before it caches RPMs built from PATH
+              pin, clean, a plain single repository (no commondir, gitdir, worktrees),
+              and whose .git/config holds only what fetch writes (core, remote.origin,
+              branch keys); 1, naming what is wrong, otherwise. build-image.sh asks
+              before it caches RPMs built from PATH, and before the lane builds from it
 
 APEX_SRC_<NAME> (NAME upper-cased, - as _; APEX_SRC_APEX_DESKTOP for apex-desktop)
 points at a sibling checkout to use instead of the pinned clone, relative to this
@@ -56,22 +57,22 @@ git_in() {
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directory="$dir" -C "$dir" "$@"
 }
 
-# Keys whose values git runs as commands, or that pull in other config: a clone a build
-# container wrote could carry them, and git on this host would run them.
-readonly UNSAFE_CONFIG='^(filter\.|include\.|includeif\.|core\.fsmonitor|core\.hookspath|core\.sshcommand|core\.gitproxy|core\.askpass|core\.editor|core\.pager|credential\.|diff\.[^.]+\.(textconv|command)|merge\.[^.]+\.driver|uploadpack\.packobjectshook)'
+# The only config a pinned clone has once fetch made it; anything else may run code or point elsewhere.
+readonly SAFE_CONFIG='^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase)|remote\.origin\.(url|fetch|tagopt)|branch\..+\.(remote|merge))$'
 
-# DIR: why its clone's own config is not safe to run git on, or nothing. Read as files, never
-# through git's include handling.
+# DIR: why its clone is no plain single repository with only fetch's config, or nothing. The
+# config is read as a file, never through git's include handling or another repository's.
 unsafe_config() {
     local f keys
     [[ -d $1/.git && ! -L $1/.git ]] || { echo ".git is not a directory"; return; }
-    for f in "$1/.git/config" "$1/.git/config.worktree"; do
-        [[ -e $f || -L $f ]] || continue
-        [[ -f $f && ! -L $f ]] || { echo "${f#"$1"/} is not a regular file"; return; }
-        keys=$(git config --file "$f" --no-includes --name-only --list 2>/dev/null | grep -iE "$UNSAFE_CONFIG" | sort -u | paste -sd' ') ||
-            true
-        [[ -z $keys ]] || { echo "${f#"$1"/} sets $keys"; return; }
+    for f in commondir gitdir worktrees config.worktree; do
+        [[ ! -e $1/.git/$f && ! -L $1/.git/$f ]] || { echo ".git/$f makes it no plain single repository"; return; }
     done
+    f=$1/.git/config
+    [[ -f $f && ! -L $f ]] || { echo ".git/config is not a regular file"; return; }
+    keys=$(git config --file "$f" --no-includes --name-only --list 2>/dev/null | grep -viE "$SAFE_CONFIG" | sort -u | paste -sd' ') ||
+        true
+    [[ -z $keys ]] || echo ".git/config sets $keys"
 }
 
 lock_sha256() {

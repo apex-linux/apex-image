@@ -96,7 +96,11 @@ Each component builds as root in its own fedora:45 container. To give its key, t
 container sees only the component's checkout, read-only. To build, it sees the checkout
 with `.git` read-only, and its own output directory, which build-image.sh empties first.
 No container mounts the rest of `_build`: other components' clones and RPMs, or
-apex-gnome's clone, whose G2 script runs on the host.
+apex-gnome's clone, whose G2 script runs on the host. Before signing, the host refuses an
+output that holds anything but plain, plainly named `*.rpm` files and the key files
+(`KEY`, `key.txt`, `manifest.txt`, `SHA256SUMS`), and it writes `SHA256SUMS` afresh.
+With pinned components, apex-kernel's clone and each `APEX_LANE_RECIPES` clone must
+still pass `components.sh verify` before the lane builds from them.
 
 With pinned components (`APEX_COMPONENTS=pinned`), the signed RPMs of apex-system,
 apex-desktop and libfprint are cached in `~/apex-rpm-cache/fedora-N/entries` (set
@@ -128,8 +132,9 @@ Any mismatch rebuilds. A hit restores the component's key files with the RPMs, a
 image.sh reads them. `rpms.sh build` gets the key and fails if it moved.
 
 A set is stored only when:
-- `components.sh verify` finds the component's clone still clean at its pin, with no git
-  config that runs code (filters, fsmonitor, hooks, includes);
+- `components.sh verify` finds the component's clone still clean at its pin, a plain
+  single repository (no `commondir`, `gitdir` or `worktrees`) whose `.git/config` holds
+  only what fetch writes (`core`, `remote.origin` and `branch` keys);
 - its files are plain;
 - its stated key matches;
 - fedora:45 did not move during the build;
@@ -140,7 +145,8 @@ does not use go until the cache's disk keeps 30 GiB free after storing (the VM's
 is a 120G qcow2); when that cannot be reached, nothing is stored and nothing goes. After
 a store, each component keeps its 3 newest entries. A store that died leaves
 `ENTRY.tmp`, which the next build deletes. Delete `~/apex-rpm-cache` to start over.
-`components.sh fetch` clones afresh over a clone whose git config would run code.
+`components.sh fetch` clones afresh over a clone that fails the same repository and
+config check.
 
 When G2 passed and G4 passed or was not due, `_build/gates-passed.txt` names the lane
 lock the image carries (from G2's `result.txt`), the image, G4's verdict (`passed for
