@@ -2306,10 +2306,10 @@ apex_locked_in
 rm -rf "$GUEST_DIR/sysfs" "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
 mkdir -p "$GUEST_DIR/sysfs/module/kvm_amd/parameters"
 echo 1 >"$GUEST_DIR/sysfs/module/kvm_amd/parameters/nested"
-check "an AMD host's lock matrix runs" 0 "$(QUALIFY_SYSFS="$GUEST_DIR/sysfs" rc_of guest lock_matrix local 1000)"
+check "an AMD host's lock matrix runs" 0 "$(QUALIFY_SYSFS="$GUEST_DIR/sysfs" guest lock_matrix local 1000)"
 check_true "and its line reads kvm_amd's nested" grep -q '; nested 1;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
 # G4's display, from QEMU (its 8.2 answers in qmp-fixtures/) and from the guest once ssh answers.
-display_rc() { echo "$1" >"$GUEST_DIR/state/displays"; rc_of guest assert_display t-display; }
+display_rc() { echo "$1" >"$GUEST_DIR/state/displays"; guest assert_display t-display; }
 check "display: QEMU's std VGA alone passes" 0 "$(display_rc vga)"
 check "display: VGA plus a virtio-gpu fails" 1 "$(display_rc vga-virtio)"
 check_true "naming each display device by vendor:device, class and QOM type" grep -qF \
@@ -2321,7 +2321,7 @@ check "display: another VGA-class device fails" 1 "$(display_rc cirrus)"
 check_true "named by its ids" grep -qF "QEMU built display device(s) '1013:00b8 0300 cirrus-vga'" "$GUEST_DIR/out/results.md"
 rm "$GUEST_DIR/state/displays"
 # shellcheck disable=SC2016 # expanded by the fake guest
-boot_rc() { rc_of guest eval 'VM_NAME=local; wait_ssh'; }
+boot_rc() { guest eval 'VM_NAME=local; wait_ssh'; }
 check "display: the guest's card on bochs-drm passes once ssh answers" 0 "$(boot_rc)"
 echo ../../../bus/pci/drivers/virtio_gpu >"$GUEST_DIR/state/drm-drivers"
 check "display: a guest card on virtio_gpu fails the boot" 1 "$(boot_rc)"
