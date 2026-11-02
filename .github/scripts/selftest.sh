@@ -2282,6 +2282,12 @@ mkdir -p "$GUEST_DIR/sysfs/module/kvm_intel/parameters"
 echo Y >"$GUEST_DIR/sysfs/module/kvm_intel/parameters/nested"
 QUALIFY_SYSFS="$GUEST_DIR/sysfs" guest lock_matrix local 1000 >/dev/null
 check_true "and the host's nested KVM, from whichever vendor's module is loaded" grep -q '; nested Y;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+apex_locked_in
+rm -rf "$GUEST_DIR/sysfs" "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
+mkdir -p "$GUEST_DIR/sysfs/module/kvm_amd/parameters"
+echo 1 >"$GUEST_DIR/sysfs/module/kvm_amd/parameters/nested"
+check "an AMD host's lock matrix runs" 0 "$(QUALIFY_SYSFS="$GUEST_DIR/sysfs" rc_of guest lock_matrix local 1000)"
+check_true "and its line reads kvm_amd's nested" grep -q '; nested 1;' "$GUEST_DIR/out/logs/local-lock-suspend.env.txt"
 # shellcheck disable=SC2016 # expanded by the fake guest
 suspend_only() { guest eval 'wait_session t user apexqa; matrix_suspend local "$(shell_pid 1000)" "$(password_conversations)"'; }
 suspend_read_fails() { # FLAG DETAIL: with FLAG set, matrix_suspend alone fails saying DETAIL
@@ -2947,7 +2953,7 @@ check_true "names it" grep -qF "allowed:2: want WORKFLOW JOB PERMISSION REASON" 
 
 # --- guest-lint.sh: the code qualify.sh runs in the guest parses on hosted CI ---------------
 # guest-lint stubs a readonly script passed as "$NAME"; each still parses as the guest's sh.
-for gs in SUSPEND_HEARTBEAT SLEEP_OFFSET WAKEUP_IRQ_LINE; do
+for gs in SUSPEND_HEARTBEAT SLEEP_OFFSET WAKEUP_IRQ_LINE DRM_OUTPUTS; do
     # shellcheck disable=SC2016 # expanded by qualify.sh's shell
     check "guest code: $gs parses with dash and shellcheck" 0 \
         "$(rc_of bash -c '. "$1"; dash -n -c "${!2}" && printf "%s\n" "${!2}" | shellcheck -s sh -' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$gs")"
@@ -3570,6 +3576,25 @@ gd_form single-quoted "s/-device VGA /-device VGA -device 'virtio-vga' /" 1
 gd_form single-quoted-vga "s/-device VGA /-device 'VGA' /" 0
 gd_form no-display 's/-device VGA //' 1
 check_true "named as none at all" grep -qF "QEMU display device(s) '', expected VGA alone" "$QP/err"
+gd_form driver-later 's/-device VGA /-device VGA -device id=g,driver=virtio-gpu-pci /' 1
+gd_form driver-after-bus 's/-device VGA /-device VGA -device bus=pcie.0,driver=virtio-gpu-pci /' 1
+check_true "named by its driver, wherever the key sits" grep -qF "QEMU display device(s) 'VGA virtio-gpu-pci'" "$QP/err"
+gd_form driver-quoted "s/-device VGA /-device VGA -device 'id=g,driver=virtio-vga' /" 1
+gd_form json "s/-device VGA /-device VGA -device '{\"driver\":\"virtio-gpu-pci\",\"id\":\"g\"}' /" 1
+gd_form quoted-option 's/-device VGA /-device VGA "-device" virtio-gpu-pci /' 1
+gd_form ramfb 's/-device VGA /-device VGA -device ramfb /' 1
+gd_form vga-by-key 's/-device VGA /-device id=v0,driver=VGA /' 0
+gd_form vga-by-json "s/-device VGA /-device '{\"driver\":\"VGA\",\"id\":\"v0\"}' /" 0
+gd_form two-vgas 's/-device VGA /-device VGA -device id=v1,driver=VGA /' 1
+check_true "counting each std VGA" grep -qF "QEMU display device(s) 'VGA VGA'" "$QP/err"
+gd_form two-vgas-json "s/-device VGA /-device VGA -device '{\"driver\":\"VGA\"}' /" 1
+# shellcheck disable=SC2016 # expanded by the fixture's shell
+{ printf 'gpu=(\n    -device\n    virtio-gpu-pci\n)\n'; sed 's/-device VGA /-device VGA "${gpu[@]}" /' "${QP_REAL[0]}"; } >"$QP/qualify-array.sh"
+check "g4 display: a device from a multi-line array fails" 1 "$(gd_rc "$QP/qualify-array.sh")"
+# shellcheck disable=SC2016 # expanded by the fixture's shell
+{ printf 'GPU=virtio-gpu-pci\n'; sed 's/-device VGA /-device VGA -device "$GPU" /' "${QP_REAL[0]}"; } >"$QP/qualify-variable.sh"
+check "g4 display: a display driver named anywhere fails by name, here through a variable" 1 "$(gd_rc "$QP/qualify-variable.sh")"
+check_true "and names it" grep -qF "qualify-variable.sh: QEMU display device(s) 'virtio-gpu-pci VGA'" "$QP/err"
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------
 QM=$TMP/qualify-markers

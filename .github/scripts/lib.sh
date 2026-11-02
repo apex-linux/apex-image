@@ -352,16 +352,62 @@ qemu_parity() {
     return "$rc"
 }
 
-# g4_display FILE: the one QEMU display device in FILE is std VGA; virtio-gpu's control
-# queue stalls after an s2idle resume and the shell hangs (apex-image#127).
+# g4_display FILE: FILE's QEMU runs one std VGA and no other display device; virtio-gpu's
+# control queue stalls after an s2idle resume and the shell hangs (apex-image#127).
 g4_display() {
-    local -a devices
-    mapfile -t devices < <(grep -v '^[[:space:]]*#' "$1" | sed -e ':a' -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta' |
-        grep -oE -- "(^|[[:space:](])(--?device[[:space:]=]+[\"']?(driver=)?(VGA|[A-Za-z0-9-]*(vga|gpu|display)[^[:space:],\\)]*)|--?vga[[:space:]=]+[\"']?[A-Za-z0-9-]+)" |
-        sed -E "s/^[[:space:](]*//; s/^--?device[[:space:]=]+[\"']?(driver=)?//; s/^--?vga[[:space:]=]+[\"']?/-vga /; s/[\"']//g" |
-        grep -vx -- '-vga none')
-    [[ ${devices[*]} == VGA ]] && return 0
-    warn "$1: QEMU display device(s) '${devices[*]}', expected VGA alone: virtio-gpu's control queue stalls after an s2idle resume (apex-image#127)"
+    local devices
+    devices=$(python3 - "$1" <<'EOF'
+import re
+import sys
+
+text = "".join(l for l in open(sys.argv[1]) if not l.lstrip().startswith("#"))
+text = re.sub(r"\\\n", " ", text)
+W = r"(?<![A-Za-z0-9_.-])"
+E = r"(?![A-Za-z0-9_-])"
+# (a) a display-class driver named anywhere fails by name, whatever passes it to QEMU.
+CLASS = (r"virtio-vga[A-Za-z0-9-]*|virtio-gpu[A-Za-z0-9-]*|vhost-user-(?:vga|gpu)[A-Za-z0-9-]*"
+         r"|qxl(?:-vga)?|bochs-display|secondary-vga|cirrus-vga|isa-[A-Za-z0-9-]*vga|ati-vga"
+         r"|vmware-svga|ramfb")
+found = [(m.start(), m.group(0)) for m in re.finditer(W + "(?:" + CLASS + ")" + E, text)]
+
+
+def word(i):
+    """The shell word at text[i:], unquoted, and where it ends."""
+    out = ""
+    while i < len(text) and not (text[i].isspace() or text[i] in ");|&"):
+        q = text[i]
+        if q in "'\"":
+            j = text.index(q, i + 1) if q in text[i + 1:] else len(text)
+            out += text[i + 1:j].replace('\\"', '"') if q == '"' else text[i + 1:j]
+            i = j + 1
+        else:
+            out += q
+            i += 1
+    return out, i
+
+
+# (b) each -device value read whole: its driver= key, else its first bare key, else JSON's.
+for m in re.finditer(W + r"[\"']?--?(device|vga)[\"']?(?=[\s=])[\s=]+", text):
+    value, _ = word(m.end())
+    if m.group(1) == "vga":
+        if value != "none":
+            found.append((m.start(), "-vga " + value))
+        continue
+    if value.startswith("{"):
+        j = re.search(r'"driver"\s*:\s*"([^"]*)"', value)
+        driver = j.group(1) if j else ""
+    else:
+        keys = value.split(",")
+        driver = next((k[7:] for k in keys if k.startswith("driver=")), None)
+        if driver is None:
+            driver = next((k for k in keys if "=" not in k), "")
+    if driver == "VGA":
+        found.append((m.start(), driver))
+print(" ".join(name for _, name in sorted(found)))
+EOF
+    ) || return 1
+    [[ $devices == VGA ]] && return 0
+    warn "$1: QEMU display device(s) '$devices', expected VGA alone: virtio-gpu's control queue stalls after an s2idle resume (apex-image#127)"
     return 1
 }
 
