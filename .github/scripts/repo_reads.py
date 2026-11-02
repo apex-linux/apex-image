@@ -25,6 +25,12 @@ class Repo:
         except OSError as e:
             sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
 
+    def source(self, path):
+        try:
+            return open(os.path.join(self.root, path), "rb").read()
+        except OSError as e:
+            sys.exit(f"error: cannot read {e.filename}: {e.strerror}")
+
 
 def allow_lines(repo, path, problems):
     allowed = {}
@@ -57,9 +63,6 @@ def strip(line):
 def references(path, numbered):
     heredoc, quoted, cases, depth = None, False, 0, 0
     shell = not path.endswith(".py")
-    if not shell:
-        numbered = list(numbered)
-        yield from python_reads(path, [line for _, line in numbered])
     for number, line in numbered:
         if heredoc:
             if line.strip() == heredoc:
@@ -91,9 +94,8 @@ def references(path, numbered):
 UNRESOLVED, UNPARSED = "\0", "\1"
 
 
-def module_files(here, level, dotted):
-    """The files beside HERE that importing DOTTED runs: each package's __init__.py, then the module."""
-    base = os.path.join(here, *[".."] * max(0, level - 1))
+def module_files(base, dotted):
+    """The files under BASE that importing DOTTED runs: each package's __init__.py, then the module."""
     parts = [p for p in dotted.split(".") if p]
     for i in range(1, len(parts) + 1):
         yield os.path.normpath(os.path.join(base, *parts[:i], "__init__.py"))
@@ -104,7 +106,7 @@ def module_files(here, level, dotted):
 def joined_to_here(node):
     """The path NODE builds on __file__'s directory with string constants alone, or None."""
     def here(n):
-        return HERE.fullmatch(ast.unparse(n)) is not None
+        return isinstance(n, (ast.Call, ast.Attribute)) and HERE.fullmatch(ast.unparse(n)) is not None
 
     def text(n):
         return n.value if isinstance(n, ast.Constant) and isinstance(n.value, str) else None
@@ -121,39 +123,62 @@ def joined_to_here(node):
     return None
 
 
-def python_reads(path, lines):
-    """Modules beside PATH that LINES import, files they join to __file__, and __file__ uses they cannot."""
-    return dict.fromkeys(python_reads_of(path, lines))
+def python_reads(path, source, tracked):
+    """Modules PATH's SOURCE imports, files it joins to __file__, and __file__ uses it cannot follow."""
+    lines = re.split(r"\r\n|\r|\n", source.decode("utf-8", "replace"))
+    try:
+        return dict.fromkeys(python_reads_of(path, source, lines, tracked))
+    except RecursionError:
+        return {(1, UNPARSED + f"{path} nests too deeply for the walk"): None}
 
 
-def python_reads_of(path, lines):
+def import_bases(path, level, tracked):
+    """Where a module PATH imports at LEVEL is looked for: beside it, or from its top package's parent."""
+    here = os.path.dirname(path)
+    if level:
+        return [os.path.normpath(os.path.join(here, *[".."] * (level - 1)))]
+    top = here
+    while top and os.path.join(top, "__init__.py") in tracked:
+        top = os.path.dirname(top)
+    return [here] if top == here else [here, top]
+
+
+def python_reads_of(path, source, lines, tracked):
     here = os.path.dirname(path)
     try:
-        tree = ast.parse("\n".join(lines), path)
+        tree = ast.parse(source, path)
     except SyntaxError as e:
         yield e.lineno or 1, UNPARSED + f"{path} does not parse ({e.msg})"
         return
+    nodes = list(ast.walk(tree))
     followed = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                for f in module_files(here, 0, alias.name):
-                    yield node.lineno, f
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            for f in module_files(here, node.level, module):
-                yield node.lineno, f
-            for alias in node.names:
-                if alias.name != "*":
-                    for f in module_files(here, node.level, f"{module}.{alias.name}"):
-                        yield node.lineno, f
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            level = getattr(node, "level", 0)
+            module = getattr(node, "module", None) or ""
+            for base in import_bases(path, level, tracked):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        for f in module_files(base, alias.name):
+                            yield node.lineno, os.path.normpath(f)
+                    continue
+                for f in module_files(base, module):
+                    yield node.lineno, os.path.normpath(f)
+                for alias in node.names:
+                    if alias.name not in ("*", "__file__"):
+                        for f in module_files(base, f"{module}.{alias.name}"):
+                            yield node.lineno, os.path.normpath(f)
+            if isinstance(node, ast.ImportFrom) and any(alias.name == "__file__" for alias in node.names):
+                yield node.lineno, UNRESOLVED + lines[node.lineno - 1].strip()
         else:
             name = joined_to_here(node)
             if name is not None:
                 followed |= {id(n) for n in ast.walk(node)}
                 yield node.lineno, os.path.normpath(os.path.join(here, name.lstrip("/")))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id == "__file__" and id(node) not in followed:
+    for node in nodes:
+        named = isinstance(node, ast.Name) and node.id == "__file__"
+        named = named or isinstance(node, ast.Attribute) and node.attr == "__file__"
+        if named and id(node) not in followed:
             yield node.lineno, UNRESOLVED + lines[node.lineno - 1].strip()
 
 
@@ -192,10 +217,16 @@ def walk(repo, queue, covered, allowed, covers, under, problems):
         if token in repo.tracked:
             if token not in seen:
                 seen[token] = where
-                lines = repo.read(token)
-                if token.endswith((".sh", ".py")) or lines[:1] and lines[0].startswith("#!"):
-                    for number, ref in references(token, enumerate(lines, 1)):
-                        queue.append((ref, f"{token}:{number}"))
+                if token.endswith(".py"):
+                    source = repo.source(token)
+                    lines = re.split(r"\r\n|\r|\n", source.decode("utf-8", "replace"))
+                    refs = list(python_reads(token, source, repo.tracked)) + list(references(token, enumerate(lines, 1)))
+                else:
+                    lines = repo.read(token)
+                    shell = token.endswith(".sh") or lines[:1] and lines[0].startswith("#!")
+                    refs = references(token, enumerate(lines, 1)) if shell else []
+                for number, ref in refs:
+                    queue.append((ref, f"{token}:{number}"))
             ok = covered(token)
         elif static != token:
             matches = expand(repo, token)

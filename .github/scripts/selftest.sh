@@ -4150,6 +4150,22 @@ check_true "naming the use it excuses" grep -qF "error: .github/scripts/tool.py:
 check "g4 harness: a Python script that does not parse" 1 \
     "$(hc4 "$HC4_PY; printf 'def (:\n' >.github/scripts/tool.py")"
 check_true "fails, naming it" grep -qF "error: .github/scripts/tool.py:1: .github/scripts/tool.py does not parse (invalid syntax), so the walk cannot tell what it reads" "$HC4.err"
+check "g4 harness: another module's __file__" 1 \
+    "$(hc4 "$HC4_PY; printf 'import rowsmod\nprint(rowsmod.__file__)\nfrom rowsmod import __file__ as there\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py")"
+check_true "is a use the walk cannot follow" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'print(rowsmod.__file__)' reads" "$HC4.err"
+check_true "and so is one imported by name" grep -qF "error: .github/scripts/tool.py:3: cannot tell what 'from rowsmod import __file__ as there' reads" "$HC4.err"
+check "g4 harness: a package module's absolute imports" 1 \
+    "$(hc4 "$HC4_PY; printf 'from pkg import rows\n' >.github/scripts/tool.py; mkdir .github/scripts/pkg; : >.github/scripts/pkg/__init__.py; printf 'import common\nfrom pkg import sibling\n' >.github/scripts/pkg/rows.py; : >.github/scripts/common.py; : >.github/scripts/pkg/sibling.py")"
+check_true "reach a module beside the package" grep -qF "error: .github/scripts/pkg/rows.py:1: reads .github/scripts/common.py" "$HC4.err"
+check_true "and the package's own" grep -qF "error: .github/scripts/pkg/rows.py:2: reads .github/scripts/pkg/sibling.py" "$HC4.err"
+check "g4 harness: a long chain of + that parses is walked" 0 \
+    "$(hc4 "$HC4_PY; python3 -c 'print(\"x = \\\"a\\\"\" + \" + \\\"a\\\"\" * 1000)' >.github/scripts/tool.py")"
+check "g4 harness: one too deep to parse" 1 \
+    "$(hc4 "$HC4_PY; python3 -c 'print(\"x = \\\"a\\\"\" + \" + \\\"a\\\"\" * 20000)' >.github/scripts/tool.py")"
+check_true "fails, naming it" grep -qF "error: .github/scripts/tool.py:1: .github/scripts/tool.py nests too deeply for the walk, so the walk cannot tell what it reads" "$HC4.err"
+check "g4 harness: a BOM, a form feed and a U+2028 in a string" 1 \
+    "$(hc4 "$HC4_PY; printf '\xef\xbb\xbfs = \"a\x0cb\xe2\x80\xa8c\"\nHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py")"
+check_true "parse, and the use names its own line" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'HERE = os.path.dirname(__file__)' reads" "$HC4.err"
 check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line" 1 \
     "$(hc4 "printf 'case \$1 in\n    x)\n        rows=\$(sort\n            \"\$APEX_ROOT/.github/scripts/rows.txt\")\n        ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
 check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
