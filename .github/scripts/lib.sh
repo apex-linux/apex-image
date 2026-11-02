@@ -352,11 +352,14 @@ qemu_parity() {
     return "$rc"
 }
 
+# QEMU's display drivers by name, for g4_display and qualify.sh's runtime check (apex-image#127).
+readonly DISPLAY_DRIVERS_RE='virtio-vga[A-Za-z0-9-]*|virtio-gpu[A-Za-z0-9-]*|vhost-user-(vga|gpu)[A-Za-z0-9-]*|qxl(-vga)?|bochs-display|secondary-vga|cirrus-vga|isa-[A-Za-z0-9-]*vga|ati-vga|vmware-svga|ramfb'
+
 # g4_display FILE: a best-effort lint that FILE asks QEMU for std VGA alone (apex-image#127).
 # It catches honest edits; qualify.sh's QMP check of the running VM is the guarantee.
 g4_display() {
     local devices
-    devices=$(python3 - "$1" <<'EOF'
+    devices=$(python3 - "$1" "$DISPLAY_DRIVERS_RE" <<'EOF'
 import re
 import sys
 
@@ -365,9 +368,7 @@ text = re.sub(r"\\\n", "", "".join(re.sub(r"\s#\s.*", "", l) for l in lines))
 W = r"(?<![A-Za-z0-9_])"
 E = r"(?![A-Za-z0-9_-])"
 # (a) a display-class driver named anywhere fails by name, whatever passes it to QEMU.
-CLASS = (r"virtio-vga[A-Za-z0-9-]*|virtio-gpu[A-Za-z0-9-]*|vhost-user-(?:vga|gpu)[A-Za-z0-9-]*"
-         r"|qxl(?:-vga)?|bochs-display|secondary-vga|cirrus-vga|isa-[A-Za-z0-9-]*vga|ati-vga"
-         r"|vmware-svga|ramfb")
+CLASS = sys.argv[2]
 found = [(m.start(), m.group(0)) for m in re.finditer(W + "(?:" + CLASS + ")" + E, text)]
 # Devices from a config file or set by property are out of the lint's reach: they fail by name.
 found += [(m.start(), m.group(0)) for m in re.finditer(W + r"--?(?:readconfig|set\s+device\.\S*)", text)]
