@@ -370,6 +370,7 @@ E = r"(?![A-Za-z0-9_-])"
 # (a) a display-class driver named anywhere fails by name, whatever passes it to QEMU.
 CLASS = sys.argv[2]
 found = [(m.start(), m.group(0)) for m in re.finditer(W + "(?:" + CLASS + ")" + E, text)]
+named = [p for p, _ in found]
 # Devices from a config file or set by property are out of the lint's reach: they fail by name.
 found += [(m.start(), m.group(0)) for m in re.finditer(W + r"--?(?:readconfig|set\s+device\.\S*)", text)]
 
@@ -391,7 +392,7 @@ def word(i):
 
 # (b) each -device value read whole: its driver= key, else its first bare key, else JSON's.
 for m in re.finditer(W + r"[\"']?--?(device|vga)[\"']?(?=[\s=])[\s=]+", text):
-    value, _ = word(m.end())
+    value, end = word(m.end())
     if m.group(1) == "vga":
         if value != "none":
             found.append((m.start(), "-vga " + value))
@@ -406,6 +407,8 @@ for m in re.finditer(W + r"[\"']?--?(device|vga)[\"']?(?=[\s=])[\s=]+", text):
             driver = next((k for k in keys if "=" not in k), "")
     if driver == "VGA":
         found.append((m.start(), driver))
+    elif re.fullmatch(CLASS, driver) and not any(m.end() <= p < end for p in named):
+        found.append((m.start(), driver))  # named only once unquoted: 'virtio-''gpu-pci'
 print(" ".join(name for _, name in sorted(found)))
 EOF
     ) || return 1
