@@ -5608,6 +5608,8 @@ esac
 EOF
 chmod +x "$V/bin/gh"
 DAILY_DUE='Is the daily due'
+# The step passes daily-due.sh the real clock, so its jobs started that many hours before now.
+DD_FIXED_NOW=$DD_NOW DD_NOW=$(date +%s)
 dd_runs "901:completed:push" "902:completed:push"
 cp "$DD/runs.json" "$V/gh-runs.json"
 dd_jobs "901:$BJ:3:success"
@@ -5631,6 +5633,7 @@ check "daily-due step: one run's jobs unread gives due=true, though an earlier o
 rm "$V/gh-jobs-902.fails" "$V/bin/gh"
 dd_job=$(awk '/^  daily-due:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
 build_job=$(awk '/^  build:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
+DD_NOW=$DD_FIXED_NOW
 check_true "daily-due runs only on the schedule" grep -q "&& github.event_name == 'schedule'$" <<<"$dd_job"
 check "daily-due may only read Actions" "actions: read" "$(awk '/^    permissions:$/ { p = 1; next } p && /^      / { print $1, $2; next } p { exit }' <<<"$dd_job")"
 check_true "build waits for daily-due" grep -qx '    needs: \[dispatch-approval, daily-due\]' <<<"$build_job"
