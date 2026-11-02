@@ -2037,7 +2037,8 @@ pkexec_typed() {
 qmp_query() { # QEMU 8.2.2's info qtree (qmp-fixtures/) for the display devices of $STATE/displays
     local fixture
     printf '%s\n' "$1" >>"$STATE/qmp"
-    fixture="$APEX_ROOT/.github/scripts/qmp-fixtures/$(cat "$STATE/displays" 2>/dev/null || echo vga)"
+    fixture=$(cat "$STATE/displays" 2>/dev/null || echo vga)
+    [[ $fixture == /* ]] || fixture="$APEX_ROOT/.github/scripts/qmp-fixtures/$fixture"
     case $1 in
         *'info qtree'*) jq -Rs . "$fixture.qtree.txt" ;;
         *) if [[ -e $STATE/suspended ]]; then echo '{"status":"suspended"}'; else echo '{"status":"running"}'; fi ;;
@@ -2924,6 +2925,12 @@ display_named rp-secondary '1234:1111 0380 secondary-vga,1234:1111 0300 VGA'
 display_named rp-bochs '1234:1111 0380 bochs-display,1234:1111 0300 VGA'
 display_named ramfb 'non-PCI ramfb,1234:1111 0300 VGA'
 display_named isa-cirrus '1234:1111 0300 VGA,non-PCI isa-cirrus-vga'
+display_named two-vga '1234:1111 0300 VGA,1234:1111 0300 VGA'
+check "display: a forged class line (a JSON -device's string property) fails" 1 "$(display_rc inj-ati)"
+check_true "saying the tree is not as QEMU prints it" grep -qF \
+    "| t-display | FAIL | cannot read QEMU's device tree: a second class line for ati-vga: the device tree is not as QEMU prints it |" "$GUEST_DIR/out/results.md"
+{ cat "$APEX_ROOT/.github/scripts/qmp-fixtures/vga.qtree.txt"; printf '  dev: filler%s, id ""\n' $(seq 8000); } >"$GUEST_DIR/big.qtree.txt"
+check "display: a device tree past 128 KiB is read whole" 0 "$(display_rc "$GUEST_DIR/big")"
 rm "$GUEST_DIR/state/displays"
 # shellcheck disable=SC2016 # expanded by the fake guest
 boot_rc() { guest eval 'VM_NAME=local; wait_ssh'; }
@@ -4468,6 +4475,8 @@ gd_form default-value 's/-device VGA /-device VGA -device "${QUALIFY_GPU:-virtio
 gd_form readconfig 's/-device VGA /-device VGA -readconfig gpu.cfg /' 1
 check_true "named as out of the lint's reach" grep -qF "display device(s) named in it 'VGA -readconfig'" "$QP/err"
 gd_form set-device 's/-device VGA /-device VGA -set device.v0.addr=04.0 /' 1
+gd_form split-quotes "s/-device VGA /-device VGA -device 'virtio-''gpu-pci' /" 1
+check_true "named once unquoted" grep -qF "display device(s) named in it 'VGA virtio-gpu-pci'" "$QP/err"
 gd_form trailing-comment 's/-device VGA /-device VGA # virtio-gpu-pci was #127 /' 0
 
 # --- markers.sh: G4's journal markers against an inventory of their source context ---------

@@ -1534,9 +1534,9 @@ readonly DRM_DRIVERS='for d in /sys/class/drm/card*/device/driver; do [ -e "$d" 
 readonly VM_DISPLAYS='
 import re, sys
 CLASSES = {"VGA controller": "0300", "XGA controller": "0301", "3D controller": "0302", "Display controller": "0380"}
-drivers = re.compile(sys.argv[2])
+drivers = re.compile(sys.argv[1])
 devs = []
-for line in sys.argv[1].splitlines():
+for line in sys.stdin.read().splitlines():
     indent = len(line) - len(line.lstrip())
     m = re.match(r"\s*dev: ([^,]+),", line)
     if m:
@@ -1545,6 +1545,8 @@ for line in sys.argv[1].splitlines():
     m = re.match(r"\s*class (.*), addr [0-9a-f:.]+, pci id ([0-9a-f]{4}:[0-9a-f]{4})", line)
     if m:
         dev = next(d for d in reversed(devs) if d["indent"] == indent - 2)
+        if dev["class"] is not None:
+            sys.exit("a second class line for %s: the device tree is not as QEMU prints it" % dev["type"])
         desc = m.group(1)
         dev["class"] = CLASSES.get(desc) or (desc[6:] if desc.startswith("Class ") else "pci")
         dev["ids"] = m.group(2)
@@ -1568,7 +1570,8 @@ assert_display() {
     local test=$1 qtree displays
     qtree=$(hmp 'info qtree') || qtree=
     [[ -n $qtree ]] || fail "$test" "cannot read QEMU's device tree over QMP ($QMP_SOCKET)"
-    displays=$(python3 -c "$VM_DISPLAYS" "$qtree" "$DISPLAY_DRIVERS_RE") || fail "$test" "cannot read QEMU's device tree"
+    displays=$(python3 -c "$VM_DISPLAYS" "$DISPLAY_DRIVERS_RE" <<<"$qtree" 2>&1) ||
+        fail "$test" "cannot read QEMU's device tree: $(tail -n 1 <<<"$displays")"
     [[ $displays == '1234:1111 0300 VGA' ]] && return 0
     fail "$test" "QEMU built display device(s) '$(paste -sd, - <<<"$displays")', expected std VGA (1234:1111, class 0300) alone: the virtio GPU's control queue stalls after an s2idle resume (apex-image#127)"
 }
