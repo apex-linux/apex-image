@@ -1474,7 +1474,20 @@ STATE=$2
 shift 2
 VM_SERIAL=$STATE/serial
 from() { cat "$STATE/$1" 2>/dev/null || true; }
-as_root() { [[ "$*" == "podman image inspect --format {{.Id}} localhost/apex:build" ]] && echo cafe; }
+as_root() {
+    printf '%s\n' "$*" >>"$STATE/host-calls"
+    case "$*" in
+        "podman image inspect --format {{.Id}} localhost/apex:build") echo cafe ;;
+        "podman image inspect --format {{.Digest}} $LOCAL_CANDIDATE") from local-digest ;;
+        "podman build --pull=never --tag $LOCAL_CANDIDATE $QUALIFY_OUT/candidate" | "podman rmi $LOCAL_CANDIDATE") ;;
+        "podman container inspect --format {{.State.Running}} $CANDIDATE_REGISTRY") from registry-left | grep . ;;
+        "podman rm -f -v $CANDIDATE_REGISTRY") [[ ! -e $STATE/rm-fails ]] && rm -f "$STATE/registry-left" ;;
+        "podman run -d --rm --name $CANDIDATE_REGISTRY -p 127.0.0.1:5000:5000 $CANDIDATE_REGISTRY_IMAGE") [[ ! -e $STATE/registry-fails ]] ;;
+        "podman push --tls-verify=false --digestfile $QUALIFY_OUT/candidate/pushed $LOCAL_CANDIDATE 127.0.0.1:5000/apex-qualify:candidate")
+            [[ ! -e $STATE/push-fails ]] && from pushed >"$QUALIFY_OUT/candidate/pushed" ;;
+        *) return 1 ;;
+    esac
+}
 TEST_PASSWORD=$(from password)
 conversations() { echo "${1:-$(from conversations)}" >"$STATE/conversations"; }
 start_asking() {
@@ -1641,7 +1654,7 @@ login_only() { wait_session "$1-login" user "$TEST_USER"; assert_apex_login "$1-
 # the login through the greeter on, what they run is the real code against this guest.
 local_flow_stubs() {
     ensure_key() { :; }
-    install_disk() { :; }
+    install_disk() { : >"$STATE/retagged"; }
     start_vm() { # -loadvm starts the guest as local-diag saved it
         echo "$*" >>"$STATE/started"
         VM_SERIAL="$QUALIFY_OUT/logs/${2:-$1}.serial.log"
@@ -1684,9 +1697,14 @@ local_flow_stubs() {
     qemu-img() { echo "qemu-img $*" >>"$STATE/disk-calls"; }
     save_bootc_status_fixture() { :; }
     assert_bootloader_updated() { :; }
-    as_root() { case "$*" in *'{{.Digest}}'*) echo sha256:feed ;; *'{{.Id}}'*) echo cafe ;; esac; }
+    as_root() { # the install retags the image: its ID is the one read before it
+        case "$*" in
+            *'{{.Digest}}'*) echo sha256:feed ;;
+            *'{{.Id}}'*) if [[ -e $STATE/retagged ]]; then echo dead; else echo cafe; fi ;;
+        esac
+    }
     assert_green() { result "$1" PASS "green on sha256:feed"; }
-    stage_local_candidate() { LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
+    stage_local_candidate() { echo "$3" >"$STATE/stage-base"; LOCAL_CANDIDATE_DIGEST=sha256:cand; result "$1" PASS staged; }
     counted_rollback() { result "$1-fallback" PASS "back on $2"; }
     create_test_user() { result "$1-user" PASS made; }
     set_test_password() { result "$1-password" PASS set; }
@@ -1724,13 +1742,12 @@ vm_ssh() {
         "rpm-ostree kargs --delete=apex.safe=1") rm -f "$STATE/karg" "$STATE/safe-booted"; : >"$STATE/apex-lock" ;;
         "command -v apexctl") echo /usr/bin/apexctl ;;
         "journalctl -b _UID=60578 _COMM=systemd -o short-monotonic --no-pager") from greeter-manager ;;
-        "rm -rf $GUEST_TMP/candidate && mkdir -p $GUEST_TMP/candidate") ;;
-        "cat > $GUEST_TMP/candidate/manifest.json && chmod 0644 $GUEST_TMP/candidate/manifest.json") cat >"$STATE/built-manifest" ;;
-        "cat > $GUEST_TMP/candidate/Containerfile") cat >"$STATE/built-containerfile" ;;
-        "timeout 1800 bootc image copy-to-storage") ;;
-        "timeout 1800 podman build --pull=never --tag $LOCAL_CANDIDATE $GUEST_TMP/candidate") ;;
-        "timeout 3600 bootc switch --transport containers-storage --download-only $LOCAL_CANDIDATE") ;;
-        "podman rmi $LOCAL_CANDIDATE localhost/bootc >/dev/null") ;;
+        "mkdir -p $CANDIDATE_GUEST_CONF && cat > $CANDIDATE_GUEST_CONF/registries.conf") cat >"$STATE/registries.conf" ;;
+        "cat > $CANDIDATE_GUEST_CONF/policy.json") cat >"$STATE/policy.json" ;;
+        "timeout 3600 env CONTAINERS_REGISTRIES_CONF=$CANDIDATE_GUEST_CONF/registries.conf CONTAINERS_POLICY_JSON=$CANDIDATE_GUEST_CONF/policy.json bootc switch --download-only 10.0.2.2:5000/apex-qualify:candidate")
+            echo switch >>"$STATE/host-calls"
+            [[ ! -e $STATE/switch-fails ]] ;;
+        "rm -rf $CANDIDATE_GUEST_CONF") ;;
         "bootc status --format=json --format-version=1") from status ;;
         "grub2-editenv /boot/grub2/grubenv list") echo apex_ok=0 ;;
         *"org.gnome.ScreenSaver.GetActive"*) printf '(%s,)\n' "$(from active)" ;;
@@ -2049,23 +2066,83 @@ staged() {
 rm -rf "$GUEST_DIR/state"
 mkdir -p "$GUEST_DIR/state"
 printf '%s\n' "$manifest" >"$GUEST_DIR/state/manifest"
+IMAGE_ID=$(printf 'b%.0s' {1..64})
+stage() { guest stage_local_candidate local-stage "$D0" "$IMAGE_ID"; }
 staged "$D1" true
-check "a newer image derived in the guest is staged" 0 "$(guest stage_local_candidate local-stage "$D0")"
-check "its manifest version extends the booted one" 45.20260929.0.1 "$(jq -r .version "$GUEST_DIR/state/built-manifest")"
-check "and nothing else changes in it" "$(jq -S 'del(.version)' <<<"$manifest")" "$(jq -S 'del(.version)' "$GUEST_DIR/state/built-manifest")"
-check "the candidate is the booted image plus that manifest, labelled with its version" \
-    "FROM localhost/bootc|COPY manifest.json /usr/share/apex/manifest.json|LABEL org.opencontainers.image.version=45.20260929.0.1" \
-    "$(paste -sd'|' "$GUEST_DIR/state/built-containerfile")"
-check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged localhost/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
+echo "$D1" >"$GUEST_DIR/state/pushed"
+echo "$D2" >"$GUEST_DIR/state/local-digest"
+check "a newer image built on the host is staged from the host's registry" 0 "$(stage)"
+check "its manifest version extends the booted one" 45.20260929.0.1 "$(jq -r .version "$GUEST_DIR/out/candidate/manifest.json")"
+check "and nothing else changes in it" "$(jq -S 'del(.version)' <<<"$manifest")" "$(jq -S 'del(.version)' "$GUEST_DIR/out/candidate/manifest.json")"
+check "the candidate is the image under test plus that manifest, labelled with its version" \
+    "FROM $IMAGE_ID|COPY manifest.json /usr/share/apex/manifest.json|LABEL org.opencontainers.image.version=45.20260929.0.1" \
+    "$(paste -sd'|' "$GUEST_DIR/out/candidate/Containerfile")"
+check "the guest reaches the host's registry over plain HTTP" '[[registry]]|location = "10.0.2.2:5000"|insecure = true' \
+    "$(paste -sd'|' "$GUEST_DIR/state/registries.conf")"
+check "and trusts that registry alone, for the one switch" \
+    '{"default":[{"type":"reject"}],"transports":{"docker":{"10.0.2.2:5000":[{"type":"insecureAcceptAnything"}]}}}' \
+    "$(jq -c . "$GUEST_DIR/state/policy.json")"
+check "the registry runs from its pinned digest, stops after the switch, and the candidate is removed" \
+    "podman run -d --rm --name apex-qualify-registry-5000 -p 127.0.0.1:5000:5000 docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373|switch|podman rm -f -v apex-qualify-registry-5000|podman rmi localhost/apex-qualify:candidate" \
+    "$(grep -E '^podman (run|rm|rmi) |^switch$' "$GUEST_DIR/state/host-calls" | paste -sd'|')"
+check_true "the row names the staged digest" grep -qF "| local-stage | PASS | staged 10.0.2.2:5000/apex-qualify:candidate ($D1, version 45.20260929.0.1)" "$GUEST_DIR/out/results.md"
+echo "$D2" >"$GUEST_DIR/state/pushed"
+echo "$D1" >"$GUEST_DIR/state/local-digest"
+check "a staged digest other than the pushed manifest's fails, even when podman image inspect names it" 1 "$(stage)"
+check_true "naming both" grep -qF "| local-stage | FAIL | bootc staged $D1, not $D2, the manifest the host pushed" "$GUEST_DIR/out/results.md"
+echo "$D1" >"$GUEST_DIR/state/pushed"
 staged "$D0" true
-check "a candidate with the booted digest fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
+echo "$D0" >"$GUEST_DIR/state/pushed"
+check "a candidate with the booted digest fails" 1 "$(stage)"
+echo "$D1" >"$GUEST_DIR/state/pushed"
 staged "$D1" false
-check "a candidate that is not download-only fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
+check "a candidate that is not download-only fails" 1 "$(stage)"
 staged "" true
-check "no staged digest fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
-jq 'del(.version)' <<<"$manifest" >"$GUEST_DIR/state/manifest"
+check "no staged digest fails" 1 "$(stage)"
 staged "$D1" true
-check "a booted manifest without a version fails" 1 "$(guest stage_local_candidate local-stage "$D0")"
+: >"$GUEST_DIR/state/push-fails"
+check "a failed push fails" 1 "$(stage)"
+: >"$GUEST_DIR/state/host-calls"
+: >"$GUEST_DIR/state/vm-dead"
+check "and qualify.sh's exit after it" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "stops the registry this run started" "podman rm -f -v apex-qualify-registry-5000" \
+    "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/push-fails"
+: >"$GUEST_DIR/state/registry-fails"
+: >"$GUEST_DIR/state/host-calls"
+check "a registry that does not start fails" 1 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check_true "naming its container and port" grep -qF \
+    "| local-stage | FAIL | cannot start apex-qualify-registry-5000 (docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373) on 127.0.0.1:5000: another run's, or the port taken? |" \
+    "$GUEST_DIR/out/results.md"
+check "and qualify.sh's exit then leaves that container alone" "" "$(grep '^podman rm ' "$GUEST_DIR/state/host-calls")"
+rm "$GUEST_DIR/state/registry-fails"
+echo false >"$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/host-calls"
+check "a stopped registry a crashed run left is removed, and the stage goes on" 0 "$(stage)"
+check "before this run starts its own" "podman rm -f -v apex-qualify-registry-5000|podman run -d --rm --name apex-qualify-registry-5000" \
+    "$(grep -oE '^podman (rm -f -v|run -d --rm --name) apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls" | head -n 2 | paste -sd'|')"
+echo true >"$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/host-calls"
+check "a running one is another run's: the stage fails" 1 "$(stage)"
+check "without touching it" "" "$(grep -E '^podman (rm|run) ' "$GUEST_DIR/state/host-calls")"
+rm -f "$GUEST_DIR/state/registry-left"
+: >"$GUEST_DIR/state/rm-fails"
+: >"$GUEST_DIR/state/host-calls"
+check "a registry that will not go: the stage still passes" 0 "$(guest eval "trap cleanup EXIT; stage_local_candidate local-stage $D0 $IMAGE_ID")"
+check "and qualify.sh's exit tries again" 2 "$(grep -c '^podman rm -f -v apex-qualify-registry-5000' "$GUEST_DIR/state/host-calls")"
+check_true "saying how to remove it" grep -qF "cannot remove apex-qualify-registry-5000; remove it with: podman rm -f -v apex-qualify-registry-5000" "$GUEST_DIR/stderr"
+rm "$GUEST_DIR/state/rm-fails" "$GUEST_DIR/state/vm-dead"
+: >"$GUEST_DIR/state/pushed"
+check "a push that wrote no digest fails" 1 "$(stage)"
+echo "$D1" >"$GUEST_DIR/state/pushed"
+: >"$GUEST_DIR/state/switch-fails"
+check "a failed switch fails" 1 "$(stage)"
+rm "$GUEST_DIR/state/switch-fails"
+jq 'del(.version)' <<<"$manifest" >"$GUEST_DIR/state/manifest"
+check "a booted manifest without a version fails" 1 "$(stage)"
+check "qualify.sh's registry:2 is publish.sh's rehearsal registry" \
+    "$(sed -n 's/^readonly REHEARSAL_REGISTRY_IMAGE=\([^ ]*\).*/\1/p' "$APEX_ROOT/.github/scripts/publish.sh")" \
+    "$(sed -n 's/^readonly CANDIDATE_REGISTRY_IMAGE=\([^ ]*\).*/\1/p' "$APEX_ROOT/.github/scripts/qualify.sh")"
 
 logged_in() {
     at_greeter
@@ -2596,13 +2673,17 @@ h_base=$(h_key)
 check "g4-key: the image's key and one harness line" \
     "harness $("$APEX_ROOT/.github/scripts/qualify.sh" g4-harness)|package gdm-1:51.0-1.fc45.x86_64" \
     "$(paste -sd'|' <<<"$h_base")"
-for h_file in qualify.sh lib.sh qualify-allowed-failures.txt ci-host.sh; do
+for h_file in qualify.sh lib.sh qualify-allowed-failures.txt; do
     cp "$H/.github/scripts/$h_file" "$H/$h_file.orig"
     echo '# a changed row' >>"$H/.github/scripts/$h_file"
     check_false "g4-key: a changed $h_file changes the key" test "$(h_key)" = "$h_base"
     cp "$H/$h_file.orig" "$H/.github/scripts/$h_file"
 done
-check "and the same four files give the same key" "$h_base" "$(h_key)"
+cp "$H/.github/scripts/ci-host.sh" "$H/ci-host.sh.orig"
+echo '# a changed runner step' >>"$H/.github/scripts/ci-host.sh"
+check "g4-key: a changed ci-host.sh, which G4 never runs, leaves the key" "$h_base" "$(h_key)"
+cp "$H/ci-host.sh.orig" "$H/.github/scripts/ci-host.sh"
+check "and the same three files give the same key" "$h_base" "$(h_key)"
 key_lines 1.fc45.apex1 aaaa >"$G4_DIR/harness-a.key"
 echo 'harness aaaa' >>"$G4_DIR/harness-a.key"
 record_pass "$G4_DIR/harness-a.key" "$(date -u -d '-1 day' +%FT%TZ)"
@@ -2646,7 +2727,8 @@ local_ready() { # logged in once, so that the guest has its user's files; cmd_lo
 }
 rows_of() { awk -F' [|] ' '{ sub(/^[|] /, "", $1); print $1, $2 }' "$GUEST_DIR/out/results.md" | paste -sd'|'; }
 local_ready
-check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:build')"
+check "cmd_local: a FAIL at Esc ends G4" 1 "$(guest eval 'local_flow_stubs; cmd_local localhost/apex:selftest')"
+check "the candidate builds on the installed image's ID, not on its tag" cafe "$(cat "$GUEST_DIR/state/stage-base")"
 check "in cmd_local's row order, with no row after the first FAIL" \
     "local-install PASS|local-stage PASS|local-fallback PASS|local-password PASS|local-login-boot PASS|local-greeter-login PASS|local-boot-metrics SKIP|local-login PASS|local-lock PASS|local-unlock PASS|local-unlock-signal PASS|local-user-units PASS|local-lock-wrong-password PASS|local-lock-esc FAIL" \
     "$(rows_of)"
@@ -3252,8 +3334,14 @@ check "vm paths: a script vm.yml runs that no path covers" 1 \
 check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:15: reads .github/scripts/daily.sh" "$VP.err"
 check "vm paths: a dynamic path outside every path" 1 \
     "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.env\"\n' >>.github/scripts/helper.sh")"
+check_true "names each file it can be" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env, which no" "$VP.err"
+check "vm paths: a directory read with a trailing slash, outside every path" 1 \
+    "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\"*.env\n' >>.github/scripts/helper.sh")"
+check_true "names the directory" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf, which no" "$VP.err"
+check "vm paths: a dynamic path that names no file, outside every path" 1 \
+    "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.conf\"\n' >>.github/scripts/helper.sh")"
 check_true "is unresolvable" grep -qF \
-    "error: .github/scripts/helper.sh:3: unresolvable path 'tools/conf/\$NAME.env': its static part tools/conf is not under a" "$VP.err"
+    "error: .github/scripts/helper.sh:3: unresolvable path 'tools/conf/\$NAME.conf': its static part tools/conf is not under a" "$VP.err"
 printf -v VP_ALLOW '%s\n' '.github/scripts/helper.sh tools/conf/a.env  read for the log only'
 check "vm paths: an allowed uncovered read" 0 \
     "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh; printf '%s' '$VP_ALLOW' >>.github/scripts/vm-paths-allowed.txt")"
@@ -3311,6 +3399,54 @@ check_true "names the stale line" grep -qF "g4-harness-allowed.txt:3: .github/sc
 check "g4 harness: a digest that hashes a file the checkout lacks" 1 "$(hc4 "rm .github/scripts/helper.sh")"
 check_true "names it" grep -qF "g4_harness hashes .github/scripts/helper.sh, which is not in the checkout" "$HC4.err"
 check "g4 harness: a qualify.sh without g4_harness" 1 "$(hc4 "sed -i '/^g4_harness()/,/^}/d' .github/scripts/qualify.sh")"
+check "g4 harness: a templated file name is each file it can name" 1 \
+    "$(hc4 "printf 'cat \"\$APEX_ROOT/.github/scripts/rows-\$n.txt\"\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows-a.txt")"
+check_true "names the file" grep -qF "qualify.sh:8: reads .github/scripts/rows-a.txt, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a directory's allow line excuses its one read" 1 \
+    "$(hc4 "printf 'ls \"\$APEX_ROOT/.github/scripts\"\n' >>.github/scripts/qualify.sh")"
+check_true "not a second" grep -qF "qualify.sh:8: reads .github/scripts again; its allow line excuses only .github/scripts/qualify.sh:6" "$HC4.err"
+check "g4 harness: the host expands an unquoted heredoc" 1 \
+    "$(hc4 "printf 'cat <<EOF\n\$(cat \"\$APEX_ROOT/.github/scripts/rows.txt\")\nEOF\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "so its reads count" grep -qF "qualify.sh:9: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: but not a quoted one" 0 \
+    "$(hc4 "printf 'cat <<'\"'\"'EOF'\"'\"'\n\$APEX_ROOT/.github/scripts/rows.txt\nEOF\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check "g4 harness: a multi-line \$(...) reads on its last line" 1 \
+    "$(hc4 "printf 'rows=\$(sort\n    \"\$APEX_ROOT/.github/scripts/rows.txt\")\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "names that line" grep -qF "qualify.sh:9: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: a case pattern is not a read" 0 \
+    "$(hc4 "printf 'case \$1 in\n    .github/scripts/rows.txt) ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check "g4 harness: a Python script G4 runs is walked too" 1 \
+    "$(hc4 "sed -i 's/ helper.sh)/ helper.sh tool.py)/' .github/scripts/qualify.sh; printf 'python3 \"\$APEX_ROOT/.github/scripts/tool.py\"\n' >>.github/scripts/qualify.sh; printf 'open(\".github/scripts/rows.txt\")\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "naming its line" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+HC4_PY="sed -i 's/ helper.sh)/ helper.sh tool.py)/' .github/scripts/qualify.sh; printf 'python3 \"\$APEX_ROOT/.github/scripts/tool.py\"\n' >>.github/scripts/qualify.sh"
+check "g4 harness: a module the Python script imports from beside it" 1 \
+    "$(hc4 "$HC4_PY; printf 'import json\nfrom rowsmod import rows\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py")"
+check_true "is walked as a read" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/rowsmod.py, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a file the Python script finds beside itself with os.path" 1 \
+    "$(hc4 "$HC4_PY; printf 'open(os.path.join(os.path.dirname(os.path.abspath(__file__)), \"rows.txt\"))\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "is a read of it" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: and with pathlib" 1 \
+    "$(hc4 "$HC4_PY; printf '(Path(__file__).resolve().parent / \"rows.txt\").read_text()\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "is a read of it too" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+check "g4 harness: a directory read with a trailing slash" 1 \
+    "$(hc4 "printf 'for f in \"\$APEX_ROOT/.github/scripts/\"*.rows; do . \"\$f\"; done\n' >>.github/scripts/qualify.sh; : >.github/scripts/x.rows")"
+check_true "is the directory's second read" grep -qF "qualify.sh:8: reads .github/scripts again; its allow line excuses only .github/scripts/qualify.sh:6" "$HC4.err"
+check "g4 harness: and of a directory nothing excuses" 1 \
+    "$(hc4 "printf 'ls \"\$APEX_ROOT/tools/conf/\"\n' >>.github/scripts/helper.sh; mkdir -p tools/conf; : >tools/conf/a.env")"
+check_true "names the directory" grep -qF "error: .github/scripts/helper.sh:2: reads tools/conf, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: a templated directory read with a trailing slash" 1 \
+    "$(hc4 "printf 'ls \"\$APEX_ROOT/.github/scripts/\$sub/\"\n' >>.github/scripts/qualify.sh")"
+check_true "is each file it can name" grep -qF "qualify.sh:8: reads .github/scripts/g4-harness-allowed.txt, which g4_harness does not hash" "$HC4.err"
+check "g4 harness: modules a Python script imports on one line, dotted or not" 1 \
+    "$(hc4 "$HC4_PY; printf 'import json, rowsmod\nfrom pkg.rows import r\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py; mkdir .github/scripts/pkg; : >.github/scripts/pkg/rows.py")"
+check_true "are reads, each" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rowsmod.py" "$HC4.err"
+check_true "the dotted one too" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/pkg/rows.py" "$HC4.err"
+check "g4 harness: a __file__ use the walk cannot follow" 1 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nopen(os.path.join(HERE, \"rows.txt\"))\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
+check_true "fails by name" grep -qF "error: .github/scripts/tool.py:1: cannot tell what 'HERE = os.path.dirname(__file__)' reads: join a string to __file__ on that line" "$HC4.err"
+check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line" 1 \
+    "$(hc4 "printf 'case \$1 in\n    x)\n        rows=\$(sort\n            \"\$APEX_ROOT/.github/scripts/rows.txt\")\n        ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
+check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
 repo_args_with() {
@@ -4111,9 +4247,12 @@ ch() { # SUBCOMMAND [PATH_KEY=BYTES...]: ci-host.sh's exit on Actions behind the
     printf '%s' "$rc"
 }
 CH_G=$((1024 * 1024 * 1024))
-for c in free-disk storage podman-conf kvm; do
-    check "ci-host $c refuses to run off GitHub Actions" 1 \
-        "$(PATH="$HC/bin:$PATH" GITHUB_ACTIONS='' rc_of "$APEX_ROOT/.github/scripts/ci-host.sh" "$c")"
+for c in free-disk storage podman-conf kvm qualify; do
+    : >"$HC/sudo"
+    hc_rc=0
+    PATH="$HC/bin:$PATH" GITHUB_ACTIONS='' FAKE_SUDO="$HC/sudo" "$APEX_ROOT/.github/scripts/ci-host.sh" "$c" >"$HC/out" 2>&1 || hc_rc=$?
+    check "ci-host $c refuses to run off GitHub Actions, before it runs anything as root" \
+        "1|1|" "$hc_rc|$(grep -c "ci-host.sh $c changes the host" "$HC/out")|$(paste -sd'|' "$HC/sudo")"
 done
 check "ci-host podman-conf" 0 "$(ch podman-conf)"
 check "writes the sqlite drop-in with temp in the store" \
@@ -4122,6 +4261,10 @@ check_true "to containers.conf.d" grep -qx "tee /etc/containers/containers.conf.
 check "ci-host kvm passes exactly when /dev/kvm is writable" "$([[ -w /dev/kvm ]] && echo 0 || echo 1)" "$(ch kvm)"
 check_true "after the udev rule for kvm" grep -qx "tee /etc/udev/rules.d/99-apex-kvm.rules" "$HC/sudo"
 check "and gives the kvm group the node" 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' "$(cat "$HC/tee")"
+check "ci-host qualify passes exactly when /dev/kvm is writable" "$([[ -w /dev/kvm ]] && echo 0 || echo 1)" "$(ch qualify)"
+check "after qualify.sh's packages, podman-conf and the udev rule for kvm" \
+    "apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils ovmf dosfstools btrfs-progs openssh-client jq|tee /etc/containers/containers.conf.d/50-apex-ci.conf|tee /etc/udev/rules.d/99-apex-kvm.rules" \
+    "$(grep -E '^(apt-get install|tee)' "$HC/sudo" | paste -sd'|')"
 check "ci-host free-disk" 0 "$(ch free-disk "_=$((20 * CH_G))" "_=$((50 * CH_G))")"
 check_true "deletes the toolchains" grep -qx "rm -rf /usr/share/dotnet" "$HC/sudo"
 check_true "and prunes docker's images" grep -qx "docker image prune --all --force" "$HC/sudo"
