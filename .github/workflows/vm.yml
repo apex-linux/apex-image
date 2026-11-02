@@ -18,7 +18,6 @@ on:
       - .github/scripts/qualify-allowed-failures.txt
       - .github/scripts/image.sh
       - .github/scripts/oci-artifact.sh
-      - .github/scripts/ci-host.sh
       - .github/scripts/lib.sh
       - tools/builder-vm/build-image.sh
       - tools/builder-vm/lane.sh
