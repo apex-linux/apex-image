@@ -1566,7 +1566,8 @@ for d in devs:
 # G4's guarantee of std VGA alone, from QEMU itself; contracts.sh's g4_display is only a lint.
 assert_display() {
     local test=$1 qtree displays
-    qtree=$(hmp 'info qtree') && [[ -n $qtree ]] || fail "$test" "cannot read QEMU's device tree over QMP ($QMP_SOCKET)"
+    qtree=$(hmp 'info qtree') || qtree=
+    [[ -n $qtree ]] || fail "$test" "cannot read QEMU's device tree over QMP ($QMP_SOCKET)"
     displays=$(python3 -c "$VM_DISPLAYS" "$qtree" "$DISPLAY_DRIVERS_RE") || fail "$test" "cannot read QEMU's device tree"
     [[ $displays == '1234:1111 0300 VGA' ]] && return 0
     fail "$test" "QEMU built display device(s) '$(paste -sd, - <<<"$displays")', expected std VGA (1234:1111, class 0300) alone: the virtio GPU's control queue stalls after an s2idle resume (apex-image#127)"
