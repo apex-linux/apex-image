@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: components.sh fetch | env | promotable | provenance
+usage: components.sh fetch | env | promotable | provenance | verify PATH
 
 The component checkouts the image builds from, pinned by components.lock at the root of
 this checkout: one line per repository, `NAME GIT-URL SHA` (40 lowercase hex digits);
@@ -26,6 +26,12 @@ blank lines and lines starting with # are skipped.
               or on a pin/* branch whose commits past main are each a `git cherry-pick -x`
               of a commit X on main, with a `(cherry picked from commit X)` trailer and
               changing only paths that X changes; 1 otherwise
+  verify PATH exit 0 when PATH is a pinned clone of the last fetch that is still at its
+              pin, clean, a plain single repository (no commondir, gitdir, worktrees),
+              and whose .git/config holds only what fetch writes (core and extensions
+              keys with fetch's values, remote.origin and branch keys); 1, naming what
+              is wrong, otherwise. build-image.sh asks before it caches RPMs built from
+              PATH, and before the lane builds from it
 
 APEX_SRC_<NAME> (NAME upper-cased, - as _; APEX_SRC_APEX_DESKTOP for apex-desktop)
 points at a sibling checkout to use instead of the pinned clone, relative to this
@@ -50,6 +56,37 @@ git_in() {
     local dir=$1
     shift
     git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directory="$dir" -C "$dir" "$@"
+}
+
+# NAME VALUE: whether a pinned clone's .git/config may hold it, as fetch writes it.
+config_allowed() {
+    case $1 in
+        core.repositoryformatversion) [[ $2 == 0 || $2 == 1 ]] ;;
+        core.filemode | core.logallrefupdates) [[ $2 == true ]] ;;
+        core.bare) [[ $2 == false ]] ;;
+        extensions.refstorage) [[ $2 == files || $2 == reftable ]] ;;
+        extensions.objectformat) [[ $2 == sha1 || $2 == sha256 ]] ;;
+        remote.origin.url | remote.origin.fetch | remote.origin.tagopt | branch.*.remote | branch.*.merge) true ;;
+        *) false ;;
+    esac
+}
+
+# DIR: why its clone is no plain single repository with only fetch's config, or nothing. The
+# config is read as a file, never through git's include handling or another repository's.
+unsafe_config() {
+    local f entry name bad=''
+    [[ -d $1/.git && ! -L $1/.git ]] || { echo ".git is not a directory"; return; }
+    for f in commondir gitdir worktrees config.worktree; do
+        [[ ! -e $1/.git/$f && ! -L $1/.git/$f ]] || { echo ".git/$f makes it no plain single repository"; return; }
+    done
+    f=$1/.git/config
+    [[ -f $f && ! -L $f ]] || { echo ".git/config is not a regular file"; return; }
+    while IFS= read -r -d '' entry; do
+        name=${entry%%$'\n'*}
+        [[ $entry == *$'\n'* ]] || entry+=$'\n'
+        config_allowed "${name,,}" "${entry#*$'\n'}" || bad+=" $name=${entry#*$'\n'}"
+    done < <(git config --file "$f" --no-includes --null --list 2>/dev/null)
+    [[ -z $bad ]] || echo ".git/config sets${bad//[^[:print:]]/?}"
 }
 
 lock_sha256() {
@@ -93,6 +130,12 @@ reclaim() {
 clone_pinned() {
     local name=$1 url=$2 sha=$3 dest=$DIR/$1
     reclaim "$name" "$dest"
+    local unsafe
+    unsafe=$([[ ! -e $dest ]] || unsafe_config "$dest")
+    if [[ -n $unsafe ]]; then
+        log "$name: $unsafe; cloning afresh"
+        rm -rf -- "$dest"
+    fi
     if [[ -d $dest/.git && $(git_in "$dest" remote get-url origin 2>/dev/null) == "$url" ]]; then
         git_in "$dest" fetch -q --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
     else
@@ -211,9 +254,25 @@ cmd_provenance() {
     return "$bad"
 }
 
+cmd_verify() {
+    local kind name mode sha path found='' unsafe
+    current_state
+    while read -r kind name mode sha path; do
+        [[ $kind == component && $path == "$1" ]] || continue
+        found=$name
+        [[ $mode == pinned ]] || die "$name: $path is a $mode, not a pinned clone"
+        unsafe=$(unsafe_config "$path")
+        [[ -z $unsafe ]] || die "$name: $unsafe"
+        [[ $(git_in "$path" rev-parse HEAD 2>/dev/null) == "$sha" ]] || die "$name: HEAD is not its pin $sha"
+        [[ -z $(git_in "$path" status --porcelain --ignored=no 2>&1) ]] || die "$name: the clone of $sha is not clean"
+    done <"$STATE"
+    [[ -n $found ]] || die "$1 is no component of the last fetch"
+}
+
 main() {
-    (($# == 1)) || { usage >&2; exit "$EXIT_USAGE"; }
+    [[ $# == 1 || ($# == 2 && $1 == verify) ]] || { usage >&2; exit "$EXIT_USAGE"; }
     case $1 in
+        verify) cmd_verify "$2" ;;
         fetch) cmd_fetch ;;
         env) cmd_env ;;
         promotable) cmd_promotable ;;
