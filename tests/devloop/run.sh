@@ -8,6 +8,8 @@ REPO=$(cd -- "$HERE/../.." && pwd)
 readonly DESKTOP_VM=$REPO/tools/builder-vm/desktop-vm.sh
 readonly SHELL_DEV=$REPO/tools/builder-vm/shell-dev.sh
 readonly SHELL_DEV_GUEST=$REPO/tools/builder-vm/shell-dev-guest.sh
+readonly APP_DEV=$REPO/tools/builder-vm/app-dev.sh
+readonly APP_DEV_GUEST=$REPO/tools/builder-vm/app-dev-guest.sh
 readonly THROWAWAY_PORT=2299
 readonly BUILDER_PORT=2222
 readonly OWNER_PORT=2223
@@ -94,6 +96,8 @@ case $cmd in
     *"cat >/var/lib/apex-shell-dev/bin/shell-dev-guest.sh"*) cat >"$state/guest-script" ;;
     *"shell-dev-guest.sh receive inputs"*) cat >"$state/inputs.tar" ;;
     *"shell-dev-guest.sh receive src"*) cat >"$state/src.tar" ;;
+    *"cat >/var/lib/apex-app-dev/bin/app-dev-guest.sh"*) cat >"$state/app-guest-script" ;;
+    *"app-dev-guest.sh receive "*) cat >"$state/app-inputs.tar" ;;
     *"shell-dev-guest.sh log"*) exec sleep 300 ;;
     *"shell-dev-guest.sh eval Main.panel.height"*)
         [[ -n ${FAKE_REPO:-} ]] || exit 0
@@ -469,6 +473,62 @@ check "push installs the guest script" cmp -s "$SHELL_DEV_GUEST" "$FAKE_STATE/gu
 check "push sends the inputs" \
     bash -c "tar -tf '$FAKE_STATE/inputs.tar' | grep -qx source.env && tar -tf '$FAKE_STATE/inputs.tar' | grep -qx 'rpms/$SRPM'"
 check "push sends desktop/shell" bash -c "tar -tf '$FAKE_STATE/src.tar' | grep -qx './js/ui/apex/layer.js'"
+
+readonly APP_KEY=k7
+readonly APP_SRPM=ptyxis-49.1-1.fc45.apex2.src.rpm
+mkdir -p "$BUILDER_HOME/apex-store/pkgs/ptyxis/$APP_KEY" "$THROWAWAY_DIR/app-dev/ptyxis/rpms"
+printf 'srpm\n' >"$THROWAWAY_DIR/app-dev/ptyxis/rpms/$APP_SRPM"
+{
+    printf '# apex-lane manifest 1: kind nevra sha256 file\n'
+    printf '# pkg=ptyxis family=ptyxis key=%s release=1.fc45.apex2 n=2 stock=ptyxis-49.1-1.fc45 fedora=45 ga_reached=0\n' "$APP_KEY"
+    printf 'built ptyxis-0:49.1-1.fc45.apex2.x86_64 00 ptyxis-49.1-1.fc45.apex2.x86_64.rpm\n'
+    printf 'apex-srpm ptyxis-0:49.1-1.fc45.apex2.src %s %s\n' \
+        "$(sha256sum "$THROWAWAY_DIR/app-dev/ptyxis/rpms/$APP_SRPM" | cut -d' ' -f1)" "$APP_SRPM"
+} >"$BUILDER_HOME/apex-store/pkgs/ptyxis/$APP_KEY/manifest.txt"
+cp "$FAKE_STATE/vm-lock" "$T/shell-dev-lock"
+
+run_cmd throwaway "$APP_DEV" mutter fetch
+check "app-dev refuses a package outside its three" test "$RC" -ne 0
+check "and names them" err_has "gnome-control-center nautilus ptyxis"
+run_cmd throwaway "$APP_DEV" ptyxis nonsense
+check "app-dev refuses an unknown command" test "$RC" -ne 0
+run_cmd env APEX_DESKTOP_THROWAWAY=1 APEX_DESKTOP_SSH_PORT=$THROWAWAY_PORT "$APP_DEV" ptyxis fetch
+check "app-dev keeps the throwaway guard" test "$RC" -ne 0 -a ! -e "$OWNER_DIR"
+run_cmd throwaway "$APP_DEV" nautilus build
+check "app-dev build needs a fetched SRPM" test "$RC" -ne 0
+check "and says to fetch" err_has "just app-dev nautilus fetch"
+
+printf 'family ptyxis stock %s\n' "$APP_KEY" >"$FAKE_STATE/vm-lock"
+run_cmd throwaway "$APP_DEV" ptyxis fetch
+check "app-dev fetch refuses a lock that ships Fedora's own ptyxis" test "$RC" -ne 0
+check "that refusal says stock" err_has "Fedora's own ptyxis"
+
+printf 'family gnome-shell built %s\nfamily ptyxis built %s\n' "$KEY" "$APP_KEY" >"$FAKE_STATE/vm-lock"
+run_cmd throwaway "$APP_DEV" ptyxis fetch
+app_inputs=$THROWAWAY_DIR/app-dev/ptyxis
+check "app-dev fetch takes the VM's build" test "$RC" -eq 0
+check "it records the package, its build and the SRPM" \
+    bash -c "grep -qx 'pkg=ptyxis' '$app_inputs/source.env' && grep -qx 'vr=49.1-1.fc45.apex2' '$app_inputs/source.env' &&
+        grep -qx 'srpm=$APP_SRPM' '$app_inputs/source.env'"
+check "and keeps the Apex SRPM" test -f "$app_inputs/rpms/$APP_SRPM"
+
+mkdir -p "$OWNER_DIR/app-dev"
+: >"$OWNER_DIR/app-dev/owner-file"
+cp "$FAKE_STATE/vm-lock" "$BUILDER_HOME/apex-store/rpms.lock.next"
+run_cmd "$APP_DEV" ptyxis fetch </dev/null
+check "without a terminal, app-dev fetch refuses the owner's VM" \
+    bash -c "test $RC -ne 0 && grep -qF 'stdin is not a terminal' '$T/err'"
+check "and writes nothing into its directory" \
+    test "$(find "$OWNER_DIR" -mindepth 1 | sort | paste -sd' ')" == "$OWNER_DIR/app-dev $OWNER_DIR/app-dev/owner-file"
+rm -rf -- "${OWNER_DIR:?}" "${BUILDER_HOME:?}/apex-store/rpms.lock.next"
+
+rm -f -- "${FAKE_STATE:?}/app-guest-script" "${FAKE_STATE:?}/app-inputs.tar"
+run_cmd throwaway "$APP_DEV" ptyxis push
+check "app-dev push succeeds" test "$RC" -eq 0
+check "it installs the guest script" cmp -s "$APP_DEV_GUEST" "$FAKE_STATE/app-guest-script"
+check "it sends the SRPM and source.env" \
+    bash -c "tar -tf '$FAKE_STATE/app-inputs.tar' | grep -qx source.env && tar -tf '$FAKE_STATE/app-inputs.tar' | grep -qx 'rpms/$APP_SRPM'"
+cp "$T/shell-dev-lock" "$FAKE_STATE/vm-lock"
 
 wait_for_ssh_log() {
     local wanted_count=$1 text=$2 polls count

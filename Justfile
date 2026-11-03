@@ -257,3 +257,8 @@ shell-c:
     @echo '  tar -C ~/apex-shell-c/root -cf - usr | sudo tar -C / --no-same-owner --no-overwrite-dir -xf -'
     @echo ''
     @echo 'Then just shell-dev on this host (the nested shell), or log out and in (the session shell), runs it.'
+
+# An Apex app's C (gnome-control-center, nautilus or ptyxis) rebuilt incrementally in the desktop VM: fetch, push, build, run.
+[positional-arguments]
+app-dev *args:
+    tools/builder-vm/app-dev.sh "$@"
