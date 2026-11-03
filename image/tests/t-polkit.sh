@@ -22,8 +22,8 @@ check() {
 
 check "$(mkroot good)"
 expect_rc "apex-system's policy passes" 0
-expect_out "and names its six actions" \
-    "^PASS polkit: /$ACTIONS/$NAME: 6 actions, vendor Apex: io\\.github\\.apex-linux\\.apex\\.update\\.check .*\\.configure$"
+expect_out "and names its seven actions, major-upgrade last" \
+    "^PASS polkit: /$ACTIONS/$NAME: 7 actions, vendor Apex: io\\.github\\.apex-linux\\.apex\\.update\\.check .*\\.configure io\\.github\\.apex-linux\\.apex\\.update\\.major-upgrade$"
 
 check "$(mkroot novendor '/<vendor>Apex<\/vendor>/d')"
 expect_rc "a missing vendor fails" 1
@@ -72,7 +72,7 @@ sed 's/apex\.update/apex.other/g' "$POLICY" >"$r/$ACTIONS/io.github.apex-linux.a
 sed -i '/<vendor>Apex<\/vendor>/d' "$r/$ACTIONS/io.github.apex-linux.apex.other.policy"
 check "$r"
 expect_rc "every Apex policy is checked" 1
-expect_out "the good one passes" "^PASS polkit: /$ACTIONS/$NAME: 6 actions"
+expect_out "the good one passes" "^PASS polkit: /$ACTIONS/$NAME: 7 actions"
 expect_out "the bad one fails" "apex\\.other\\.check's vendor is ''"
 
 done_testing
