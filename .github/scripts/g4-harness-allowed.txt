@@ -1,5 +1,9 @@
 # Files G4 reads that its harness digest leaves out, one per line: READER PATH REASON. Exact paths
 # only; g4-harness-check.sh fails on a line that no longer matches a read.
+
+# A __file__@, __python__@ or __syntax__@ key excuses one use, pinned to its line's text. One on a line that
+# only names a directory (HERE = ...) stays valid when reads are added through HERE: review those reads.
+
 .github/scripts/qualify.sh .github/scripts  g4_harness's own cd: each file it then hashes is checked here
 .github/scripts/qualify.sh image/system_files  the key's file lines hash each /usr file of it as the image under test carries it
 .github/scripts/qualify.sh image/variants/pair  the key's file lines hash each of its files that the image under test carries

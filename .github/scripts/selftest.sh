@@ -4116,7 +4116,7 @@ HC4_EOF
     printf '%s\n' '# READER PATH REASON' '.github/scripts/qualify.sh .github/scripts  the digest'"'"'s own cd' \
         >"$HC4/.github/scripts/g4-harness-allowed.txt"
     (cd "$HC4" && eval "$1" && git init -q && git add -A)
-    "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$HC4" >"$HC4.out" 2>"$HC4.err" || rc=$?
+    timeout 30 "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$HC4" >"$HC4.out" 2>"$HC4.err" || rc=$?
     printf '%s' "$rc"
 }
 check "g4 harness: a fixture whose digest covers every read" 0 "$(hc4 :)"
@@ -4182,7 +4182,8 @@ check_true "the dotted one too" grep -qF "error: .github/scripts/tool.py:2: read
 check "g4 harness: a __file__ use the walk cannot follow" 1 \
     "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nopen(os.path.join(HERE, \"rows.txt\"))\n' >.github/scripts/tool.py; : >.github/scripts/rows.txt")"
 check_true "fails by name" grep -qF "error: .github/scripts/tool.py:1: cannot tell what 'HERE = os.path.dirname(__file__)' reads: join a string to __file__ on that line" "$HC4.err"
-check_true "and says how to excuse it" grep -qF "or excuse this one use with the allow line '.github/scripts/tool.py __file__ REASON'" "$HC4.err"
+check_true "and says how to excuse that use, by its line's text" grep -qF \
+    "or excuse this use, pinned to that line's text, with the allow line '.github/scripts/tool.py __file__@79cbaafa REASON'" "$HC4.err"
 check "g4 harness: an import with a trailing comment, or after a ;" 1 \
     "$(hc4 "$HC4_PY; printf 'import rowsmod  # noqa: E402\nimport json; import semi\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py; : >.github/scripts/semi.py")"
 check_true "is still a read" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rowsmod.py" "$HC4.err"
@@ -4200,14 +4201,28 @@ check "g4 harness: a file found beside the script in an f-string" 1 \
 check_true "is a read of it" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
 check "g4 harness: __file__ named in a docstring or a comment reads nothing" 0 \
     "$(hc4 "$HC4_PY; printf '\"\"\"Finds its rows\nbeside __file__.\n\"\"\"\n# and __file__ here\n' >.github/scripts/tool.py")"
-check "g4 harness: an allow line for __file__ excuses its one use" 0 \
-    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; printf '.github/scripts/tool.py __file__  HERE only names the log directory\n' >>.github/scripts/g4-harness-allowed.txt")"
-check "g4 harness: not a second" 1 \
-    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nTHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; printf '.github/scripts/tool.py __file__  HERE only names the log directory\n' >>.github/scripts/g4-harness-allowed.txt")"
-check_true "naming the use it excuses" grep -qF "error: .github/scripts/tool.py:2: uses __file__ again; its allow line excuses only .github/scripts/tool.py:1" "$HC4.err"
+HC4_HERE="printf '.github/scripts/tool.py __file__@79cbaafa  HERE only names the log directory\n' >>.github/scripts/g4-harness-allowed.txt"
+check "g4 harness: an allow line excuses the __file__ use whose line it names" 0 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; $HC4_HERE")"
+check "g4 harness: not another use on a line with the same text" 1 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; $HC4_HERE")"
+check_true "which needs an allow line of its own" grep -qF \
+    "error: .github/scripts/tool.py:2: cannot tell what 'HERE = os.path.dirname(__file__)' reads: join a string to __file__ on that line, or excuse this use, pinned to that line's text, with the allow line '.github/scripts/tool.py __file__@79cbaafa.2 REASON'" \
+    "$HC4.err"
+check "g4 harness: nor a use on another line" 1 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)\nTHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py; $HC4_HERE")"
+check_true "named by its own text" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'THERE = os.path.dirname(__file__)' reads" "$HC4.err"
+check "g4 harness: nor the use once its line changed" 1 \
+    "$(hc4 "$HC4_PY; printf 'HERE = os.path.dirname(__file__)  # the log directory\n' >.github/scripts/tool.py; $HC4_HERE")"
+check_true "whose new text needs a new allow line" grep -qF "allow line '.github/scripts/tool.py __file__@4e025f12 REASON'" "$HC4.err"
+check_true "and the old one goes stale" grep -qF ".github/scripts/tool.py __file__@79cbaafa is no longer an unhashed read" "$HC4.err"
 check "g4 harness: a Python script that does not parse" 1 \
     "$(hc4 "$HC4_PY; printf 'def (:\n' >.github/scripts/tool.py")"
-check_true "fails, naming it" grep -qF "error: .github/scripts/tool.py:1: .github/scripts/tool.py does not parse (invalid syntax), so the walk cannot tell what it reads" "$HC4.err"
+check_true "fails, naming it and the Python that read it" grep -qE \
+    "error: \.github/scripts/tool\.py:1: \.github/scripts/tool\.py does not parse on Python [0-9]+\.[0-9]+\.[0-9]+ \(invalid syntax\), so the walk cannot tell what it reads; if a newer Python reads it, excuse it with the allow line '\.github/scripts/tool\.py __syntax__@4cd93c46 REASON'" \
+    "$HC4.err"
+check "g4 harness: and its allow line excuses it" 0 \
+    "$(hc4 "$HC4_PY; printf 'def (:\n' >.github/scripts/tool.py; printf '.github/scripts/tool.py __syntax__@4cd93c46  the guest runs a newer Python\n' >>.github/scripts/g4-harness-allowed.txt")"
 check "g4 harness: another module's __file__" 1 \
     "$(hc4 "$HC4_PY; printf 'import rowsmod\nprint(rowsmod.__file__)\nfrom rowsmod import __file__ as there\n' >.github/scripts/tool.py; : >.github/scripts/rowsmod.py")"
 check_true "is a use the walk cannot follow" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'print(rowsmod.__file__)' reads" "$HC4.err"
@@ -4224,6 +4239,208 @@ check_true "fails, naming it" grep -qF "error: .github/scripts/tool.py:1: .githu
 check "g4 harness: a BOM, a form feed and a U+2028 in a string" 1 \
     "$(hc4 "$HC4_PY; printf '\xef\xbb\xbfs = \"a\x0cb\xe2\x80\xa8c\"\nHERE = os.path.dirname(__file__)\n' >.github/scripts/tool.py")"
 check_true "parse, and the use names its own line" grep -qF "error: .github/scripts/tool.py:2: cannot tell what 'HERE = os.path.dirname(__file__)' reads" "$HC4.err"
+HC4_PYF=$TMP/hc4-python
+mkdir -p "$HC4_PYF"
+cat >"$HC4_PYF/alias.py" <<'EOF'
+from os.path import join, dirname
+import os.path as p
+from pathlib import Path as P
+open(join(dirname(__file__), "rowsa.txt"))
+open(p.join(p.dirname(p.abspath(__file__)), "rowsb.txt"))
+(P(__file__).parent / "rowsc.txt").read_text()
+EOF
+check "g4 harness: os.path and pathlib under other names" 1 \
+    "$(hc4 "$HC4_PY; cp '$HC4_PYF/alias.py' .github/scripts/tool.py; : >.github/scripts/rowsa.txt; : >.github/scripts/rowsb.txt; : >.github/scripts/rowsc.txt")"
+check_true "from os.path import join, dirname" grep -qF "error: .github/scripts/tool.py:4: reads .github/scripts/rowsa.txt" "$HC4.err"
+check_true "import os.path as p" grep -qF "error: .github/scripts/tool.py:5: reads .github/scripts/rowsb.txt" "$HC4.err"
+check_true "from pathlib import Path as P" grep -qF "error: .github/scripts/tool.py:6: reads .github/scripts/rowsc.txt" "$HC4.err"
+cat >"$HC4_PYF/chain.py" <<'EOF'
+open(os.path.join(os.path.dirname(__file__), "rows") + ".txt")
+(Path(__file__).parent / "rows").with_suffix(".json")
+open(os.path.join(os.path.dirname(__file__), "rows", name))
+EOF
+check "g4 harness: a path built further than its join" 1 \
+    "$(hc4 "$HC4_PY; cp '$HC4_PYF/chain.py' .github/scripts/tool.py; : >.github/scripts/rows; : >.github/scripts/rows.txt; : >.github/scripts/rows.json")"
+check_true "is the longer path, with + \".txt\"" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows.txt" "$HC4.err"
+check_false "not the join's" grep -qF "error: .github/scripts/tool.py:1: reads .github/scripts/rows," "$HC4.err"
+check_true "and with .with_suffix" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/rows.json" "$HC4.err"
+check_true "one built on a name is a use the walk cannot follow" grep -qF \
+    "error: .github/scripts/tool.py:3: cannot tell what 'open(os.path.join(os.path.dirname(__file__), \"rows\", name))' reads" "$HC4.err"
+cat >"$HC4_PYF/embedded.sh" <<'EOF'
+readonly CODE='
+import rowsa
+'
+python3 -c "$CODE"
+python3 -c 'import rowsb'
+python3 - <<'PY'
+import rowsc
+PY
+"$APEX_ROOT/.github/scripts/pytool"
+EOF
+printf '#!/usr/bin/env python3\nimport rowsd\n' >"$HC4_PYF/pytool"
+check "g4 harness: Python a shell script runs" 1 \
+    "$(hc4 "cat '$HC4_PYF/embedded.sh' >>.github/scripts/qualify.sh; cp '$HC4_PYF/pytool' .github/scripts/; sed -i 's/ helper.sh)/ helper.sh pytool)/' .github/scripts/qualify.sh
+        for m in rowsa rowsb rowsc rowsd; do : >.github/scripts/\$m.py; done")"
+check_true "in a python3 -c of a readonly string" grep -qF "error: .github/scripts/qualify.sh:9: reads .github/scripts/rowsa.py" "$HC4.err"
+check_true "in a python3 -c of a literal" grep -qF "error: .github/scripts/qualify.sh:12: reads .github/scripts/rowsb.py" "$HC4.err"
+check_true "fed on python3 -'s stdin" grep -qF "error: .github/scripts/qualify.sh:14: reads .github/scripts/rowsc.py" "$HC4.err"
+check_true "and in a script with a python shebang and no .py" grep -qF "error: .github/scripts/pytool:2: reads .github/scripts/rowsd.py" "$HC4.err"
+cat >"$HC4_PYF/dynamic.py" <<'EOF'
+import importlib, runpy, sys
+importlib.import_module("rowsa")
+__import__("rowsb")
+runpy.run_path("rowsc.py")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
+import rowsd
+from pkg import *
+EOF
+check "g4 harness: modules loaded by name" 1 \
+    "$(hc4 "$HC4_PY; cp '$HC4_PYF/dynamic.py' .github/scripts/tool.py; mkdir .github/scripts/lib .github/scripts/pkg
+        for m in rowsa rowsb rowsc lib/rowsd pkg/one; do : >.github/scripts/\$m.py; done
+        printf '__all__ = [\"one\"]\n' >.github/scripts/pkg/__init__.py")"
+check_true "importlib.import_module" grep -qF "error: .github/scripts/tool.py:2: reads .github/scripts/rowsa.py" "$HC4.err"
+check_true "__import__" grep -qF "error: .github/scripts/tool.py:3: reads .github/scripts/rowsb.py" "$HC4.err"
+check_true "runpy.run_path" grep -qF "error: .github/scripts/tool.py:4: reads .github/scripts/rowsc.py" "$HC4.err"
+check_true "an import from a directory sys.path gained" grep -qF "error: .github/scripts/tool.py:6: reads .github/scripts/lib/rowsd.py" "$HC4.err"
+check_true "and a star import's modules, by the package's __all__" grep -qF "error: .github/scripts/tool.py:7: reads .github/scripts/pkg/one.py" "$HC4.err"
+cat >"$HC4_PYF/forms.sh" <<'EOF'
+python3 -c "import rowsa"
+python3 -c '
+import rowsb
+'
+python3 <<'PY'
+import rowsc
+PY
+f() {
+    local code='import rowsd'
+    python3 -c "$code"
+}
+python3 -Ic 'import rowse'
+python3 -W ignore -c 'import rowsf'
+python3.12 -c 'import rowsg'
+python3 <<<'import rowsh'
+DQ="import rowsi"
+python3 -c "$DQ"
+python3 -c "$LIBCODE"
+python3 -c 'import rowsk; print('\''x'\'')'
+python3 - <<-'PY'
+	import rowsl
+	PY
+# python3 -c "$NOPE"
+cat <<'EOF2'
+python3 -c "$NOPE"
+EOF2
+readonly A='x'  # a comment
+readonly CODE='import rowsm'
+python3 -c "$CODE"
+python3 -c "$NOPE"
+printf 'x' | python3 -
+python3 -c "import x; $y"
+python3 -c "$NOPE"
+python3 -c 'import os; print(os.__file__)'
+python3 -c 'import os; print(os.__file__)'
+TWICE='import rowsn'
+python3 -c "$TWICE"
+TWICE='import rowso'
+python3 -c "$TWICE"
+python3 -c 'def (:'
+python3 -c 'class (:'
+python3 - <<'PY'
+open(os.path.join(os.path.dirname(__file__), "rowsp.txt"))
+PY
+EOF
+check "g4 harness: the forms Python takes in a shell script" 1 \
+    "$(hc4 "cat '$HC4_PYF/forms.sh' >>.github/scripts/qualify.sh; printf 'LIBCODE=%s\n' \"'import rowsj'\" >>.github/scripts/lib.sh
+        for m in a b c d e f g h i j k l m n o; do : >.github/scripts/rows\$m.py; done; : >rowsp.txt
+        printf '.github/scripts/qualify.sh __syntax__@100bd1d9  the first piece is excused\n' >>.github/scripts/g4-harness-allowed.txt")"
+for row in "10 rowsb -c over several lines" "16 rowsd a local code='...'" "21 rowsg python3.12" \
+    "25 rowsj NAME from the lib.sh it sources" "35 rowsm NAME after a commented assignment" \
+    "43 rowsn the nearest of two NAMEs" "45 rowso and the later one"; do
+    read -r n m what <<<"$row"
+    check_true "reads Python's module from $what" grep -qF "error: .github/scripts/qualify.sh:$n: reads .github/scripts/$m.py" "$HC4.err"
+done
+check_true "and dirname(__file__) under python3 - is the checkout's root" grep -qF "error: .github/scripts/qualify.sh:50: reads rowsp.txt" "$HC4.err"
+for row in "8 -c in double quotes" "12 a heredoc to python3 with no -" "19 bundled -Ic" "20 -W ignore -c" \
+    "22 a here-string" "24 NAME set in double quotes" "26 a '\\'' inside single quotes" "27 a <<- heredoc" \
+    "32 a run in another command's heredoc" "37 a NAME set nowhere" "38 code piped to python3 -" "39 code with an expansion"; do
+    read -r n what <<<"$row"
+    check_true "fails closed on $what" grep -qF "error: .github/scripts/qualify.sh:$n: cannot tell what Python" "$HC4.err"
+done
+check "but not on a commented-out line" 0 "$(grep -c 'qualify\.sh:30:' "$HC4.err")"
+check_true "keys count per reader: a repeated command is .2" grep -qF "allow line '.github/scripts/qualify.sh __python__@9e3c3748.2 REASON'" "$HC4.err"
+check_true "across pieces too" grep -qF "error: .github/scripts/qualify.sh:42: cannot tell what 'import os; print(os.__file__)' reads: join a string to __file__ on that line, or excuse this use, pinned to that line's text, with the allow line '.github/scripts/qualify.sh __file__@6262ca4d.2 REASON'" "$HC4.err"
+check "an allow line excuses one embedded piece that does not parse" 0 "$(grep -c 'qualify.sh:47:' "$HC4.err")"
+check_true "not another" grep -qF "error: .github/scripts/qualify.sh:48: the Python at .github/scripts/qualify.sh:48 does not parse on Python" "$HC4.err"
+check "which is not offered the newer-Python excuse" 0 "$(grep 'qualify.sh:48:' "$HC4.err" | grep -c 'newer Python')"
+# shellcheck disable=SC2016 # the fixture script's own expansions
+printf '%s\n' '#!/usr/bin/env bash' "out=\$(python3 - <<'PY')" 'import rowsq' 'PY' "python3 2>/dev/null - <<'PY'" 'import rowsr' 'PY' \
+    '(( x << n ))' "f() { local code='import rowss'; python3 -c \"\$code\"; }" "sudo -u nobody python3 -c 'import rowss'" \
+    "PY=python3; \"\${PY}\" -c 'import rowss'" "CODE2='import rowss'" "CODE2+='; import rowst'" 'python3 -c "$CODE2"' \
+    'command -v python3 >/dev/null 2>&1' >"$HC4_PYF/edges.sh"
+printf "%s" "python3 -c 'import rowsu' >" >>"$HC4_PYF/edges.sh"
+check "g4 harness: the edges of the forms, each read or failed closed, with no hang and no traceback" 1 \
+    "$(hc4 "cp '$HC4_PYF/edges.sh' .github/scripts/helper.sh; for m in q r s t u; do : >.github/scripts/rows\$m.py; done")"
+check "no traceback" 0 "$(grep -c Traceback "$HC4.err")"
+check_true "a heredoc to python3 - inside \$( )" grep -qF "error: .github/scripts/helper.sh:3: reads .github/scripts/rowsq.py" "$HC4.err"
+check_true "after a redirect" grep -qF "error: .github/scripts/helper.sh:6: reads .github/scripts/rowsr.py" "$HC4.err"
+for row in "9 a definition inside a one-line body" "10 a sudo prefix" "11 a program word the walk cannot name" "14 a NAME extended with +="; do
+    read -r n what <<<"$row"
+    check_true "fails closed on $what" grep -qF "error: .github/scripts/helper.sh:$n: cannot tell what Python" "$HC4.err"
+done
+check "(( x << n )) is no heredoc, and command -v python3 runs nothing" 0 "$(grep -cE 'helper\.sh:(8|15):' "$HC4.err")"
+check_true "a script ending in a redirect with no newline is still read" grep -qF "error: .github/scripts/helper.sh:16: reads .github/scripts/rowsu.py" "$HC4.err"
+printf "CRCODE='import rowsw\rprint(rowsw.__file__)'\n" >"$HC4_PYF/crlib.sh"
+check "g4 harness: a module named by keyword, and a CR inside a sourced NAME" 1 \
+    "$(hc4 "printf '%s\n' \"python3 - <<'PY'\" 'import importlib' 'importlib.import_module(name=\"rowsv\")' 'PY' 'python3 -c \"\$CRCODE\"' >>.github/scripts/helper.sh
+        cat '$HC4_PYF/crlib.sh' >>.github/scripts/lib.sh; printf '. \"\$(dirname \"\${BASH_SOURCE[0]}\")/lib.sh\"\n' >>.github/scripts/helper.sh
+        : >.github/scripts/rowsv.py; : >.github/scripts/rowsw.py")"
+check_true "reads the module import_module(name=...) names" grep -qF "error: .github/scripts/helper.sh:4: reads .github/scripts/rowsv.py" "$HC4.err"
+check_true "and splits a sourced NAME's code at a CR, as Python does" grep -qF "error: .github/scripts/helper.sh:6: reads .github/scripts/rowsw.py" "$HC4.err"
+check "with no traceback" 0 "$(grep -c Traceback "$HC4.err")"
+check "g4 harness: a script over 4 MiB that mentions python fails closed" 1 \
+    "$(hc4 "{ echo '#!/usr/bin/env bash'; echo 'python3 -c \"\$X\"'; head -c 5000000 /dev/zero | tr '\\0' '#'; } >.github/scripts/helper.sh")"
+check_true "naming its size" grep -qF "helper.sh, over 4 MiB" "$HC4.err"
+check "the real scripts' Python: qualify.sh's four, lib.sh's three, desktop-vm.sh's and builder-vm.sh's one each" "4 3 1 1" \
+    "$(cd "$APEX_ROOT/.github/scripts" && python3 - "$APEX_ROOT" <<'EOF'
+import sys
+import repo_reads as r
+repo, counts = r.Repo(sys.argv[1]), []
+for path in (".github/scripts/qualify.sh", ".github/scripts/lib.sh", "tools/builder-vm/desktop-vm.sh", "tools/builder-vm/builder-vm.sh"):
+    lines, seen, real = r.LINES.split(repo.source(path).decode()), [], r.python_reads
+    r.python_reads = lambda *a, **k: seen.append(a) or real(*a, **k)
+    list(r.python_runs(repo, path, "\n".join(lines), lines, {}))
+    r.python_reads = real
+    counts.append(str(len(seen)))
+print(" ".join(counts))
+EOF
+)"
+cat >"$HC4_PYF/built.py" <<'EOF'
+ROOT = Path(__file__).resolve().parent / ".." / ".."
+open(Path(__file__).parent.with_name("rowsa.txt"))
+open(Path(__file__).with_name("rowsb.txt"))
+open(Path(__file__).with_suffix(".json"))
+open(os.path.join(os.path.dirname(os.path.realpath(str(Path(__file__)))), "rowsc.txt"))
+open(Path(__file__).parents[1] / "rowsd.txt")
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import rowse
+importlib.import_module(name)
+importlib.import_module(f"pkg.{name}")
+EOF
+check "g4 harness: paths built on __file__ and modules loaded by name" 1 \
+    "$(hc4 "$HC4_PY; cp '$HC4_PYF/built.py' .github/scripts/tool.py; mkdir .github/scripts/lib .github/scripts/pkg
+        : >.github/rowsa.txt; : >.github/scripts/rowsb.txt; : >.github/scripts/tool.json; : >.github/scripts/rowsc.txt; : >.github/rowsd.txt
+        : >.github/scripts/lib/rowse.py; : >.github/scripts/pkg/__init__.py; : >.github/scripts/pkg/one.py")"
+check_true "a path to the checkout's root is a base the walk cannot follow" grep -qF \
+    "error: .github/scripts/tool.py:1: cannot tell what 'ROOT = Path(__file__).resolve().parent / \"..\" / \"..\"' reads" "$HC4.err"
+check_true "with_name on the directory is its sibling" grep -qF "error: .github/scripts/tool.py:2: reads .github/rowsa.txt" "$HC4.err"
+check_true "with_name on the script is beside it" grep -qF "error: .github/scripts/tool.py:3: reads .github/scripts/rowsb.txt" "$HC4.err"
+check_true "with_suffix on the script" grep -qF "error: .github/scripts/tool.py:4: reads .github/scripts/tool.json" "$HC4.err"
+check_true "dirname, realpath, str and Path compose" grep -qF "error: .github/scripts/tool.py:5: reads .github/scripts/rowsc.txt" "$HC4.err"
+check_true "as does .parents[N]" grep -qF "error: .github/scripts/tool.py:6: reads .github/rowsd.txt" "$HC4.err"
+check_true "sys.path's directory, unwrapped, is where an import is looked for" grep -qF "error: .github/scripts/tool.py:8: reads .github/scripts/lib/rowse.py" "$HC4.err"
+check "and is no read of its own" 0 "$(grep -c 'tool.py:7:' "$HC4.err")"
+check_true "a module loaded by a name the walk cannot read fails" grep -qF "error: .github/scripts/tool.py:9: cannot tell what module 'importlib.import_module(name)' loads" "$HC4.err"
+check_true "and one with a constant package prefix reads that package's modules" grep -qF "error: .github/scripts/tool.py:10: reads .github/scripts/pkg/one.py" "$HC4.err"
 check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line" 1 \
     "$(hc4 "printf 'case \$1 in\n    x)\n        rows=\$(sort\n            \"\$APEX_ROOT/.github/scripts/rows.txt\")\n        ;;\nesac\n' >>.github/scripts/qualify.sh; : >.github/scripts/rows.txt")"
 check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
