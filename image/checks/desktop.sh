@@ -365,12 +365,18 @@ fi
 
 dropin=$USERUNITS/org.gnome.Shell@.service.d/50-apex.conf
 guard=$USERUNITS/apex-shell-safe.service
+guard_exec=/usr/libexec/apex/apex-shell-guard
+guard_start="$guard_exec %t/apex-shell-starting %S/apex"
 if [ ! -f "$(rootpath "$dropin")" ] || [ ! -f "$(rootpath "$guard")" ]; then
     fail "the crash guard is not installed ($dropin, $guard)"
 elif ! grep -Eq '^OnFailure=([^#]* )?apex-shell-safe\.service( |$)' "$(rootpath "$dropin")"; then
     fail "$dropin does not add OnFailure=apex-shell-safe.service"
-elif ! grep -q '^ConditionPathExists=%t/apex-shell-starting$' "$(rootpath "$guard")"; then
-    fail "$guard is not gated on the layer's marker %t/apex-shell-starting"
+elif [ "$(sed -n 's/^ExecStart=//p' "$(rootpath "$guard")")" != "$guard_start" ]; then
+    fail "$guard does not run exactly ExecStart=$guard_start"
+elif grep -q '^Condition' "$(rootpath "$guard")"; then
+    fail "$guard has a Condition*= line: $guard_exec decides, so every failure of the shell must reach it"
+elif [ ! -f "$(rootpath "$guard_exec")" ] || [ ! -x "$(rootpath "$guard_exec")" ]; then
+    fail "$guard_exec, which $guard runs, is missing or not executable (apex-desktop)"
 elif ! grep -Eq '^Before=([^#]* )?gnome-session-restart-dbus\.service( |$)' "$(rootpath "$guard")"; then
     fail "$guard is not ordered before gnome-session-restart-dbus.service (its gsettings write would race the session bus restart)"
 elif ! command -v systemd-analyze >/dev/null 2>&1; then
@@ -389,7 +395,7 @@ else
         if [ -s "$TMPD/out" ]; then
             warn "systemd-analyze --user verify: messages about other units: $(head -n 3 "$TMPD/out" | paste -sd '|' -)"
         fi
-        pass "the crash guard is installed: OnFailure=apex-shell-safe.service on GNOME Shell's unit, ordered before the session bus restart, and both verify"
+        pass "the crash guard is installed: OnFailure=apex-shell-safe.service on GNOME Shell's unit runs $guard_exec, ordered before the session bus restart, and both verify"
     fi
 fi
 
