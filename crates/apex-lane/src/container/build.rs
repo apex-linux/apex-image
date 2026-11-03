@@ -800,7 +800,6 @@ impl Container<'_> {
             stock: b.stock.nvr.clone(),
             pin_nvr: b.stock.pin.as_ref().map(|p| p.nvr.clone()),
             fedora: self.rpm_eval("%fedora")?,
-            ga_reached: self.args.ga_reached,
             base: self.args.repos_base.clone(),
         });
         let entry = |kind: &str, nevra: &str, file: &Path| -> Result<String> {

@@ -38,8 +38,8 @@ each RPM is built in its component's clone, as root in a fresh `fedora:45`. It b
 order:
 
 - the apex RPM (apex-system's `rpms.sh build`) and apex-desktop (apex-desktop's);
-- the patched libfprint (apex-kernel's `libfprint.sh build`, given this image's
-  `GA_REACHED` and updates-testing allowlist);
+- the patched libfprint (apex-kernel's `libfprint.sh build`, against Fedora 45's
+  `fedora` and `updates`);
 - the rebuild lane's packages (gnome-shell, from apex-gnome's recipe), into
   `rpms.lock.next` of the store below;
 - the image, from those RPMs and that lock;

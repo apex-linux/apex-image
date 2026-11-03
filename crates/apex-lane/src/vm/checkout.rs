@@ -178,11 +178,6 @@ impl Vm<'_> {
         Ok(base)
     }
 
-    pub fn ga_reached(&self) -> Result<u8> {
-        let (ga, _) = self.release_arg("GA_REACHED")?;
-        repos::ga_reached(self.settings.ga_override.as_deref(), &ga).map_err(infra)
-    }
-
     fn archive(&self, root: &Path, tree: &str, out: &Path) -> Result<()> {
         self.run_ok(
             &Self::git_in(root)
@@ -321,7 +316,6 @@ impl Vm<'_> {
         source1: Option<&Source1>,
     ) -> Result<i32> {
         let base = self.repos_base()?;
-        let ga = self.ga_reached()?;
         let store = self.store_pkg(&pkg.name);
         fs::create_dir_all(&store)?;
         let mount = |from: &Path, to: &str, opts: &str| -> Result<OsString> {
@@ -356,11 +350,7 @@ impl Vm<'_> {
             Mode::Prep { nvr } => ("prep", nvr.as_deref()),
         };
         cmd = cmd.arg(name).arg(&pkg.name).args(nvr);
-        cmd = cmd
-            .arg("--repos-base")
-            .arg(&base)
-            .arg("--ga-reached")
-            .arg(ga.to_string());
+        cmd = cmd.arg("--repos-base").arg(&base);
         match mode {
             Mode::Build { n, tool, .. } | Mode::Key { n, tool } => {
                 cmd = cmd.arg("--n").arg(n.to_string()).arg("--tool").arg(tool);

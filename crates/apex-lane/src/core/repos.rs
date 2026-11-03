@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::core::text;
 
 pub const SETOPTS: [&str; 1] = ["--setopt=install_weak_deps=False"];
@@ -59,61 +57,6 @@ pub fn is_fedora_pin(s: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
-pub fn ga_reached(env: Option<&str>, containerfile_value: &str) -> Result<u8, String> {
-    let v = env.filter(|v| !v.is_empty()).unwrap_or(containerfile_value);
-    match v {
-        "" | "0" => Ok(0),
-        "1" => Ok(1),
-        other => Err(format!("GA_REACHED must be 0 or 1, got '{other}'")),
-    }
-}
-
-pub fn testing_includepkgs(allowlist: Option<&[u8]>) -> String {
-    let entries: Vec<String> = allowlist
-        .map(text::lines)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|line| {
-            text::strip_comment(line)
-                .iter()
-                .copied()
-                .filter(|&b| !text::is_space(b))
-                .collect::<Vec<u8>>()
-        })
-        .filter(|e| !e.is_empty())
-        .map(|e| text::lossy(&e))
-        .collect();
-    entries.join(",")
-}
-
-/// Every subpackage of the allowlisted `builds` (a source RPM per line; `all` has `NVR SOURCERPM`
-/// lines), so the buildroot also gets the -devel packages the runtime allowlist leaves out.
-pub fn admitted(builds: &[u8], all: &[u8]) -> String {
-    let wanted: BTreeSet<&[u8]> = text::lines(builds)
-        .into_iter()
-        .map(|l| text::fields(l).first().copied().unwrap_or_default())
-        .collect();
-    let names: BTreeSet<&[u8]> = text::lines(all)
-        .into_iter()
-        .filter_map(|l| {
-            let f = text::fields(l);
-            let first = f.first().copied().unwrap_or_default();
-            let source = f.get(1).copied().unwrap_or_default();
-            wanted.contains(source).then_some(first)
-        })
-        .collect();
-    names
-        .into_iter()
-        .map(text::lossy)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-pub fn sort_unique(lines: &[u8]) -> Vec<u8> {
-    let set: BTreeSet<&[u8]> = text::lines(lines).into_iter().collect();
-    text::join_lines(&set.into_iter().collect::<Vec<_>>())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repos {
     pub bin: Vec<String>,
@@ -131,34 +74,14 @@ impl Repos {
         }
     }
 
-    #[must_use]
-    pub fn with_testing(mut self, admitted: &str) -> Self {
-        self.bin.push("--repo=updates-testing".into());
-        self.bin
-            .push(format!("--setopt=updates-testing.includepkgs={admitted}"));
-        self.src.push("--repo=updates-testing-source".into());
-        self
-    }
-
     pub fn key_text(&self) -> String {
         format!("{} {}", self.bin.join(" "), SETOPTS.join(" "))
     }
 }
 
-pub fn refresh_repos(testing: bool) -> Vec<String> {
-    let mut out: Vec<String> = [
-        "--repo=fedora",
-        "--repo=updates",
-        "--repo=fedora-source",
-        "--repo=updates-source",
-    ]
-    .map(String::from)
-    .to_vec();
-    if testing {
-        out.push("--repo=updates-testing".into());
-        out.push("--repo=updates-testing-source".into());
-    }
-    out
+pub fn refresh_repos() -> Vec<String> {
+    let r = Repos::released();
+    r.bin.into_iter().chain(r.src).collect()
 }
 
 #[cfg(test)]
@@ -167,12 +90,12 @@ mod tests {
 
     #[test]
     fn containerfile_args() {
-        let cf = b"FROM x\n  ARG  REPOS_BASE=\"registry.fedoraproject.org/fedora@sha256:ab\"  \nARG REPOS_BASE=later\nARG GA_REACHED='0'\nARGX GA=1\n";
+        let cf = b"FROM x\n  ARG  REPOS_BASE=\"registry.fedoraproject.org/fedora@sha256:ab\"  \nARG REPOS_BASE=later\nARG RELEASE_BUILD='0'\nARGX GA=1\n";
         assert_eq!(
             containerfile_arg(cf, "REPOS_BASE"),
             "registry.fedoraproject.org/fedora@sha256:ab"
         );
-        assert_eq!(containerfile_arg(cf, "GA_REACHED"), "0");
+        assert_eq!(containerfile_arg(cf, "RELEASE_BUILD"), "0");
         assert_eq!(containerfile_arg(cf, "GA"), "");
         assert_eq!(containerfile_arg(b"ARG X=\"'y'\"\n", "X"), "y");
     }
@@ -195,29 +118,19 @@ mod tests {
     }
 
     #[test]
-    fn ga_switch() {
-        assert_eq!(ga_reached(None, "0"), Ok(0));
-        assert_eq!(ga_reached(Some("1"), "0"), Ok(1));
-        assert_eq!(ga_reached(Some(""), ""), Ok(0));
-        assert!(ga_reached(Some("yes"), "0").is_err());
-    }
-
-    #[test]
-    fn admission() {
+    fn released_repositories() {
         assert_eq!(
-            testing_includepkgs(Some(b"# c\n mutter \n\ngtk4 # x\n")),
-            "mutter,gtk4"
-        );
-        assert_eq!(testing_includepkgs(None), "");
-        let builds = b"mutter-51.0-1.fc45.src.rpm\n";
-        let all = b"mutter-devel-51.0-1.fc45 mutter-51.0-1.fc45.src.rpm\nmutter-51.0-1.fc45 mutter-51.0-1.fc45.src.rpm\ngtk4-4.24-1.fc45 gtk4-4.24-1.fc45.src.rpm\n";
-        assert_eq!(
-            admitted(builds, all),
-            "mutter-51.0-1.fc45,mutter-devel-51.0-1.fc45"
+            Repos::released().key_text(),
+            "--repo=fedora --repo=updates --setopt=install_weak_deps=False"
         );
         assert_eq!(
-            Repos::released().with_testing("a,b").key_text(),
-            "--repo=fedora --repo=updates --repo=updates-testing --setopt=updates-testing.includepkgs=a,b --setopt=install_weak_deps=False"
+            refresh_repos(),
+            [
+                "--repo=fedora",
+                "--repo=updates",
+                "--repo=fedora-source",
+                "--repo=updates-source"
+            ]
         );
     }
 }
