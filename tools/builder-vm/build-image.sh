@@ -503,7 +503,7 @@ add_verdict() {
 }
 
 libfprint_env() {
-    COMPONENT_ENV=(-e "GA_REACHED=$(lib ga_reached)" -e "TESTING_INCLUDEPKGS=$(lib testing_includepkgs)")
+    COMPONENT_ENV=()
     # apex-kernel's libfprint build knows only 45's key; a next release names its own.
     [[ $BUILD == _build ]] || COMPONENT_ENV+=(-e "FEDORA_KEY_FPR=$(lib release_arg FEDORA_KEY_FPR)")
 }

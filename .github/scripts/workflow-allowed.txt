@@ -1,2 +1,4 @@
 # Write permissions a job needs, one per line: WORKFLOW JOB PERMISSION REASON, the PERMISSION as
 # the workflow writes it without spaces (contents:write). workflow-check.sh fails on a stale line.
+vm-keeper.yml keep actions:write re-runs a vm.yml run that ended with no verdict (owner-approved T3 change, off until vars.APEX_VM_KEEPER is on)
+vm-keeper.yml keep issues:write keeps the one VM status issue current with the replay it made

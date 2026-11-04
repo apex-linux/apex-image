@@ -95,6 +95,6 @@ mod tests {
             "registry.fedoraproject.org/fedora-bootc@sha256:ab"
         );
         assert_eq!(env_value(text, "BASE_SOURCE"), "rawhide");
-        assert_eq!(env_value(text, "GA_REACHED"), "");
+        assert_eq!(env_value(text, "FEDORA_KEY_FPR"), "");
     }
 }

@@ -13,24 +13,9 @@ The repos stage:
   disabled in the repo files themselves.
 - `[apex]` has priority 1, which beats version. Its `includepkgs` keeps a stray RPM in
   `rpms/` from replacing the signed Fedora package of the same name.
-- `[apex-gnome51]` gets the Fedora excludes only after its own check, which must see
-  the pinned builds.
-- Each pin in `packages/updates-testing-allowlist.txt` is settled against `fedora` and
-  `updates` first: updates-testing kept listing the builds of FEDORA-2026-48a7996f9c
-  for days after Bodhi pushed it stable (seen 2026-10-02), so a build still being there
-  says nothing. A pin the stable repositories carry at the same or a newer version is
-  reported for removal; when that is every pin, `[apex-gnome51]` is dropped. A pin
-  that is in neither place fails the build. That query clears `excludepkgs` of `fedora`
-  and `updates`, or a pin of a name the lane locks (gnome-shell, mutter) would look
-  missing there.
-- An NVR carries no epoch. A pin is compared with the stable build of its name with
-  the stable epoch on both sides; Fedora never lowers an epoch.
-- The allowlist only offers a build. A pinned build whose requirements are not offered
-  too is passed over without an error, and the compose installs the stable build of
-  that name. `epiphany-runtime-51.0-2.fc45` and `gnome-control-center-51.0-2.fc45`
-  need `libxml2.so.16`, which was never pinned: the stage admitted them, and the image
-  of 2026-09-29 carried `epiphany-51~rc-1.fc45` and
-  `gnome-control-center-51~rc.1-1.fc45`.
+- The compose takes `fedora`, `updates` and `[apex]`, nothing from updates-testing.
+  Before Fedora 45 GA a list of pinned updates-testing builds admitted GNOME 51.0
+  early; the admission went at GA (ARCHITECTURE §4.3).
 
 The kernel pair (S1c, ADR 0015) is switched on by `rpms.lock` alone: an image takes it
 when the lock has `rpm` lines for the `kernel-cachyos` family, which happens only once

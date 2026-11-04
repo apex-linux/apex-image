@@ -1,2 +1,0 @@
-# Builds to take from updates-testing until F45 GA, one name-version-release per line. Pin every
-# installed subpackage of a build and the builds it requires, or the compose keeps the stable one.

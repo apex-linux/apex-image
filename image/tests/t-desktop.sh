@@ -5,9 +5,15 @@
 command -v python3 >/dev/null 2>&1 || skip_all "python3 not found (the fake rpm)"
 command -v glib-compile-schemas >/dev/null 2>&1 || skip_all "glib-compile-schemas not found"
 command -v systemd-analyze >/dev/null 2>&1 || skip_all "systemd-analyze not found"
-[ -x /usr/bin/gsettings ] || skip_all "no /usr/bin/gsettings (systemd-analyze checks apex-shell-safe.service's ExecStart)"
 
 DESKTOP=$APEX_DESKTOP_SRC/desktop
+# systemd-analyze verify looks for apex-shell-safe.service's ExecStart on this host, not in ROOT.
+GUARD=/usr/libexec/apex/apex-shell-guard
+if [ ! -x "$GUARD" ]; then
+    install -D -m0755 "$DESKTOP/systemd/apex-shell-guard.sh" "$GUARD" 2>/dev/null ||
+        skip_all "no $GUARD here, and it cannot be installed (systemd-analyze checks apex-shell-safe.service's ExecStart)"
+    trap 'rm -rf "$T"; rm -f "$GUARD"; rmdir /usr/libexec/apex 2>/dev/null || true' EXIT
+fi
 NKEYS=$(find "$DESKTOP/dconf/distro.d" -maxdepth 1 -type f -exec cat {} + | grep -cvE '^[[:space:]]*(#|\[|$)')
 SHA=$(printf '%064d' 0 | tr 0 a)
 KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
@@ -124,6 +130,7 @@ mkroot() {
     mkdir -p "$r/usr/lib/systemd/user/graphical-session.target.wants" "$r/usr/libexec"
     ln -s ../apex-folder-icons.service "$r/usr/lib/systemd/user/graphical-session.target.wants/apex-folder-icons.service"
     install -m0755 "$DESKTOP/icons/apex-folder-icons.sh" "$r/usr/libexec/apex-folder-icons"
+    install -D -m0755 "$DESKTOP/systemd/apex-shell-guard.sh" "$r$GUARD"
     printf '[Unit]\nDescription=GNOME Shell\nOnFailure=org.gnome.Shell-disable-extensions.service\n\n[Service]\nType=notify\nExecStart=/usr/bin/true\nSuccessExitStatus=1\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell@.service"
     printf '[Unit]\nDescription=Disable GNOME Shell extensions after failure\nDefaultDependencies=no\n\n[Service]\nType=simple\nExecStart=/usr/bin/true\n' \
@@ -405,11 +412,27 @@ r=$(mkroot noonfailure)
 sed -i 's/^OnFailure=.*/OnFailure=gnome-session-shutdown.target/' "$r/usr/lib/systemd/user/org.gnome.Shell@.service.d/50-apex.conf"
 desktop noonfailure
 expect_rc "a drop-in without the OnFailure= fails" 1
-r=$(mkroot ungated)
-sed -i '/^ConditionPathExists=/d' "$r/usr/lib/systemd/user/apex-shell-safe.service"
-desktop ungated
-expect_rc "a guard that is not gated on the layer's marker fails" 1
-expect_out "and says so" 'is not gated on the layer.s marker'
+r=$(mkroot gated)
+sed -i 's|^\[Unit\]$|&\nConditionPathExists=%t/apex-shell-starting|' "$r/usr/lib/systemd/user/apex-shell-safe.service"
+desktop gated
+expect_rc "a guard unit that still has ConditionPathExists= fails" 1
+expect_out "and says so" '^FAIL desktop: .*apex-shell-safe\.service has a Condition\*= line'
+r=$(mkroot gsettingsguard)
+sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/gsettings set io.github.apex_linux.Apex.Desktop layer-enabled false|' \
+    "$r/usr/lib/systemd/user/apex-shell-safe.service"
+desktop gsettingsguard
+expect_rc "a guard unit that does not run apex-shell-guard fails" 1
+expect_out "and names the ExecStart it wants" '^FAIL desktop: .*apex-shell-safe\.service does not run exactly ExecStart=/usr/libexec/apex/apex-shell-guard %t/apex-shell-starting %S/apex$'
+r=$(mkroot noguardscript)
+rm "$r$GUARD"
+desktop noguardscript
+expect_rc "a guard unit without its script fails" 1
+expect_out "and names the script" '^FAIL desktop: /usr/libexec/apex/apex-shell-guard, which .*apex-shell-safe\.service runs, is missing or not executable'
+r=$(mkroot guardnotexec)
+chmod 0644 "$r$GUARD"
+desktop guardnotexec
+expect_rc "a guard script that is not executable fails" 1
+expect_out "and names it" '^FAIL desktop: /usr/libexec/apex/apex-shell-guard, which .*apex-shell-safe\.service runs, is missing or not executable'
 r=$(mkroot unordered)
 sed -i '/^Before=gnome-session-restart-dbus\.service$/d' "$r/usr/lib/systemd/user/apex-shell-safe.service"
 desktop unordered

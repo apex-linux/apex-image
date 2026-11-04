@@ -39,7 +39,6 @@ pub struct Args {
     pub n: u64,
     pub tool: String,
     pub repos_base: String,
-    pub ga_reached: u8,
     pub source1: Option<String>,
     pub source1_tree: Option<String>,
     pub locked_evr: Option<String>,
@@ -240,85 +239,17 @@ impl Container<'_> {
     }
 
     fn repos(&self) -> Result<Repos> {
-        let allow_path = self
-            .paths
-            .src
-            .join("image/packages/updates-testing-allowlist.txt");
-        let allow = repos::testing_includepkgs(fs::read_opt(&allow_path)?.as_deref());
-        let testing = self.args.ga_reached != 1 && !allow.is_empty();
         // --refresh: the cache volume may be days old. minrate: dnf's default, 1000 B/s,
         // once kept a run on a stalled mirror for 15 minutes.
         let refresh = Cmd::new(Program::Dnf5)
             .args(["-q", "--refresh", "--setopt=minrate=65536"])
-            .args(repos::refresh_repos(testing))
+            .args(repos::refresh_repos())
             .arg("makecache")
             .stdout(Stdout::Null);
         if !retry(self.runner, self.report, 3, RETRY_DELAY, &refresh)?.ok() {
             return Err(infra("cannot refresh the repository metadata"));
         }
-        if !testing {
-            return Ok(Repos::released());
-        }
-        let builds = retry(
-            self.runner,
-            self.report,
-            3,
-            RETRY_DELAY,
-            &Cmd::new(Program::Dnf5)
-                .args(["-q", "--repo=updates-testing"])
-                .arg(format!("--setopt=updates-testing.includepkgs={allow}"))
-                .args([
-                    "repoquery",
-                    "--available",
-                    "--queryformat",
-                    "%{sourcerpm}\\n",
-                ])
-                .capture(),
-        )?;
-        if !builds.ok() {
-            return Err(infra("cannot query the allowlisted updates-testing builds"));
-        }
-        let builds = repos::sort_unique(&builds.stdout);
-        if text::chomp(&builds).is_empty() {
-            return Err(infra(
-                "the updates-testing allowlist matches nothing in updates-testing",
-            ));
-        }
-        let all = retry(
-            self.runner,
-            self.report,
-            3,
-            RETRY_DELAY,
-            &Cmd::new(Program::Dnf5)
-                .args([
-                    "-q",
-                    "--repo=updates-testing",
-                    "repoquery",
-                    "--available",
-                    "--arch=x86_64,noarch",
-                ])
-                .args([
-                    "--queryformat",
-                    "%{name}-%{version}-%{release} %{sourcerpm}\\n",
-                ])
-                .capture(),
-        )?;
-        if !all.ok() {
-            return Err(infra("cannot query updates-testing"));
-        }
-        let admitted = repos::admitted(text::chomp(&builds), text::chomp(&all.stdout));
-        if admitted.is_empty() {
-            return Err(infra(
-                "no updates-testing package comes from the allowlisted builds",
-            ));
-        }
-        self.report.log(&format!(
-            "buildroot admission: {} allowlisted builds give {} packages (runtime allowlist: {})",
-            text::lines(text::chomp(&builds)).len(),
-            admitted.split(',').count(),
-            allow.split(',').count()
-        ));
-        Ok(Repos::released().with_testing(&admitted))
+        Ok(Repos::released())
     }
 
     fn import_fedora_key(&self) -> Result<String> {

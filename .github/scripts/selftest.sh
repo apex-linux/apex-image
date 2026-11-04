@@ -57,7 +57,7 @@ check_false "uppercase digest" is_digest "sha256:$(printf 'A%.0s' {1..64})"
 cat >"$TMP/Containerfile" <<'EOF'
 ARG FEDORA=45
 ARG BASE=registry.fedoraproject.org/fedora-bootc@sha256:5225b8afb65136bcf6131eb2b02ef7923a64e37264e5e0fdda47dfeef51851c1
-ARG GA_REACHED="0"
+ARG RELEASE_BUILD="0"
 ARG EMPTY=
 ARG COMPOSE=build-rootfs
 FROM registry.fedoraproject.org/fedora:${FEDORA} AS repos
@@ -70,7 +70,7 @@ FROM ${UNKNOWN}
 EOF
 check "ARG with default" "registry.fedoraproject.org/fedora-bootc@sha256:5225b8afb65136bcf6131eb2b02ef7923a64e37264e5e0fdda47dfeef51851c1" \
     "$(containerfile_arg BASE "$TMP/Containerfile")"
-check "ARG quotes removed" 0 "$(containerfile_arg GA_REACHED "$TMP/Containerfile")"
+check "ARG quotes removed" 0 "$(containerfile_arg RELEASE_BUILD "$TMP/Containerfile")"
 check "ARG empty" "" "$(containerfile_arg EMPTY "$TMP/Containerfile")"
 check "ARG missing" "" "$(containerfile_arg NOPE "$TMP/Containerfile")"
 check "FROM images (stages, scratch and unresolved ARGs skipped)" \
@@ -81,10 +81,8 @@ check "FROM images with build-arg overrides" "example.org/base:1
 registry.fedoraproject.org/fedora:46" \
     "$(containerfile_from_images "$TMP/Containerfile" BASE=example.org/base:1 FEDORA=46 COMPOSE=dnf)"
 
-is_empty_or_csv_list() { [[ $1 =~ ^([A-Za-z0-9._+-]+(,[A-Za-z0-9._+-]+)*)?$ ]]; }
-if [[ -f $APEX_TESTING_ALLOWLIST ]]; then
-    check_true "includepkgs has no comments or blanks" is_empty_or_csv_list "$(testing_includepkgs)"
-fi
+check "the Containerfile writes no repository file but [apex]'s" ">/etc/yum.repos.d/apex.repo" \
+    "$(grep -o '>/etc/yum\.repos\.d/[^ ;]*' "$APEX_CONTAINERFILE" | sort -u | paste -sd' ')"
 
 # --- policy transforms -----------------------------------------------------------------
 policy='{"default":[{"type":"reject"}],"transports":{"docker":{
@@ -440,10 +438,9 @@ check "a missing key too" 1 "$(g4_due "$G4_DIR/absent.key")"
 # --- build-image.sh: G4 when due, G2 twice, both always, and the gates record --------------
 BUILD_DIR="$TMP/build-image"
 mkdir -p "$BUILD_DIR/work/tests/shots" "$BUILD_DIR/work/.github/scripts" "$BUILD_DIR/work/_build/image" \
-    "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image/packages" "$BUILD_DIR/store"
+    "$BUILD_DIR/work/_build/g2/latest" "$BUILD_DIR/work/image" "$BUILD_DIR/store"
 cp "$APEX_ROOT/.github/scripts/lib.sh" "$BUILD_DIR/work/.github/scripts/"
 cp "$APEX_CONTAINERFILE" "$BUILD_DIR/work/image/"
-cp "$APEX_TESTING_ALLOWLIST" "$BUILD_DIR/work/image/packages/"
 printf 'lock\n' >"$BUILD_DIR/store/rpms.lock.next"
 LANE_LOCK_SHA=$(sha256sum <"$BUILD_DIR/store/rpms.lock.next" | cut -d' ' -f1)
 cat >"$BUILD_DIR/work/tests/shots/run.sh" <<'EOF'
@@ -1380,10 +1377,9 @@ check "provenance: a dev-override is refused" 1 \
 # --- build-image.sh: each RPM from its pinned component, after components.sh fetch and env ---
 BI="$TMP/build-image-components"
 BIW=$BI/home/apex-image
-mkdir -p "$BIW/tools/builder-vm" "$BIW/.github/scripts" "$BIW/image/packages"
+mkdir -p "$BIW/tools/builder-vm" "$BIW/.github/scripts" "$BIW/image"
 cp "$APEX_ROOT/.github/scripts/lib.sh" "$BIW/.github/scripts/"
 cp "$APEX_CONTAINERFILE" "$BIW/image/"
-cp "$APEX_TESTING_ALLOWLIST" "$BIW/image/packages/"
 cat >"$BIW/tools/components.sh" <<'EOF'
 #!/usr/bin/env bash
 if [[ $1 == verify ]]; then
@@ -1448,10 +1444,9 @@ check "a component's build mounts its checkout, its .git read-only and its own o
 check "an output outside /build is refused before any container runs" "2|" \
     "$(cd "$BIW" && FAKE=$BI bash -c '. "$1"; sudo() { printf "%s\n" "$*" >>"$FAKE/escape.log"; }
         in_component /pinned/system x build /build/../home' _ "$APEX_ROOT/tools/builder-vm/build-image.sh" >/dev/null 2>&1; echo $?)|$(cat "$BI/escape.log" 2>/dev/null)"
-check "libfprint gets this image's GA_REACHED and updates-testing allowlist" \
-    "-e GA_REACHED=$(ga_reached) -e TESTING_INCLUDEPKGS=$(testing_includepkgs)" \
-    "$(grep -o -- '-e GA_REACHED=.* registry' "$BI/steps.log" | sed 's/ registry$//')"
-check "only libfprint gets them" 1 "$(grep -c -- '-e GA_REACHED=' "$BI/steps.log")"
+check "libfprint gets no environment on 45: apex-kernel's libfprint.sh builds against Fedora 45 as released" "" \
+    "$(grep "^podman run .* -v /pinned/kernel:/component:z " "$BI/steps.log" | grep -o -- ' -e [^ ]*')"
+check "and no component build gets one" 0 "$(grep -c -- ' -e ' "$BI/steps.log")"
 check "every RPM is signed, then the lane builds" "sign _build/rpms/apex/x.rpm|sign _build/rpms/desktop/x.rpm|sign _build/libfprint/x.rpm|build all" \
     "$(sed -n 's/^lane.sh //p' "$BI/steps.log" | paste -sd'|')"
 
@@ -1570,8 +1565,8 @@ printf '%s\n' kdesk >"$RC/keys/desktop"
 printf '%s\n' "$KFP" >"$RC/keys/kernel"
 echo "$D1" >"$RC/digest"
 check "rpm-cache: the first build builds each component, rpms.sh with its key" "0|system desktop kernel" "$(bi_cache)|$(rc_builds)"
-check "libfprint's key is taken once, with this image's GA_REACHED" 1 \
-    "$(grep -c -- "-e GA_REACHED=$(ga_reached) .* .github/scripts/libfprint.sh key$" "$RC/steps.log")"
+check "libfprint's key is taken once, with no environment on 45" "1|" \
+    "$(grep -c -- ' .github/scripts/libfprint.sh key$' "$RC/steps.log")|$(grep -- ' .github/scripts/libfprint.sh key$' "$RC/steps.log" | grep -o -- ' -e [^ ]*')"
 check_true "and apex-system's build is held to the key it resolved" grep -q '.github/scripts/rpms.sh build /build/rpms/apex ksys$' "$RC/steps.log"
 check "and stores each component's signed RPMs, sums, key files and inputs, one entry each" \
     "$(printf '%s\n' ./apex-desktop/E/{CONTENTS,KEY,PREIMAGE,SHA256SUMS,desktop.rpm} \
@@ -1587,8 +1582,7 @@ check "an entry names the key, fedora:45's digest, lane.sh's tool, the Apex key 
     "$(printf 'apex rpm-cache 1\ncomponent apex-system\nkey ksys\nfedora registry.fedoraproject.org/fedora:45@%s\nlane-tool tool1\napex-key %s\nenv ' \
         "$D1" "$(sha256sum <"$BIW/image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" | cut -d' ' -f1)")" \
     "$(cat "$(rc_entry apex-system ksys)/PREIMAGE")"
-check_true "and libfprint's entry its GA_REACHED" grep -qx -- "env -e GA_REACHED=$(ga_reached) -e TESTING_INCLUDEPKGS=.*" \
-    "$(rc_entry libfprint "$KFP")/PREIMAGE"
+check_true "and libfprint's entry its environment, empty on 45" grep -qx -- "env " "$(rc_entry libfprint "$KFP")/PREIMAGE"
 check "rpm-cache: the next build with the same keys builds nothing" "0|" "$(bi_cache)|$(rc_builds)"
 check "and checks each signature against the committed key in a scratch rpmdb" \
     "import image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex" "$(sort -u "$RC/rpmkeys.log")"
@@ -2011,6 +2005,7 @@ password_typed() {
     elif [[ -e $STATE/fault-file ]]; then
         if [[ ! -e $STATE/guard-broken ]]; then
             : >"$STATE/tripped"
+            [[ ! -e $STATE/guard-counts-early ]] || echo "$DEPLOYMENT 1" >"$STATE/trips"
             printf '%s\n' 'Apex: APEX_SHELL_TEST_FAULT=abort-after-enable: aborting the shell' \
                 'Finished apex-shell-safe.service - Turn the Apex desktop layer off' >>"$STATE/journal"
         fi
@@ -2024,6 +2019,31 @@ password_typed() {
     fi
     conversations "$(($(from conversations) - 1))"
     rm -f "$STATE/asking"
+}
+DEPLOYMENT=$(printf '0123456789abcdef%.0s' 1 2 3 4).1
+# gnome-shell aborts past its 60 s window: DESK-1's guard runs and counts per deployment; the
+# guard-* flags are its mutants.
+shell_aborts() {
+    local dep=$DEPLOYMENT line n=0
+    [[ ! -e $STATE/guard-no-serial ]] || dep=${DEPLOYMENT%.*}
+    echo 'Finished apex-shell-safe.service - Turn the Apex desktop layer off' >>"$STATE/journal"
+    rm -f "$STATE/session" "$STATE/manager-active" "$STATE/asking"
+    echo 'c1 60578 wayland' >"$STATE/greeter"
+    conversations 0
+    [[ ! -e $STATE/tripped ]] || return 0
+    if [[ -e $STATE/guard-old ]]; then
+        : >"$STATE/tripped"
+        return 0
+    fi
+    line=$(from trips)
+    [[ ${line% *} != "$dep" ]] || n=${line##* }
+    n=$((n + 1))
+    if ((n >= 2)) || [[ -e $STATE/guard-threshold-1 ]]; then
+        : >"$STATE/tripped"
+        if [[ -e $STATE/guard-no-zero ]]; then echo "$dep $n" >"$STATE/trips"; else rm -f "$STATE/trips"; fi
+    else
+        echo "$dep $n" >"$STATE/trips"
+    fi
 }
 pkexec_typed() {
     if [[ "$TEST_USER:$(from typed)" == "$(from chpasswd)" ]]; then
@@ -2286,7 +2306,9 @@ vm_ssh() {
             [[ -e $STATE/clock-stuck ]] ||
                 awk -v g="$(from clock-skew)" -v s="$s" 'BEGIN { printf "%.3f\n", g - s }' >"$STATE/clock-skew" ;;
         "journalctl -b _UID=1000 --since @999 -o short-monotonic --no-pager") from journal ;;
-        "test -e /run/user/1000/$CRASH_GUARD_MARKER") [[ -e $STATE/marker ]] ;;
+        "test -e /run/user/1000/$CRASH_GUARD_MARKER") # the layer's 60 s window: gone after it was seen
+            [[ -e $STATE/marker ]] || return 1
+            [[ -e $STATE/marker-stays ]] || rm "$STATE/marker" ;;
         "$(user_cmd 'gsettings get org.gnome.desktop.interface color-scheme')") from scheme ;;
         "$(user_cmd "gsettings get $APEX_SCHEMA layer-enabled")") if [[ -e $STATE/tripped ]]; then echo false; else echo true; fi ;;
         "$(user_cmd "systemctl --user list-units --state=active --plain --no-legend --no-pager 'apex*'")") from agents ;;
@@ -2372,6 +2394,14 @@ vm_ssh() {
             fi
             if [[ -e $STATE/crash ]]; then echo 1235 >"$STATE/pid"; fi
             if [[ -e $STATE/js-error ]]; then echo 'gnome-shell[1234]: JS ERROR: TypeError: x is null' >>"$STATE/journal"; fi ;;
+        "rpm-ostree status --json")
+            [[ ! -e $STATE/no-deployment ]] || return 1
+            printf '{"deployments":[{"booted":false,"checksum":"%s","serial":0},{"booted":true,"checksum":"%s","serial":%s}]}\n' \
+                "$(printf 'f%.0s' {1..64})" "${DEPLOYMENT%.*}" "${DEPLOYMENT##*.}" ;;
+        "kill -ABRT "*) shell_aborts ;;
+        "cat ~$TEST_USER/$CRASH_GUARD_TRIPS") from trips | grep . ;;
+        "test -e ~$TEST_USER/$CRASH_GUARD_TRIPS") [[ -e $STATE/trips ]] ;;
+        "rm -f ~$TEST_USER/$CRASH_GUARD_TRIPPED") rm -f "$STATE/tripped" ;;
         "loginctl terminate-user $TEST_USER")
             rm -f "$STATE/session" "$STATE/manager-active" "$STATE/asking"
             echo 'c1 60578 wayland' >"$STATE/greeter"
@@ -3258,6 +3288,42 @@ echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
 : >"$GUEST_DIR/state/guard-broken"
 check "a fault login whose guard never trips fails" 1 "$(guest crash_guard_logins local)"
 check "at the crash guard" 1 "$(row local-crash-guard FAIL)"
+DEPLOYMENT=$(printf '0123456789abcdef%.0s' 1 2 3 4).1
+TRIPS=.local/state/apex/shell-guard-trips
+logged_in
+echo 'c1 60578 wayland' >"$GUEST_DIR/state/greeter"
+: >"$GUEST_DIR/state/guard-counts-early"
+check "a trip inside the 60 s window that also counts fails" 1 "$(guest crash_guard_logins local)"
+check_true "naming the count" grep -qF "| local-crash-guard | FAIL | a failure inside the 60 s window left ~/$TRIPS: it trips at once, uncounted" \
+    "$GUEST_DIR/out/results.md"
+
+# shellcheck disable=SC2016 # expanded by the fake guest
+late() { guest eval 'wait_session t user apexqa; crash_guard_late local'; }
+logged_in
+check "DESK-1: two late aborts, the first counted and the second tripping" 0 "$(late)"
+check_true "the first counts 1 on the booted deployment, checksum and serial" grep -qF \
+    "| local-crash-guard-late | PASS | gnome-shell aborted past its 60 s window: apex-shell-safe.service ran, the layer stayed on, ~/$TRIPS counts '$DEPLOYMENT 1'" \
+    "$GUEST_DIR/out/results.md"
+check "the second trips and zeroes it" 1 "$(row local-crash-guard-late-trip PASS)"
+check "and the row leaves a fresh login with the layer on" "1:no tripped:no trips" \
+    "$(row local-crash-guard-late-reset-greeter-login PASS):$([[ -e $GUEST_DIR/state/tripped ]] && echo tripped || echo no tripped):$([[ -e $GUEST_DIR/state/trips ]] && echo trips || echo no trips)"
+late_fails() { # FLAG ROW DETAIL: with FLAG set, crash_guard_late fails at ROW saying DETAIL
+    logged_in
+    : >"$GUEST_DIR/state/$1"
+    check "DESK-1: $1 fails" 1 "$(late)"
+    check_true "$1: at $2, saying so" grep -qF "| $2 | FAIL | $3" "$GUEST_DIR/out/results.md"
+}
+late_fails guard-old local-crash-guard-late 'one late abort turned the layer off: past the 60 s window a failure only counts'
+late_fails guard-threshold-1 local-crash-guard-late 'one late abort turned the layer off: past the 60 s window a failure only counts'
+late_fails guard-no-serial local-crash-guard-late "apexqa's ~/$TRIPS reads '${DEPLOYMENT%.*} 1', not '$DEPLOYMENT 1'"
+late_fails guard-no-zero local-crash-guard-late-trip "the trip left ~/$TRIPS: a trip zeroes the count"
+late_fails marker-stays local-crash-guard-late "/run/user/1000/apex-shell-starting outlived the layer's 60 s window"
+late_fails no-deployment local-crash-guard-late "cannot read the booted deployment from rpm-ostree status --json (got 'nothing')"
+apex_locked_in
+echo "$DEPLOYMENT 1" >"$GUEST_DIR/state/trips"
+check "a late shell failure left counted by the lock matrix fails it" 1 "$(guest lock_matrix local 1000)"
+check_true "by name, not by turning the layer off later" grep -qF "| local-lock-matrix | FAIL | apexqa's ~/$TRIPS exists after the lock matrix" \
+    "$GUEST_DIR/out/results.md"
 
 logged_in
 rm -f "$GUEST_DIR/record"
@@ -3381,10 +3447,10 @@ diag_units() { awk -F' [|] ' 'NR > 2 { sub(/^[|] /, "", $1); print $1, $2 }' "$G
 # On this guest Esc also leaves polkit's dialog open, and no policy file exists: two more
 # FAILs, each the unit's own.
 check "but every unit after it still runs, each with its own verdict" \
-    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
+    "boot-metrics PASS|login-lock-unlock PASS|lock-wrong-password PASS|lock-esc FAIL|lock-blank-wake PASS|lock-reduce-motion PASS|polkit-agent FAIL|polkit-actions FAIL|crash-guard-late PASS|crash-guard PASS|safe-karg-lock PASS|lock-suspend PASS|lock-suspend-s3 PASS" \
     "$(diag_units)"
 check_true "the suspends run last, deep S3 after s2idle, each unit after the first from the post-login snapshot: no apex.safe=1, no fresh login" \
-    test "$(grep -c '^| local-diag-reset-greeter-login |' "$GUEST_DIR/out/results.md"):$(wc -l <"$GUEST_DIR/state/loaded"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "0:11: local-lock-suspend-s3 "
+    test "$(grep -c '^| local-diag-reset-greeter-login |' "$GUEST_DIR/out/results.md"):$(wc -l <"$GUEST_DIR/state/loaded"):$(tail -n 1 "$GUEST_DIR/out/results.md" | cut -d'|' -f2)" = "0:12: local-lock-suspend-s3 "
 check_true "saved once, after the first login" grep -q '^| local-diag-snapshot | PASS | saved the guest after its first login as diag0 |' "$GUEST_DIR/out/results.md"
 check_false "and the safe karg is gone" test -e "$GUEST_DIR/state/karg"
 check_true "and the snapshot closed the dialog polkit-agent left, so the crash guard's greeter took its keys" \
@@ -4446,16 +4512,10 @@ check "g4 harness: a multi-line \$(...) inside a case arm reads on its last line
 check_true "names that line" grep -qF "qualify.sh:11: reads .github/scripts/rows.txt" "$HC4.err"
 
 # --- repositories: the compose's set, never all of updates-testing ---------------------
-repo_args_with() {
-    local ga_reached=$1 allowlist=$2
-    APEX_GA_REACHED=$ga_reached bash -c '. "$1"; fake_allowlist=$2; testing_includepkgs() { printf "%s\n" "$fake_allowlist"; }; dnf_repo_args | paste -sd" " -' \
-        _ "$APEX_ROOT/.github/scripts/lib.sh" "$allowlist"
-}
-check "pre-GA with an allowlist: only those builds from updates-testing" \
-    "--repo=fedora --repo=updates --repo=updates-testing --setopt=updates-testing.includepkgs=gtk4-4.24.0-1.fc45,glib2-2.90.0-1.fc45" \
-    "$(repo_args_with 0 gtk4-4.24.0-1.fc45,glib2-2.90.0-1.fc45)"
-check "pre-GA with an empty allowlist: no updates-testing" "--repo=fedora --repo=updates" "$(repo_args_with 0 '')"
-check "after GA: no updates-testing" "--repo=fedora --repo=updates" "$(repo_args_with 1 gtk4-4.24.0-1.fc45)"
+check "the compose's repositories: fedora and updates, exactly" "--repo=fedora --repo=updates" \
+    "$(bash -c '. "$1"; dnf_repo_args | paste -sd" " -' _ "$APEX_ROOT/.github/scripts/lib.sh")"
+check "a leftover APEX_GA_REACHED=0 changes nothing" "--repo=fedora --repo=updates" \
+    "$(APEX_GA_REACHED=0 bash -c '. "$1"; dnf_repo_args | paste -sd" " -' _ "$APEX_ROOT/.github/scripts/lib.sh")"
 
 # --- contracts.sh: the image against a hardware profile (the CI job runs the pinned one) ----
 CT=$TMP/contracts
@@ -4565,8 +4625,9 @@ ct_g2_weekday() { # PATCHED SMOKE: the clock-show-weekday values G2's patched.sh
 ct_g2_weekday clock-show-weekday=true clock-show-weekday=true
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
+printf '#!/usr/bin/env bash\n' >"$CT/desktop/desktop/systemd/apex-shell-guard.sh"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
-    "$CT/gnome/tests/layer/fixtures/"
+    "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/gnome/tests/layer/fixtures/"
 CT_UPDATE1=io.github.apex_linux.Apex.Update1.xml
 mkdir -p "$CT/gnome/desktop/control-center/panels/apex" "$CT/system/crates/apex-dbus/data" \
     "$CT/system/crates/apex-session-agent/tests/data"
@@ -4614,6 +4675,12 @@ check "contracts: an apex-system without the session agent's crate" 1 "$(ct_run)
 mkdir -p "$CT/system/crates/apex-session-agent/tests/data"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/system/crates/apex-session-agent/tests/data/"
 check "contracts: the session agent with its schema copy" 0 "$(ct_run)"
+printf '#!/bin/sh\n' >"$CT/gnome/tests/layer/fixtures/apex-shell-guard.sh"
+check "contracts: apex-gnome's crash guard script copy differs from apex-desktop's" 1 "$(ct_run)"
+rm "$CT/gnome/tests/layer/fixtures/apex-shell-guard.sh"
+check "contracts: apex-gnome's crash guard script copy is missing" 1 "$(ct_run)"
+cp "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/gnome/tests/layer/fixtures/"
+check "contracts: the crash guard script copies equal" 0 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
@@ -5128,8 +5195,7 @@ check "a 45 build and rechunk take main's arguments, tag and labels" \
     "build --pull=missing --layers=false --cap-add=SYS_ADMIN,NET_ADMIN --device /dev/fuse \
 --security-opt seccomp=unconfined --security-opt label=disable --build-arg BASE=$ib_base \
 --build-arg REPOS_BASE=$(containerfile_arg REPOS_BASE) --build-arg APEX_VERSION=$ib_v \
---build-arg APEX_REVISION=$(printf '%040d' 7) --build-arg GA_REACHED=$(containerfile_arg GA_REACHED) \
---build-arg RELEASE_BUILD=0 --label org.opencontainers.image.version=$ib_v \
+--build-arg APEX_REVISION=$(printf '%040d' 7) --build-arg RELEASE_BUILD=0 --label org.opencontainers.image.version=$ib_v \
 -f $IB/tree/image/Containerfile -t localhost/apex:build $IB/tree
 run --rm --privileged --pull=never --security-opt label=disable \
 --mount type=image,source=localhost/apex:build,target=/apex-rootfs -v $IB/work/oci:/out:z \
@@ -5148,8 +5214,8 @@ ib46=$(ib_steps APEX_FEDORA=46) || ib46="image.sh failed: $ib46"
 check "a 46 build takes 46.env's BASE and REPOS_BASE, never 45's" \
     "--build-arg BASE=$(ib_next_env BASE) --build-arg REPOS_BASE=$(ib_next_env REPOS_BASE) " \
     "$(grep -o -- '--build-arg BASE=[^ ]* --build-arg REPOS_BASE=[^ ]* ' <<<"$ib46")"
-check "with its FEDORA and GA date, tagged localhost/apex:46" \
-    "--build-arg FEDORA=46 --build-arg FEDORA_GA_DATE=$(ib_next_env FEDORA_GA_DATE) \
+check "with its FEDORA alone, tagged localhost/apex:46" \
+    "--build-arg FEDORA=46 \
 -f $IB/tree/image/Containerfile -t localhost/apex:46 " \
     "$(grep -o -- '--build-arg FEDORA=.* -t [^ ]* ' <<<"$ib46")"
 check "its version is 46.<date>.<run>" "46.$(date -u +%Y%m%d).0" "$(sed -n 's/^APEX_VERSION=//p' "$IB/work/build.env")"
@@ -6587,6 +6653,84 @@ check_true "its journal read" grep -qx "journalctl -D $QV/out/mnt-v-journal/log/
 check_true "and the mapping closed" grep -qx 'cryptsetup close apex-qualify-v-journal' "$QV/calls"
 qv_cleanup 3 unreadable
 check_true "a journal the host's journalctl cannot read is said so" grep -qF "cannot read the journal off $QV/out/v.raw" "$QV/err"
+
+# --- vm-keeper.sh: replay a vm.yml run only when it gave no verdict --------------------------
+VK="$TMP/vm-keeper"
+mkdir -p "$VK/bin"
+VK_NOW=1793376000
+VK_HEAD=$(printf 'c%.0s' {1..40})
+VK_OLD=$(printf 'd%.0s' {1..40})
+vk_run() { # ID SHA STATUS CONCLUSION BUILD_CONCLUSION AGE_MIN [EVENT ACTOR [ANNOTATION...]]: one run as gather() makes it
+    local id=$1 sha=$2 status=$3 conclusion=$4 build=$5 age=$6 event=${7:-push} actor=${8:-owner}
+    shift $(($# < 8 ? $# : 8))
+    jq -nc --argjson id "$id" --arg sha "$sha" --arg status "$status" --arg conclusion "$conclusion" --arg build "$build" \
+        --arg created "$(date -u -d "@$((VK_NOW - age * 60))" +%FT%TZ)" --arg event "$event" --arg actor "$actor" \
+        --args '{id: $id, event: $event, head_sha: $sha, status: $status, conclusion: (if $conclusion == "" then null else $conclusion end),
+            created_at: $created, actor: $actor, annotations: $ARGS.positional,
+            build: (if $build == "none" then null else {status: (if $build == "queued" then "queued" else "completed" end),
+                conclusion: (if $build == "" or $build == "queued" then null else $build end)} end)}' "$@"
+}
+vk_decide() { # CHANGED RUN_JSON...: the keeper's decision, newest run first
+    local changed=$1
+    shift
+    jq -n --argjson now "$VK_NOW" --arg head "$VK_HEAD" --argjson changed "$changed" \
+        '{now: $now, main_head: $head, changed_since_verdict: $changed, runs: [$ARGS.positional[] | fromjson]}' --args "$@" \
+        >"$VK/ctx.json"
+    "$APEX_ROOT/.github/scripts/vm-keeper.sh" decide "$VK/ctx.json"
+}
+NO_RESULTS='Gates file: the builder VM returned no results'
+check "keeper: no run yet" "none no vm.yml run yet" "$(vk_decide true)"
+check "keeper: a run queued for a runner waits" "wait run 9 is queued for a runner" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" queued '' queued 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
+check "keeper: a run pending behind the vm concurrency group waits, apart from a queued job" "wait run 9 is pending" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" pending '' none 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
+check "keeper: the last run's verdict, a failure that returned its results, is never replayed" "none run 9 is a verdict" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed failure failure 30 push owner 'Components, RPMs: the build in the builder VM failed (exit 1)')")"
+check "keeper: nor is a green one" "none run 9 is a verdict" "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed success success 30)")"
+check "keeper: a qualify-only run is advisory, not a gate verdict, and is not replayed" "none run 9 is advisory" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed failure failure 30 push owner 'qualify-only: advisory: records nothing, promotes nothing by design')")"
+for case in "cancelled|cancelled|" "failure|failure|$NO_RESULTS" "cancelled|cancelled|Build: The job was not acquired by Runner of type self-hosted even after multiple attempts" \
+    "failure|timed_out|"; do
+    IFS='|' read -r vk_conclusion vk_build vk_note <<<"$case"
+    check "keeper: no verdict ($vk_build${vk_note:+, $vk_note}) dispatches main's head" "dispatch $VK_HEAD" \
+        "$(vk_decide true "$(vk_run 9 "$VK_OLD" completed "$vk_conclusion" "$vk_build" 30 schedule owner ${vk_note:+"$vk_note"})")"
+done
+check "keeper: ssh 255 before the tar is no verdict either" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 9 "$VK_OLD" completed failure failure 30 push owner \
+        'Components, RPMs: ssh lost or never reached the builder VM (exit 255)' "$NO_RESULTS")")"
+check "keeper: never replays a commit whose verdict is known" "none main head ${VK_HEAD:0:12} has a verdict" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_HEAD" completed failure failure 300)")"
+check "keeper: nor when no vm.yml push path changed since the last verdict" "none no vm.yml push path changed since the last verdict" \
+    "$(vk_decide false "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_OLD" completed failure failure 300)")"
+check "keeper: a rejected dispatch approval (build skipped) is no run" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 10 "$VK_HEAD" completed failure skipped 10 workflow_dispatch owner)" "$(vk_run 9 "$VK_OLD" completed cancelled cancelled 30)")"
+check "keeper: once per 3 hours per commit" "wait already dispatched ${VK_HEAD:0:12} in the last 3 hours" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 120 workflow_dispatch 'github-actions[bot]')")"
+check "keeper: after 3 hours, again" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 190 workflow_dispatch 'github-actions[bot]')")"
+check "keeper: an owner's own dispatch is not the keeper's" "dispatch $VK_HEAD" \
+    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 60 workflow_dispatch owner)")"
+vk_day=()
+for n in 1 2 3 4; do vk_day+=("$(vk_run "$((20 - n))" "$VK_OLD" completed cancelled cancelled $((n * 200)) workflow_dispatch 'github-actions[bot]')"); done
+check "keeper: and at most 4 a day" "wait 4 dispatches in the last 24 hours" "$(vk_decide true "${vk_day[@]}")"
+check "keeper: the fifth is past the day" "dispatch $VK_HEAD" "$(vk_decide true "${vk_day[@]:0:3}" \
+    "$(vk_run 16 "$VK_OLD" completed cancelled cancelled 1500 workflow_dispatch 'github-actions[bot]')")"
+cat >"$VK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$FAKE_VK/gh.log"
+EOF
+chmod +x "$VK/bin/gh"
+vk_off() { env -u APEX_VM_KEEPER PATH="$VK/bin:$PATH" FAKE_VK="$VK" "$APEX_ROOT/.github/scripts/vm-keeper.sh" run; }
+check "keeper: the kill switch is checked first: off, it exits 0" \
+    "vm-keeper: off (repository variable APEX_VM_KEEPER is not on)|0" "$(vk_off)|$(rc_of vk_off)"
+check "keeper: and asks nothing of GitHub" "no call" "$([[ -e $VK/gh.log ]] && echo call || echo 'no call')"
+# shellcheck disable=SC2016 # expanded by the inner bash
+VK_RE=$(cd "$APEX_ROOT" && bash -c '. "$1"; paths_regex' _ .github/scripts/vm-keeper.sh)
+check_true "keeper: vm.yml's push paths match image/" grep -qE "$VK_RE" <<<"image/Containerfile"
+check_false "keeper: and not a workflow" grep -qE "$VK_RE" <<<".github/workflows/ci.yml"
+check_true "keeper: the cron's minute is the one it measures its lag from" grep -qF \
+    "cron: \"$(sed -n 's/.*KEEPER_MINUTE=\([0-9]*\).*/\1/p' "$APEX_ROOT/.github/scripts/vm-keeper.sh") * * * *\"" "$APEX_ROOT/.github/workflows/vm-keeper.yml"
+check_true "keeper: off in the workflow too, before the job starts" grep -qF "vars.APEX_VM_KEEPER == 'on'" "$APEX_ROOT/.github/workflows/vm-keeper.yml"
 
 # --- vm.yml: the Commit, build and gates steps, taken from the workflow, on canned results ---
 V="$TMP/vm-yml"
