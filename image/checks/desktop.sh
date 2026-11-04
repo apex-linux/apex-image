@@ -399,6 +399,23 @@ else
     fi
 fi
 
+# The guard reads the deployment this unit records at boot, before bootc can rewrite the boot entries.
+recorder=/usr/lib/systemd/system/apex-booted-deployment.service
+recorder_want=/usr/lib/systemd/system/sysinit.target.wants/apex-booted-deployment.service
+recorder_exec=/usr/libexec/apex/apex-booted-deployment
+recorder_start="$recorder_exec /run/apex/booted-deployment"
+if [ ! -f "$(rootpath "$recorder")" ]; then
+    fail "$recorder, which records the deployment the crash guard keys on, is not installed (apex-desktop)"
+elif [ "$(readlink -f -- "$(rootpath "$recorder_want")")" != "$(readlink -f -- "$(rootpath "$recorder")")" ]; then
+    fail "$recorder_want is not a link that resolves to $recorder: nothing starts it at boot"
+elif [ "$(sed -n 's/^ExecStart=//p' "$(rootpath "$recorder")")" != "$recorder_start" ]; then
+    fail "$recorder does not run exactly ExecStart=$recorder_start"
+elif [ ! -f "$(rootpath "$recorder_exec")" ] || [ ! -x "$(rootpath "$recorder_exec")" ]; then
+    fail "$recorder_exec, which $recorder runs, is missing or not executable (apex-desktop)"
+else
+    pass "apex-booted-deployment.service is enabled through sysinit.target.wants and runs exactly $recorder_start"
+fi
+
 # vte.sh wraps the PS1 it finds, so the Apex prompt must be set first (apex-desktop's CI runs both).
 owner=''
 if root_rpm -qf --qf '%{NAME}\n' "$PROMPT" >"$TMPD/owner" 2>/dev/null; then owner=$(head -n 1 "$TMPD/owner"); fi

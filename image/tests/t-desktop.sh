@@ -14,6 +14,8 @@ if [ ! -x "$GUARD" ]; then
         skip_all "no $GUARD here, and it cannot be installed (systemd-analyze checks apex-shell-safe.service's ExecStart)"
     trap 'rm -rf "$T"; rm -f "$GUARD"; rmdir /usr/libexec/apex 2>/dev/null || true' EXIT
 fi
+RECORDER=/usr/lib/systemd/system/apex-booted-deployment.service
+RECORDER_WANT=/usr/lib/systemd/system/sysinit.target.wants/apex-booted-deployment.service
 NKEYS=$(find "$DESKTOP/dconf/distro.d" -maxdepth 1 -type f -exec cat {} + | grep -cvE '^[[:space:]]*(#|\[|$)')
 SHA=$(printf '%064d' 0 | tr 0 a)
 KEYDIR=pkgs/gnome-shell/gnome-shell-51.0-1.fc45-s0123456789ab
@@ -131,6 +133,10 @@ mkroot() {
     ln -s ../apex-folder-icons.service "$r/usr/lib/systemd/user/graphical-session.target.wants/apex-folder-icons.service"
     install -m0755 "$DESKTOP/icons/apex-folder-icons.sh" "$r/usr/libexec/apex-folder-icons"
     install -D -m0755 "$DESKTOP/systemd/apex-shell-guard.sh" "$r$GUARD"
+    install -D -m0644 "$DESKTOP/systemd/system/apex-booted-deployment.service" "$r$RECORDER"
+    install -D -m0755 "$DESKTOP/systemd/apex-booted-deployment.sh" "$r/usr/libexec/apex/apex-booted-deployment"
+    mkdir -p "$r/usr/lib/systemd/system/sysinit.target.wants"
+    ln -s ../apex-booted-deployment.service "$r$RECORDER_WANT"
     printf '[Unit]\nDescription=GNOME Shell\nOnFailure=org.gnome.Shell-disable-extensions.service\n\n[Service]\nType=notify\nExecStart=/usr/bin/true\nSuccessExitStatus=1\n' \
         >"$r/usr/lib/systemd/user/org.gnome.Shell@.service"
     printf '[Unit]\nDescription=Disable GNOME Shell extensions after failure\nDefaultDependencies=no\n\n[Service]\nType=simple\nExecStart=/usr/bin/true\n' \
@@ -180,6 +186,8 @@ expect_out "the distro database is compiled" '^PASS desktop: /etc/dconf/db/distr
 expect_out "an empty locks directory holds no lock" '^PASS desktop: no dconf lock in /etc/dconf/db/distro\.d$'
 expect_out "the Ptyxis profile is the default and valid" "^PASS desktop: the $NKEYS dconf default\\(s\\) in /etc/dconf/db/distro\\.d set Ptyxis's default profile [0-9a-f]{32}, and each is a valid setting$"
 expect_out "the committed crash guard verifies" '^PASS desktop: the crash guard is installed'
+expect_out "the deployment the guard keys on is recorded at boot" \
+    '^PASS desktop: apex-booted-deployment\.service is enabled through sysinit\.target\.wants and runs exactly /usr/libexec/apex/apex-booted-deployment /run/apex/booted-deployment$'
 expect_out "the greeter's logo and background" '^PASS desktop: the greeter.s logo resolves to /usr/share/pixmaps/apex-gdm-logo\.svg, and /usr/share/backgrounds/apex/apex-greeter-light\.png is installed$'
 expect_out "the folder icons unit is enabled" '^PASS desktop: apex-folder-icons\.service is enabled for every user through graphical-session\.target\.wants and runs /usr/libexec/apex-folder-icons$'
 
@@ -443,6 +451,48 @@ sed -i 's/^Type=oneshot$/Type=oneshot\nRestartSec=soon/' "$r/usr/lib/systemd/use
 desktop badunit
 expect_rc "a guard unit that does not verify fails" 1
 expect_out "systemd-analyze names it" '^FAIL desktop: systemd-analyze --user verify'
+
+r=$(mkroot norecorder)
+rm "$r$RECORDER"
+desktop norecorder
+expect_rc "no boot-time deployment recorder fails" 1
+expect_out "and says so" '^FAIL desktop: /usr/lib/systemd/system/apex-booted-deployment\.service, which records the deployment the crash guard keys on, is not installed'
+r=$(mkroot norecorderlink)
+rm "$r$RECORDER_WANT"
+desktop norecorderlink
+expect_rc "a recorder nothing starts at boot fails" 1
+expect_out "and names the link" '^FAIL desktop: /usr/lib/systemd/system/sysinit\.target\.wants/apex-booted-deployment\.service is not a link that resolves to'
+r=$(mkroot recorderfile)
+rm "$r$RECORDER_WANT"
+cp "$r$RECORDER" "$r$RECORDER_WANT"
+desktop recorderfile
+expect_rc "a copy in sysinit.target.wants, not a link, fails" 1
+expect_out "and names the link" 'sysinit\.target\.wants/apex-booted-deployment\.service is not a link that resolves to'
+r=$(mkroot recorderelsewhere)
+rm "$r$RECORDER_WANT"
+cp "$r$RECORDER" "$r/usr/lib/systemd/system/apex-other.service"
+ln -s ../apex-other.service "$r$RECORDER_WANT"
+desktop recorderelsewhere
+expect_rc "a link to another installed unit fails" 1
+expect_out "and names the link" 'sysinit\.target\.wants/apex-booted-deployment\.service is not a link that resolves to'
+r=$(mkroot recorderexec)
+sed -i 's|^ExecStart=.*|ExecStart=/usr/libexec/apex/apex-booted-deployment /run/booted|' "$r$RECORDER"
+desktop recorderexec
+expect_rc "a recorder writing elsewhere fails" 1
+expect_out "and names the ExecStart it wants" '^FAIL desktop: .*apex-booted-deployment\.service does not run exactly ExecStart=/usr/libexec/apex/apex-booted-deployment /run/apex/booted-deployment$'
+r=$(mkroot recordertwice)
+printf 'ExecStart=/usr/bin/true\n' >>"$r$RECORDER"
+desktop recordertwice
+expect_rc "a second ExecStart= fails" 1
+r=$(mkroot recordernotexec)
+chmod 0644 "$r/usr/libexec/apex/apex-booted-deployment"
+desktop recordernotexec
+expect_rc "a recorder script that is not executable fails" 1
+expect_out "and names it" '^FAIL desktop: /usr/libexec/apex/apex-booted-deployment, which .*apex-booted-deployment\.service runs, is missing or not executable'
+r=$(mkroot norecorderscript)
+rm "$r/usr/libexec/apex/apex-booted-deployment"
+desktop norecorderscript
+expect_rc "a recorder without its script fails" 1
 
 r=$(mkroot noiconslink)
 rm "$r/usr/lib/systemd/user/graphical-session.target.wants/apex-folder-icons.service"
