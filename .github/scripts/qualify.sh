@@ -371,6 +371,9 @@ close_mappers() {
 }
 
 serial_lines() { wc -l <"$VM_SERIAL" 2>/dev/null || echo 0; }
+# OVMF's debug console, which start_vm writes next to the serial console (-debugcon).
+ovmf_log() { printf '%s\n' "${VM_SERIAL%.serial.log}.ovmf.log"; }
+ovmf_lines() { wc -l <"$(ovmf_log)" 2>/dev/null || echo 0; }
 serial_has() { tail -n "+$(($1 + 1))" "$VM_SERIAL" 2>/dev/null | tr -d '\r' | grep -Eq "$2"; }
 cryptsetup_asked() { serial_has "$1" 'Starting .*Cryptography Setup for '; }
 cryptsetup_opened() { serial_has "$1" 'Finished .*Cryptography Setup for '; }
@@ -1793,10 +1796,23 @@ resume_timeout_dump() {
     } >"$QUALIFY_OUT/logs/$test.resume-timeout.txt" 2>&1 || true
 }
 
+# edk2-ovmf 20260812 asserts on S3 resume, so the firmware never hands back to the guest: an upstream bug.
+readonly OVMF_S3_ASSERT='ASSERT MemoryServices.c(203):'
+readonly OVMF_S3_ASSERT_ITEM='the known edk2-ovmf 20260812 S3 resume ASSERT in MemoryServices.c(203), upstream of Apex'
+
+# MARK: OVMF's assert line after its S3 resume and after line MARK of its log, when it is that one.
+ovmf_s3_assert() {
+    local log
+    log=$(ovmf_log)
+    [[ -n $1 && -r $log ]] || return 0
+    tail -n "+$(($1 + 1))" "$log" | tr -d '\r' |
+        awk -v a="$OVMF_S3_ASSERT" '/^SEC: S3 resume/ { r = 1 } r && !n && index($0, a) == 1 { print; n = 1 }'
+}
+
 # After the wake: QEMU's run state on every pass, then one ssh probe. Nothing more is sent
 # to the guest, so what it does on its own is what the row sees.
 wait_resumed() {
-    local test=$1 wake_line=$2 wake=$3 deadline=$((SECONDS + QUALIFY_RESUME_TIMEOUT)) state='' seen=''
+    local test=$1 wake_line=$2 wake=$3 ovmf_mark=${4:-} deadline=$((SECONDS + QUALIFY_RESUME_TIMEOUT)) state='' seen='' known
     while :; do
         if ! vm_alive; then
             suspend_serial_after_wake "$test" "$wake_line"
@@ -1812,7 +1828,9 @@ wait_resumed() {
         if ((SECONDS >= deadline)); then
             suspend_serial_after_wake "$test" "$wake_line"
             resume_timeout_dump "$test"
-            fail "$test" "no ssh ${QUALIFY_RESUME_TIMEOUT}s after $wake (QEMU run state ${state:-unknown}; seen: ${seen:-none}; logs/$test.resume-timeout.txt)"
+            known=$(ovmf_s3_assert "$ovmf_mark")
+            [[ -z $known ]] || known="; OVMF stopped at '$known': $OVMF_S3_ASSERT_ITEM"
+            fail "$test" "no ssh ${QUALIFY_RESUME_TIMEOUT}s after $wake (QEMU run state ${state:-unknown}; seen: ${seen:-none}; logs/$test.resume-timeout.txt)$known"
         fi
         sleep "$QUALIFY_POLL"
     done
@@ -1831,6 +1849,7 @@ journal_since_has() {
 # QMP is a local-diag unit only: OVMF's S3 resume asserts in the firmware G4 runs.
 matrix_suspend() {
     local test=$1-lock-suspend pid=$2 base=$3 mode=${4:-s2idle} since boot_id woken_boot cursor mark wake_line wake success offset
+    local ovmf_mark=''
     local after clock gap slept irq detail
     [[ $mode == s2idle ]] || test+=-$mode
     since=$(vm_ssh 'date +%s') || fail "$test" "cannot read the guest's clock"
@@ -1863,12 +1882,12 @@ matrix_suspend() {
         qmp "$(key_press wake)" || fail "$test" "QEMU took no wake key"
     else
         wait_until "$test" "$QUALIFY_LOCK_TIMEOUT" "the VM did not suspend (QMP query-status)" vm_suspended
-        wake_line=$(serial_lines)
+        wake_line=$(serial_lines) ovmf_mark=$(ovmf_lines)
         qmp '{"execute":"system_wakeup"}' || fail "$test" "QEMU took no system_wakeup"
     fi
     sleep "$QUALIFY_POLL"
     screendump "$test-woken"
-    wait_resumed "$test" "$wake_line" "$wake"
+    wait_resumed "$test" "$wake_line" "$wake" "$ovmf_mark"
     suspend_serial_after_wake "$test" "$wake_line"
     woken_boot=$(vm_ssh 'cat /proc/sys/kernel/random/boot_id') || fail "$test" "cannot read the guest's boot_id after the wake"
     [[ $woken_boot == "$boot_id" ]] || fail "$test" "the guest rebooted instead of resuming (boot $boot_id -> $woken_boot)"
