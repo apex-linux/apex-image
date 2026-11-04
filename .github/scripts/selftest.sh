@@ -4649,8 +4649,10 @@ ct_g2_weekday clock-show-weekday=true clock-show-weekday=true
 ct_favorites "'org.gnome.Nautilus.desktop', 'org.gnome.Ptyxis.desktop', 'io.github.kolunmi.Bazaar.desktop'"
 printf '[Unit]\n' >"$CT/desktop/desktop/systemd/user/apex-shell-safe.service"
 printf '#!/usr/bin/env bash\n' >"$CT/desktop/desktop/systemd/apex-shell-guard.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$CT/desktop/desktop/systemd/apex-booted-deployment.sh"
 cp "$CT/desktop/desktop/schemas/$CT_SCHEMA" "$CT/desktop/desktop/systemd/user/apex-shell-safe.service" \
-    "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/gnome/tests/layer/fixtures/"
+    "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/desktop/desktop/systemd/apex-booted-deployment.sh" \
+    "$CT/gnome/tests/layer/fixtures/"
 CT_UPDATE1=io.github.apex_linux.Apex.Update1.xml
 mkdir -p "$CT/gnome/desktop/control-center/panels/apex" "$CT/system/crates/apex-dbus/data" \
     "$CT/system/crates/apex-session-agent/tests/data"
@@ -4704,6 +4706,12 @@ rm "$CT/gnome/tests/layer/fixtures/apex-shell-guard.sh"
 check "contracts: apex-gnome's crash guard script copy is missing" 1 "$(ct_run)"
 cp "$CT/desktop/desktop/systemd/apex-shell-guard.sh" "$CT/gnome/tests/layer/fixtures/"
 check "contracts: the crash guard script copies equal" 0 "$(ct_run)"
+printf '#!/bin/sh\n' >"$CT/gnome/tests/layer/fixtures/apex-booted-deployment.sh"
+check "contracts: apex-gnome's booted-deployment recorder copy differs from apex-desktop's" 1 "$(ct_run)"
+rm "$CT/gnome/tests/layer/fixtures/apex-booted-deployment.sh"
+check "contracts: apex-gnome's booted-deployment recorder copy is missing" 1 "$(ct_run)"
+cp "$CT/desktop/desktop/systemd/apex-booted-deployment.sh" "$CT/gnome/tests/layer/fixtures/"
+check "contracts: the booted-deployment recorder copies equal" 0 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
 ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
