@@ -2086,6 +2086,7 @@ guest_wakes() {
     if [[ -e $STATE/resuspends && ! -e $STATE/woken ]]; then : >"$STATE/woken"; else rm -f "$STATE/suspended" "$STATE/frozen"; fi
     [[ ! -e $STATE/reboots-on-wake ]] || echo boot-2 >"$STATE/boot-id"
     [[ ! -e $STATE/dies-on-wake ]] || : >"$STATE/vm-dead"
+    [[ ! -e $STATE/ovmf-says ]] || cat "$STATE/ovmf-says" >>"$(ovmf_log)"
     [[ -e $STATE/no-logind-finish ]] || echo "Operation 'suspend' finished." >>"$STATE/journal-systemd-logind"
     [[ -e $STATE/no-nm-wake ]] || echo 'manager: sleep: wake requested (sleeping: yes  enabled: yes)' >>"$STATE/journal-NetworkManager"
     [[ ! -e $STATE/power-key ]] || echo 'Power key pressed short.' >>"$STATE/journal-systemd-logind"
@@ -3109,6 +3110,28 @@ suspend_s3_fails dies-on-wake 'the VM exited after system_wakeup (QEMU run state
 resume_checks local-lock-suspend-s3 dies-on-wake
 suspend_s3_fails no-resume 'no ssh 2s after system_wakeup (QEMU run state running;'
 resume_checks local-lock-suspend-s3 no-resume
+check_false "a timeout with no OVMF line names no firmware item" grep -qF 'OVMF stopped' "$GUEST_DIR/out/results.md"
+S3_ASSERT='ASSERT MemoryServices.c(203): !(((RETURN_STATUS)(Status)) >= 0x8000000000000000ULL)'
+s3_ovmf() { # LINES...: what OVMF's debug console prints on the wake, then the no-resume row on it
+    apex_locked_in
+    printf '%s\r\n' "$@" >"$GUEST_DIR/state/ovmf-says"
+    : >"$GUEST_DIR/state/no-resume"
+    check "suspend-s3: no resume after OVMF printed ${#} line(s) fails" 1 "$(suspend_s3)"
+}
+s3_ovmf 'SEC: S3 resume' 'ASSERT_EFI_ERROR (Status = Not Found)' "$S3_ASSERT"
+check_true "and names edk2's resume ASSERT, still a FAIL" grep -qF \
+    "| local-lock-suspend-s3 | FAIL | no ssh 2s after system_wakeup (QEMU run state running; seen: running; logs/local-lock-suspend-s3.resume-timeout.txt); OVMF stopped at '$S3_ASSERT': the known edk2-ovmf 20260812 S3 resume ASSERT in MemoryServices.c(203), upstream of Apex" \
+    "$GUEST_DIR/out/results.md"
+resume_checks local-lock-suspend-s3 ovmf-assert
+s3_ovmf 'SEC: S3 resume' 'ASSERT [PeiCore] Other.c(7): Status'
+check_false "another OVMF ASSERT is a plain resume FAIL" grep -qF 'OVMF stopped' "$GUEST_DIR/out/results.md"
+s3_ovmf "$S3_ASSERT" 'SEC: S3 resume'
+check_false "so is that ASSERT before the resume began" grep -qF 'OVMF stopped' "$GUEST_DIR/out/results.md"
+apex_locked_in
+printf '%s\r\n' 'SEC: S3 resume' "$S3_ASSERT" >"$GUEST_DIR/state/serial.ovmf.log"
+: >"$GUEST_DIR/state/no-resume"
+check "suspend-s3: an ASSERT logged before this wake" 1 "$(suspend_s3)"
+check_false "is not this wake's" grep -qF 'OVMF stopped' "$GUEST_DIR/out/results.md"
 apex_locked_in
 printf '%s\n' 'PM: suspend entry (deep)' 'ACPI: PM: Waking up from system sleep state S3' 'PM: suspend exit' >"$GUEST_DIR/state/kernel"
 check "suspend: the matrix passes with the kernel's resume lines" 0 "$(guest lock_matrix local 1000)"
