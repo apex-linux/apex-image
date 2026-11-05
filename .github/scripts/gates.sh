@@ -156,6 +156,13 @@ store_signed_rpms() {
     done
 }
 
+# The store's first Apex-signed RPM, read whole: a pipe into head would end the producer with SIGPIPE.
+first_signed_rpm() {
+    local -a rpms
+    mapfile -t rpms < <(store_signed_rpms)
+    ((${#rpms[@]} == 0)) || printf '%s\n' "${rpms[0]}"
+}
+
 # Every signature goes first, as rpm 6 may keep several; then this run's key signs and apex-lane checks each.
 resign_store() {
     local -a rpms
@@ -189,7 +196,7 @@ resign_proof() {
     rpmkeys --dbpath "$work/db" --import "$work/a.asc" "$ROOT/$KEY_FILE"
     out=$(rpmkeys --dbpath "$work/db" -Kv "$work/x.rpm" 2>&1) || die "re-signed by $b, ${rpm##*/} does not verify: $out"
     if grep -qi -e "${a: -16}" <<<"$out" || ! grep -qi -e "${b: -16}" <<<"$out" ||
-        grep -i signature <<<"$out" | grep -qv ': OK$'; then
+        [[ $(grep -i signature <<<"$out" | grep -cv ': OK$') != 0 ]]; then
         die "signed by $a, stripped and signed by $b, ${rpm##*/} is not $b's alone: $out"
     fi
     log "gates: a store RPM signed by $a, then stripped and signed by $b, carries $b's signature alone"
@@ -222,7 +229,7 @@ inner_build() {
     printf 'sha %s\nimage-id %s\ncontent-key %s\nrpm-key test:%s\nlock-sha256 %s\nseconds %s\n' \
         "$GATES_SHA" "$id" "${key:-unknown}" "$fpr" "$lock" "$((SECONDS - t0))" >"$out/build.txt"
     cat "$out/build.txt"
-    first=$(store_signed_rpms | head -n 1)
+    first=$(first_signed_rpm)
     [[ -z $first ]] || resign_proof "$first" "$fpr"
     unsign_cache /work/cache
 }
@@ -322,7 +329,7 @@ cmd_record() {
 repo_revision() {
     local xml
     xml=$(curl -fsS --retry 3 --max-time 60 "https://mirrors.fedoraproject.org/metalink?repo=$1&arch=x86_64") || return 0
-    sed -n 's:.*<mm0\:timestamp>\([0-9]\{1,\}\)</mm0\:timestamp>.*:\1:p' <<<"$xml" | head -n 1
+    sed -n 's:.*<mm0\:timestamp>\([0-9]\{1,\}\)</mm0\:timestamp>.*:\1:p;T;q' <<<"$xml"
 }
 
 cmd_cache_key() {

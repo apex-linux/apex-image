@@ -1974,6 +1974,11 @@ mv "$GS/store" "$GS/store.full"
 mkdir -p "$GS/store"
 gs_run resign_store
 check_false "gates: an empty store signs nothing" test -e "$GS/log"
+mkdir -p "$GS/store/pkgs/big/k3"
+{ echo '# apex-lane manifest'; for i in $(seq 30000); do echo "built big-0:$i-1.x86_64 ee big$i.rpm"; done; } \
+    >"$GS/store/pkgs/big/k3/manifest.txt"
+check "gates: the proof's RPM from a store too big for one pipe buffer, no SIGPIPE under pipefail" \
+    "$GS/store/pkgs/big/k3/big1.rpm|0" "$(rc=0; out=$(gs_run first_signed_rpm) || rc=$?; echo "$out|$rc")"
 rm -rf "$GS/store"
 mv "$GS/store.full" "$GS/store"
 echo 1793348934 >"$GS/ts-fedora-45"
