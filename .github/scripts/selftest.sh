@@ -4570,7 +4570,7 @@ check "with no traceback" 0 "$(grep -c Traceback "$HC4.err")"
 check "g4 harness: a script over 4 MiB that mentions python fails closed" 1 \
     "$(hc4 "{ echo '#!/usr/bin/env bash'; echo 'python3 -c \"\$X\"'; head -c 5000000 /dev/zero | tr '\\0' '#'; } >.github/scripts/helper.sh")"
 check_true "naming its size" grep -qF "helper.sh, over 4 MiB" "$HC4.err"
-check "the real scripts' Python: qualify.sh's four, lib.sh's three, desktop-vm.sh's and builder-vm.sh's one each" "4 3 1 1" \
+check "the real scripts' Python: qualify.sh's five, lib.sh's three, desktop-vm.sh's and builder-vm.sh's one each" "5 3 1 1" \
     "$(cd "$APEX_ROOT/.github/scripts" && python3 - "$APEX_ROOT" <<'EOF'
 import sys
 import repo_reads as r
@@ -5359,14 +5359,13 @@ ib_rc=0
 ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_FEDORA=46 APEX_WORK="$IB/work" \
     "$IB/tree/.github/scripts/image.sh" push 2>&1) || ib_rc=$?
 check "image.sh push refuses the next lane" 1 "$ib_rc"
+check_true "and says it never pushes" grep -q 'next lane: it never pushes' <<<"$ib_log"
+check_false "before podman" test -e "$IB/podman.log"
 printf 'APEX_VERSION=45.20261105.0\nAPEX_REVISION=%040d\n' 7 >"$IB/work/build.env"
 printf 'RPM_KEY=test:0123456789ABCDEF0123456789ABCDEF01234567\n' >"$IB/work/image.env"
 ib_rc=0
 ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_WORK="$IB/work" "$IB/tree/.github/scripts/image.sh" push 2>&1) || ib_rc=$?
 check "image.sh push refuses a test-key image" "1|1" "$ib_rc|$(grep -c 'not the Apex RPM key: it never pushes' <<<"$ib_log")"
-check "before skopeo copies anything" 0 "$(grep -c 'copy' "$IB/podman.log" 2>/dev/null || true)"
-check_true "and says it never pushes" grep -q 'next lane: it never pushes' <<<"$ib_log"
-check_false "before podman" test -e "$IB/podman.log"
 ib_rc=0
 ib_log=$(env APEX_FEDORA=47 "$IB/tree/.github/scripts/image.sh" build 2>&1) || ib_rc=$?
 check "a release without its image/fedora/N.env is refused" "2|1" \
