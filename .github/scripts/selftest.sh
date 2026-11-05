@@ -1878,6 +1878,46 @@ check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
 check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
     "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
 
+# --- qualify.sh: a degraded system keeps each failed unit's status, chain and TuneD's log ----
+QA=$TMP/assert-running
+qa() { # STATE UNITS...: assert_running on a fake guest in STATE with UNITS failed; its exit
+    rm -rf "$QA" && mkdir -p "$QA/out/logs"
+    echo "$1" >"$QA/state"
+    shift
+    printf '%s\n' "$@" >"$QA/failed"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    rc_of env QUALIFY_OUT="$QA/out" bash -c '. "$1"; QA=$2 VM_NAME=local
+        vm_alive() { :; }
+        vm_ssh() {
+            printf "%s\n" "$*" >>"$QA/ssh"
+            case $* in
+                *is-system-running*) cat "$QA/state" ;;
+                *"list-units --state=failed --plain"*) sed "/^$/d; s/\$/ loaded failed failed x/" "$QA/failed" ;;
+                "systemctl status --no-pager --full --lines=200 "*) echo "status of ${*##* }" ;;
+                "systemd-analyze critical-chain --no-pager "*) echo "chain of ${*##* }" ;;
+                "cat /var/log/tuned/tuned.log") echo "tuned: the profile took 40 s" ;;
+            esac
+        }
+        fail() { printf "%s\n" "$2" >"$QA/fail"; exit 1; }
+        assert_running local-fallback' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$QA"
+}
+check "degraded by tuned.service: the row fails" 1 "$(qa degraded tuned.service)"
+check "naming the unit" "system degraded; failed units: tuned.service " "$(cat "$QA/fail")"
+check "with its status and its critical chain kept" \
+    "## systemctl status tuned.service|status of tuned.service|## systemd-analyze critical-chain tuned.service|chain of tuned.service" \
+    "$(paste -sd'|' "$QA/out/logs/local-local-fallback.failed-units.txt")"
+check "and TuneD's own log" "tuned: the profile took 40 s" "$(cat "$QA/out/logs/local-local-fallback.tuned.log")"
+check "and the journal, as before" 1 "$(grep -c '^journalctl -b' "$QA/ssh")"
+check "degraded by two units: fails" 1 "$(qa degraded a.service b.service)"
+check "each unit's status and chain" "## systemctl status a.service|## systemd-analyze critical-chain a.service|## systemctl status b.service|## systemd-analyze critical-chain b.service" \
+    "$(grep '^##' "$QA/out/logs/local-local-fallback.failed-units.txt" | paste -sd'|')"
+check_false "and no TuneD log when TuneD did not fail" test -e "$QA/out/logs/local-local-fallback.tuned.log"
+# shellcheck disable=SC2016 # a literal $(...) in the unit's name
+check "a unit name reaches the guest's shell quoted" 1 "$(qa degraded 'x;touch$(y).service')"
+check_true "as one word" grep -qxF 'systemctl status --no-pager --full --lines=200 x\;touch\$\(y\).service' "$QA/ssh"
+check "running: passes" 0 "$(qa running)"
+check_false "and keeps nothing" test -e "$QA/out/logs/local-local-fallback.failed-units.txt"
+
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
 mkdir -p "$QMP_DIR"
