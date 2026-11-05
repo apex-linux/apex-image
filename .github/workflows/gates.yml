@@ -44,8 +44,28 @@ jobs:
           .github/scripts/ci-host.sh free-disk
           sudo install -d -o "$(id -u)" -g "$(id -g)" "$GATES_WORK"
           APEX_SCRATCH=$GATES_WORK .github/scripts/ci-host.sh preflight 0 45
+      - name: The build cache's name (inputs and the day's repositories)
+        id: cache-key
+        run: .github/scripts/gates.sh cache-key >>"$GITHUB_OUTPUT"
+      # Unsigned RPMs and apex-lane, an exact key only: build signs them again with its own key.
+      - name: The build cache
+        if: steps.cache-key.outputs.key != ''
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ env.GATES_WORK }}/cache
+          key: ${{ steps.cache-key.outputs.key }}
       - name: Build in fedora:45
+        id: build
+        env:
+          GATES_REPOS: ${{ steps.cache-key.outputs.repos }}
         run: .github/scripts/gates.sh build "$RUNNER_TEMP/gates-build"
+      - name: Keep the build cache
+        if: steps.build.outcome == 'success' && steps.cache-key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ env.GATES_WORK }}/cache
+          key: ${{ steps.cache-key.outputs.key }}
       - name: Disk after the build
         if: ${{ !cancelled() }}
         run: .github/scripts/ci-host.sh usage build
