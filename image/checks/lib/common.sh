@@ -23,6 +23,9 @@ esac
 FEDORA_KEYID=${FEDORA_KEY_FPR#????????????????????????}
 # A rotation changes this pin and the public key the image ships in one reviewed change.
 APEX_RPM_KEY_FPR=B9A8301A20A14E732212A4C58DA3252BD6EF25FA
+# A hosted gates image names its ephemeral key here (image/Containerfile APEX_TEST_KEY); it never publishes.
+APEX_TEST_KEY_FILE=/usr/share/apex/test-key
+if [ -e "$ROOT$APEX_TEST_KEY_FILE" ]; then APEX_RPM_KEY_FPR=$(head -n 1 "$ROOT$APEX_TEST_KEY_FILE" | cut -c1-40); fi
 APEX_RPM_KEYID=${APEX_RPM_KEY_FPR#????????????????????????}
 
 _apex_failures=0

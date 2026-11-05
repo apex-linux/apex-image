@@ -82,6 +82,17 @@ if [ "$bad" -eq 0 ]; then
     pass "no dnf configuration, repository or override disables gpgcheck ($(wc -l <"$TMPD/dnfconf" | tr -d ' ') file(s))"
 fi
 
+marker=$(rootpath "$APEX_TEST_KEY_FILE")
+if [ ! -e "$marker" ]; then
+    pass "no $APEX_TEST_KEY_FILE: the Apex RPM key signs this image"
+elif [ "$(wc -l <"$marker" | tr -d ' ')" != 1 ] || ! grep -Eqx '[0-9A-F]{40}' "$marker"; then
+    fail "$APEX_TEST_KEY_FILE is not one 40-hex fingerprint"
+elif [ "${RELEASE_BUILD:-0}" != 0 ]; then
+    fail "a release build carries $APEX_TEST_KEY_FILE: a test-key image never publishes"
+else
+    pass "test-key image: $APEX_TEST_KEY_FILE names the ephemeral key $APEX_RPM_KEY_FPR, and publish.sh refuses it"
+fi
+
 key=$(rootpath "$APEX_RPM_KEY")
 if [ ! -s "$key" ]; then
     fail "no $APEX_RPM_KEY: the public half of the Apex RPM key"

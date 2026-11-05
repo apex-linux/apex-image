@@ -49,6 +49,15 @@ Environment:
                     this checkout)
   APEX_SYSTEM_SRC, APEX_DESKTOP_SRC   the apex-system and apex-desktop checkouts
                     (default this checkout)
+  APEX_TEST_KEY     a hosted gates build's ephemeral RPM key (gates.sh): the image says
+                    so (rpm-key=test:FPR) and never pushes or publishes
+
+The content key (schema 2) hashes the image's inputs, never its signer: the base, the
+degraded and held sets, the components' own keys, the lane lock's family lines and each
+rpm line's FAMILY KIND NAME NEVRA (not its SHA256 or PATH), image/'s committed tree
+without RPM-GPG-KEY-apex, apex-desktop's desktop/ and apex-system's hardware/ trees, and
+the manifest's NEVRAs. A gates build under its test key and the signer's build under the
+Apex RPM key have the same key exactly when they built the same thing.
 EOF
     exit 2
 }
@@ -353,6 +362,12 @@ cmd_build() {
     [[ -z ${APEX_COMPOSE:-} ]] || args+=(--build-arg "COMPOSE=$APEX_COMPOSE")
     ! is_next || args+=(--build-arg "FEDORA=$APEX_FEDORA")
     [[ -z ${APEX_TARGET:-} ]] || args+=(--target "$APEX_TARGET")
+    # A hosted gates build (gates.sh) signs with an ephemeral key: the image says so, and never publishes.
+    if [[ -n ${APEX_TEST_KEY:-} ]]; then
+        [[ $APEX_TEST_KEY =~ ^[0-9A-F]{40}$ ]] || die "APEX_TEST_KEY '$APEX_TEST_KEY' is not a 40-hex fingerprint"
+        [[ ${APEX_RELEASE_BUILD:-0} == 0 ]] || die "a test-key image is never a release build"
+        args+=(--build-arg "APEX_TEST_KEY=$APEX_TEST_KEY" --label "$APEX_LABEL_PREFIX.rpm-key=test:$APEX_TEST_KEY")
+    fi
 
     group "podman build ($version)"
     # The privileges build-rootfs needs inside the build.
@@ -366,20 +381,29 @@ cmd_build() {
         "(RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}$([[ -f $APEX_WORK/replay.lock ]] && echo ', lock replay'))"
 }
 
-# No build time goes in, so a rebuild of unchanged inputs publishes nothing.
+# The lock as inputs: family lines, and each rpm line without the SHA256 and PATH a signature changes.
+lock_inputs() { awk '$1 == "family" { print; next } $1 == "rpm" { print $1, $2, $3, $4, $5 }' "$1" | sha256sum | cut -c1-64; }
+# image/'s committed tree without the RPM key, which a gates build replaces with its ephemeral one.
+image_tree_inputs() {
+    local tree
+    tree=$(git -c safe.directory="$1" -C "$1" ls-tree -r --full-tree HEAD -- image 2>/dev/null) || { echo none; return; }
+    grep -v $'\timage/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex$' <<<"$tree" | sha256sum | cut -c1-64
+}
+
+# No build time goes in, so a rebuild of unchanged inputs publishes nothing; nor the signer.
 # shellcheck disable=SC2153 # BASE, RPMS_KEY, ... come from load_env
 content_key() {
     local degraded=$1 held=$2
     {
-        printf 'apex content key schema 1\n'
+        printf 'apex content key schema 2\n'
         printf 'base %s\n' "$BASE"
         printf 'degraded %s\n' "$degraded"
         printf 'held %s\n' "$held"
         printf 'rpms %s\n' "$RPMS_KEY"
         printf 'desktop-rpm %s\n' "$DESKTOP_KEY"
         printf 'libfprint %s\n' "$LIBFPRINT_KEY"
-        printf 'lane %s\n' "$LANE_LOCK_SHA256"
-        printf 'tree image %s\n' "$(head_tree "$APEX_ROOT" image)"
+        printf 'lane %s\n' "$(lock_inputs "$APEX_WORK/image-rpms.lock")"
+        printf 'tree image %s\n' "$(image_tree_inputs "${APEX_GIT_ROOT:-$APEX_ROOT}")"
         printf 'tree desktop %s\n' "$(head_tree "$APEX_DESKTOP_SRC" desktop)"
         printf 'tree hardware %s\n' "$(head_tree "$APEX_SYSTEM_SRC" hardware)"
         jq -cS '[.packages[] | {name, epoch, version, release, arch}]' "$APEX_WORK/manifest.json"
@@ -400,14 +424,20 @@ cmd_inspect() {
 
     podman_ run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/rpms.lock \
         >"$APEX_WORK/image-rpms.lock" || die "$IMAGE has no /usr/share/apex/rpms.lock"
-    local degraded held key pair
+    local degraded held key pair rpm_key=apex test_key
     pair=$(lock_pair_key <"$APEX_WORK/image-rpms.lock")
+    # The image's own marker, not the build's environment, says which key signed it.
+    if test_key=$(podman_ run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/test-key 2>/dev/null); then
+        [[ $test_key =~ ^[0-9A-F]{40}$ ]] || die "$IMAGE's /usr/share/apex/test-key is not one fingerprint"
+        rpm_key=test:$test_key
+    fi
     degraded=$(jq -r '.degraded | sort | join(",")' "$APEX_WORK/manifest.json")
     held=$(jq -r '.held | sort | join(",")' "$APEX_WORK/manifest.json")
     manifest_lock_list <"$APEX_WORK/manifest.json" >"$APEX_WORK/lock.txt"
     key=$(content_key "$degraded" "$held")
 
-    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\nKERNEL_PAIR=%q\n' "$degraded" "$held" "$key" "$pair" >"$APEX_WORK/image.env"
+    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\nKERNEL_PAIR=%q\nRPM_KEY=%q\n' "$degraded" "$held" "$key" "$pair" "$rpm_key" \
+        >"$APEX_WORK/image.env"
     summary "Manifest: $(jq '.packages | length' "$APEX_WORK/manifest.json") packages;" \
         "degraded: \`${degraded:-none}\`; held: \`${held:-none}\`; content key \`$key\`"
     set_output version "$APEX_VERSION"
@@ -463,6 +493,7 @@ rechunk_once() {
         --label "$APEX_LABEL_PREFIX.content-key=$CONTENT_KEY" \
         --label "$APEX_LABEL_PREFIX.fedora=$APEX_FEDORA" \
         --label "$APEX_LABEL_PREFIX.kernel-pair=${KERNEL_PAIR:?image.env has no KERNEL_PAIR: run image.sh inspect again}" \
+        --label "$APEX_LABEL_PREFIX.rpm-key=${RPM_KEY:?image.env has no RPM_KEY: run image.sh inspect again}" \
         "${NEXT_LABEL[@]}" --output "oci:/out/$OCI_REF:latest"
 }
 
@@ -497,7 +528,8 @@ cmd_rechunk() {
 cmd_push() {
     ! is_next || die "APEX_FEDORA=$APEX_FEDORA is the next lane: it never pushes"
     require skopeo git
-    load_env build.env
+    load_env build.env image.env
+    [[ ${RPM_KEY:-} == apex ]] || die "the image's RPMs are signed by '${RPM_KEY:-an unknown key}', not the Apex RPM key: it never pushes"
     local out="$APEX_SCRATCH/oci" run tag digestfile digest
     run=${APEX_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-0}}
     tag="sha-${APEX_REVISION:0:12}-$run"

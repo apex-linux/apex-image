@@ -60,6 +60,14 @@ the digest that will be published.
                                      due, after printing the pass's passed-at and
                                      image-id lines on stdout
 
+  qualify.sh local-shard SHARD IMAGE  one shard of G4 for the hosted gates, from a fresh install:
+                                     update (install to acknowledge, then the login),
+                                     boot-metrics, login, lock, polkit or crash-guard (each
+                                     after the install and the login); records nothing
+  qualify.sh g4-merge OUT DIR...     the shards' results.md (each DIR named for its shard) as
+                                     one OUT/results.md in local's row order; exit 0 when
+                                     every row passed and every shard closed
+
   qualify.sh local-diag [UNIT...] IMAGE
                                      diagnostic only, never a G4 pass: install IMAGE
                                      (separate-boot), make the test user, reboot, set
@@ -402,6 +410,19 @@ luks_unlock() {
     [[ -z $wrong ]] || result "$test" PASS "Plymouth's prompt (logs/$test-prompt.png) took the passphrase over QMP; systemd-cryptsetup opened the LUKS2 root"
 }
 
+# LOOP: udev knows each new filesystem's UUID, which bootc install reads; mkfs's events land later.
+partition_uuids() {
+    local p tries=0
+    as_root udevadm settle 2>/dev/null || true
+    for p in "$1"p1 "$1"p2 "$1"p3; do
+        until [[ -n $(as_root lsblk -dno UUID "$p" 2>/dev/null) ]]; do
+            ((++tries <= 60)) || die "$p has no UUID that udev knows 30 s after mkfs, so bootc install cannot name it"
+            sleep 0.5
+            as_root udevadm settle 2>/dev/null || true
+        done
+    done
+}
+
 install_disk() {
     local name=$1 image=$2 target=$3 disk="$QUALIFY_OUT/$1.raw"
     group "Install $image ($QUALIFY_LAYOUT) into $disk"
@@ -442,6 +463,7 @@ EOF
             as_root mkfs.vfat -F 32 -n EFI-SYSTEM "${loop}p1" >/dev/null
             as_root mkfs.ext4 -q -F -L boot "${loop}p2"
             as_root mkfs.btrfs -q -f -L root "${loop}p3"
+            partition_uuids "$loop"
             mkdir -p "$mnt"
             as_root mount "${loop}p3" "$mnt"
             MOUNTS+=("$mnt")
@@ -2551,6 +2573,105 @@ cmd_local() {
     drop_disk local
 }
 
+# The hosted gates (gates.yml) run G4 as these shards, each on its own runner from a fresh install;
+# the update chain stays in one. g4-merge joins their results in cmd_local's row order.
+readonly G4_SHARDS=(update boot-metrics login lock polkit crash-guard)
+
+cmd_local_shard() {
+    (($# == 2)) || die "usage: qualify.sh local-shard SHARD localhost/NAME:TAG (SHARD: ${G4_SHARDS[*]})"
+    local shard=$1 image=$2 digest image_id since s known=0
+    for s in "${G4_SHARDS[@]}"; do [[ $s != "$shard" ]] || known=1; done
+    ((known)) || die "no G4 shard '$shard' (${G4_SHARDS[*]})"
+    [[ $QUALIFY_LAYOUT == separate-boot ]] || die "the G4 shards run QUALIFY_LAYOUT=separate-boot only, not $QUALIFY_LAYOUT"
+    [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
+        die "expected a local image reference localhost/NAME[:TAG], got '$image'"
+    digest=$(as_root podman image inspect --format '{{.Digest}}' "$image") ||
+        die "$image is not in local container storage (gates.sh load)"
+    image_id=$(as_root podman image inspect --format '{{.Id}}' "$image") || die "cannot read the ID of $image"
+    ensure_key
+    install_disk local "$image" "$APEX_REPO_TESTING:$APEX_FEDORA"
+    start_vm local
+    wait_ssh
+    assert_green local-install "$digest"
+    assert_bootloader_updated local-install
+    save_bootc_status_fixture booted
+    vm_ssh 'command -v apexctl' >/dev/null || fail local-install "$image has no apexctl, so nothing can arm the boot counter"
+    if [[ $shard == update ]]; then
+        stage_local_candidate local-stage "$digest" "$image_id"
+        counted_rollback local "$digest" "$LOCAL_CANDIDATE_DIGEST"
+    else
+        create_test_user local
+        vm_reboot
+        assert_green local-rebooted "$digest"
+        assert_greeter local
+    fi
+    set_test_password local
+    vm_reboot
+    assert_green local-login-boot "$digest"
+    assert_bootloader_updated local-login-boot
+    since=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
+    greeter_login local
+    case $shard in
+        update) ;;
+        boot-metrics) boot_metrics local ;;
+        login) login_lock_unlock local ;;
+        lock) lock_matrix local "$since" ;;
+        polkit) polkit_agent local "$since"; polkit_actions local ;;
+        crash-guard)
+            crash_guard_late local
+            crash_guard_logins local
+            polkit_agent local-safe "$SAFE_LOGIN_SINCE" stock
+            safe_karg_lock local
+            ;;
+    esac
+    result "local-shard-$shard" PASS "every row of the $shard shard ran"
+    save_journal final
+    stop_vm
+    drop_disk local
+}
+
+# OUT SHARD_DIR...: one results.md in cmd_local's order; a row any shard failed is FAIL, a shard
+# without its closing row is FAIL. Exit 0 only when every row is PASS.
+cmd_g4_merge() {
+    (($# >= 2)) || die "usage: qualify.sh g4-merge OUT SHARD_DIR..."
+    local out=$1
+    shift
+    mkdir -p "$out"
+    python3 - "$out/results.md" "${G4_SHARDS[*]}" "$@" <<'PY'
+import os, sys
+out, shards, dirs = sys.argv[1], sys.argv[2].split(), sys.argv[3:]
+by_name = {os.path.basename(os.path.normpath(d)): d for d in dirs}
+order, rows = [], {}
+def row(name, status, detail, gate, shard):
+    if name not in rows:
+        order.append(name)
+        rows[name] = [status, detail, gate, shard]
+    elif rows[name][0] == "PASS" and status != "PASS":
+        rows[name] = [status, detail, gate, shard]
+for shard in shards:
+    d = by_name.get(shard)
+    path = d and os.path.join(d, "results.md")
+    lines = open(path, encoding="utf-8", errors="replace").read().splitlines() if path and os.path.isfile(path) else []
+    closed = False
+    for line in lines:
+        f = [x.strip() for x in line.strip().strip("|").split(" | ")]
+        if len(f) < 4:
+            continue
+        if f[0] == "local-shard-" + shard:
+            closed = f[1] == "PASS"
+            continue
+        row(f[0], f[1], f[2] if shard == "update" else f"{f[2]} (shard {shard})", f[3], shard)
+    if not closed:
+        row("local-shard-" + shard, "FAIL", f"the {shard} shard did not run every row" +
+            ("" if lines else " (no results.md)"), "-", shard)
+with open(out, "w", encoding="utf-8") as fh:
+    for name in order:
+        st, detail, gate, _ = rows[name]
+        fh.write(f"| {name} | {st} | {detail} | {gate} |\n")
+sys.exit(0 if all(rows[n][0] == "PASS" for n in order) else 1)
+PY
+}
+
 diag_refuse_g4_out() {
     [[ $QUALIFY_OUT != "$APEX_ROOT/_build/qualify" && ! $QUALIFY_OUT -ef $APEX_ROOT/_build/qualify ]] ||
         die "local-diag needs its own QUALIFY_OUT, not G4's $APEX_ROOT/_build/qualify"
@@ -3122,7 +3243,9 @@ main() {
         g4-key) cmd_g4_key "$@"; return ;;
         g4-due) cmd_g4_due "$@"; return ;;
         g4-harness) g4_harness; return ;;
+        g4-merge) cmd_g4_merge "$@"; return ;;
         fresh | upgrade | red | all | local) ;;
+        local-shard) cmd=local_shard ;;
         local-diag) cmd=local_diag; diag_refuse_g4_out ;;
         *) usage ;;
     esac
