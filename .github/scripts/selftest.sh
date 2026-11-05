@@ -877,8 +877,12 @@ cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 : >"$FAKE/build-ran"
 echo "== plan: gate (G4 first)" >&2
 echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
+echo "${APEX_SIGN_RUN-unset} ${APEX_SIGN_CONTENT_KEY-unset}" >"$FAKE/sign-env"
 mkdir -p _build
-if [[ ${APEX_CI_MODE:-} == g4 && ! -e $FAKE/ignore-mode ]]; then echo qualify-only; else echo gate; fi >_build/plan.txt
+if [[ -e $FAKE/ignore-mode ]]; then echo gate
+elif [[ ${APEX_CI_MODE:-} == g4 ]]; then echo qualify-only
+elif [[ ${APEX_CI_MODE:-} == sign ]]; then echo sign
+else echo gate; fi >_build/plan.txt
 [[ ! -e $FAKE/no-plan ]] || rm _build/plan.txt
 echo "lock-sha256 x" >_build/gates-passed.txt
 echo "== G4, when qualify.sh g4-due says it is due"
@@ -902,6 +906,7 @@ if [[ -e $FAKE/with-logs ]]; then
 fi
 echo "== G2, the headless shell, 2 runs" >&2
 exit "$(cat "$FAKE/build-rc")"
+sign_gates() { :; }
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -1073,7 +1078,45 @@ for request in "ci-build $CI_SHA next " "ci-build $CI_SHA NEXT" "ci-build $CI_SH
     check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
         "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 done
-check "ci-build modes names daily, next, gate and g4, before any git or lock" "0|daily next gate g4|no git" \
+# ci-build <sha> sign <run> <content key>: the release signer, once per content key.
+CI_KEY=$(printf 'c%.0s' {1..64})
+for request in "ci-build $CI_SHA sign" "ci-build $CI_SHA sign 12" "ci-build $CI_SHA sign 12 ${CI_KEY:1}" \
+    "ci-build $CI_SHA sign 0 $CI_KEY" "ci-build $CI_SHA sign 012 $CI_KEY" "ci-build $CI_SHA sign 12 ${CI_KEY^^}" \
+    "ci-build $CI_SHA sign 12 $CI_KEY daily" "ci-build $CI_SHA sign $CI_KEY 12" "ci-build $CI_SHA SIGN 12 $CI_KEY" \
+    "ci-build $CI_SHA sign x12 $CI_KEY" "ci-build $CI_SHA sign 12 $CI_KEY " "ci-build sign 12 $CI_KEY"; do
+    check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
+        "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
+done
+rm -f "$CI_DIR/store/signed.txt"
+check "sign: build-image.sh gets the sign plan, its gates run and content key, and the lane lock is promoted" \
+    "0|sign|12 $CI_KEY|promote" \
+    "$(ci_request "ci-build $CI_SHA sign 12 $CI_KEY")|$(cat "$CI_DIR/ci-mode")|$(cat "$CI_DIR/sign-env")|$(cat "$CI_DIR/lane.log")"
+check "and signed.txt names the content key, the commit and the run" "content-key $CI_KEY|sha $CI_SHA|run 12|signed" \
+    "$(sed 's/^signed .*/signed/' "$CI_DIR/store/signed.txt" | paste -sd'|')"
+check_true "ci-build.txt says so" bash -c "tar -xOf '$CI_DIR/out.tar' ./ci-build.txt | grep -qx 'signed $CI_KEY'"
+rm -f "$CI_DIR/build-ran"
+check "sign: a content key signed already builds nothing, fetches nothing and exits 0" "0|no git|no build" \
+    "$(ci_request "ci-build $CI_SHA sign 13 $CI_KEY")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')|$(
+        [[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')"
+check_true "and says nothing new" bash -c "tar -xOf '$CI_DIR/out.tar' ./ci-build.txt | grep -q '^sign nothing new: content key $CI_KEY'"
+check "and signed.txt still names the first run" "run 12" "$(grep '^run ' "$CI_DIR/store/signed.txt")"
+echo 1 >"$CI_DIR/build-rc"
+check "sign: a failed build promotes nothing and keeps signed.txt" "1|no promotion|content-key $CI_KEY" \
+    "$(ci_request "ci-build $CI_SHA sign 14 $(printf 'd%.0s' {1..64})")|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')|$(grep '^content-key ' "$CI_DIR/store/signed.txt")"
+echo 0 >"$CI_DIR/build-rc"
+: >"$CI_DIR/ignore-mode"
+check "sign: a build-image.sh that ran another plan is refused, its gates record removed, nothing promoted" \
+    "2|plan refused: build-image.sh ran gate, not sign; no gates record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA sign 15 $(printf 'e%.0s' {1..64})")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$(
+        [[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+rm -f "$CI_DIR/ignore-mode"
+sed -i '/^sign_gates() {/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/build-ran"
+check "sign: a commit whose build-image.sh has no sign plan is refused before it builds" "2|no build" \
+    "$(ci_request "ci-build $CI_SHA sign 16 $(printf 'f%.0s' {1..64})")|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')"
+echo 'sign_gates() { :; }' >>"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/store/signed.txt"
+check "ci-build modes names daily, next, gate, g4 and sign, before any git or lock" "0|daily next gate g4 sign|no git" \
     "$(ci_request "ci-build modes")|$(cat "$CI_DIR/out.tar")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 mv "$CIW/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-45.sh"
 cat >"$CIW/tools/builder-vm/build-image.sh" <<'EOF'
@@ -1883,6 +1926,161 @@ check_true "and says so" grep -q 'the next lane gates on G1 only and records not
 check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
 check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
     "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
+
+# --- build-image.sh sign: the hosted verdict's content key, the Apex key, then the G4 smoke ------
+SG=$TMP/sign-gates
+mkdir -p "$SG/w/_build/image" "$SG/store"
+SG_KEY=$(printf 'c%.0s' {1..64})
+printf 'lane lock\n' >"$SG/store/rpms.lock.next"
+sg_sign() { # RUN KEY: sign_gates in SG's checkout, its image.env as SG left it; prints exit|refusal|smoke
+    local rc=0
+    rm -f "$SG/log" "$SG/w/_build/gates-passed.txt"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$SG/w" && env SG="$SG" APEX_STORE="$SG/store" APEX_COMPONENTS=pinned APEX_SIGN_RUN="$1" APEX_SIGN_CONTENT_KEY="$2" bash -c '
+        . "$1"
+        image_test_key() { [[ -e $SG/marker ]] && echo TESTFPR; }
+        qualify() { echo "qualify $* layout=$QUALIFY_LAYOUT" >>"$SG/log"; [[ ! -e $SG/smoke-fails ]]; }
+        sudo() { printf "%s  /usr/share/apex/rpms.lock\n" "$(cat "$SG/image-lock")"; }
+        image_id() { echo img1; }
+        sign_gates' _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >"$SG/out" 2>&1 || rc=$?
+    printf '%s|%s|%s\n' "$rc" "$(sed -n 's/^sign refused: \([^:]*\):.*/\1/p' "$SG/out" | head -n 1)" "$(cat "$SG/log" 2>/dev/null)"
+}
+sha256sum <"$SG/store/rpms.lock.next" | cut -d' ' -f1 >"$SG/image-lock"
+printf 'CONTENT_KEY=%s\nRPM_KEY=apex\n' "$SG_KEY" >"$SG/w/_build/image/image.env"
+check "sign: the Apex key's image of the hosted content key gets the G4 smoke, then its gates record" \
+    "0||qualify local-shard smoke localhost/apex:build layout=separate-boot" "$(sg_sign 12 "$SG_KEY")"
+check "and the record names the hosted run, the smoke, the Apex key and the content key" \
+    "lock-sha256 $(cat "$SG/image-lock")|image-id img1|g2 hosted 12|g4 hosted 12, smoke passed|components pinned|rpm-key apex|content-key $SG_KEY" \
+    "$(paste -sd'|' "$SG/w/_build/gates-passed.txt")"
+check "sign: another content key is refused before the smoke, naming content-key" "2|content-key|" \
+    "$(sg_sign 12 "$(printf 'd%.0s' {1..64})")"
+check_false "and nothing is recorded" test -e "$SG/w/_build/gates-passed.txt"
+check "sign: a gates run or content key that is not one is refused" "2||" "$(sg_sign 0 "$SG_KEY")"
+check "sign: an empty content key is refused" "2||" "$(sg_sign 12 '')"
+printf 'CONTENT_KEY=%s\nRPM_KEY=test:TESTFPR\n' "$SG_KEY" >"$SG/w/_build/image/image.env"
+check "sign: an image whose rpm-key is not apex is refused, naming rpm-key" "2|rpm-key|" "$(sg_sign 12 "$SG_KEY")"
+printf 'CONTENT_KEY=%s\nRPM_KEY=apex\n' "$SG_KEY" >"$SG/w/_build/image/image.env"
+: >"$SG/marker"
+check "sign: an image that carries the test-key marker is refused, however image.env reads" "2|rpm-key|" "$(sg_sign 12 "$SG_KEY")"
+rm -f "$SG/marker"
+: >"$SG/smoke-fails"
+check "sign: a failed G4 smoke records nothing" "1||qualify local-shard smoke localhost/apex:build layout=separate-boot|no record" \
+    "$(sg_sign 12 "$SG_KEY")|$([[ -e $SG/w/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+rm -f "$SG/smoke-fails"
+echo other >"$SG/image-lock"
+check "sign: an image whose rpms.lock is not the lane's records nothing" "1||qualify local-shard smoke localhost/apex:build layout=separate-boot|no record" \
+    "$(sg_sign 12 "$SG_KEY")|$([[ -e $SG/w/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+sg_shard() { # SHARD: how far qualify.sh local-shard gets on a to-disk layout, sourced so no tool is needed
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    QUALIFY_LAYOUT=to-disk bash -c '. "$1"; cmd_local_shard "$2" localhost/apex:build' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1" 2>&1 |
+        sed -n 's/^error: //p' | head -n 1
+}
+check "qualify.sh local-shard takes smoke, the signer's shard, as far as the layout check" \
+    "the G4 shards run QUALIFY_LAYOUT=separate-boot only, not to-disk" "$(sg_shard smoke)"
+check "and names it among the shards it takes" "no G4 shard 'bogus' (update boot-metrics login lock polkit crash-guard smoke)" \
+    "$(sg_shard bogus)"
+check_false "while the hosted gates' G4 shards stay the six" grep -q '^readonly G4_SHARDS=(.*smoke' "$APEX_ROOT/.github/scripts/qualify.sh"
+
+# --- sign-source.sh: the gates run the release signer trusts, each field checked (fake gh) ---
+SS=$TMP/sign-source
+mkdir -p "$SS/bin"
+SS_MAIN=$(printf '1%.0s' {1..40})
+SS_TRAIN=$(printf '2%.0s' {1..40})
+SS_KEY=$(printf 'c%.0s' {1..64})
+SS_FPR=$(printf 'A%.0s' {1..40})
+cat >"$SS/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# gh api ENDPOINT: the fixture each endpoint names; the record's archive is SS/record.zip.
+[[ $1 == api ]] || exit 2
+case $2 in
+    */commits/*) cat "$SS_DIR/commit.json" ;;
+    */actions/workflows/gates.yml/runs\?*) cat "$SS_DIR/runs.json" ;;
+    */actions/runs/*/artifacts\?*) cat "$SS_DIR/artifacts.json" ;;
+    https://download/*) cat "$SS_DIR/record.zip" ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$SS/bin/gh"
+ss_commit() { # MESSAGE PARENTS...
+    local msg=$1
+    shift
+    jq -n --arg m "$msg" --args '{commit: {message: $m}, parents: [$ARGS.positional[] | {sha: .}]}' "$@" >"$SS/commit.json"
+}
+ss_run() { # ID PATH EVENT REPO HEAD STATUS CONCLUSION: one run, appended
+    jq --argjson id "$1" --arg path "$2" --arg event "$3" --arg repo "$4" --arg head "$5" --arg st "$6" --arg c "$7" \
+        '.workflow_runs += [{id: $id, path: $path, event: $event, head_repository: {full_name: $repo}, head_sha: $head,
+            status: $st, conclusion: $c}]' "$SS/runs.json" >"$SS/runs.tmp" && mv "$SS/runs.tmp" "$SS/runs.json"
+}
+ss_record() { # gates.txt lines: the run's gates-record
+    rm -rf "$SS/rec" && mkdir -p "$SS/rec" && printf '%s\n' "$@" >"$SS/rec/gates.txt"
+    (cd "$SS/rec" && python3 -I -c 'import zipfile; z = zipfile.ZipFile("../record.zip", "w"); z.write("gates.txt"); z.close()')
+}
+ss_good() {
+    ss_commit "Merge pull request #180 from apex-linux/train/r23" "$(printf '0%.0s' {1..40})" "$SS_TRAIN"
+    echo '{"workflow_runs": []}' >"$SS/runs.json"
+    ss_run 41979648886 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed success
+    echo '{"artifacts": [{"name": "gates-record", "expired": false, "archive_download_url": "https://download/rec"}]}' >"$SS/artifacts.json"
+    ss_record "sha $SS_TRAIN" "image-id x" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 passed"
+}
+ss() { # prints stdout, then the exit and the refusal
+    local rc=0
+    PATH="$SS/bin:$PATH" SS_DIR=$SS "$APEX_ROOT/.github/scripts/sign-source.sh" "${1:-apex-linux/apex-image}" "${2:-$SS_MAIN}" \
+        >"$SS/out" 2>"$SS/err" || rc=$?
+    printf '%s|%s|%s\n' "$(paste -sd' ' "$SS/out")" "$rc" "$(sed -n 's/^sign refused: \([^:]*\):.*/\1/p' "$SS/err" | head -n 1)"
+}
+ss_good
+check "sign-source: the train's green gates run, its content key and the train head" \
+    "run=41979648886 content-key=$SS_KEY train=$SS_TRAIN|0|" "$(ss)"
+check "sign-source: a sha that is not one" "|1|sha" "$(ss apex-linux/apex-image HEAD)"
+ss_commit "Merge pull request #180 from apex-linux/train/r23" "$SS_TRAIN"
+check "sign-source: a commit that is no merge" "|1|merge" "$(ss)"
+ss_commit "Merge pull request #183 from apex-linux/claude/x" "$(printf '0%.0s' {1..40})" "$SS_TRAIN"
+check "sign-source: a merge of no train" "|1|merge" "$(ss)"
+ss_commit "Merge pull request #183 from someone/train/r23" "$(printf '0%.0s' {1..40})" "$SS_TRAIN"
+check "sign-source: a train of another owner" "|1|merge" "$(ss)"
+ss_good
+echo '{"workflow_runs": []}' >"$SS/runs.json"
+check "sign-source: no gates.yml run of the train head" "|1|run" "$(ss)"
+for bad in "path .github/workflows/ci.yml" "event push" "head-repo fork/apex-image" "conclusion completed/failure" \
+    "conclusion in_progress/"; do
+    ss_good
+    echo '{"workflow_runs": []}' >"$SS/runs.json"
+    case $bad in
+        path*) ss_run 9 .github/workflows/ci.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed success ;;
+        event*) ss_run 9 .github/workflows/gates.yml push apex-linux/apex-image "$SS_TRAIN" completed success ;;
+        head-repo*) ss_run 9 .github/workflows/gates.yml pull_request fork/apex-image "$SS_TRAIN" completed success ;;
+        *failure) ss_run 9 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed failure ;;
+        *) ss_run 9 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" in_progress "" ;;
+    esac
+    check "sign-source: refuses a run whose $bad, naming the field" "|1|$bad" "$(ss)"
+done
+ss_good
+ss_run 41979650000 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed failure
+check "sign-source: a newer red run does not hide the green one, which is taken" \
+    "run=41979648886 content-key=$SS_KEY train=$SS_TRAIN|0|" "$(ss)"
+ss_good
+ss_run 7 .github/workflows/gates.yml pull_request apex-linux/apex-image "$(printf '3%.0s' {1..40})" completed success
+echo '{"workflow_runs": []}' >"$SS/runs.json"
+ss_run 7 .github/workflows/gates.yml pull_request apex-linux/apex-image "$(printf '3%.0s' {1..40})" completed success
+check "sign-source: a green run of another head never counts" "|1|run" "$(ss)"
+ss_good
+echo '{"artifacts": []}' >"$SS/artifacts.json"
+check "sign-source: a run with no gates-record" "|1|record" "$(ss)"
+ss_good
+echo '{"artifacts": [{"name": "gates-record", "expired": true, "archive_download_url": "https://download/rec"}]}' >"$SS/artifacts.json"
+check "sign-source: an expired gates-record" "|1|record" "$(ss)"
+for bad in sha g1 g2 g4 content-key rpm-key; do
+    ss_good
+    case $bad in
+        sha) ss_record "sha $SS_MAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 passed" ;;
+        g1) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g2 passed" "g4 passed" ;;
+        g2) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 failed" "g4 passed" ;;
+        g4) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 failed" ;;
+        content-key) ss_record "sha $SS_TRAIN" "content-key unknown" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 passed" ;;
+        rpm-key) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key apex" "g1 passed" "g2 passed" "g4 passed" ;;
+    esac
+    check "sign-source: refuses a record whose $bad does not hold, naming it" "|1|$bad" "$(ss)"
+done
 
 # --- image.sh: the content key (schema 2) hashes what was built, never who signed it ----------
 CK=$TMP/content-key

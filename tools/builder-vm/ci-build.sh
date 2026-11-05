@@ -12,9 +12,10 @@ The builder VM's one entry point for the self-hosted runner (tools/runner/README
 with restrict,command=. It takes nothing but SSH_ORIGINAL_COMMAND, which must be exactly
 
   ci-build <40 lowercase hex digits> [daily | next | gate | g4]
+  ci-build <40 lowercase hex digits> sign <gates run id> <64 lowercase hex digits>
 
-or `ci-build modes`, which prints the modes this copy takes ("daily next gate g4"): vm.yml asks
-before it sends next, which an older copy refuses.
+or `ci-build modes`, which prints the modes this copy takes ("daily next gate g4 sign"): vm.yml
+asks before it sends next or sign, which an older copy refuses.
 
 It fetches main from APEX_CI_REMOTE, refuses a commit that main does not contain, checks
 the commit out in a clean ~/apex-image (keeping _build/, where the G4 record lives), and
@@ -54,6 +55,13 @@ without a next release builds nothing and says "next none". When this installed 
 differs from the
 commit's tools/builder-vm/ci-build.sh, ci-build.txt says "stale"; it never updates
 itself from the checkout, which would let any commit of main rewrite the forced command.
+With sign (vm.yml's release signer), G2 and G4 have passed on GitHub's runners for a content
+key, and vm.yml checked where that gates record came from. When ~/apex-store/signed.txt
+already names that content key, it builds nothing and says "sign nothing new". Otherwise
+build-image.sh builds the commit with the Apex RPM key and G1, refuses (exit 2) an image
+whose content key is not the one given or whose rpm-key is not apex, runs the G4 smoke on
+the signed image and writes the gates record; then lane.sh promote, and signed.txt names
+the content key, the commit and the gates run.
 Nothing is pushed or signed but the RPMs, and the RPM key and ~/apex-store never leave
 the VM.
 
@@ -89,6 +97,10 @@ git_() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c safe.directo
 
 requested_sha() {
     local request=${SSH_ORIGINAL_COMMAND-}
+    if [[ $request =~ ^ci-build\ ([0-9a-f]{40})\ sign\ ([1-9][0-9]{0,19})\ ([0-9a-f]{64})$ ]]; then
+        printf '%s sign %s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+        return 0
+    fi
     [[ $request =~ ^ci-build\ ([0-9a-f]{40})(\ (daily|next|gate|g4))?$ ]] || return 1
     printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
 }
@@ -304,15 +316,24 @@ plan_honoured() {
     case $1 in
         gate) [[ $(plan_of "$2") == gate ]] ;;
         g4) [[ $(plan_of "$2") == qualify-only ]] ;;
+        sign) [[ $(plan_of "$2") == sign ]] ;;
         *) return 0 ;;
     esac
 }
 
+# KEY: the content key ~/apex-store/signed.txt says was last signed.
+signed_key() { sed -n 's/^content-key //p' "$STORE/signed.txt" 2>/dev/null | tail -n 1; }
+
 build() {
-    local sha=$1 out=$2 mode=$3 rc=0 promote daily=
+    local sha=$1 out=$2 mode=$3 run=${4:-} key=${5:-} rc=0 promote daily=
     [[ $mode != daily ]] || daily=daily
     local stamp=$out/.started
     : >"$stamp"
+    if [[ $mode == sign && $(signed_key) == "$key" ]]; then
+        printf 'sign nothing new: content key %s is signed already (%s)\n' "$key" "$STORE/signed.txt" >>"$out/ci-build.txt"
+        log "sign: content key $key is signed already; nothing is built"
+        return 0
+    fi
     clock "$out/stages.tsv" "fetch and check out"
     fetch_main
     check_out "$sha"
@@ -320,13 +341,19 @@ build() {
     check_installed >>"$out/ci-build.txt"
     clock "$out/stages.tsv" "components (ci-build)"
     stage_components 9>&- </dev/null >&2
+    if [[ $mode == sign ]] && ! grep -q '^sign_gates() {' tools/builder-vm/build-image.sh; then
+        printf 'plan refused: %s predates the sign plan\n' "$sha" >>"$out/ci-build.txt"
+        log "refused: this commit's build-image.sh has no sign plan"
+        return "$EXIT_REFUSED"
+    fi
     if [[ $mode == gate || $mode == g4 ]] && ! grep -q 'APEX_CI_MODE' tools/builder-vm/build-image.sh; then
         printf 'plan refused: %s predates APEX_CI_MODE, so it cannot run %s\n' "$sha" "$mode" >>"$out/ci-build.txt"
         log "refused: this commit's build-image.sh predates APEX_CI_MODE; it would not run $mode"
         return "$EXIT_REFUSED"
     fi
     log "== build-image.sh: RPMs, libfprint, lane, image, G4 when due, G2 twice, gates record"
-    APEX_CI_MODE=$mode bash tools/builder-vm/build-image.sh 9>&- </dev/null 2>&1 | stage_clock "$out" >&2 || rc=$?
+    APEX_CI_MODE=$mode APEX_SIGN_RUN=$run APEX_SIGN_CONTENT_KEY=$key bash tools/builder-vm/build-image.sh 9>&- </dev/null 2>&1 |
+        stage_clock "$out" >&2 || rc=$?
     printf 'build-image %s\n' "$rc" >>"$out/ci-build.txt"
     if ! plan_honoured "$mode" "$stamp"; then
         rm -f -- _build/gates-passed.txt
@@ -357,6 +384,11 @@ build() {
     log "== promote the lane lock"
     promote=$(stage_promote) || rc=$?
     printf 'promote %s\n' "$promote" >>"$out/ci-build.txt"
+    if [[ $mode == sign && $rc == 0 && ($promote == passed || $promote == unchanged*) ]]; then
+        printf 'content-key %s\nsha %s\nrun %s\nsigned %s\n' "$key" "$sha" "$run" "$(utc_now)" >"$STORE/signed.txt.tmp" &&
+            mv -f -- "$STORE/signed.txt.tmp" "$STORE/signed.txt"
+        printf 'signed %s\n' "$key" >>"$out/ci-build.txt"
+    fi
     return "$rc"
 }
 
@@ -366,13 +398,14 @@ main() {
         '') ;;
         *) usage >&2; exit "$EXIT_REFUSED" ;;
     esac
-    local sha mode out rc request
+    local sha mode run key out rc request
     if [[ ${SSH_ORIGINAL_COMMAND-} == "ci-build modes" ]]; then
-        echo "daily next gate g4"
+        echo "daily next gate g4 sign"
         exit 0
     fi
-    request=$(requested_sha) || refuse "the command must be exactly 'ci-build <40-hex sha> [daily | next | gate | g4]'"
-    read -r sha mode <<<"$request"
+    request=$(requested_sha) ||
+        refuse "the command must be exactly 'ci-build <40-hex sha> [daily | next | gate | g4]' or 'ci-build <40-hex sha> sign <run id> <64-hex content key>'"
+    read -r sha mode run key <<<"$request"
 
     # stdout carries only the results tar.
     exec 3>&1 1>&2
@@ -388,7 +421,7 @@ main() {
     if [[ $mode == next ]]; then
         (set -e; : >"$out/.started"; build_next "$sha" "$out")
     else
-        (set -e; build "$sha" "$out" "$mode")
+        (set -e; build "$sha" "$out" "$mode" "$run" "$key")
     fi
     rc=$?
     set -e

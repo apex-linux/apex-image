@@ -63,7 +63,9 @@ the digest that will be published.
   qualify.sh local-shard SHARD IMAGE  one shard of G4 for the hosted gates, from a fresh install:
                                      update (install to acknowledge, then the login),
                                      boot-metrics, login, lock, polkit or crash-guard (each
-                                     after the install and the login); records nothing
+                                     after the install and the login); records nothing.
+                                     smoke, the release signer's, is the install and the
+                                     login alone, and no G4 shard
   qualify.sh g4-merge OUT DIR...     the shards' results.md (each DIR named for its shard) as
                                      one OUT/results.md in local's row order; exit 0 when
                                      every row passed and every shard closed
@@ -2564,10 +2566,10 @@ cmd_local() {
 readonly G4_SHARDS=(update boot-metrics login lock polkit crash-guard)
 
 cmd_local_shard() {
-    (($# == 2)) || die "usage: qualify.sh local-shard SHARD localhost/NAME:TAG (SHARD: ${G4_SHARDS[*]})"
+    (($# == 2)) || die "usage: qualify.sh local-shard SHARD localhost/NAME:TAG (SHARD: ${G4_SHARDS[*]} smoke)"
     local shard=$1 image=$2 digest image_id since s known=0
-    for s in "${G4_SHARDS[@]}"; do [[ $s != "$shard" ]] || known=1; done
-    ((known)) || die "no G4 shard '$shard' (${G4_SHARDS[*]})"
+    for s in "${G4_SHARDS[@]}" smoke; do [[ $s != "$shard" ]] || known=1; done
+    ((known)) || die "no G4 shard '$shard' (${G4_SHARDS[*]} smoke)"
     [[ $QUALIFY_LAYOUT == separate-boot ]] || die "the G4 shards run QUALIFY_LAYOUT=separate-boot only, not $QUALIFY_LAYOUT"
     [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
         die "expected a local image reference localhost/NAME[:TAG], got '$image'"
@@ -2598,7 +2600,7 @@ cmd_local_shard() {
     since=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
     greeter_login local
     case $shard in
-        update) ;;
+        update | smoke) ;;
         boot-metrics) boot_metrics local ;;
         login) login_lock_unlock local ;;
         lock) lock_matrix local "$since" ;;

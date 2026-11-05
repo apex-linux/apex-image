@@ -34,9 +34,9 @@ on:
         required: false
         default: ""
       plan:
-        description: "auto: build-image.sh chooses; gate: the full gate run, G4 due; g4: qualify-only (advisory)"
+        description: "auto: build-image.sh chooses; gate: the full gate run, G4 due; g4: qualify-only (advisory); sign: the release signer; daily: the full gate run with the absorption report"
         type: choice
-        options: [auto, gate, g4]
+        options: [auto, gate, g4, sign, daily]
         default: auto
 
 permissions: {}
@@ -103,9 +103,36 @@ jobs:
           echo "::notice::daily ${verdict}"
           if [[ $verdict == skip:* ]]; then echo "due=false" >>"$GITHUB_OUTPUT"; else echo "due=true" >>"$GITHUB_OUTPUT"; fi
 
+  # The release signer's source: the gates.yml run that passed the train this commit merges,
+  # checked field by field (.github/scripts/sign-source.sh). Its content key is only what the VM must match.
+  sign-source:
+    name: the hosted gates run the signer trusts
+    if: >-
+      github.repository == 'apex-linux/apex-image' && github.ref == 'refs/heads/main'
+      && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.plan == 'sign'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run: ${{ steps.source.outputs.run }}
+      content-key: ${{ steps.source.outputs.content-key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: The gates run of the train this commit merges
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: .github/scripts/sign-source.sh "$GITHUB_REPOSITORY" "${INPUT_SHA:-$GITHUB_SHA}" >>"$GITHUB_OUTPUT"
+
   build:
     name: builder VM build and gates
-    needs: [dispatch-approval, daily-due]
+    needs: [dispatch-approval, daily-due, sign-source]
     # Skipped approval: no inputs to approve. A rejected or failed one stops the build. Only a
     # daily-due that ran and said due=false skips it.
     if: >-
@@ -115,6 +142,7 @@ jobs:
           || (needs.dispatch-approval.result == 'skipped'
               && (github.event_name != 'workflow_dispatch' || inputs.sha == '')))
       && (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')
+      && (needs.sign-source.result == 'success' || needs.sign-source.result == 'skipped')
     runs-on: [self-hosted, apex-kvm]
     timeout-minutes: 420
     permissions: {}
@@ -128,12 +156,12 @@ jobs:
           sha=${INPUT_SHA:-$GITHUB_SHA}
           [[ $sha =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a full commit sha: $sha"; exit 1; }
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
-          # The daily run also asks for the absorption report and the image's size metrics.
-          if [[ $GITHUB_EVENT_NAME == schedule ]]; then echo "extra=daily" >>"$GITHUB_OUTPUT"; fi
+          # The nightly run is the release signer; daily (the absorption report) is a dispatch.
+          if [[ $GITHUB_EVENT_NAME == schedule ]]; then echo "extra=sign" >>"$GITHUB_OUTPUT"; fi
           case ${INPUT_PLAN:-auto} in
             auto) ;;
-            gate | g4) echo "extra=$INPUT_PLAN" >>"$GITHUB_OUTPUT" ;;
-            *) echo "::error::not a plan: $INPUT_PLAN (auto, gate or g4)"; exit 1 ;;
+            gate | g4 | sign | daily) echo "extra=$INPUT_PLAN" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::not a plan: $INPUT_PLAN (auto, gate, g4, sign or daily)"; exit 1 ;;
           esac
 
       # ci-build (tools/builder-vm/ci-build.sh) runs every stage in the VM, starting with the
@@ -142,7 +170,15 @@ jobs:
         env:
           SHA: ${{ steps.commit.outputs.sha }}
           EXTRA: ${{ steps.commit.outputs.extra }}
+          SIGN_RUN: ${{ needs.sign-source.outputs.run }}
+          SIGN_KEY: ${{ needs.sign-source.outputs.content-key }}
         run: |
+          args=(${EXTRA:+"$EXTRA"})
+          if [[ $EXTRA == sign ]]; then
+            [[ $SIGN_RUN =~ ^[1-9][0-9]*$ && $SIGN_KEY =~ ^[0-9a-f]{64}$ ]] ||
+              { echo "::error::sign-source gave no gates run and content key to sign"; exit 2; }
+            args+=("$SIGN_RUN" "$SIGN_KEY")
+          fi
           # A ci-build before gate and g4 sends no APEX_CI_MODE: daily could go qualify-only.
           if [[ -n $EXTRA ]]; then
             mrc=0
@@ -151,8 +187,8 @@ jobs:
               echo "::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)"
               exit 255
             fi
-            if [[ " $modes " != *" gate "* ]]; then
-              echo "::error::the builder VM's ci-build predates gate and g4, so it cannot run $EXTRA as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
+            if [[ " $modes " != *" gate "* || ($EXTRA == sign && " $modes " != *" sign "*) ]]; then
+              echo "::error::the builder VM's ci-build predates $EXTRA, so it cannot run it as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
               exit 2
             fi
           fi
@@ -161,7 +197,7 @@ jobs:
           echo "::stop-commands::$token"
           rc=0
           # shellcheck disable=SC2029 # the sha is the remote command, checked above and by ci-build
-          ssh apex-builder ci-build "$SHA" ${EXTRA:+"$EXTRA"} >"$RUNNER_TEMP/results.tar" || rc=$?
+          ssh apex-builder ci-build "$SHA" "${args[@]}" >"$RUNNER_TEMP/results.tar" || rc=$?
           echo "::$token::"
           case $rc in
             0) ;;
@@ -268,6 +304,10 @@ jobs:
           if [[ $exit_status != 0 ]]; then
             echo "::error::ci-build exited $(esc "${exit_status:-without an exit line}"): no gates record"
             exit 1
+          fi
+          if grep -q '^sign nothing new' "$out/ci-build.txt"; then
+            echo "::notice title=sign::nothing new: $(esc "$(grep -m1 '^sign nothing new' "$out/ci-build.txt")")"
+            exit 0
           fi
           case $promote in
             passed | unchanged:*) ;;
