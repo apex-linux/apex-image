@@ -410,6 +410,19 @@ luks_unlock() {
     [[ -z $wrong ]] || result "$test" PASS "Plymouth's prompt (logs/$test-prompt.png) took the passphrase over QMP; systemd-cryptsetup opened the LUKS2 root"
 }
 
+# LOOP: udev knows each new filesystem's UUID, which bootc install reads; mkfs's events land later.
+partition_uuids() {
+    local p tries=0
+    as_root udevadm settle 2>/dev/null || true
+    for p in "$1"p1 "$1"p2 "$1"p3; do
+        until [[ -n $(as_root lsblk -dno UUID "$p" 2>/dev/null) ]]; do
+            ((++tries <= 60)) || die "$p has no UUID that udev knows 30 s after mkfs, so bootc install cannot name it"
+            sleep 0.5
+            as_root udevadm settle 2>/dev/null || true
+        done
+    done
+}
+
 install_disk() {
     local name=$1 image=$2 target=$3 disk="$QUALIFY_OUT/$1.raw"
     group "Install $image ($QUALIFY_LAYOUT) into $disk"
@@ -450,6 +463,7 @@ EOF
             as_root mkfs.vfat -F 32 -n EFI-SYSTEM "${loop}p1" >/dev/null
             as_root mkfs.ext4 -q -F -L boot "${loop}p2"
             as_root mkfs.btrfs -q -f -L root "${loop}p3"
+            partition_uuids "$loop"
             mkdir -p "$mnt"
             as_root mount "${loop}p3" "$mnt"
             MOUNTS+=("$mnt")

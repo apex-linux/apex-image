@@ -374,6 +374,27 @@ check "each of the four boots is unlocked from its own console's start, with no 
 rc=0
 PATH="$Q/bin:$PATH" bash -c '. "$1"' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$Q/stderr.log" 2>&1 || rc=$?
 check "sourcing qualify.sh runs nothing" "0:" "$rc:$(cat "$Q/stderr.log")"
+pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after UUID_AFTER lsblk calls
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PU=$Q/pu PU_AFTER=$1 bash -c '. "$1"
+        : >"$PU"
+        as_root() {
+            case $1 in
+                udevadm) echo settle >>"$PU" ;;
+                lsblk)
+                    echo "lsblk ${*: -1}" >>"$PU"
+                    [[ ${*: -1} != *p2 || $(grep -c "^lsblk .*p2$" "$PU") -gt $PU_AFTER ]] && echo "uuid-${*: -1}" ;;
+            esac
+        }
+        sleep() { :; }
+        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | sed -n 's/^error: //p'
+}
+check "install: bootc waits until udev knows each new filesystem's UUID, settling first" \
+    "|settle|lsblk /dev/loop9p1|lsblk /dev/loop9p2|lsblk /dev/loop9p3" "$(pu 0)|$(grep -m4 . "$Q/pu" | paste -sd'|')"
+check "a UUID that lands late is waited for, settling again" "|3|3" \
+    "$(pu 2)|$(grep -c '^lsblk /dev/loop9p2$' "$Q/pu")|$(grep -c '^settle$' "$Q/pu")"
+check "one that never lands stops the install, naming the partition" \
+    "/dev/loop9p2 has no UUID that udev knows 30 s after mkfs, so bootc install cannot name it" "$(pu 1000)"
 
 # --- qualify.sh: G4 is due when its key changes or its last pass is a week old ------------
 G4_DIR="$TMP/g4"
