@@ -2054,6 +2054,26 @@ check "gates: the proof's RPM from a store too big for one pipe buffer, no SIGPI
     "$GS/store/pkgs/big/k3/big1.rpm|0" "$(rc=0; out=$(gs_run first_signed_rpm) || rc=$?; echo "$out|$rc")"
 rm -rf "$GS/store"
 mv "$GS/store.full" "$GS/store"
+cat >"$GS/bin/gpg" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 != --homedir || $4 != --export ]] || echo key-a
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' >"$GS/bin/rpm"
+cat >"$GS/bin/rpmkeys" <<'EOF'
+#!/usr/bin/env bash
+[[ $3 != -Kv ]] || printf 'x.rpm:\n    Header OpenPGP V4 EdDSA signature, key fingerprint: %s: OK\n' "$GS_B"
+EOF
+chmod +x "$GS/bin/gpg" "$GS/bin/rpm" "$GS/bin/rpmkeys"
+rm -f "$GS/log"
+GS_A=$(printf 'A%.0s' {1..40}) GS_B=$(printf 'B%.0s' {1..40})
+# shellcheck disable=SC2016 # expanded by the inner bash
+(cd "$GS/root" && PATH="$GS/bin:$PATH" GS_LOG="$GS/log" GS_DIR="$GS" GS_A=$GS_A GS_B=$GS_B bash -c '. "$1"
+    mktemp() { command mktemp -d "$GS_DIR/proof.XXXXXX"; }
+    new_key() { echo "$GS_A"; }
+    resign_proof "$GS_DIR/store/pkgs/nautilus/k2/n.rpm" "$GS_B"' _ "$APEX_ROOT/.github/scripts/gates.sh") >"$GS/out" 2>&1
+check "gates: the proof's copy, which the build signed with B, is stripped before A signs it, then stripped and signed by B" \
+    "rpmsign --delsign -- x.rpm|rpmsign --addsign x.rpm|rpmsign --delsign -- x.rpm|lane.sh sign x.rpm|B's alone" \
+    "$(sed -E 's|[^ ]*/x\.rpm|x.rpm|g; s/--define [^ ]+ [^ ]+ //g' "$GS/log" | paste -sd'|')|$(grep -q "carries $GS_B's signature alone" "$GS/out" && echo "B's alone")"
 echo 1793348934 >"$GS/ts-fedora-45"
 echo 1793839916 >"$GS/ts-updates-released-f45"
 GSK1=$(gs_run cmd_cache_key)

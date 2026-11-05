@@ -189,6 +189,8 @@ resign_proof() {
     work=$(mktemp -d /work/resign-proof.XXXXXX)
     a=$(new_key "$work/a")
     cp -- "$rpm" "$work/x.rpm"
+    # The build signed it with B already, and rpm 6 adds no signature beside a legacy one.
+    rpmsign --delsign -- "$work/x.rpm" >/dev/null
     rpmsign --define "_gpg_path $work/a" --define "_openpgp_sign_id $a" --addsign "$work/x.rpm" >/dev/null
     rpmsign --delsign -- "$work/x.rpm" >/dev/null
     tools/builder-vm/lane.sh sign "$work/x.rpm"
