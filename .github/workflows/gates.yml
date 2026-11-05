@@ -41,7 +41,7 @@ jobs:
         run: |
           .github/scripts/ci-host.sh free-disk
           sudo install -d -o "$(id -u)" -g "$(id -g)" "$GATES_WORK"
-          APEX_SCRATCH=$GATES_WORK .github/scripts/ci-host.sh preflight 0 60
+          APEX_SCRATCH=$GATES_WORK .github/scripts/ci-host.sh preflight 0 45
       - name: Build in fedora:45
         run: .github/scripts/gates.sh build "$RUNNER_TEMP/gates-build"
       - name: Disk after the build
