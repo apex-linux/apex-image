@@ -387,7 +387,7 @@ pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after
             esac
         }
         sleep() { :; }
-        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | sed -n 's/^error: //p'
+        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | sed -n 's/^\(error: \|::error::\)//p'
 }
 check "install: bootc waits until udev knows each new filesystem's UUID, settling first" \
     "|settle|lsblk /dev/loop9p1|lsblk /dev/loop9p2|lsblk /dev/loop9p3" "$(pu 0)|$(grep -m4 . "$Q/pu" | paste -sd'|')"
