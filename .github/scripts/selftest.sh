@@ -1884,6 +1884,41 @@ check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
 check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
     "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
 
+# --- image.sh: the content key (schema 2) hashes what was built, never who signed it ----------
+CK=$TMP/content-key
+mkdir -p "$CK/repo/image/system_files/usr/share/apex/keys" "$CK/work"
+git -C "$CK/repo" init -q
+ck_commit() { # KEY_TEXT CONTAINERFILE_TEXT: commit the fixture's image/ tree
+    printf '%s\n' "$1" >"$CK/repo/image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex"
+    printf '%s\n' "$2" >"$CK/repo/image/Containerfile"
+    git -C "$CK/repo" add -A && git -C "$CK/repo" -c user.name=t -c user.email=t@t commit -qm x --allow-empty
+}
+ck_lock() { # RECIPE_KEY NEVRA SHA256 PATH
+    printf '# apex rpms.lock 1\nfamily gnome-shell built %s\nrpm gnome-shell built gnome-shell %s %s %s\n' "$@" >"$CK/work/image-rpms.lock"
+}
+printf '{"packages":[{"name":"gnome-shell","epoch":0,"version":"51.1","release":"1.fc45.apex9","arch":"x86_64"}]}\n' >"$CK/work/manifest.json"
+ck() {
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    env APEX_WORK="$CK/work" APEX_GIT_ROOT="$CK/repo" APEX_DESKTOP_SRC="$CK/repo" APEX_SYSTEM_SRC="$CK/repo" bash -c \
+        '. "$1"; BASE=b RPMS_KEY=r DESKTOP_KEY=d LIBFPRINT_KEY=f; content_key "" ""' _ "$APEX_ROOT/.github/scripts/image.sh"
+}
+ck_commit 'the Apex RPM key' 'FROM x'
+ck_lock k1 gnome-shell-51.1-1.fc45.apex9.x86_64 aaaa store/a.rpm
+CK_REAL=$(ck)
+check_true "content key: a 64-hex key" grep -Eqx '[0-9a-f]{64}' <<<"$CK_REAL"
+ck_commit 'an ephemeral test key' 'FROM x'
+ck_lock k1 gnome-shell-51.1-1.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check "the same inputs under a test key, signed RPMs of other bytes and paths: the same key" "$CK_REAL" "$(ck)"
+ck_lock k1 gnome-shell-51.1-2.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check_false "one NEVRA changes the key" test "$(ck)" = "$CK_REAL"
+ck_lock k2 gnome-shell-51.1-1.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check_false "one recipe key changes the key" test "$(ck)" = "$CK_REAL"
+ck_commit 'an ephemeral test key' 'FROM y'
+ck_lock k1 gnome-shell-51.1-1.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check_false "another file of image/ changes the key" test "$(ck)" = "$CK_REAL"
+check_true "and the key's preimage says schema 2" grep -qx "        printf 'apex content key schema 2\\\\n'" \
+    "$APEX_ROOT/.github/scripts/image.sh"
+
 # --- qualify.sh: a degraded system keeps each failed unit's status, chain and TuneD's log ----
 QA=$TMP/assert-running
 qa() { # STATE UNITS...: assert_running on a fake guest in STATE with UNITS failed; its exit

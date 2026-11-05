@@ -49,6 +49,15 @@ Environment:
                     this checkout)
   APEX_SYSTEM_SRC, APEX_DESKTOP_SRC   the apex-system and apex-desktop checkouts
                     (default this checkout)
+  APEX_TEST_KEY     a hosted gates build's ephemeral RPM key (gates.sh): the image says
+                    so (rpm-key=test:FPR) and never pushes or publishes
+
+The content key (schema 2) hashes the image's inputs, never its signer: the base, the
+degraded and held sets, the components' own keys, the lane lock's family lines and each
+rpm line's FAMILY KIND NAME NEVRA (not its SHA256 or PATH), image/'s committed tree
+without RPM-GPG-KEY-apex, apex-desktop's desktop/ and apex-system's hardware/ trees, and
+the manifest's NEVRAs. A gates build under its test key and the signer's build under the
+Apex RPM key have the same key exactly when they built the same thing.
 EOF
     exit 2
 }
@@ -372,20 +381,29 @@ cmd_build() {
         "(RELEASE_BUILD=${APEX_RELEASE_BUILD:-0}$([[ -f $APEX_WORK/replay.lock ]] && echo ', lock replay'))"
 }
 
-# No build time goes in, so a rebuild of unchanged inputs publishes nothing.
+# The lock as inputs: family lines, and each rpm line without the SHA256 and PATH a signature changes.
+lock_inputs() { awk '$1 == "family" { print; next } $1 == "rpm" { print $1, $2, $3, $4, $5 }' "$1" | sha256sum | cut -c1-64; }
+# image/'s committed tree without the RPM key, which a gates build replaces with its ephemeral one.
+image_tree_inputs() {
+    local tree
+    tree=$(git -c safe.directory="$1" -C "$1" ls-tree -r --full-tree HEAD -- image 2>/dev/null) || { echo none; return; }
+    grep -v $'\timage/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex$' <<<"$tree" | sha256sum | cut -c1-64
+}
+
+# No build time goes in, so a rebuild of unchanged inputs publishes nothing; nor the signer.
 # shellcheck disable=SC2153 # BASE, RPMS_KEY, ... come from load_env
 content_key() {
     local degraded=$1 held=$2
     {
-        printf 'apex content key schema 1\n'
+        printf 'apex content key schema 2\n'
         printf 'base %s\n' "$BASE"
         printf 'degraded %s\n' "$degraded"
         printf 'held %s\n' "$held"
         printf 'rpms %s\n' "$RPMS_KEY"
         printf 'desktop-rpm %s\n' "$DESKTOP_KEY"
         printf 'libfprint %s\n' "$LIBFPRINT_KEY"
-        printf 'lane %s\n' "$LANE_LOCK_SHA256"
-        printf 'tree image %s\n' "$(head_tree "$APEX_ROOT" image)"
+        printf 'lane %s\n' "$(lock_inputs "$APEX_WORK/image-rpms.lock")"
+        printf 'tree image %s\n' "$(image_tree_inputs "${APEX_GIT_ROOT:-$APEX_ROOT}")"
         printf 'tree desktop %s\n' "$(head_tree "$APEX_DESKTOP_SRC" desktop)"
         printf 'tree hardware %s\n' "$(head_tree "$APEX_SYSTEM_SRC" hardware)"
         jq -cS '[.packages[] | {name, epoch, version, release, arch}]' "$APEX_WORK/manifest.json"
