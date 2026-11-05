@@ -187,7 +187,8 @@ inner_g2() {
 inner_g2_stable() {
     local here=$APEX_GNOME_SRC/tests/shots a b
     a=$(realpath -- "$1") b=$(realpath -- "$2")
-    G2_GJS="podman run --rm --net=none --tmpfs /var/home -v $here:$here:ro,z -v $a:$a:ro,z -v $b:$b:ro,z --entrypoint gjs $IMAGE_REF"
+    # stable.sh writes compare.js's plan and results under the second run, so only it is writable.
+    G2_GJS="podman run --rm --net=none --tmpfs /var/home -v $here:$here:ro,z -v $a:$a:ro,z -v $b:$b:z --entrypoint gjs $IMAGE_REF"
     export G2_GJS
     "$here/stable.sh" "$a" "$b" | tee "$b/stable.txt"
 }
