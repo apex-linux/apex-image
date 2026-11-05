@@ -62,13 +62,14 @@ in_fedora() {
     fedora=$(containerfile_arg REPOS_BASE)
     is_fedora_pin "$fedora" || die "image/Containerfile REPOS_BASE '$fedora' is not a digest pin"
     [[ $1 != g4 || -c /dev/kvm ]] || die "no /dev/kvm on this runner: G4 cannot run (ci-host.sh kvm)"
-    # A loop device's partition nodes appear in the host's /dev, never in a copy made at start.
-    [[ $1 != g4 ]] || dev=(-v /dev:/dev)
+    # Loop partitions appear in the host's /dev; bootc checks /run/udev against PID 1's root.
+    [[ $1 != g4 ]] || dev=(-v /dev:/dev -v /run/udev:/run/udev)
     [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || summary=$(inside "$GITHUB_STEP_SUMMARY")
     # Buildah overlays the build context from /var/tmp, which cannot sit on this container's overlay.
-    mkdir -p "$work/var-tmp-$1"
+    mkdir -p "$work/var-tmp-$1" "$work/containers-$1"
     sudo podman run --rm --privileged --cgroupns=private --security-opt label=disable --network host \
-        -v "$ROOT:/src:z" -v "$work:/work:z" -v "$work/var-tmp-$1:/var/tmp:z" -v "$TEMP:/runner:z" "${dev[@]}" -w /src \
+        -v "$ROOT:/src:z" -v "$work:/work:z" -v "$TEMP:/runner:z" "${dev[@]}" -w /src \
+        -v "$work/var-tmp-$1:/var/tmp:z" -v "$work/containers-$1:/var/lib/containers:z" \
         -e GITHUB_ACTIONS -e GITHUB_RUN_NUMBER -e GATES_SHA="${GATES_SHA:-$(git -C "$ROOT" rev-parse HEAD)}" \
         -e GITHUB_STEP_SUMMARY="$summary" \
         "$fedora" /src/.github/scripts/gates.sh in "$@"
@@ -88,9 +89,10 @@ cmd_in() {
     esac
     retry 3 10 dnf5 -y -q --setopt=install_weak_deps=False --repo=fedora --repo=updates install "${tools[@]}"
     nested_podman
-    mkdir -p "/work/containers-$sub" /work/home
-    printf '[storage]\ndriver = "overlay"\ngraphroot = "/work/containers-%s"\nrunroot = "/run/containers/storage"\n' \
-        "$sub" >/etc/containers/storage.conf
+    # The store is /work/containers-SUB, mounted where qualify.sh hands it to bootc.
+    mkdir -p /var/lib/containers/storage /work/home
+    printf '[storage]\ndriver = "overlay"\ngraphroot = "/var/lib/containers/storage"\nrunroot = "/run/containers/storage"\n' \
+        >/etc/containers/storage.conf
     git config --global --add safe.directory '*'
     export HOME=/work/home
     case $sub in
