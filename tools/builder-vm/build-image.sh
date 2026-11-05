@@ -470,6 +470,7 @@ component_rpms() {
 }
 
 image_id() { sudo podman image inspect --format '{{.Id}}' "$IMAGE"; }
+image_test_key() { sudo podman run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/test-key; }
 image_revision() {
     sudo podman run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/manifest.json | jq -er .revision
 }
@@ -659,7 +660,7 @@ gate_g4() {
 }
 
 record_gates() {
-    local id image_lock lane_lock
+    local id image_lock lane_lock rpm_key test_key
     if [[ ${APEX_KERNEL:-} == fedora ]]; then
         echo "break-glass image (KERNEL=fedora): its gates ran, but nothing is recorded, so just pkg-promote refuses it"
         return 0
@@ -671,9 +672,12 @@ record_gates() {
         echo "the lane lock moved while the gates ran: $IMAGE carries ${image_lock:-no lock}, $LANE_LOCK is now $lane_lock; nothing is recorded (just vm-image again)" >&2
         return 1
     fi
+    # The image's own marker says which key signed it; lane.sh promote takes only the Apex RPM key's.
+    rpm_key=apex
+    if test_key=$(image_test_key 2>/dev/null); then rpm_key=test:$test_key; fi
     if [[ -s $G4_PENDING ]]; then mv -f -- "$G4_PENDING" "$G4_RECORD"; fi
-    printf 'lock-sha256 %s\nimage-id %s\ng2 passed\ng4 %s\ncomponents %s\n' "$image_lock" "$id" "$G4_VERDICT" \
-        "${APEX_COMPONENTS:-unknown}" >"$GATES_PASSED"
+    printf 'lock-sha256 %s\nimage-id %s\ng2 passed\ng4 %s\ncomponents %s\nrpm-key %s\n' "$image_lock" "$id" "$G4_VERDICT" \
+        "${APEX_COMPONENTS:-unknown}" "$rpm_key" >"$GATES_PASSED"
     echo "G1 and G2 passed for $IMAGE (image $id); G4 $G4_VERDICT"
     echo "just pkg-promote makes the lane lock it carries rpms.lock"
 }
