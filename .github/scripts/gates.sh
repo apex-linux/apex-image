@@ -195,11 +195,14 @@ inner_g2_stable() {
     "$here/stable.sh" "$a" "$b" | tee "$b/stable.txt"
 }
 
+# The shard's rows and logs are root's; upload-artifact runs as the runner's user.
 inner_g4() {
-    local shard=$1 out=/work/g4-$1
+    local shard=$1 out=/work/g4-$1 rc=0
     mkdir -p "$out"
     QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_OUT=$out QUALIFY_LAYOUT=separate-boot \
-        "$ROOT/.github/scripts/qualify.sh" local-shard "$shard" "$IMAGE_REF"
+        "$ROOT/.github/scripts/qualify.sh" local-shard "$shard" "$IMAGE_REF" || rc=$?
+    chmod -R a+rX -- "$out/results.md" "$out/logs" 2>/dev/null || echo "gates: cannot open $out to the upload" >&2
+    return "$rc"
 }
 
 # Every input is checked here, not only each job's exit: a job that never ran leaves no file.
