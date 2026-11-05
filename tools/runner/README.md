@@ -253,6 +253,13 @@ lane, image.sh and COPR only. On its first run, check `~/apex-rehearsal/report.m
 
 Owner steps that a change on `main` needs on the host, newest first.
 
+- **`ci-build` takes `sign`, the release signer (train r24).** Once this lands on `main`,
+  and before the first nightly sign: with the builder VM running (`just vm-start`), from a
+  checkout of current `main`, `just vm-ci-install`. Then `tools/runner/preflight.sh` shows
+  `PASS ci-build-modes ... daily next gate g4 sign`. Until then the nightly `vm.yml` run
+  and the dispatch plan `sign` fail at once, before the VM builds anything, with "run just
+  vm-ci-install". Nothing is signed or promoted while they fail.
+
 - **`ci-build` takes `gate` and `g4` (train r18).** The forced command's grammar is now
   `ci-build <sha> [daily | next | gate | g4]`; an older copy refuses `gate` and `g4` with
   exit 2. With the builder VM running (`just vm-start`), from a checkout of current

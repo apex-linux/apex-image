@@ -64,6 +64,7 @@ db = {
     "nautilus": {"evr": "51.0-1.fc45", "signature": fedora},
     "gnome-control-center": {"evr": "51.0-2.fc45", "signature": fedora},
     "libadwaita": {"evr": "1.10.0-2.fc45", "signature": fedora},
+    "gnome-builder": {"evr": "49.1-2.fc45", "signature": fedora},
     "apex-desktop": {"evr": "0.1.0-0.fc45", "arch": "noarch", "signature": apex,
                      "files": ["/etc/profile.d/apex-prompt.sh", "/etc/profile.d/zz-apex-shell-status.sh"]},
 }
@@ -167,6 +168,7 @@ expect_out "the mutter pin" '^PASS desktop: gnome-shell requires mutter = 0:51\.
 expect_out "mutter is Fedora-signed" '^PASS desktop: mutter 0:51\.0-1\.fc45 carries Fedora.s signature$'
 expect_out "Ptyxis before its family" '^PASS desktop: ptyxis 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no ptyxis family\)$'
 expect_out "Files before its family" '^PASS desktop: nautilus 51\.0-1\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no nautilus family\)$'
+expect_out "Apex Code before its family" '^PASS desktop: gnome-builder 49\.1-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no gnome-builder family\)$'
 expect_out "Settings before its family" '^PASS desktop: gnome-control-center 51\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no gnome-control-center family\)$'
 expect_out "libadwaita before its family" '^PASS desktop: libadwaita 1\.10\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the lane has no libadwaita family\)$'
 expect_out "the Apex prompt" '^PASS desktop: /etc/profile.d/apex-prompt.sh is apex-desktop.s and sorts before vte.sh'
@@ -652,5 +654,54 @@ add_family "$r/usr/share/apex/rpms.lock" libadwaita degraded
 desktop adwaitadegraded
 expect_rc "Fedora's libadwaita under a degraded family passes" 0
 expect_out "and is named" '^PASS desktop: libadwaita 1\.10\.0-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is degraded: degraded=adwaita\)$'
+
+# apex_code NAME: a root whose gnome-builder family is built, as the lane builds Apex Code.
+apex_code() {
+    r=$(mkroot "$1")
+    add_family "$r/usr/share/apex/rpms.lock" gnome-builder built
+    rpmdb "$T/$1.db" gnome-builder.evr=51.0-1.fc45.apex1 "gnome-builder.signature=$apex"
+    mkdir -p "$r/usr/bin" "$r/usr/share/applications" "$r/usr/share/locale/vi/LC_MESSAGES"
+    printf '\177ELF\002\001\001\000\000[Plugin]\nModule=apex\nEmbedded=_gbp_apex_register_types\n\000' >"$r/usr/bin/gnome-builder"
+    printf '[Desktop Entry]\nName=Apex Code\nExec=gnome-builder\nIcon=org.gnome.Builder\n\n[Desktop Action new-window]\nName=New Window\n' \
+        >"$r/usr/share/applications/org.gnome.Builder.desktop"
+    printf '\336\022\004\225' >"$r/usr/share/locale/vi/LC_MESSAGES/apex-builder.mo"
+    printf '%s\n' "$r"
+}
+apex_code codebuilt >/dev/null
+desktop codebuilt
+expect_rc "Apex Code as the lane built it passes" 0
+expect_out "with its plugin" '^PASS desktop: /usr/bin/gnome-builder carries Embedded=_gbp_apex_register_types: the Apex resource is compiled in$'
+expect_out "named Apex Code" '^PASS desktop: /usr/share/applications/org\.gnome\.Builder\.desktop names the app Apex Code, untranslated$'
+expect_out "with its Vietnamese catalogue" '^PASS desktop: /usr/share/locale/vi/LC_MESSAGES/apex-builder\.mo is installed$'
+r=$(apex_code codenoplugin)
+printf '\177ELF\002\001\001\000\000' >"$r/usr/bin/gnome-builder"
+desktop codenoplugin
+expect_rc "an Apex Code without its plugin fails" 1
+expect_out "and says so" '^FAIL desktop: /usr/bin/gnome-builder lacks Embedded=_gbp_apex_register_types'
+r=$(apex_code codestockname)
+sed -i 's/^Name=Apex Code$/Name=Builder/' "$r/usr/share/applications/org.gnome.Builder.desktop"
+desktop codestockname
+expect_rc "an Apex Code still named Builder fails" 1
+expect_out "and names it" "^FAIL desktop: /usr/share/applications/org\.gnome\.Builder\.desktop's \[Desktop Entry\] names it 'Name=Builder', expected Name=Apex Code alone$"
+r=$(apex_code codetranslated)
+sed -i 's/^Name=Apex Code$/&\nName[vi]=Trình soạn mã/' "$r/usr/share/applications/org.gnome.Builder.desktop"
+desktop codetranslated
+expect_rc "a translated Apex Code name fails" 1
+expect_out "listing each" "names it 'Name=Apex Code|Name\[vi\]=Trình soạn mã', expected Name=Apex Code alone$"
+r=$(apex_code codenodesktop)
+rm "$r/usr/share/applications/org.gnome.Builder.desktop"
+desktop codenodesktop
+expect_rc "an Apex Code without org.gnome.Builder.desktop fails" 1
+expect_out "and says so" '^FAIL desktop: no /usr/share/applications/org\.gnome\.Builder\.desktop: Apex Code keeps the app id org\.gnome\.Builder$'
+r=$(apex_code codenomo)
+rm "$r/usr/share/locale/vi/LC_MESSAGES/apex-builder.mo"
+desktop codenomo
+expect_rc "an Apex Code without its vi catalogue fails" 1
+expect_out "and says so" '^FAIL desktop: no /usr/share/locale/vi/LC_MESSAGES/apex-builder\.mo: Apex Code.s Vietnamese strings did not reach the image$'
+r=$(mkroot codedegraded)
+add_family "$r/usr/share/apex/rpms.lock" gnome-builder degraded
+desktop codedegraded
+expect_rc "Fedora's Builder under a degraded family passes" 0
+expect_out "and is named" '^PASS desktop: gnome-builder 49\.1-2\.fc45 is Fedora.s build, signed by Fedora.s key \(the family is degraded: degraded=code\)$'
 
 done_testing
