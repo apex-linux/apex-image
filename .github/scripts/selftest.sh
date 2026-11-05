@@ -374,6 +374,27 @@ check "each of the four boots is unlocked from its own console's start, with no 
 rc=0
 PATH="$Q/bin:$PATH" bash -c '. "$1"' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$Q/stderr.log" 2>&1 || rc=$?
 check "sourcing qualify.sh runs nothing" "0:" "$rc:$(cat "$Q/stderr.log")"
+pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after UUID_AFTER lsblk calls
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PU=$Q/pu PU_AFTER=$1 bash -c '. "$1"
+        : >"$PU"
+        as_root() {
+            case $1 in
+                udevadm) echo settle >>"$PU" ;;
+                lsblk)
+                    echo "lsblk ${*: -1}" >>"$PU"
+                    [[ ${*: -1} != *p2 || $(grep -c "^lsblk .*p2$" "$PU") -gt $PU_AFTER ]] && echo "uuid-${*: -1}" ;;
+            esac
+        }
+        sleep() { :; }
+        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | sed -n 's/^\(error: \|::error::\)//p'
+}
+check "install: bootc waits until udev knows each new filesystem's UUID, settling first" \
+    "|settle|lsblk /dev/loop9p1|lsblk /dev/loop9p2|lsblk /dev/loop9p3" "$(pu 0)|$(grep -m4 . "$Q/pu" | paste -sd'|')"
+check "a UUID that lands late is waited for, settling again" "|3|3" \
+    "$(pu 2)|$(grep -c '^lsblk /dev/loop9p2$' "$Q/pu")|$(grep -c '^settle$' "$Q/pu")"
+check "one that never lands stops the install, naming the partition" \
+    "/dev/loop9p2 has no UUID that udev knows 30 s after mkfs, so bootc install cannot name it" "$(pu 1000)"
 
 # --- qualify.sh: G4 is due when its key changes or its last pass is a week old ------------
 G4_DIR="$TMP/g4"
@@ -477,6 +498,7 @@ build_gates() {
         set -euo pipefail
         . "$1"
         image_id() { echo cafe; }
+        image_test_key() { cat "$FAKE/test-key"; }
         eval "$3"
         gates "$2"' \
         _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$image_only" "${2:-}") >"$BUILD_DIR/out" 2>&1 || rc=$?
@@ -503,8 +525,13 @@ check "G2 is apex-gnome's run.sh, given this image/, its REPOS_BASE and this _bu
     "$BUILD_DIR/work/image|$(containerfile_arg REPOS_BASE)|$BUILD_DIR/work/_build/g2" "$(cat "$BUILD_DIR/g2-env")"
 check "G4 ran" local "$(cat "$BUILD_DIR/g4-ran")"
 check "the record names the lane lock the image carries, the image and G4's pass" \
-    "lock-sha256 $LANE_LOCK_SHA|image-id cafe|g2 passed|g4 passed for image cafe|components pinned" \
+    "lock-sha256 $LANE_LOCK_SHA|image-id cafe|g2 passed|g4 passed for image cafe|components pinned|rpm-key apex" \
     "$(paste -sd'|' "$BUILD_DIR/work/_build/gates-passed.txt")"
+printf '%s\n' 0123456789ABCDEF0123456789ABCDEF01234567 >"$BUILD_DIR/test-key"
+check "a test-key image's record names its ephemeral key, which lane.sh promote refuses" \
+    "0|rpm-key test:0123456789ABCDEF0123456789ABCDEF01234567" \
+    "$(build_gates)|$(grep '^rpm-key ' "$BUILD_DIR/work/_build/gates-passed.txt")"
+rm "$BUILD_DIR/test-key"
 check "a build from a dev-override component says so in its record" "components dev-override" \
     "$(APEX_COMPONENTS=dev-override build_gates >/dev/null; grep '^components ' "$BUILD_DIR/work/_build/gates-passed.txt")"
 printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
@@ -1877,6 +1904,81 @@ check_true "and says so" grep -q 'the next lane gates on G1 only and records not
 check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
 check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
     "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
+
+# --- image.sh: the content key (schema 2) hashes what was built, never who signed it ----------
+CK=$TMP/content-key
+mkdir -p "$CK/repo/image/system_files/usr/share/apex/keys" "$CK/work"
+git -C "$CK/repo" init -q
+ck_commit() { # KEY_TEXT CONTAINERFILE_TEXT: commit the fixture's image/ tree
+    printf '%s\n' "$1" >"$CK/repo/image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex"
+    printf '%s\n' "$2" >"$CK/repo/image/Containerfile"
+    git -C "$CK/repo" add -A && git -C "$CK/repo" -c user.name=t -c user.email=t@t commit -qm x --allow-empty
+}
+ck_lock() { # RECIPE_KEY NEVRA SHA256 PATH
+    printf '# apex rpms.lock 1\nfamily gnome-shell built %s\nrpm gnome-shell built gnome-shell %s %s %s\n' "$@" >"$CK/work/image-rpms.lock"
+}
+printf '{"packages":[{"name":"gnome-shell","epoch":0,"version":"51.1","release":"1.fc45.apex9","arch":"x86_64"}]}\n' >"$CK/work/manifest.json"
+ck() {
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    env APEX_WORK="$CK/work" APEX_GIT_ROOT="$CK/repo" APEX_DESKTOP_SRC="$CK/repo" APEX_SYSTEM_SRC="$CK/repo" bash -c \
+        '. "$1"; BASE=b RPMS_KEY=r DESKTOP_KEY=d LIBFPRINT_KEY=f; content_key "" ""' _ "$APEX_ROOT/.github/scripts/image.sh"
+}
+ck_commit 'the Apex RPM key' 'FROM x'
+ck_lock k1 gnome-shell-51.1-1.fc45.apex9.x86_64 aaaa store/a.rpm
+CK_REAL=$(ck)
+check_true "content key: a 64-hex key" grep -Eqx '[0-9a-f]{64}' <<<"$CK_REAL"
+ck_commit 'an ephemeral test key' 'FROM x'
+ck_lock k1 gnome-shell-51.1-1.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check "the same inputs under a test key, signed RPMs of other bytes and paths: the same key" "$CK_REAL" "$(ck)"
+ck_lock k1 gnome-shell-51.1-2.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check_false "one NEVRA changes the key" test "$(ck)" = "$CK_REAL"
+ck_lock k2 gnome-shell-51.1-1.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check_false "one recipe key changes the key" test "$(ck)" = "$CK_REAL"
+ck_commit 'an ephemeral test key' 'FROM y'
+ck_lock k1 gnome-shell-51.1-1.fc45.apex9.x86_64 bbbb store/other/b.rpm
+check_false "another file of image/ changes the key" test "$(ck)" = "$CK_REAL"
+check_true "and the key's preimage says schema 2" grep -qx "        printf 'apex content key schema 2\\\\n'" \
+    "$APEX_ROOT/.github/scripts/image.sh"
+
+# --- qualify.sh: a degraded system keeps each failed unit's status, chain and TuneD's log ----
+QA=$TMP/assert-running
+qa() { # STATE UNITS...: assert_running on a fake guest in STATE with UNITS failed; its exit
+    rm -rf "$QA" && mkdir -p "$QA/out/logs"
+    echo "$1" >"$QA/state"
+    shift
+    printf '%s\n' "$@" >"$QA/failed"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    rc_of env QUALIFY_OUT="$QA/out" bash -c '. "$1"; QA=$2 VM_NAME=local
+        vm_alive() { :; }
+        vm_ssh() {
+            printf "%s\n" "$*" >>"$QA/ssh"
+            case $* in
+                *is-system-running*) cat "$QA/state" ;;
+                *"list-units --state=failed --plain"*) sed "/^$/d; s/\$/ loaded failed failed x/" "$QA/failed" ;;
+                "systemctl status --no-pager --full --lines=200 "*) echo "status of ${*##* }" ;;
+                "systemd-analyze critical-chain --no-pager "*) echo "chain of ${*##* }" ;;
+                "cat /var/log/tuned/tuned.log") echo "tuned: the profile took 40 s" ;;
+            esac
+        }
+        fail() { printf "%s\n" "$2" >"$QA/fail"; exit 1; }
+        assert_running local-fallback' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$QA"
+}
+check "degraded by tuned.service: the row fails" 1 "$(qa degraded tuned.service)"
+check "naming the unit" "system degraded; failed units: tuned.service " "$(cat "$QA/fail")"
+check "with its status and its critical chain kept" \
+    "## systemctl status tuned.service|status of tuned.service|## systemd-analyze critical-chain tuned.service|chain of tuned.service" \
+    "$(paste -sd'|' "$QA/out/logs/local-local-fallback.failed-units.txt")"
+check "and TuneD's own log" "tuned: the profile took 40 s" "$(cat "$QA/out/logs/local-local-fallback.tuned.log")"
+check "and the journal, as before" 1 "$(grep -c '^journalctl -b' "$QA/ssh")"
+check "degraded by two units: fails" 1 "$(qa degraded a.service b.service)"
+check "each unit's status and chain" "## systemctl status a.service|## systemd-analyze critical-chain a.service|## systemctl status b.service|## systemd-analyze critical-chain b.service" \
+    "$(grep '^##' "$QA/out/logs/local-local-fallback.failed-units.txt" | paste -sd'|')"
+check_false "and no TuneD log when TuneD did not fail" test -e "$QA/out/logs/local-local-fallback.tuned.log"
+# shellcheck disable=SC2016 # a literal $(...) in the unit's name
+check "a unit name reaches the guest's shell quoted" 1 "$(qa degraded 'x;touch$(y).service')"
+check_true "as one word" grep -qxF 'systemctl status --no-pager --full --lines=200 x\;touch\$\(y\).service' "$QA/ssh"
+check "running: passes" 0 "$(qa running)"
+check_false "and keeps nothing" test -e "$QA/out/logs/local-local-fallback.failed-units.txt"
 
 # --- qualify.sh: QMP over a unix socket ----------------------------------------------------
 QMP_DIR="$TMP/qmp"
@@ -4489,7 +4591,7 @@ check "with no traceback" 0 "$(grep -c Traceback "$HC4.err")"
 check "g4 harness: a script over 4 MiB that mentions python fails closed" 1 \
     "$(hc4 "{ echo '#!/usr/bin/env bash'; echo 'python3 -c \"\$X\"'; head -c 5000000 /dev/zero | tr '\\0' '#'; } >.github/scripts/helper.sh")"
 check_true "naming its size" grep -qF "helper.sh, over 4 MiB" "$HC4.err"
-check "the real scripts' Python: qualify.sh's four, lib.sh's three, desktop-vm.sh's and builder-vm.sh's one each" "4 3 1 1" \
+check "the real scripts' Python: qualify.sh's five, lib.sh's three, desktop-vm.sh's and builder-vm.sh's one each" "5 3 1 1" \
     "$(cd "$APEX_ROOT/.github/scripts" && python3 - "$APEX_ROOT" <<'EOF'
 import sys
 import repo_reads as r
@@ -5205,7 +5307,7 @@ ib_steps() { # [ENV...]: image.sh build, inspect's env and rechunk; prints podma
     rm -rf "$IB/work" "$IB/tree/_build" && mkdir -p "$IB/work" && : >"$IB/work/inputs.env"
     env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 "$@" \
         "$IB/tree/.github/scripts/image.sh" build >/dev/null 2>&1 || return
-    printf 'DEGRADED=\nHELD=\nCONTENT_KEY=k\nKERNEL_PAIR=none\n' >"$IB/work/image.env"
+    printf 'DEGRADED=\nHELD=\nCONTENT_KEY=k\nKERNEL_PAIR=none\nRPM_KEY=apex\n' >"$IB/work/image.env"
     env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_PREVIOUS_BUILD=none "$@" \
         "$IB/tree/.github/scripts/image.sh" rechunk >/dev/null 2>&1 || return
     grep -E '^(build|run) ' "$IB/podman.log"
@@ -5235,8 +5337,19 @@ compose build-chunked-oci --bootc --format-version=2 --max-layers 127 --rootfs /
 --label org.opencontainers.image.version=$ib_v --label org.opencontainers.image.revision=$(printf '%040d' 7) \
 --label org.opencontainers.image.source=$APEX_SOURCE_URL --label org.opencontainers.image.created=$ib_created \
 --label $APEX_LABEL_PREFIX.degraded= --label $APEX_LABEL_PREFIX.held= --label $APEX_LABEL_PREFIX.content-key=k \
---label $APEX_LABEL_PREFIX.fedora=45 --label $APEX_LABEL_PREFIX.kernel-pair=none --output oci:/out/apex:latest" \
+--label $APEX_LABEL_PREFIX.fedora=45 --label $APEX_LABEL_PREFIX.kernel-pair=none --label $APEX_LABEL_PREFIX.rpm-key=apex \
+--output oci:/out/apex:latest" \
     "$ib45"
+ibtest=$(ib_steps APEX_TEST_KEY=0123456789ABCDEF0123456789ABCDEF01234567) || ibtest="image.sh failed: $ibtest"
+check "a gates build (APEX_TEST_KEY) passes the key to the Containerfile and labels the image test:FPR" \
+    "--build-arg APEX_TEST_KEY=0123456789ABCDEF0123456789ABCDEF01234567 --label $APEX_LABEL_PREFIX.rpm-key=test:0123456789ABCDEF0123456789ABCDEF01234567 " \
+    "$(grep -o -- '--build-arg APEX_TEST_KEY=[^ ]* --label [^ ]* ' <<<"$ibtest")"
+check "a test-key release build is refused" 1 \
+    "$(rc_of env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 APEX_RELEASE_BUILD=1 \
+        APEX_TEST_KEY=0123456789ABCDEF0123456789ABCDEF01234567 "$IB/tree/.github/scripts/image.sh" build)"
+check "and so is a test key that is no fingerprint" 1 \
+    "$(rc_of env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 APEX_TEST_KEY=abc \
+        "$IB/tree/.github/scripts/image.sh" build)"
 check "and its version is 45.<date>.<run>" "45.$(date -u +%Y%m%d).0" "$ib_v"
 mkdir -p "$IB/tree/image/fedora"
 cp "$APEX_ROOT/image/fedora/46.env" "$IB/tree/image/fedora/"
@@ -5254,7 +5367,7 @@ check "and build.env records the base's source and version label, for the report
     "$(sed -n 's/^BASE_SOURCE=//p' "$IB/work/build.env")|$(sed -n 's/^BASE_VERSION=//p' "$IB/work/build.env")"
 check "and rechunk labels it Fedora 46 and the next lane, last" \
     "--label $APEX_LABEL_PREFIX.fedora=46 --label $APEX_LABEL_PREFIX.kernel-pair=none \
---label $APEX_LABEL_PREFIX.lane=next --output oci:/out/apex:latest" \
+--label $APEX_LABEL_PREFIX.rpm-key=apex --label $APEX_LABEL_PREFIX.lane=next --output oci:/out/apex:latest" \
     "$(grep -o -- "--label $APEX_LABEL_PREFIX.fedora=.*" <<<"$ib46")"
 check "rechunk runs 46.env's BASE" 1 "$(grep -c -- "--entrypoint /usr/bin/rpm-ostree $(ib_next_env BASE) " <<<"$ib46")"
 check "a 45 build has no next-lane label or FEDORA argument" 0 "$(grep -c -e '\.lane=' -e 'FEDORA=' <<<"$ib45")"
@@ -5269,6 +5382,11 @@ ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_FEDORA=46 APEX_WORK="$I
 check "image.sh push refuses the next lane" 1 "$ib_rc"
 check_true "and says it never pushes" grep -q 'next lane: it never pushes' <<<"$ib_log"
 check_false "before podman" test -e "$IB/podman.log"
+printf 'APEX_VERSION=45.20261105.0\nAPEX_REVISION=%040d\n' 7 >"$IB/work/build.env"
+printf 'RPM_KEY=test:0123456789ABCDEF0123456789ABCDEF01234567\n' >"$IB/work/image.env"
+ib_rc=0
+ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_WORK="$IB/work" "$IB/tree/.github/scripts/image.sh" push 2>&1) || ib_rc=$?
+check "image.sh push refuses a test-key image" "1|1" "$ib_rc|$(grep -c 'not the Apex RPM key: it never pushes' <<<"$ib_log")"
 ib_rc=0
 ib_log=$(env APEX_FEDORA=47 "$IB/tree/.github/scripts/image.sh" build 2>&1) || ib_rc=$?
 check "a release without its image/fedora/N.env is refused" "2|1" \
@@ -5741,7 +5859,8 @@ layout() { # VERSION REVISION DEGRADED DIGEST_CHAR [KERNEL_PAIR]
     jq -n --arg v "$1" --arg r "$2" --arg g "$3" --arg d "sha256:$(printf "$4%.0s" {1..64})" --arg l "$APEX_LABEL_PREFIX" \
         --arg p "${5:-none}" \
         '{Digest: $d, Labels: {"org.opencontainers.image.version": $v, "org.opencontainers.image.revision": $r,
-          ($l + ".fedora"): "45", ($l + ".degraded"): $g, ($l + ".kernel-pair"): $p}}' >"$R/state/layout.json"
+          ($l + ".fedora"): "45", ($l + ".degraded"): $g, ($l + ".kernel-pair"): $p, ($l + ".rpm-key"): "apex"}}' \
+        >"$R/state/layout.json"
 }
 reset_registry() {
     rm -rf "$R/state" "$R/keys"
@@ -5778,6 +5897,15 @@ mv "$R/state/next.json" "$R/state/layout.json"
 : >"$R/state/log"
 check "a next-lane layout (label lane=next) is refused" 1 "$(publish_rc)"
 check "before anything is pushed, signed or moved" "|none" "$(cat "$R/state/log")|$(published 45.20260925.152)"
+for rk in test:0123456789ABCDEF0123456789ABCDEF01234567 ''; do
+    layout 45.20260925.152 "$C_A" '' 3
+    jq --arg l "$APEX_LABEL_PREFIX.rpm-key" --arg v "$rk" 'if $v == "" then del(.Labels[$l]) else .Labels[$l] = $v end' \
+        "$R/state/layout.json" >"$R/state/rk.json"
+    mv "$R/state/rk.json" "$R/state/layout.json"
+    : >"$R/state/log"
+    check "a layout whose rpm-key label is '${rk:-missing}' is refused: only the Apex RPM key's publishes" 1 "$(publish_rc)"
+    check "before anything is pushed, signed or moved (${rk:-missing})" "|none" "$(cat "$R/state/log")|$(published 45.20260925.152)"
+done
 check "publish.sh refuses every command for APEX_FEDORA=46" "1|1" \
     "$(rc_of env PATH="$R/bin:$PATH" APEX_FEDORA=46 "$APEX_ROOT/.github/scripts/publish.sh" publish /layout)|$(
         env PATH="$R/bin:$PATH" APEX_FEDORA=46 "$APEX_ROOT/.github/scripts/publish.sh" publish /layout 2>&1 |

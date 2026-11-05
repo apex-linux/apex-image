@@ -94,7 +94,7 @@ next_lock_passed_gates() {
     local next=${APEX_STORE:-$HOME/apex-store}/rpms.lock.next passed
     passed=$(sed -n 's/^lock-sha256 //p' "$GATES_PASSED" 2>/dev/null)
     [[ -s $next && -n $passed && $passed == "$(sha256sum <"$next" | cut -d' ' -f1)" ]] &&
-        grep -qx 'components pinned' "$GATES_PASSED"
+        grep -qx 'components pinned' "$GATES_PASSED" && grep -qx 'rpm-key apex' "$GATES_PASSED"
 }
 
 recipe_dir() {
@@ -117,7 +117,7 @@ if [[ ${1:-} == --recipe-dir ]]; then
     exit 0
 fi
 if [[ ${1:-} == promote ]] && ! next_lock_passed_gates; then
-    die "no image built from rpms.lock.next and pinned components has passed G1, G2 and G4 (_build/gates-passed.txt): run just vm-image"
+    die "no image built from rpms.lock.next and pinned components, its RPMs signed by the Apex RPM key, has passed G1, G2 and G4 (_build/gates-passed.txt): run just vm-image"
 fi
 if [[ ${1:-} == promote && -x $checkout/tools/components.sh ]] && ! "$checkout/tools/components.sh" promotable; then
     die "a build from a dev-override component never promotes: unset APEX_SRC_*, then components.sh fetch and just vm-image"
