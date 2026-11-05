@@ -1401,6 +1401,7 @@ cat >"$BIW/tools/builder-vm/lane.sh" <<'EOF'
 #!/usr/bin/env bash
 [[ $1 != --path ]] || { echo "/cache/$(cat "$FAKE/lane-tool" 2>/dev/null || echo tool1)/apex-lane"; exit 0; }
 echo "lane.sh $*" >>"$FAKE/steps.log"
+[[ $1 != sign ]] || for f in "${@:2}"; do sed -i '1s/^unsigned /signed /' "$f"; done
 EOF
 chmod +x "$BIW/tools/components.sh" "$BIW/tools/builder-vm/"*.sh
 bi_main() {
@@ -1464,6 +1465,12 @@ cat >"$RC/bin/rpm" <<'EOF'
 #!/usr/bin/env bash
 [[ $1 == --dbpath && $3 == --initdb ]] && mkdir -p "$2"
 [[ $1 != -qp ]] || sed -n 's/^nvr //p' "$5"
+EOF
+cat >"$RC/bin/rpmsign" <<'EOF'
+#!/usr/bin/env bash
+# --delsign: the RPM's text says unsigned, as rpmsign leaves it.
+[[ $1 == --delsign ]] || exit 2
+for f in "${@:3}"; do sed -i '1s/^signed /unsigned /' "$f"; echo "delsign ${f##*/}" >>"$FAKE/rpmsign.log"; done
 EOF
 cat >"$RC/bin/rpmkeys" <<'EOF'
 #!/usr/bin/env bash
@@ -1847,6 +1854,42 @@ check "the pair's source artifact goes next to the image" "sources --lock /store
 APEX_KERNEL=fedora bi_sources
 check "a break-glass image writes none, and leaves no stale one" "no call|no dir" \
     "$([[ -e $BI/steps.log ]] && echo call || echo 'no call')|$([[ -e $BIW/_build/image/sources ]] && echo dir || echo 'no dir')"
+
+# Under a test key (gates.sh): entries without signatures, named by the day's repositories.
+rm -rf "$BIW/_build" "$RC/cache" "$RC/rpmsign.log"
+printf '%s\n' ksys >"$RC/keys/system"
+printf '%s\n' kdesk >"$RC/keys/desktop"
+printf '%s\n' "$KFP" >"$RC/keys/kernel"
+echo "$D1" >"$RC/digest"
+TKEY=$(printf 'A%.0s' {1..40})
+check "test key: the first build builds each component and stores it unsigned" \
+    "0|system desktop kernel|unsigned system|unsigned desktop|unsigned kernel" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" bi_cache)|$(rc_builds)|$(head -qn1 "$RCE"/apex-system/*/system.rpm)|$(head -qn1 "$RCE"/apex-desktop/*/desktop.rpm)|$(head -qn1 "$RCE"/libfprint/*/libfprint.rpm)"
+check "and the image takes its freshly signed RPMs" "signed system|signed kernel" \
+    "$(head -n1 "$BIW/_build/rpms/apex/system.rpm")|$(head -n1 "$BIW/_build/libfprint/libfprint.rpm")"
+TE=$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" rc_entry apex-system ksys)
+check "a test-key entry names no key but the day's repositories" \
+    "$(printf 'apex rpm-cache 1\ncomponent apex-system\nkey ksys\nfedora registry.fedoraproject.org/fedora:45@%s\nlane-tool tool1\napex-key test\nrepos fedora=100 updates=200\nenv ' "$D1")" \
+    "$(cat "$TE/PREIMAGE" 2>/dev/null)"
+check_false "and is never the entry a build with the Apex key takes" test "$TE" = "$(rc_entry apex-system ksys)"
+check "test key: the next build reuses, signs each copy with the run's key and checks it" \
+    "0||yes|signed system|signed desktop|signed kernel" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" bi_cache)|$(rc_builds)|$(grep -q '^lane.sh sign _build/rpms/apex/system.rpm$' "$RC/steps.log" && echo yes)|$(head -n1 "$BIW/_build/rpms/apex/system.rpm")|$(head -n1 "$BIW/_build/rpms/desktop/desktop.rpm")|$(head -n1 "$BIW/_build/libfprint/libfprint.rpm")"
+check_true "with SHA256SUMS of the signed RPMs" bash -c "cd '$BIW/_build/rpms/apex' && sha256sum --quiet --strict -c SHA256SUMS"
+sed -i '1s/^unsigned /signed /' "$TE/system.rpm"
+(cd "$TE" && sha256sum -- *.rpm >SHA256SUMS)
+rc_contents "$TE"
+rc_reindex "$TE"
+check "test key: an entry holding a signed RPM is never taken, and is built again" "0|system|yes" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" bi_cache)|$(rc_builds)|$(rc_said 'is not unsigned, as a test-key entry is')"
+check "test key: the next day's repositories name new entries, so all build again" "0|system desktop kernel" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=201" bi_cache)|$(rc_builds)"
+check "test key: without the day's repositories, nothing is cached" "0|system desktop kernel|yes" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS='' bi_cache)|$(rc_builds)|$(rc_said "a test-key build without the day's repositories")"
+rm -f "$RC/rpmsign.log"
+check "a build with the Apex key takes no test-key entry: it builds each component" "0|system desktop kernel" \
+    "$(bi_cache)|$(rc_builds)"
+check_false "and never strips a signature" test -e "$RC/rpmsign.log"
 
 # The next lane (APEX_FEDORA=46): its own fedora, _build and store, then G1 only.
 mkdir -p "$BIW/image/fedora"
