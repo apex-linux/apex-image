@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage: gates.sh build OUT | g2 IMAGE_DIR OUT | g2-stable IMAGE_DIR RUN1 RUN2 | g4 IMAGE_DIR SHARD
-       gates.sh record OUT BUILD_DIR STABLE_DIR G2_DIR G2_DIR -- G4_DIR...
+       gates.sh record OUT BUILD_DIR STABLE_DIR G2_DIR G2_DIR -- G4_DIR... | cache-key
 
 The hosted gates (.github/workflows/gates.yml): G1, G2 and G4 on GitHub's runners, before
 a merge, with no owner hardware. build, g2, g2-stable and g4 each run in a privileged
@@ -26,12 +26,23 @@ are under RUNNER_TEMP.
                        the shards' rows as one OUT/results.md (qualify.sh g4-merge), and
                        OUT/gates.txt when G1, both G2 runs, their stability and every G4 row
                        passed on build's image; exit 1 otherwise
+  cache-key            key= and repos= for GITHUB_OUTPUT: the build cache's name, from the
+                       fedora and updates repomd revisions (so an entry lasts a day), the
+                       REPOS_BASE pin and what the cached RPMs and apex-lane are made from;
+                       both empty, and a warning, when a revision cannot be read
 
 Every RPM is signed by an ephemeral key made in the build job. Its secret half stays in
 GATES_WORK/gnupg and is never uploaded or cached. Its public half replaces the committed
 RPM-GPG-KEY-apex in that job's checkout only, which apex-lane requires. The image carries
 /usr/share/apex/test-key and the label <prefix>.rpm-key=test:FPR: G1 checks the image
 against that key, and publish.sh, image.sh push, cosign and lane.sh promote refuse it.
+
+The build's cache (GATES_WORK/cache: the lane store, build-image.sh's rpm-cache and the
+apex-lane binary) holds no signature: build strips the Apex-signed RPMs (manifest kinds
+built and apex-srpm) of the store after the image is built, and rpm-cache stores them
+unsigned under a test key. A restored store is signed again with the run's key by
+apex-lane sign, which checks each RPM against the run's committed key, before the lane
+runs; the lane then checks every set it takes as it always does.
 EOF
     exit 2
 }
@@ -72,7 +83,7 @@ in_fedora() {
         -v "$ROOT:/src:z" -v "$work:/work:z" -v "$TEMP:/runner:z" "${dev[@]}" -w /src \
         -v "$work/var-tmp-$1:/var/tmp:z" -v "$work/containers-$1:/var/lib/containers:z" \
         -e GITHUB_ACTIONS -e GITHUB_RUN_NUMBER -e GATES_SHA="${GATES_SHA:-$(git -C "$ROOT" rev-parse HEAD)}" \
-        -e GITHUB_STEP_SUMMARY="$summary" \
+        -e GITHUB_STEP_SUMMARY="$summary" -e APEX_TEST_REPOS="${GATES_REPOS:-}" \
         "$fedora" /src/.github/scripts/gates.sh in "$@"
 }
 
@@ -119,26 +130,93 @@ nested_podman() {
 }
 
 # The secret half never leaves GNUPGHOME; the checkout's public key is the job's own.
+new_key() { # HOME: a signing key made in HOME, its fingerprint
+    local fpr
+    install -d -m 0700 "$1"
+    gpg --homedir "$1" --batch --quiet --passphrase '' \
+        --quick-gen-key "Apex gates test key (ephemeral, $(date -u +%FT%TZ))" ed25519 sign 1d
+    fpr=$(gpg --homedir "$1" --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+    [[ $fpr =~ ^[0-9A-F]{40}$ ]] || die "the ephemeral key has no fingerprint"
+    printf '%s\n' "$fpr"
+}
+
 ephemeral_key() {
     local home=$1 fpr
-    install -d -m 0700 "$home"
-    gpg --homedir "$home" --batch --quiet --passphrase '' \
-        --quick-gen-key "Apex gates test key (ephemeral, $(date -u +%FT%TZ))" ed25519 sign 1d
-    fpr=$(gpg --homedir "$home" --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
-    [[ $fpr =~ ^[0-9A-F]{40}$ ]] || die "the ephemeral key has no fingerprint"
+    fpr=$(new_key "$home")
     gpg --homedir "$home" --batch --armor --export "$fpr" >"$ROOT/$KEY_FILE"
     printf 'APEX_RPM_KEY_FPR=%s\nAPEX_RPM_GNUPGHOME=%s\n' "$fpr" "$home" >"$home.env"
     printf '%s\n' "$fpr"
 }
 
+# The lane store's Apex-signed RPMs, one path a line: Fedora's mirrored ones keep Fedora's signature.
+store_signed_rpms() {
+    local m
+    for m in "$APEX_STORE"/pkgs/*/*/manifest.txt; do
+        [[ -f $m ]] || continue
+        awk -v d="${m%/manifest.txt}" '$1 == "built" || $1 == "apex-srpm" { print d "/" $4 }' "$m"
+    done
+}
+
+# The store's first Apex-signed RPM, read whole: a pipe into head would end the producer with SIGPIPE.
+first_signed_rpm() {
+    local -a rpms
+    mapfile -t rpms < <(store_signed_rpms)
+    ((${#rpms[@]} == 0)) || printf '%s\n' "${rpms[0]}"
+}
+
+# Every signature goes first, as rpm 6 may keep several; then this run's key signs and apex-lane checks each.
+resign_store() {
+    local -a rpms
+    mapfile -t rpms < <(store_signed_rpms)
+    ((${#rpms[@]})) || return 0
+    log "gates: the restored store's ${#rpms[@]} RPM(s), stripped and signed with this run's key"
+    rpmsign --delsign -- "${rpms[@]}" >/dev/null
+    tools/builder-vm/lane.sh sign "${rpms[@]}"
+}
+
+# DIR: what the cache keeps holds no signature of this run's key, and the runner's user can read it.
+unsign_cache() {
+    local -a rpms
+    mapfile -t rpms < <(store_signed_rpms)
+    ((${#rpms[@]} == 0)) || rpmsign --delsign -- "${rpms[@]}" >/dev/null
+    chmod -R a+rX -- "$1"
+}
+
+# A built RPM signed by a second key A, then restored as resign_store does: rpmkeys, with both keys,
+# must find this run's key B alone, every signature OK.
+resign_proof() {
+    local rpm=$1 b=$2 work a out
+    work=$(mktemp -d /work/resign-proof.XXXXXX)
+    a=$(new_key "$work/a")
+    cp -- "$rpm" "$work/x.rpm"
+    # The build signed it with B already, and rpm 6 adds no signature beside a legacy one.
+    rpmsign --delsign -- "$work/x.rpm" >/dev/null
+    rpmsign --define "_gpg_path $work/a" --define "_openpgp_sign_id $a" --addsign "$work/x.rpm" >/dev/null
+    rpmsign --delsign -- "$work/x.rpm" >/dev/null
+    tools/builder-vm/lane.sh sign "$work/x.rpm"
+    gpg --homedir "$work/a" --batch --armor --export "$a" >"$work/a.asc"
+    rpm --dbpath "$work/db" --initdb
+    rpmkeys --dbpath "$work/db" --import "$work/a.asc" "$ROOT/$KEY_FILE"
+    out=$(rpmkeys --dbpath "$work/db" -Kv "$work/x.rpm" 2>&1) || die "re-signed by $b, ${rpm##*/} does not verify: $out"
+    if grep -qi -e "${a: -16}" <<<"$out" || ! grep -qi -e "${b: -16}" <<<"$out" ||
+        [[ $(grep -i signature <<<"$out" | grep -cv ': OK$') != 0 ]]; then
+        die "signed by $a, stripped and signed by $b, ${rpm##*/} is not $b's alone: $out"
+    fi
+    log "gates: a store RPM signed by $a, then stripped and signed by $b, carries $b's signature alone"
+    rm -rf -- "$work"
+}
+
 inner_build() {
-    local out=$1 t0=$SECONDS fpr id key lock
+    local out=$1 t0=$SECONDS fpr id key lock first
     mkdir -p "$out"
-    export APEX_STORE=/work/apex-store APEX_RPM_CACHE=/work/rpm-cache XDG_CACHE_HOME=/work/cache
+    export APEX_STORE=/work/cache/apex-store APEX_RPM_CACHE=/work/cache/rpm-cache XDG_CACHE_HOME=/work/cache/xdg
+    mkdir -p "$APEX_STORE" "$APEX_RPM_CACHE" "$XDG_CACHE_HOME"
     fpr=$(ephemeral_key /work/gnupg)
     export APEX_RPM_SIGNING_ENV=/work/gnupg.env APEX_TEST_KEY=$fpr
     log "gates: RPMs signed by the ephemeral key $fpr (its secret half stays in /work/gnupg)"
+    log "gates: the day's repositories ${APEX_TEST_REPOS:-unknown, so nothing is cached}"
     cd "$ROOT"
+    resign_store
     # shellcheck source=SCRIPTDIR/../../tools/builder-vm/build-image.sh
     . tools/builder-vm/build-image.sh
     rm -rf "$BUILD/rpms" "$BUILD/libfprint"
@@ -154,6 +232,9 @@ inner_build() {
     printf 'sha %s\nimage-id %s\ncontent-key %s\nrpm-key test:%s\nlock-sha256 %s\nseconds %s\n' \
         "$GATES_SHA" "$id" "${key:-unknown}" "$fpr" "$lock" "$((SECONDS - t0))" >"$out/build.txt"
     cat "$out/build.txt"
+    first=$(first_signed_rpm)
+    [[ -z $first ]] || resign_proof "$first" "$fpr"
+    unsign_cache /work/cache
 }
 
 load() {
@@ -247,6 +328,30 @@ cmd_record() {
     cat "$out/gates.txt"
 }
 
+# REPO: the repomd.xml timestamp its metalink names, or nothing.
+repo_revision() {
+    local xml
+    xml=$(curl -fsS --retry 3 --max-time 60 "https://mirrors.fedoraproject.org/metalink?repo=$1&arch=x86_64") || return 0
+    sed -n 's:.*<mm0\:timestamp>\([0-9]\{1,\}\)</mm0\:timestamp>.*:\1:p;T;q' <<<"$xml"
+}
+
+cmd_cache_key() {
+    local release=${APEX_FEDORA:-45} fedora updates key
+    fedora=$(repo_revision "fedora-$release")
+    updates=$(repo_revision "updates-released-f$release")
+    if [[ ! $fedora =~ ^[0-9]+$ || ! $updates =~ ^[0-9]+$ ]]; then
+        echo "::warning::gates: no repomd revision for fedora-$release or its updates; this build is not cached" >&2
+        printf 'key=\nrepos=\n'
+        return 0
+    fi
+    key=$({
+        printf 'apex gates cache 1\nrepos fedora=%s updates=%s\nbase %s\n' "$fedora" "$updates" "$(containerfile_arg REPOS_BASE)"
+        git -C "$ROOT" rev-parse HEAD:components.lock HEAD:packaging HEAD:crates HEAD:Cargo.lock HEAD:Cargo.toml \
+            HEAD:tools/builder-vm HEAD:tools/components.sh HEAD:.github/scripts/lib.sh HEAD:.github/scripts/gates.sh
+    } | sha256sum | cut -c1-32)
+    printf 'key=gates-build-%s\nrepos=fedora=%s updates=%s\n' "$key" "$fedora" "$updates"
+}
+
 main() {
     local cmd=${1:-}
     shift || true
@@ -257,6 +362,7 @@ main() {
         g4) (($# == 2)) || usage; in_fedora g4 "$(inside "$1")" "$2" ;;
         in) cmd_in "$@" ;;
         record) cmd_record "$@" ;;
+        cache-key) (($# == 0)) || usage; cmd_cache_key ;;
         *) usage ;;
     esac
 }

@@ -1474,6 +1474,7 @@ cat >"$BIW/tools/builder-vm/lane.sh" <<'EOF'
 #!/usr/bin/env bash
 [[ $1 != --path ]] || { echo "/cache/$(cat "$FAKE/lane-tool" 2>/dev/null || echo tool1)/apex-lane"; exit 0; }
 echo "lane.sh $*" >>"$FAKE/steps.log"
+[[ $1 != sign ]] || for f in "${@:2}"; do sed -i '1s/^unsigned /signed /' "$f"; done
 EOF
 chmod +x "$BIW/tools/components.sh" "$BIW/tools/builder-vm/"*.sh
 bi_main() {
@@ -1537,6 +1538,12 @@ cat >"$RC/bin/rpm" <<'EOF'
 #!/usr/bin/env bash
 [[ $1 == --dbpath && $3 == --initdb ]] && mkdir -p "$2"
 [[ $1 != -qp ]] || sed -n 's/^nvr //p' "$5"
+EOF
+cat >"$RC/bin/rpmsign" <<'EOF'
+#!/usr/bin/env bash
+# --delsign: the RPM's text says unsigned, as rpmsign leaves it.
+[[ $1 == --delsign ]] || exit 2
+for f in "${@:3}"; do sed -i '1s/^signed /unsigned /' "$f"; echo "delsign ${f##*/}" >>"$FAKE/rpmsign.log"; done
 EOF
 cat >"$RC/bin/rpmkeys" <<'EOF'
 #!/usr/bin/env bash
@@ -1921,6 +1928,42 @@ APEX_KERNEL=fedora bi_sources
 check "a break-glass image writes none, and leaves no stale one" "no call|no dir" \
     "$([[ -e $BI/steps.log ]] && echo call || echo 'no call')|$([[ -e $BIW/_build/image/sources ]] && echo dir || echo 'no dir')"
 
+# Under a test key (gates.sh): entries without signatures, named by the day's repositories.
+rm -rf "$BIW/_build" "$RC/cache" "$RC/rpmsign.log"
+printf '%s\n' ksys >"$RC/keys/system"
+printf '%s\n' kdesk >"$RC/keys/desktop"
+printf '%s\n' "$KFP" >"$RC/keys/kernel"
+echo "$D1" >"$RC/digest"
+TKEY=$(printf 'A%.0s' {1..40})
+check "test key: the first build builds each component and stores it unsigned" \
+    "0|system desktop kernel|unsigned system|unsigned desktop|unsigned kernel" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" bi_cache)|$(rc_builds)|$(head -qn1 "$RCE"/apex-system/*/system.rpm)|$(head -qn1 "$RCE"/apex-desktop/*/desktop.rpm)|$(head -qn1 "$RCE"/libfprint/*/libfprint.rpm)"
+check "and the image takes its freshly signed RPMs" "signed system|signed kernel" \
+    "$(head -n1 "$BIW/_build/rpms/apex/system.rpm")|$(head -n1 "$BIW/_build/libfprint/libfprint.rpm")"
+TE=$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" rc_entry apex-system ksys)
+check "a test-key entry names no key but the day's repositories" \
+    "$(printf 'apex rpm-cache 1\ncomponent apex-system\nkey ksys\nfedora registry.fedoraproject.org/fedora:45@%s\nlane-tool tool1\napex-key test\nrepos fedora=100 updates=200\nenv ' "$D1")" \
+    "$(cat "$TE/PREIMAGE" 2>/dev/null)"
+check_false "and is never the entry a build with the Apex key takes" test "$TE" = "$(rc_entry apex-system ksys)"
+check "test key: the next build reuses, signs each copy with the run's key and checks it" \
+    "0||yes|signed system|signed desktop|signed kernel" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" bi_cache)|$(rc_builds)|$(grep -q '^lane.sh sign _build/rpms/apex/system.rpm$' "$RC/steps.log" && echo yes)|$(head -n1 "$BIW/_build/rpms/apex/system.rpm")|$(head -n1 "$BIW/_build/rpms/desktop/desktop.rpm")|$(head -n1 "$BIW/_build/libfprint/libfprint.rpm")"
+check_true "with SHA256SUMS of the signed RPMs" bash -c "cd '$BIW/_build/rpms/apex' && sha256sum --quiet --strict -c SHA256SUMS"
+sed -i '1s/^unsigned /signed /' "$TE/system.rpm"
+(cd "$TE" && sha256sum -- *.rpm >SHA256SUMS)
+rc_contents "$TE"
+rc_reindex "$TE"
+check "test key: an entry holding a signed RPM is never taken, and is built again" "0|system|yes" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=200" bi_cache)|$(rc_builds)|$(rc_said 'is not unsigned, as a test-key entry is')"
+check "test key: the next day's repositories name new entries, so all build again" "0|system desktop kernel" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS="fedora=100 updates=201" bi_cache)|$(rc_builds)"
+check "test key: without the day's repositories, nothing is cached" "0|system desktop kernel|yes" \
+    "$(APEX_TEST_KEY=$TKEY APEX_TEST_REPOS='' bi_cache)|$(rc_builds)|$(rc_said "a test-key build without the day's repositories")"
+rm -f "$RC/rpmsign.log"
+check "a build with the Apex key takes no test-key entry: it builds each component" "0|system desktop kernel" \
+    "$(bi_cache)|$(rc_builds)"
+check_false "and never strips a signature" test -e "$RC/rpmsign.log"
+
 # The next lane (APEX_FEDORA=46): its own fedora, _build and store, then G1 only.
 mkdir -p "$BIW/image/fedora"
 cp "$APEX_ROOT/image/fedora/46.env" "$BIW/image/fedora/"
@@ -1956,6 +1999,92 @@ check_true "and says so" grep -q 'the next lane gates on G1 only and records not
 check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
 check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
     "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
+
+# --- gates.sh: the build cache, stripped before it is kept and signed again after a restore ---
+GS=$TMP/gates-cache
+mkdir -p "$GS/bin" "$GS/root/tools/builder-vm" "$GS/store/pkgs/gnome-shell/k1" "$GS/store/pkgs/nautilus/k2"
+printf '# apex-lane manifest\n# sig=OLD\nbuilt gnome-shell-0:1-1.x86_64 aa gs.rpm\napex-srpm gnome-shell-0:1-1.src bb gs.src.rpm\nmirror glib2-0:2-1.x86_64 cc glib2.rpm\n' \
+    >"$GS/store/pkgs/gnome-shell/k1/manifest.txt"
+printf '# apex-lane manifest\nbuilt nautilus-0:1-1.x86_64 dd n.rpm\n' >"$GS/store/pkgs/nautilus/k2/manifest.txt"
+for f in gnome-shell/k1/gs.rpm gnome-shell/k1/gs.src.rpm gnome-shell/k1/glib2.rpm nautilus/k2/n.rpm; do : >"$GS/store/pkgs/$f"; done
+cat >"$GS/bin/rpmsign" <<'EOF'
+#!/usr/bin/env bash
+echo "rpmsign $*" >>"$GS_LOG"
+EOF
+cat >"$GS/root/tools/builder-vm/lane.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "lane.sh $*" >>"$GS_LOG"
+EOF
+cat >"$GS/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+# The metalink of fedora-45 or updates-released-f45, from GS's files; none fails as a timeout does.
+repo=${*: -1}
+repo=${repo#*repo=}
+repo=${repo%%&*}
+[[ -f $GS_DIR/ts-$repo ]] || exit 28
+printf '<metalink>\n <files>\n  <file name="repomd.xml">\n   <mm0:timestamp>%s</mm0:timestamp>\n' "$(cat "$GS_DIR/ts-$repo")"
+EOF
+chmod +x "$GS/bin/"* "$GS/root/tools/builder-vm/lane.sh"
+gs_run() { # FUNCTION ARGS...: a gates.sh function in GS's checkout, store and fakes
+    rm -f "$GS/log"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$GS/root" && PATH="$GS/bin:$PATH" GS_LOG="$GS/log" GS_DIR="$GS" APEX_STORE="$GS/store" \
+        bash -c '. "$1"; "${@:2}"' _ "$APEX_ROOT/.github/scripts/gates.sh" "$@") 2>"$GS/err"
+}
+GSR=$GS/store/pkgs
+gs_run resign_store
+check "gates: a restored store's Apex-signed RPMs lose every signature first, then this run's key signs them" \
+    "rpmsign --delsign -- $GSR/gnome-shell/k1/gs.rpm $GSR/gnome-shell/k1/gs.src.rpm $GSR/nautilus/k2/n.rpm|lane.sh sign $GSR/gnome-shell/k1/gs.rpm $GSR/gnome-shell/k1/gs.src.rpm $GSR/nautilus/k2/n.rpm" \
+    "$(paste -sd'|' "$GS/log")"
+check_false "and Fedora's mirrored RPM keeps Fedora's signature" grep -q glib2.rpm "$GS/log"
+: >"$GS/secret"
+chmod 0600 "$GS/secret"
+gs_run unsign_cache "$GS"
+check "gates: the kept cache holds the store's Apex-signed RPMs without a signature, readable by the runner" \
+    "rpmsign --delsign -- $GSR/gnome-shell/k1/gs.rpm $GSR/gnome-shell/k1/gs.src.rpm $GSR/nautilus/k2/n.rpm|644" \
+    "$(paste -sd'|' "$GS/log")|$(stat -c %a "$GS/secret")"
+mv "$GS/store" "$GS/store.full"
+mkdir -p "$GS/store"
+gs_run resign_store
+check_false "gates: an empty store signs nothing" test -e "$GS/log"
+mkdir -p "$GS/store/pkgs/big/k3"
+{ echo '# apex-lane manifest'; for i in $(seq 30000); do echo "built big-0:$i-1.x86_64 ee big$i.rpm"; done; } \
+    >"$GS/store/pkgs/big/k3/manifest.txt"
+check "gates: the proof's RPM from a store too big for one pipe buffer, no SIGPIPE under pipefail" \
+    "$GS/store/pkgs/big/k3/big1.rpm|0" "$(rc=0; out=$(gs_run first_signed_rpm) || rc=$?; echo "$out|$rc")"
+rm -rf "$GS/store"
+mv "$GS/store.full" "$GS/store"
+cat >"$GS/bin/gpg" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 != --homedir || $4 != --export ]] || echo key-a
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' >"$GS/bin/rpm"
+cat >"$GS/bin/rpmkeys" <<'EOF'
+#!/usr/bin/env bash
+[[ $3 != -Kv ]] || printf 'x.rpm:\n    Header OpenPGP V4 EdDSA signature, key fingerprint: %s: OK\n' "$GS_B"
+EOF
+chmod +x "$GS/bin/gpg" "$GS/bin/rpm" "$GS/bin/rpmkeys"
+rm -f "$GS/log"
+GS_A=$(printf 'A%.0s' {1..40}) GS_B=$(printf 'B%.0s' {1..40})
+# shellcheck disable=SC2016 # expanded by the inner bash
+(cd "$GS/root" && PATH="$GS/bin:$PATH" GS_LOG="$GS/log" GS_DIR="$GS" GS_A=$GS_A GS_B=$GS_B bash -c '. "$1"
+    mktemp() { command mktemp -d "$GS_DIR/proof.XXXXXX"; }
+    new_key() { echo "$GS_A"; }
+    resign_proof "$GS_DIR/store/pkgs/nautilus/k2/n.rpm" "$GS_B"' _ "$APEX_ROOT/.github/scripts/gates.sh") >"$GS/out" 2>&1
+check "gates: the proof's copy, which the build signed with B, is stripped before A signs it, then stripped and signed by B" \
+    "rpmsign --delsign -- x.rpm|rpmsign --addsign x.rpm|rpmsign --delsign -- x.rpm|lane.sh sign x.rpm|B's alone" \
+    "$(sed -E 's|[^ ]*/x\.rpm|x.rpm|g; s/--define [^ ]+ [^ ]+ //g' "$GS/log" | paste -sd'|')|$(grep -q "carries $GS_B's signature alone" "$GS/out" && echo "B's alone")"
+echo 1793348934 >"$GS/ts-fedora-45"
+echo 1793839916 >"$GS/ts-updates-released-f45"
+GSK1=$(gs_run cmd_cache_key)
+check "gates: the build cache's name, and the day's repositories build-image.sh names its entries by" \
+    "key=gates-build-HEX|repos=fedora=1793348934 updates=1793839916" \
+    "$(printf '%s\n' "$GSK1" | sed 's/^key=gates-build-[0-9a-f]\{32\}$/key=gates-build-HEX/' | paste -sd'|')"
+echo 1793926316 >"$GS/ts-updates-released-f45"
+check_false "the next day's updates name another cache" test "$GSK1" = "$(gs_run cmd_cache_key)"
+rm -f "$GS/ts-updates-released-f45"
+check "a revision that cannot be read: no key, so the build runs uncached, with a warning" "key=|repos=|yes" \
+    "$(gs_run cmd_cache_key | paste -sd'|')|$(grep -q '::warning::gates: no repomd revision' "$GS/err" && echo yes)"
 
 # --- build-image.sh sign: the hosted verdict's content key, the Apex key, then the G4 smoke ------
 SG=$TMP/sign-gates

@@ -81,6 +81,12 @@ entries this build does not use go until the cache's disk keeps 30 GiB free afte
 storing, and when that cannot be reached, nothing is stored and nothing goes. A store
 that died leaves ENTRY.tmp, which the next build deletes first.
 
+Under APEX_TEST_KEY (gates.sh's hosted build) an entry is the same set without its
+signatures: its PREIMAGE names "apex-key test" and the day's repositories (APEX_TEST_REPOS,
+fedora=REVISION updates=REVISION; without them nothing is cached), and a reuse takes only
+unsigned RPMs, signs the copy with the run's key (lane.sh sign) and checks each signature
+as above. Builds with the Apex key never name or take those entries.
+
 --image-only reuses the RPMs and the lane lock of the previous run (for Containerfile
 or image/ changes), and only says whether G4 is due.
 
@@ -239,8 +245,12 @@ by_age() { # DIR DEPTH: its directories at DEPTH, newest first
 
 # What a component's RPMs depend on besides its key: an entry is named by the hash of all of it.
 cache_preimage() { # NAME KEY DIGEST
+    local signer
+    signer=$(sha256_of "$APEX_RPM_KEY")
+    # A test key signs one run only: its entries are unsigned, and the day's repositories name them.
+    [[ -z ${APEX_TEST_KEY:-} ]] || signer=$(printf 'test\nrepos %s' "${APEX_TEST_REPOS:-}")
     printf 'apex rpm-cache 1\ncomponent %s\nkey %s\nfedora %s@%s\nlane-tool %s\napex-key %s\nenv %s\n' \
-        "$1" "$2" "$FEDORA" "$3" "$LANE_TOOL" "$(sha256_of "$APEX_RPM_KEY")" "${COMPONENT_ENV[*]}"
+        "$1" "$2" "$FEDORA" "$3" "$LANE_TOOL" "$signer" "${COMPONENT_ENV[*]}"
 }
 
 # NAME KEY: the entry's path and its preimage's digest, or nothing when an input is unknown.
@@ -253,6 +263,10 @@ cache_entry() {
     digest=$(fedora_digest) || digest=''
     if [[ -z $LANE_TOOL || ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
         echo "rpm-cache: $1: lane tool '${LANE_TOOL:-?}' or $FEDORA digest '${digest:-?}' unknown; not cached"
+        return 0
+    fi
+    if [[ -n ${APEX_TEST_KEY:-} && ! ${APEX_TEST_REPOS:-} =~ ^fedora=[0-9]+\ updates=[0-9]+$ ]]; then
+        echo "rpm-cache: $1: a test-key build without the day's repositories (APEX_TEST_REPOS='${APEX_TEST_REPOS:-}'); not cached"
         return 0
     fi
     CACHE_DIGEST=$digest
@@ -337,7 +351,30 @@ cache_room() {
     ((avail >= need))
 }
 
-# NAME DIR KEY: a copy of DIR's signed RPMs and key files, under the entry cache_entry named.
+# DIR: under a test key, its RPMs without their signatures and SHA256SUMS afresh; else as they are.
+unsign_test_copy() {
+    [[ -n ${APEX_TEST_KEY:-} ]] || return 0
+    rpmsign --delsign -- "$1"/*.rpm >/dev/null && (cd "$1" && sha256sum -- *.rpm >SHA256SUMS)
+}
+
+# DB DIR: whether every RPM in DIR carries a signature the keys in DB verify ("signed"), or none ("unsigned").
+rpms_are() {
+    local want=$1 db=$2 rpm out
+    for rpm in "$3"/*.rpm; do
+        out=$(rpmkeys --dbpath "$db" --checksig -- "$rpm" 2>&1) || [[ $want == unsigned ]] || {
+            cache_note "${rpm#"$RPM_CACHE"/} is not signed by $APEX_RPM_KEY ($out); rebuilding"
+            return 1
+        }
+        case $want in
+            signed) [[ $out == *": digests signatures OK" ]] ||
+                { cache_note "${rpm#"$RPM_CACHE"/} is not signed by $APEX_RPM_KEY ($out); rebuilding"; return 1; } ;;
+            unsigned) [[ $out == *": digests OK" ]] ||
+                { cache_note "${rpm#"$RPM_CACHE"/} is not unsigned, as a test-key entry is ($out); rebuilding"; return 1; } ;;
+        esac
+    done
+}
+
+# NAME DIR KEY: a copy of DIR's RPMs (unsigned under a test key) and key files, under the entry cache_entry named.
 cache_rpms() {
     local name=$1 dir=$2 key=$3 entry=$CACHE_ENTRY old created
     local tmp=$entry.tmp
@@ -347,6 +384,7 @@ cache_rpms() {
     if ! { rm -rf -- "$tmp" && mkdir -p -- "$tmp" &&
         cp -P -- "$dir"/*.rpm "$dir/SHA256SUMS" "$tmp/" &&
         (cd "$tmp" && sha256sum --quiet --strict -c SHA256SUMS) &&
+        unsign_test_copy "$tmp" &&
         copy_key_files "$name" "$dir" "$tmp" &&
         cache_preimage "$name" "$key" "$CACHE_DIGEST" >"$tmp/PREIMAGE" &&
         (cd "$tmp" && sha256sum -- * >CONTENTS) &&
@@ -401,21 +439,23 @@ reuse_rpms() {
         rm -rf -- "$db"
         return 1
     fi
-    for rpm in "$entry"/*.rpm; do
-        out=$(rpmkeys --dbpath "$db" --checksig -- "$rpm" 2>&1) && [[ $out == *": digests signatures OK" ]] || {
-            cache_note "${rpm#"$RPM_CACHE"/} is not signed by $APEX_RPM_KEY ($out); rebuilding"
-            rm -rf -- "$db"
-            return 1
-        }
-    done
-    rm -rf -- "$db" "$dir.tmp"
+    local state=signed
+    [[ -z ${APEX_TEST_KEY:-} ]] || state=unsigned
+    rpms_are "$state" "$db" "$entry" || { rm -rf -- "$db"; return 1; }
+    rm -rf -- "$dir.tmp"
     if ! { mkdir -p -- "$dir.tmp" && cp -P -- "$entry"/*.rpm "$entry/SHA256SUMS" "$dir.tmp/" &&
         copy_key_files "$name" "$entry" "$dir.tmp" &&
         (cd "$dir.tmp" && sha256sum --quiet --strict -c SHA256SUMS) && rm -rf -- "$dir" && mv -- "$dir.tmp" "$dir"; }; then
         cache_note "$at: cannot copy to $dir; rebuilding"
-        rm -rf -- "$dir.tmp"
+        rm -rf -- "$db" "$dir.tmp"
         return 1
     fi
+    # The test key's own signature, made now and checked like a stored one: lane.sh sign verifies it too.
+    if [[ $state == unsigned ]]; then
+        sign_rpms "$dir"
+        rpms_are signed "$db" "$dir" || { rm -rf -- "$db" "$dir"; return 1; }
+    fi
+    rm -rf -- "$db"
     touch -- "$entry"
     CACHE_KEPT+=("$entry")
 }
