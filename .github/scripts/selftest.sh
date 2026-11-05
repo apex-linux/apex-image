@@ -815,7 +815,7 @@ check "APEX_CI_MODE=g4 whose conditions fail: refused, exit 2, nothing runs" \
     "$(APEX_CI_MODE=g4 t2_main)|$(cat "$T2/out")|$(t2_steps)"
 check "APEX_CI_MODE=g4 with --image-only: refused" "2|ci-build g4: qualify-only refused: --image-only" \
     "$(APEX_CI_MODE=g4 t2_main '' --image-only)|$(cat "$T2/out")"
-check "APEX_CI_MODE of another word: exit 2" "2|APEX_CI_MODE=G4: not daily, gate or g4" "$(APEX_CI_MODE=G4 t2_main)|$(cat "$T2/out")"
+check "APEX_CI_MODE of another word: exit 2" "2|APEX_CI_MODE=G4: not daily, gate, g4 or sign" "$(APEX_CI_MODE=G4 t2_main)|$(cat "$T2/out")"
 check "--image-only is never qualify-only" "1|== plan: gate (G4 first)" "$(t2_main '' --image-only)|$(head -n 1 "$T2/out")"
 
 # --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
@@ -6531,7 +6531,11 @@ case $1 in
     ssh)
         if [[ $2 == *"ci-build modes"* ]]; then
             [[ ${FAKE_MODES:-new} != old ]] || { echo "ci-build: refused" >&2; exit 2; }
-            if [[ ${FAKE_MODES:-new} == next ]]; then echo "daily next"; else echo "daily next gate g4"; fi
+            case ${FAKE_MODES:-new} in
+                next) echo "daily next" ;;
+                gate) echo "daily next gate g4" ;;
+                *) echo "daily next gate g4 sign" ;;
+            esac
             exit 0
         fi
         if [[ $2 == *cosign* ]]; then
@@ -6603,11 +6607,12 @@ check "before runner.sh key the key rows skip, and the host still passes" "rc=0 
     "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
 check "a stopped builder VM skips the binding and cosign" "rc=0 SKIP SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build) $(pf_row vm-cosign)"
-check "a forced command on the current grammar passes, naming its modes" "PASS|next gate g4" \
+check "a forced command on the current grammar passes, naming its modes" "PASS|gate g4 sign" \
     "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 2), $(NF - 1), $NF }' "$PF/out")"
-check_true "an old one's row says how to upgrade" grep -q 'an old grammar (no next, gate or g4): just vm-ci-install' \
+check_true "an old one's row says how to upgrade" grep -q 'an old grammar (no next, gate, g4 or sign): just vm-ci-install' \
     <<<"$(pf FAKE_MODES=old >/dev/null; cat "$PF/out")"
 check "one that takes next but not gate and g4 fails the row too" FAIL "$(pf FAKE_MODES=next >/dev/null; pf_row ci-build-modes)"
+check "one that takes gate and g4 but not sign fails the row too" FAIL "$(pf FAKE_MODES=gate >/dev/null; pf_row ci-build-modes)"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
 # --- install-cosign.sh: the pinned release only, checked before it is installed ----------
 IC="$TMP/install-cosign"
@@ -7086,7 +7091,9 @@ if [[ $* == "apex-builder ci-build modes" ]]; then
     [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
     [[ ! -e $FAKE_VM/modes-lost ]] || exit 255
     # The ci-build installed before r18: it takes modes, and answers without gate and g4.
-    if [[ -e $FAKE_VM/next-host ]]; then echo "daily next"; else echo "daily next gate g4"; fi
+    if [[ -e $FAKE_VM/next-host ]]; then echo "daily next"
+    elif [[ -e $FAKE_VM/gate-host ]]; then echo "daily next gate g4"
+    else echo "daily next gate g4 sign"; fi
     exit 0
 fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
@@ -7153,7 +7160,7 @@ check "push paths: every file of tools/builder-vm that builds or gates is named,
 vm_reset
 check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
 vm_reset
-check "Commit: the schedule asks for the daily extras" "0|sha=$CI_SHA extra=daily" \
+check "Commit: the schedule is the release signer" "0|sha=$CI_SHA extra=sign" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=schedule INPUT_SHA=)|$(paste -sd' ' "$V/output")"
 vm_reset
 check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
@@ -7161,7 +7168,7 @@ check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
 vm_reset
 check "Commit: a short sha is an error" "1|::error::not a full commit sha: abc123" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA=abc123)|$(cat "$V/log")"
-for plan in gate g4; do
+for plan in gate g4 sign daily; do
     vm_reset
     check "Commit: a dispatch with plan $plan sends it" "0|sha=$CI_SHA extra=$plan" \
         "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=$plan)|$(paste -sd' ' "$V/output")"
@@ -7170,8 +7177,8 @@ vm_reset
 check "Commit: plan auto sends nothing" "0|sha=$CI_SHA" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=auto)|$(cat "$V/output")"
 vm_reset
-check "Commit: another plan is an error" "1|::error::not a plan: daily (auto, gate or g4)" \
-    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=daily)|$(cat "$V/log")"
+check "Commit: another plan is an error" "1|::error::not a plan: nightly (auto, gate, g4, sign or daily)" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=nightly)|$(cat "$V/log")"
 
 for case in "0:" "1:::error::the build in the builder VM failed (exit 1)" "2:::error::ci-build refused $CI_SHA" \
     "75:::error::another build holds the builder VM" \
@@ -7228,6 +7235,22 @@ check "build: ssh lost while asking modes is exit 255, and nothing builds" \
     "255|::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)|no build" \
     "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
 rm "$V/modes-lost"
+VM_KEY=$(printf 'c%.0s' {1..64})
+vm_reset
+check "build: the signer sends its gates run and content key" "0|apex-builder ci-build $CI_SHA sign 41979648886 $VM_KEY" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=sign SIGN_RUN=41979648886 SIGN_KEY="$VM_KEY")|$(cat "$V/ssh.args")"
+vm_reset
+check "build: a sign without sign-source's run and key fails at once, building nothing" \
+    "2|::error::sign-source gave no gates run and content key to sign|no build" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=sign SIGN_RUN= SIGN_KEY="$VM_KEY")|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+: >"$V/gate-host"
+vm_reset
+check "build: an installed ci-build before sign fails the signer at once, building nothing" \
+    "2|::error::the builder VM's ci-build predates sign, so it cannot sign as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=sign SIGN_RUN=12 SIGN_KEY="$VM_KEY")|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+vm_reset
+check "build: and still runs gate" "0|apex-builder ci-build $CI_SHA gate" "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=gate)|$(cat "$V/ssh.args")"
+rm "$V/gate-host"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"
@@ -7236,6 +7259,15 @@ vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g
     "g4-results.md=| local | PASS |" "qualify-logs/local.png=png" "g2-logs/run-1/motion.log=log" \
     "diag-logs/local-lock/journal.txt=diag" "stages.tsv=$(printf '1793370000\tfetch and check out\n1793370090\t1/4 rpms\n1793374200\tG4, due\n1793378000\tend')"
 check "gates: a green build passes" 0 "$(vm_gates)"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nsign nothing new: content key %s is signed already (x)\nexit 0' "$CI_SHA" "$VM_KEY")"
+check "gates: a sign with nothing new passes, and says so" "0|yes" \
+    "$(vm_gates)|$(grep -q '::notice title=sign::nothing new: sign nothing new: content key' "$V/log" && echo yes)"
+vm_reset
+vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
+    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png" "g2-logs/run-1/motion.log=log" \
+    "diag-logs/local-lock/journal.txt=diag" "stages.tsv=$(printf '1793370000\tfetch and check out\n1793370090\t1/4 rpms\n1793374200\tG4, due\n1793378000\tend')"
+vm_gates >/dev/null
 check "gates: with each result in the summary" "## Builder VM|### ci-build|### Stages|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
     "$(grep -E '^##' "$V/summary" | paste -sd'|')"
 check "gates: each stage with its UTC start and its minutes" \
@@ -7505,7 +7537,7 @@ dd_job=$(awk '/^  daily-due:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APE
 build_job=$(awk '/^  build:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
 check_true "daily-due runs only on the schedule" grep -q "&& github.event_name == 'schedule'$" <<<"$dd_job"
 check "daily-due may only read Actions" "actions: read" "$(awk '/^    permissions:$/ { p = 1; next } p && /^      / { print $1, $2; next } p { exit }' <<<"$dd_job")"
-check_true "build waits for daily-due" grep -qx '    needs: \[dispatch-approval, daily-due\]' <<<"$build_job"
+check_true "build waits for daily-due and the signer's source" grep -qx '    needs: \[dispatch-approval, daily-due, sign-source\]' <<<"$build_job"
 check_true "and only a daily-due that ran and said due=false skips it" \
     grep -qF "&& (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')" <<<"$build_job"
 

@@ -187,8 +187,12 @@ jobs:
               echo "::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)"
               exit 255
             fi
-            if [[ " $modes " != *" gate "* || ($EXTRA == sign && " $modes " != *" sign "*) ]]; then
-              echo "::error::the builder VM's ci-build predates $EXTRA, so it cannot run it as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
+            if [[ " $modes " != *" gate "* ]]; then
+              echo "::error::the builder VM's ci-build predates gate and g4, so it cannot run $EXTRA as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
+              exit 2
+            fi
+            if [[ $EXTRA == sign && " $modes " != *" sign "* ]]; then
+              echo "::error::the builder VM's ci-build predates sign, so it cannot sign as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)"
               exit 2
             fi
           fi
