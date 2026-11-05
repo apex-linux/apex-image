@@ -2,28 +2,8 @@
 name: vm
 
 # The image build in the builder VM, through the self-hosted runner (tools/runner/README.md).
-# No pull_request trigger: the runner only builds commits of main, and ci-build refuses others.
+# No pull_request or push trigger: gates.yml gives the verdict before a merge; the VM signs.
 on:
-  push:
-    branches: [main]
-    # Only what the build or its gates read (tools/runner/README.md, What a run does).
-    paths:
-      - components.lock
-      - Cargo.lock
-      - Cargo.toml
-      - image/**
-      - crates/apex-lane/**
-      - tools/components.sh
-      - .github/scripts/qualify.sh
-      - .github/scripts/qualify-allowed-failures.txt
-      - .github/scripts/image.sh
-      - .github/scripts/oci-artifact.sh
-      - .github/scripts/lib.sh
-      - tools/builder-vm/build-image.sh
-      - tools/builder-vm/lane.sh
-      - tools/builder-vm/snapshot.sh
-      - tools/builder-vm/metrics.sh
-      - tools/builder-vm/lane-absorb-report.sh
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:

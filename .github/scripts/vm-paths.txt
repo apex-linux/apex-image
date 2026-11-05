@@ -1,0 +1,18 @@
+# What a vm.yml run reads: vm-paths-check.sh follows every read from these, and fails on one
+# they do not cover. tools/runner/README.md's "What a run reads" names each.
+components.lock
+Cargo.lock
+Cargo.toml
+image/**
+crates/apex-lane/**
+tools/components.sh
+.github/scripts/qualify.sh
+.github/scripts/qualify-allowed-failures.txt
+.github/scripts/image.sh
+.github/scripts/oci-artifact.sh
+.github/scripts/lib.sh
+tools/builder-vm/build-image.sh
+tools/builder-vm/lane.sh
+tools/builder-vm/snapshot.sh
+tools/builder-vm/metrics.sh
+tools/builder-vm/lane-absorb-report.sh

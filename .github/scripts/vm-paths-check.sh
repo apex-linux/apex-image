@@ -8,12 +8,13 @@ usage() {
 
 vm-paths-check.sh ROOT
 
-Checks that vm.yml's push paths in the checkout ROOT cover what a VM run reads. It starts at
+Checks that .github/scripts/vm-paths.txt in the checkout ROOT covers what a VM run reads,
+and that vm.yml has no push trigger: gates.yml gives the verdict before a merge. It starts at
 each listed file and each repository path vm.yml's run: steps name, and follows what every
 reached script sources, runs or reads as data. A read that no path covers fails, as does a
 dynamic path whose static part no path covers, unless .github/scripts/vm-paths-allowed.txt
 gives that reader and path with a reason. tools/runner/README.md's "What a run does" must
-name each path, and no file vm.yml does not list.
+name each path, and no file vm-paths.txt does not list.
 
   vm-paths-check.sh ROOT    exit 0 when the paths cover every read
 EOF
@@ -33,23 +34,21 @@ sys.path.insert(0, here)
 from repo_reads import Repo, allow_lines, references, walk  # noqa: E402
 
 workflow, allowed_file, readme = ".github/workflows/vm.yml", ".github/scripts/vm-paths-allowed.txt", "tools/runner/README.md"
+list_file = ".github/scripts/vm-paths.txt"
 repo = Repo(root)
 problems = []
 read = repo.read
 lines = read(workflow)
-paths, steps, inside = [], [], None
+paths = [line.strip() for line in read(list_file) if line.strip() and not line.strip().startswith("#")]
+steps, inside, on = [], None, False
 for number, line in enumerate(lines, 1):
-    if re.match(r"^    paths:\s*$", line):
-        inside = "paths"
+    if re.match(r"^on:\s*$", line):
+        on = True
         continue
-    if inside == "paths":
-        m = re.match(r"^      - (\S+)\s*$", line)
-        if m:
-            paths.append(m[1])
-            continue
-        if line.strip().startswith("#"):
-            continue
-        inside = None
+    if on and re.match(r"^\S", line):
+        on = False
+    if on and re.match(r"^  push:", line):
+        problems.append(f"{workflow}:{number}: a push trigger; gates.yml gives the verdict before a merge, and vm.yml signs")
     m = re.match(r"^(\s*)(?:- )?run: *\|?\s*(.*)$", line)
     if m:
         inside, indent = "run", len(m[1])
@@ -62,7 +61,7 @@ for number, line in enumerate(lines, 1):
         else:
             steps.append((number, line))
 if not paths:
-    sys.exit(f"error: {workflow} has no on.push.paths")
+    sys.exit(f"error: {list_file} lists no path")
 
 
 def covered(p):
@@ -70,21 +69,21 @@ def covered(p):
 
 
 allowed = allow_lines(repo, allowed_file, problems)
-queue = [(p, f"{workflow} paths") for p in paths if p in repo.tracked]
+queue = [(p, list_file) for p in paths if p in repo.tracked]
 for number, token in references(workflow, steps):
     queue.append((token, f"{workflow}:{number}"))
-seen, used = walk(repo, queue, covered, allowed, f"no {workflow} path covers", f"a {workflow} path", problems)
+seen, used = walk(repo, queue, covered, allowed, f"no {list_file} path covers", f"a {list_file} path", problems)
 problems += [f"{allowed_file}:{n}: {r} {t} is no longer an uncovered read: delete the line" for (r, t), n in allowed.items() if (r, t) not in used]
 text = "\n".join(read(readme))
-section = re.search(r"on a push to `main` that touches(.*?)Each such push", text, re.S)
+section = re.search(r"What a run reads:(.*?)A change to them", text, re.S)
 if not section:
-    problems.append(f"{readme}: no \"What a run does\" list of the paths a push to main runs on")
+    problems.append(f"{readme}: no \"What a run reads:\" list of the paths in {list_file}")
 else:
     named = set(re.findall(r"`([^`\s]+)`|\b([\w-]+\.sh)\b", section[1]))
     named = {a or b for a, b in named if not (a or b).endswith("/") and ("." in (a or b) or "/" in (a or b))}
     problems += [f"{readme}: \"What a run does\" does not name {p}" for p in paths if p not in named and os.path.basename(p) not in named]
     problems += [
-        f"{readme}: \"What a run does\" names {n}, which no {workflow} path is"
+        f"{readme}: \"What a run does\" names {n}, which no {list_file} path is"
         for n in sorted(named)
         if n not in paths and n not in {os.path.basename(p) for p in paths}
     ]
