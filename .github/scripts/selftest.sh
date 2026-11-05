@@ -374,29 +374,36 @@ check "each of the four boots is unlocked from its own console's start, with no 
 rc=0
 PATH="$Q/bin:$PATH" bash -c '. "$1"' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$Q/stderr.log" 2>&1 || rc=$?
 check "sourcing qualify.sh runs nothing" "0:" "$rc:$(cat "$Q/stderr.log")"
-pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after UUID_AFTER lsblk calls
+pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after UUID_AFTER blkid calls
     # shellcheck disable=SC2016 # expanded by the inner bash
     PU=$Q/pu PU_AFTER=$1 bash -c '. "$1"
         : >"$PU"
         as_root() {
             case $1 in
-                udevadm) if [[ $2 == settle ]]; then echo settle; else echo "$2 $3 ${*: -1}"; fi >>"$PU" ;;
-                blkid) echo probed-uuid ;;
-                lsblk)
-                    echo "lsblk ${*: -1}" >>"$PU"
-                    [[ ${*: -1} != *p2 || $(grep -c "^lsblk .*p2$" "$PU") -gt $PU_AFTER ]] && echo "uuid-${*: -1}" ;;
+                udevadm | lsblk) echo "$1" >>"$PU" ;;
+                tee) cat >/dev/null; echo "uevent ${*: -1}" >>"$PU" ;;
+                blkid)
+                    echo "blkid ${*: -1}" >>"$PU"
+                    [[ ${*: -1} != *p2 || $(grep -c "^blkid .*p2$" "$PU") -gt $PU_AFTER ]] && echo "uuid-${*: -1}" ;;
             esac
         }
         sleep() { :; }
-        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | sed -n 's/^\(error: \|::error::\)//p'
+        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | tee "$Q/pu.err" |
+        sed -n 's/^\(error: \|::error::\)//p'
 }
-check "install: bootc waits until udev knows each new filesystem's UUID, settling first" \
-    "|settle|lsblk /dev/loop9p1|lsblk /dev/loop9p2|lsblk /dev/loop9p3" "$(pu 0)|$(grep -m4 . "$Q/pu" | paste -sd'|')"
-check "a UUID that lands late is waited for, udev asked to probe that partition again, then settled" "|3|3|2|2" \
-    "$(pu 2)|$(grep -c '^lsblk /dev/loop9p2$' "$Q/pu")|$(grep -c '^settle$' "$Q/pu")|$(
-        grep -c '^trigger --action=change /dev/loop9p2$' "$Q/pu")|$(grep -c '^trigger ' "$Q/pu")"
+check "install: bootc waits until blkid -p reads each new filesystem's UUID from the partition, asking udev nothing" \
+    "|uevent /sys/class/block/loop9p2/uevent|blkid /dev/loop9p1|blkid /dev/loop9p2|blkid /dev/loop9p3|0" \
+    "$(pu 0)|$(paste -sd'|' "$Q/pu")|$(grep -cE '^(udevadm|lsblk)$' "$Q/pu")"
+check "a UUID that lands late is waited for, still with blkid alone" "|3|0" \
+    "$(pu 2)|$(grep -c '^blkid /dev/loop9p2$' "$Q/pu")|$(grep -cE '^(udevadm|lsblk)$' "$Q/pu")"
 check "one that never lands stops the install, naming the partition" \
-    "/dev/loop9p2 has no UUID that udev knows 30 s after mkfs (blkid -p reads 'probed-uuid'), so bootc install cannot name it" "$(pu 1000)"
+    "/dev/loop9p2 has no UUID that blkid -p reads 30 s after mkfs, so bootc install cannot name it" "$(pu 1000)"
+check_true "the log says whether /sys takes a uevent write, as udevadm trigger needs" \
+    grep -qE '^install: /sys is [a-z]+ \([^)]*\), a uevent write to loop9p2 (ok|failed)$' "$Q/pu.err"
+check_true "gates.sh: G4's container has the host's /dev and an empty /run/udev of its own" \
+    grep -qF 'dev=(-v /dev:/dev --tmpfs /run/udev)' "$APEX_ROOT/.github/scripts/gates.sh"
+check_false "never the host's /run/udev, whose loop-partition records predate mkfs" \
+    grep -qF '/run/udev:/run/udev' "$APEX_ROOT/.github/scripts/gates.sh"
 
 # --- qualify.sh: G4 is due when its key changes or its last pass is a week old ------------
 G4_DIR="$TMP/g4"

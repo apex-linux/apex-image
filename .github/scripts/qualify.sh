@@ -412,20 +412,22 @@ luks_unlock() {
     [[ -z $wrong ]] || result "$test" PASS "Plymouth's prompt (logs/$test-prompt.png) took the passphrase over QMP; systemd-cryptsetup opened the LUKS2 root"
 }
 
-# LOOP: udev knows each new filesystem's UUID, which bootc install reads; mkfs's events land later.
+# PARTITION: logged only: whether this container can write the kernel's uevent files, as udevadm trigger does.
+uevent_access() {
+    local sys ev=ok
+    sys=$(findmnt -no OPTIONS /sys 2>/dev/null | cut -d, -f1)
+    printf 'change\n' | as_root tee "/sys/class/block/${1##*/}/uevent" >/dev/null 2>&1 || ev=failed
+    log "install: /sys is ${sys:-unknown} ($(stat -f -c %T /sys 2>/dev/null)), a uevent write to ${1##*/} $ev"
+}
+
+# LOOP: each new filesystem's UUID, as blkid -p reads it from the partition, which bootc install names.
 partition_uuids() {
-    local p tries=0 probed
-    as_root udevadm settle 2>/dev/null || true
+    local p tries=0
+    uevent_access "$1"p2
     for p in "$1"p1 "$1"p2 "$1"p3; do
-        until [[ -n $(as_root lsblk -dno UUID "$p" 2>/dev/null) ]]; do
-            if ((++tries > 60)); then
-                probed=$(as_root blkid -p -o value -s UUID "$p" 2>/dev/null) || true
-                die "$p has no UUID that udev knows 30 s after mkfs (blkid -p reads '${probed:-none}'), so bootc install cannot name it"
-            fi
-            # A lost change event leaves udev's record stale for good: udev probes the partition again.
-            as_root udevadm trigger --action=change "$p" 2>/dev/null || true
+        until [[ -n $(as_root blkid -p -o value -s UUID "$p" 2>/dev/null) ]]; do
+            ((++tries <= 60)) || die "$p has no UUID that blkid -p reads 30 s after mkfs, so bootc install cannot name it"
             sleep 0.5
-            as_root udevadm settle 2>/dev/null || true
         done
     done
 }
