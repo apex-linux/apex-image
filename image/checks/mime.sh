@@ -6,7 +6,7 @@ CHECK_NAME=mime
 APEX_CHECKS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$APEX_CHECKS_DIR/lib/common.sh"
 
-# Builder claims text/x-python in that list and is not installed: text/plain's default takes it.
+# Builder (Apex Code) claims text/x-python in that list; /etc/xdg/gnome-mimeapps.list keeps Text Editor.
 DEFAULTS='image/png org.gnome.Loupe.desktop
 image/jpeg org.gnome.Loupe.desktop
 video/mp4 org.gnome.Showtime.desktop
