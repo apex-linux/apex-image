@@ -5286,7 +5286,7 @@ ib_steps() { # [ENV...]: image.sh build, inspect's env and rechunk; prints podma
     rm -rf "$IB/work" "$IB/tree/_build" && mkdir -p "$IB/work" && : >"$IB/work/inputs.env"
     env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 "$@" \
         "$IB/tree/.github/scripts/image.sh" build >/dev/null 2>&1 || return
-    printf 'DEGRADED=\nHELD=\nCONTENT_KEY=k\nKERNEL_PAIR=none\n' >"$IB/work/image.env"
+    printf 'DEGRADED=\nHELD=\nCONTENT_KEY=k\nKERNEL_PAIR=none\nRPM_KEY=apex\n' >"$IB/work/image.env"
     env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_PREVIOUS_BUILD=none "$@" \
         "$IB/tree/.github/scripts/image.sh" rechunk >/dev/null 2>&1 || return
     grep -E '^(build|run) ' "$IB/podman.log"
@@ -5316,8 +5316,19 @@ compose build-chunked-oci --bootc --format-version=2 --max-layers 127 --rootfs /
 --label org.opencontainers.image.version=$ib_v --label org.opencontainers.image.revision=$(printf '%040d' 7) \
 --label org.opencontainers.image.source=$APEX_SOURCE_URL --label org.opencontainers.image.created=$ib_created \
 --label $APEX_LABEL_PREFIX.degraded= --label $APEX_LABEL_PREFIX.held= --label $APEX_LABEL_PREFIX.content-key=k \
---label $APEX_LABEL_PREFIX.fedora=45 --label $APEX_LABEL_PREFIX.kernel-pair=none --output oci:/out/apex:latest" \
+--label $APEX_LABEL_PREFIX.fedora=45 --label $APEX_LABEL_PREFIX.kernel-pair=none --label $APEX_LABEL_PREFIX.rpm-key=apex \
+--output oci:/out/apex:latest" \
     "$ib45"
+ibtest=$(ib_steps APEX_TEST_KEY=0123456789ABCDEF0123456789ABCDEF01234567) || ibtest="image.sh failed: $ibtest"
+check "a gates build (APEX_TEST_KEY) passes the key to the Containerfile and labels the image test:FPR" \
+    "--build-arg APEX_TEST_KEY=0123456789ABCDEF0123456789ABCDEF01234567 --label $APEX_LABEL_PREFIX.rpm-key=test:0123456789ABCDEF0123456789ABCDEF01234567 " \
+    "$(grep -o -- '--build-arg APEX_TEST_KEY=[^ ]* --label [^ ]* ' <<<"$ibtest")"
+check "a test-key release build is refused" 1 \
+    "$(rc_of env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 APEX_RELEASE_BUILD=1 \
+        APEX_TEST_KEY=0123456789ABCDEF0123456789ABCDEF01234567 "$IB/tree/.github/scripts/image.sh" build)"
+check "and so is a test key that is no fingerprint" 1 \
+    "$(rc_of env PATH="$IB/bin:$PATH" APEX_WORK="$IB/work" GITHUB_ACTIONS='' APEX_RUN_NUMBER=0 APEX_TEST_KEY=abc \
+        "$IB/tree/.github/scripts/image.sh" build)"
 check "and its version is 45.<date>.<run>" "45.$(date -u +%Y%m%d).0" "$ib_v"
 mkdir -p "$IB/tree/image/fedora"
 cp "$APEX_ROOT/image/fedora/46.env" "$IB/tree/image/fedora/"
@@ -5335,7 +5346,7 @@ check "and build.env records the base's source and version label, for the report
     "$(sed -n 's/^BASE_SOURCE=//p' "$IB/work/build.env")|$(sed -n 's/^BASE_VERSION=//p' "$IB/work/build.env")"
 check "and rechunk labels it Fedora 46 and the next lane, last" \
     "--label $APEX_LABEL_PREFIX.fedora=46 --label $APEX_LABEL_PREFIX.kernel-pair=none \
---label $APEX_LABEL_PREFIX.lane=next --output oci:/out/apex:latest" \
+--label $APEX_LABEL_PREFIX.rpm-key=apex --label $APEX_LABEL_PREFIX.lane=next --output oci:/out/apex:latest" \
     "$(grep -o -- "--label $APEX_LABEL_PREFIX.fedora=.*" <<<"$ib46")"
 check "rechunk runs 46.env's BASE" 1 "$(grep -c -- "--entrypoint /usr/bin/rpm-ostree $(ib_next_env BASE) " <<<"$ib46")"
 check "a 45 build has no next-lane label or FEDORA argument" 0 "$(grep -c -e '\.lane=' -e 'FEDORA=' <<<"$ib45")"
@@ -5348,6 +5359,12 @@ ib_rc=0
 ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_FEDORA=46 APEX_WORK="$IB/work" \
     "$IB/tree/.github/scripts/image.sh" push 2>&1) || ib_rc=$?
 check "image.sh push refuses the next lane" 1 "$ib_rc"
+printf 'APEX_VERSION=45.20261105.0\nAPEX_REVISION=%040d\n' 7 >"$IB/work/build.env"
+printf 'RPM_KEY=test:0123456789ABCDEF0123456789ABCDEF01234567\n' >"$IB/work/image.env"
+ib_rc=0
+ib_log=$(env PATH="$IB/bin:$PATH" GITHUB_ACTIONS='' APEX_WORK="$IB/work" "$IB/tree/.github/scripts/image.sh" push 2>&1) || ib_rc=$?
+check "image.sh push refuses a test-key image" "1|1" "$ib_rc|$(grep -c 'not the Apex RPM key: it never pushes' <<<"$ib_log")"
+check "before skopeo copies anything" 0 "$(grep -c 'copy' "$IB/podman.log" 2>/dev/null || true)"
 check_true "and says it never pushes" grep -q 'next lane: it never pushes' <<<"$ib_log"
 check_false "before podman" test -e "$IB/podman.log"
 ib_rc=0
