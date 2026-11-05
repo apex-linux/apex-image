@@ -4,25 +4,34 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: gates.sh build OUT
+usage: gates.sh build OUT | g2 IMAGE_DIR OUT | g2-stable IMAGE_DIR RUN1 RUN2 | g4 IMAGE_DIR SHARD
+       gates.sh record OUT BUILD_DIR STABLE_DIR G2_DIR G2_DIR -- G4_DIR...
 
 The hosted gates (.github/workflows/gates.yml): G1, G2 and G4 on GitHub's runners, before
-a merge, with no owner hardware.
+a merge, with no owner hardware. build, g2, g2-stable and g4 each run in a privileged
+fedora:45 (the REPOS_BASE pin), as the builder VM's Fedora does: its podman store and work
+tree on GATES_WORK, the runner's second disk, and /dev/kvm passed through. Their paths
+are under RUNNER_TEMP.
 
-  gates.sh build OUT   on the runner: start a privileged fedora:45 (the REPOS_BASE pin) on
-                       GATES_WORK (the runner's second disk), and in it build-in OUT
-  gates.sh build-in OUT
-                       in that container: the components' RPMs, the lane and the image, as
-                       build-image.sh builds them, G1 in the image build; then OUT/apex.oci.zst
-                       (podman save, zstd) and OUT/build.txt
+  build OUT            the components' RPMs, the lane and the image, as build-image.sh builds
+                       them, G1 in the image build; then OUT/apex.oci.zst and OUT/build.txt
+                       (sha, image-id, content-key, rpm-key, lock-sha256, seconds)
+  g2 IMAGE_DIR OUT     one G2 run (apex-gnome's tests/shots/run.sh, G2_RUNS=1) of build's
+                       image into OUT/run-1, with OUT/result.txt
+  g2-stable IMAGE_DIR RUN1 RUN2
+                       stable.sh: RUN2 agrees with RUN1, as G2's two runs must (RUN2/stable.txt)
+  g4 IMAGE_DIR SHARD   qualify.sh local-shard SHARD (separate-boot, 3G, 4 vCPUs) into
+                       GATES_WORK/g4-SHARD
+  record OUT BUILD_DIR STABLE_DIR G2_DIR G2_DIR -- G4_DIR...
+                       the shards' rows as one OUT/results.md (qualify.sh g4-merge), and
+                       OUT/gates.txt when G1, both G2 runs, their stability and every G4 row
+                       passed on build's image; exit 1 otherwise
 
-Every RPM is signed by an ephemeral key made in the job. Its secret half stays in
+Every RPM is signed by an ephemeral key made in the build job. Its secret half stays in
 GATES_WORK/gnupg and is never uploaded or cached. Its public half replaces the committed
-RPM-GPG-KEY-apex in this job's checkout only, which apex-lane requires. The image carries
+RPM-GPG-KEY-apex in that job's checkout only, which apex-lane requires. The image carries
 /usr/share/apex/test-key and the label <prefix>.rpm-key=test:FPR: G1 checks the image
 against that key, and publish.sh, image.sh push, cosign and lane.sh promote refuse it.
-
-build.txt: sha, image-id, content-key, rpm-key, lock-sha256, seconds.
 EOF
     exit 2
 }
@@ -32,21 +41,60 @@ readonly ROOT
 # shellcheck source=SCRIPTDIR/lib.sh
 . "$ROOT/.github/scripts/lib.sh"
 readonly KEY_FILE=image/system_files/usr/share/apex/keys/RPM-GPG-KEY-apex
-readonly BUILD_TOOLS=(podman skopeo buildah git-core gnupg2 rpm-sign jq zstd python3 sudo findutils diffutils
-    gawk tar gzip xz cpio openssl util-linux procps-ng which rsync file)
+readonly IMAGE_REF=localhost/apex:build
+readonly COMMON_TOOLS=(podman skopeo git-core jq zstd python3 sudo findutils diffutils gawk tar gzip xz
+    util-linux procps-ng which file openssl)
+readonly BUILD_TOOLS=(buildah gnupg2 rpm-sign cpio rsync)
+readonly G4_TOOLS=(qemu-system-x86-core qemu-img edk2-ovmf dosfstools btrfs-progs e2fsprogs openssh-clients
+    socat iproute)
+TEMP=${RUNNER_TEMP:-/tmp}
+readonly TEMP
 
-cmd_build() {
-    (($# == 1)) || usage
-    local out=$1 work=${GATES_WORK:?GATES_WORK names the work directory, on the second disk} fedora
+# PATH: PATH under RUNNER_TEMP, as the container sees it.
+inside() {
+    [[ $1 == "$TEMP"/* ]] || die "$1 is not under RUNNER_TEMP ($TEMP)"
+    printf '/runner/%s\n' "${1#"$TEMP"/}"
+}
+
+# SUB ARGS...: SUB in a privileged fedora:45 on GATES_WORK, this checkout at /src.
+in_fedora() {
+    local work=${GATES_WORK:?GATES_WORK names the work directory, on the second disk} fedora summary=''
     fedora=$(containerfile_arg REPOS_BASE)
     is_fedora_pin "$fedora" || die "image/Containerfile REPOS_BASE '$fedora' is not a digest pin"
-    mkdir -p "$out" "$work"
-    # Its own podman runs nested: its store and every container's under GATES_WORK.
+    [[ $1 != g4 || -c /dev/kvm ]] || die "no /dev/kvm on this runner: G4 cannot run (ci-host.sh kvm)"
+    [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || summary=$(inside "$GITHUB_STEP_SUMMARY")
+    mkdir -p "$work"
     sudo podman run --rm --privileged --security-opt label=disable --network host \
-        -v "$ROOT:/src:z" -v "$work:/work:z" -v "$out:/out:z" -w /src \
-        -e GITHUB_ACTIONS -e GITHUB_STEP_SUMMARY=/out/summary.md -e GITHUB_RUN_NUMBER -e GITHUB_SHA \
-        -e GATES_SHA="${GATES_SHA:-$(git -C "$ROOT" rev-parse HEAD)}" \
-        "$fedora" /src/.github/scripts/gates.sh build-in /out
+        -v "$ROOT:/src:z" -v "$work:/work:z" -v "$TEMP:/runner:z" -w /src \
+        -e GITHUB_ACTIONS -e GITHUB_RUN_NUMBER -e GATES_SHA="${GATES_SHA:-$(git -C "$ROOT" rev-parse HEAD)}" \
+        -e GITHUB_STEP_SUMMARY="$summary" \
+        "$fedora" /src/.github/scripts/gates.sh in "$@"
+}
+
+# In the container: its tools, and podman's store on /work.
+cmd_in() {
+    local sub=${1:-}
+    shift || true
+    local -a tools=("${COMMON_TOOLS[@]}")
+    [[ -d /work && -d /runner ]] || die "gates.sh in runs in gates.sh's own container"
+    case $sub in
+        build) tools+=("${BUILD_TOOLS[@]}") ;;
+        g4) tools+=("${G4_TOOLS[@]}") ;;
+        g2 | g2-stable) ;;
+        *) usage ;;
+    esac
+    retry 3 10 dnf5 -y -q --setopt=install_weak_deps=False --repo=fedora --repo=updates install "${tools[@]}"
+    mkdir -p "/work/containers-$sub" /work/home
+    printf '[storage]\ndriver = "overlay"\ngraphroot = "/work/containers-%s"\nrunroot = "/run/containers/storage"\n' \
+        "$sub" >/etc/containers/storage.conf
+    git config --global --add safe.directory '*'
+    export HOME=/work/home
+    case $sub in
+        build) inner_build "$@" ;;
+        g2) load "$1"; components; inner_g2 "$2" ;;
+        g2-stable) load "$1"; components; inner_g2_stable "$2" "$3" ;;
+        g4) load "$1"; components; inner_g4 "$2" ;;
+    esac
 }
 
 # The secret half never leaves GNUPGHOME; the checkout's public key is the job's own.
@@ -62,46 +110,124 @@ ephemeral_key() {
     printf '%s\n' "$fpr"
 }
 
-cmd_build_in() {
-    (($# == 1)) || usage
-    local out=$1 t0=$SECONDS fpr
-    [[ -d /work ]] || die "build-in runs in gates.sh build's container"
-    retry 3 10 dnf5 -y -q --setopt=install_weak_deps=False --repo=fedora --repo=updates install "${BUILD_TOOLS[@]}"
-    mkdir -p /work/containers /work/home
-    printf '[storage]\ndriver = "overlay"\ngraphroot = "/work/containers"\nrunroot = "/run/containers/storage"\n' \
-        >/etc/containers/storage.conf
-    git config --global --add safe.directory /src
-    export HOME=/work/home APEX_STORE=/work/apex-store APEX_RPM_CACHE=/work/rpm-cache XDG_CACHE_HOME=/work/cache
+inner_build() {
+    local out=$1 t0=$SECONDS fpr id key lock
+    mkdir -p "$out"
+    export APEX_STORE=/work/apex-store APEX_RPM_CACHE=/work/rpm-cache XDG_CACHE_HOME=/work/cache
     fpr=$(ephemeral_key /work/gnupg)
     export APEX_RPM_SIGNING_ENV=/work/gnupg.env APEX_TEST_KEY=$fpr
-    log "gates: RPMs signed by the ephemeral key $fpr (secret in /work/gnupg, never uploaded)"
-
+    log "gates: RPMs signed by the ephemeral key $fpr (its secret half stays in /work/gnupg)"
     cd "$ROOT"
     # shellcheck source=SCRIPTDIR/../../tools/builder-vm/build-image.sh
     . tools/builder-vm/build-image.sh
-    sudo rm -rf "$BUILD/rpms" "$BUILD/libfprint"
+    rm -rf "$BUILD/rpms" "$BUILD/libfprint"
     mkdir -p _build/image
     use_components
     libfprint_args=(--libfprint-dir "$BUILD/libfprint")
     build_inputs
     build_image
-
-    local id key lock
     id=$(image_id)
-    key=$(sed -n 's/^CONTENT_KEY=//p' "${APEX_WORK:-_build/image}/image.env" 2>/dev/null | tail -n 1)
+    key=$(sed -n 's/^CONTENT_KEY=//p' _build/image/image.env | tail -n 1)
     lock=$(sha256_of "$LANE_LOCK")
-    sudo podman save --format oci-archive "$IMAGE" | zstd -T0 -3 -q -o "$out/apex.oci.zst"
+    podman save --format oci-archive "$IMAGE" | zstd -T0 -3 -q -o "$out/apex.oci.zst"
     printf 'sha %s\nimage-id %s\ncontent-key %s\nrpm-key test:%s\nlock-sha256 %s\nseconds %s\n' \
-        "${GATES_SHA:-$(git rev-parse HEAD)}" "$id" "${key:-unknown}" "$fpr" "$lock" "$((SECONDS - t0))" >"$out/build.txt"
+        "$GATES_SHA" "$id" "${key:-unknown}" "$fpr" "$lock" "$((SECONDS - t0))" >"$out/build.txt"
     cat "$out/build.txt"
+}
+
+load() {
+    local dir=$1 want id
+    want=$(sed -n 's/^image-id //p' "$dir/build.txt")
+    [[ -n $want ]] || die "$dir/build.txt names no image-id"
+    zstd -dc "$dir/apex.oci.zst" | podman load -q >/dev/null
+    id=$(podman image inspect --format '{{.Id}}' "$IMAGE_REF") || die "the archive did not load as $IMAGE_REF"
+    [[ $id == "$want" ]] || die "the loaded $IMAGE_REF is $id, not the build's $want"
+    log "gates: loaded $IMAGE_REF ($id)"
+}
+
+components() {
+    "$ROOT/tools/components.sh" fetch >&2
+    eval "$("$ROOT/tools/components.sh" env)"
+}
+
+inner_g2() {
+    local out=$1 root
+    G2_IMAGE_DIR=$ROOT/image G2_REPOS_BASE=$(containerfile_arg REPOS_BASE)
+    export G2_IMAGE_DIR G2_REPOS_BASE
+    mkdir -p "$out/runs"
+    G2_RUNS=1 G2_OUT_DIR=$out/runs "$APEX_GNOME_SRC/tests/shots/run.sh" "$IMAGE_REF" || true
+    root=$(find "$out/runs" -mindepth 1 -maxdepth 1 -type d ! -name latest | sort | tail -n 1)
+    [[ -n $root && -s $root/result.txt ]] || die "G2 wrote no result.txt"
+    rm -rf -- "$out/run-1"
+    cp -a -- "$root/run-1" "$out/run-1"
+    cp -- "$root/result.txt" "$out/result.txt"
+    rm -rf -- "$out/runs"
+    cat "$out/result.txt"
+    grep -qx 'status passed' "$out/result.txt"
+}
+
+inner_g2_stable() {
+    local here=$APEX_GNOME_SRC/tests/shots a b
+    a=$(realpath -- "$1") b=$(realpath -- "$2")
+    G2_GJS="podman run --rm --net=none --tmpfs /var/home -v $here:$here:ro,z -v $a:$a:ro,z -v $b:$b:ro,z --entrypoint gjs $IMAGE_REF"
+    export G2_GJS
+    "$here/stable.sh" "$a" "$b" | tee "$b/stable.txt"
+}
+
+inner_g4() {
+    local shard=$1 out=/work/g4-$1
+    mkdir -p "$out"
+    QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_OUT=$out QUALIFY_LAYOUT=separate-boot \
+        "$ROOT/.github/scripts/qualify.sh" local-shard "$shard" "$IMAGE_REF"
+}
+
+# Every input is checked here, not only each job's exit: a job that never ran leaves no file.
+cmd_record() {
+    (($# >= 7)) || usage
+    local out=$1 build=$2 stable=$3 status=0 d id key rpm_key sha
+    shift 3
+    local -a g2=() g4=()
+    while (($#)) && [[ $1 != -- ]]; do g2+=("$1"); shift; done
+    [[ ${1:-} == -- ]] || usage
+    shift
+    g4=("$@")
+    ((${#g2[@]} == 2 && ${#g4[@]} > 0)) || die "record needs two G2 runs and the G4 shards"
+    mkdir -p "$out"
+    id=$(sed -n 's/^image-id //p' "$build/build.txt" 2>/dev/null)
+    key=$(sed -n 's/^content-key //p' "$build/build.txt" 2>/dev/null)
+    rpm_key=$(sed -n 's/^rpm-key //p' "$build/build.txt" 2>/dev/null)
+    sha=$(sed -n 's/^sha //p' "$build/build.txt" 2>/dev/null)
+    [[ -n $id && -n $key && $key != unknown && $sha =~ ^[0-9a-f]{40}$ && $rpm_key == test:* ]] ||
+        die "$build/build.txt is missing or incomplete"
+    for d in "${g2[@]}"; do
+        if [[ $(sed -n 's/^image-id //p' "$d/result.txt" 2>/dev/null) != "$id" ]] || ! grep -qx 'status passed' "$d/result.txt"; then
+            echo "G2: $d did not pass on image $id" >&2
+            status=1
+        fi
+    done
+    if ! grep -qE '^# [0-9]+ passed, 0 failed' "$stable/stable.txt" 2>/dev/null; then
+        echo "G2: $stable/stable.txt does not show the second run agreeing with the first" >&2
+        status=1
+    fi
+    "$ROOT/.github/scripts/qualify.sh" g4-merge "$out" "${g4[@]}" || status=1
+    summary "### Gates for \`${sha:0:12}\` (image $id)" "" "| Test | Result | Detail | Layer feature |" \
+        "|---|---|---|---|" "$(cat "$out/results.md" 2>/dev/null)"
+    ((status == 0)) || { echo "gates: not passed; no record" >&2; return 1; }
+    printf 'sha %s\nimage-id %s\ncontent-key %s\nrpm-key %s\ng1 passed\ng2 passed\ng4 passed\n' \
+        "$sha" "$id" "$key" "$rpm_key" >"$out/gates.txt"
+    cat "$out/gates.txt"
 }
 
 main() {
     local cmd=${1:-}
     shift || true
     case $cmd in
-        build) cmd_build "$@" ;;
-        build-in) cmd_build_in "$@" ;;
+        build) (($# == 1)) || usage; in_fedora build "$(inside "$1")" ;;
+        g2) (($# == 2)) || usage; in_fedora g2 "$(inside "$1")" "$(inside "$2")" ;;
+        g2-stable) (($# == 3)) || usage; in_fedora g2-stable "$(inside "$1")" "$(inside "$2")" "$(inside "$3")" ;;
+        g4) (($# == 2)) || usage; in_fedora g4 "$(inside "$1")" "$2" ;;
+        in) cmd_in "$@" ;;
+        record) cmd_record "$@" ;;
         *) usage ;;
     esac
 }

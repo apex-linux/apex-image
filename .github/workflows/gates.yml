@@ -18,6 +18,10 @@ concurrency:
   group: gates-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  GATES_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  GATES_WORK: /mnt/gates
+
 jobs:
   build:
     name: build (components, RPMs, lane, image, G1)
@@ -33,27 +37,170 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - name: Disk, and the work directory on the second disk
         run: |
           .github/scripts/ci-host.sh free-disk
-          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/gates
-          echo "GATES_WORK=/mnt/gates" >>"$GITHUB_ENV"
-          APEX_SCRATCH=/mnt/gates .github/scripts/ci-host.sh preflight 0 60
-
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$GATES_WORK"
+          APEX_SCRATCH=$GATES_WORK .github/scripts/ci-host.sh preflight 0 60
       - name: Build in fedora:45
-        env:
-          GATES_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/gates.sh build "$RUNNER_TEMP/gates-build"
-
       - name: Disk after the build
         if: ${{ !cancelled() }}
         run: .github/scripts/ci-host.sh usage build
-
       - name: The image
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gates-image
           path: ${{ runner.temp }}/gates-build
           retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+      - name: The build's record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gates-build
+          path: ${{ runner.temp }}/gates-build/build.txt
+          retention-days: 30
+          if-no-files-found: error
+
+  g2:
+    name: G2 run ${{ matrix.run }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Disk, and the work directory on the second disk
+        run: |
+          .github/scripts/ci-host.sh free-disk
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$GATES_WORK"
+          APEX_SCRATCH=$GATES_WORK .github/scripts/ci-host.sh preflight 0 30
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gates-image
+          path: ${{ runner.temp }}/image
+      - name: G2, one run
+        run: .github/scripts/gates.sh g2 "$RUNNER_TEMP/image" "$RUNNER_TEMP/g2"
+      - name: The run
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gates-g2-${{ matrix.run }}
+          path: ${{ runner.temp }}/g2
+          retention-days: 14
+          if-no-files-found: error
+
+  g2-stable:
+    name: G2 stability (run 2 against run 1)
+    needs: g2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The work directory on the second disk
+        run: sudo install -d -o "$(id -u)" -g "$(id -g)" "$GATES_WORK"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gates-image
+          path: ${{ runner.temp }}/image
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: gates-g2-*
+          path: ${{ runner.temp }}/g2
+      - name: stable.sh
+        run: .github/scripts/gates.sh g2-stable "$RUNNER_TEMP/image" "$RUNNER_TEMP/g2/gates-g2-1/run-1" "$RUNNER_TEMP/g2/gates-g2-2/run-1"
+      - name: Its verdict
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gates-g2-stable
+          path: ${{ runner.temp }}/g2/gates-g2-2/run-1/stable.txt
+          retention-days: 14
+          if-no-files-found: error
+
+  g4:
+    name: G4 ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [update, boot-metrics, login, lock, polkit, crash-guard]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: KVM, disk, and the work directory on the second disk
+        run: |
+          .github/scripts/ci-host.sh kvm
+          .github/scripts/ci-host.sh free-disk
+          sudo install -d -o "$(id -u)" -g "$(id -g)" "$GATES_WORK"
+          APEX_SCRATCH=$GATES_WORK .github/scripts/ci-host.sh preflight 0 40
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gates-image
+          path: ${{ runner.temp }}/image
+      - name: G4, the ${{ matrix.shard }} shard
+        run: .github/scripts/gates.sh g4 "$RUNNER_TEMP/image" "${{ matrix.shard }}"
+      - name: Its rows and logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gates-g4-${{ matrix.shard }}
+          path: |
+            ${{ env.GATES_WORK }}/g4-${{ matrix.shard }}/results.md
+            ${{ env.GATES_WORK }}/g4-${{ matrix.shard }}/logs
+          retention-days: 14
+          if-no-files-found: warn
+
+  gates:
+    name: gates (G1, G2, G4)
+    needs: [build, g2, g2-stable, g4]
+    # It runs, and fails, whatever an earlier job did: a skipped job is no pass.
+    if: ${{ !cancelled() && github.repository == 'apex-linux/apex-image' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: "{gates-build,gates-g2-1,gates-g2-2,gates-g2-stable,gates-g4-*}"
+          path: ${{ runner.temp }}/in
+      - name: The record
+        run: |
+          in=$RUNNER_TEMP/in
+          shards=()
+          for s in update boot-metrics login lock polkit crash-guard; do
+            mkdir -p "$RUNNER_TEMP/g4/$s"
+            if [[ -d $in/gates-g4-$s ]]; then cp -r "$in/gates-g4-$s/." "$RUNNER_TEMP/g4/$s/"; fi
+            shards+=("$RUNNER_TEMP/g4/$s")
+          done
+          .github/scripts/gates.sh record "$RUNNER_TEMP/gates" "$in/gates-build" "$in/gates-g2-stable" \
+            "$in/gates-g2-1" "$in/gates-g2-2" -- "${shards[@]}"
+      - name: The gates record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gates-record
+          path: ${{ runner.temp }}/gates
+          retention-days: 90
           if-no-files-found: error
