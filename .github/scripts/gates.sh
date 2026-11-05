@@ -63,9 +63,10 @@ in_fedora() {
     is_fedora_pin "$fedora" || die "image/Containerfile REPOS_BASE '$fedora' is not a digest pin"
     [[ $1 != g4 || -c /dev/kvm ]] || die "no /dev/kvm on this runner: G4 cannot run (ci-host.sh kvm)"
     [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || summary=$(inside "$GITHUB_STEP_SUMMARY")
-    mkdir -p "$work"
+    # Buildah overlays the build context from /var/tmp, which cannot sit on this container's overlay.
+    mkdir -p "$work/var-tmp-$1"
     sudo podman run --rm --privileged --cgroupns=private --security-opt label=disable --network host \
-        -v "$ROOT:/src:z" -v "$work:/work:z" -v "$TEMP:/runner:z" -w /src \
+        -v "$ROOT:/src:z" -v "$work:/work:z" -v "$work/var-tmp-$1:/var/tmp:z" -v "$TEMP:/runner:z" -w /src \
         -e GITHUB_ACTIONS -e GITHUB_RUN_NUMBER -e GATES_SHA="${GATES_SHA:-$(git -C "$ROOT" rev-parse HEAD)}" \
         -e GITHUB_STEP_SUMMARY="$summary" \
         "$fedora" /src/.github/scripts/gates.sh in "$@"
