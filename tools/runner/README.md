@@ -320,17 +320,18 @@ Owner steps that a change on `main` needs on the host, newest first.
 
 ## What a run does
 
-`vm.yml` runs once a day, on `workflow_dispatch`, and on a push to `main` that touches
-what the build or its gates read: `components.lock`, `Cargo.lock`, `Cargo.toml` (both
+`vm.yml` runs nightly, on `workflow_dispatch`, and when vm-keeper replays a nightly run that
+gave no verdict. It never runs on a push or a pull request: `gates.yml` gives G1, G2 and G4
+on GitHub's runners before a merge, so no merge waits on the laptop. What a run reads:
+`components.lock`, `Cargo.lock`, `Cargo.toml` (both
 feed the lane's tool id and every family's content key), `image/**` (its READMEs ship in
 the image, so they count), `crates/apex-lane/**`, `tools/components.sh`, qualify.sh,
 `qualify-allowed-failures.txt`, `image.sh`, `oci-artifact.sh` (image.sh pulls the RPMs with it)
 and `lib.sh` in `.github/scripts/`, and
 `build-image.sh`, `lane.sh`, `snapshot.sh`, `metrics.sh` and `lane-absorb-report.sh` in
-`tools/builder-vm/`. Each such push queues a run of about two hours on the laptop. A push
-that touches only `tools/runner/**`, `ci-build.sh` (it takes effect at `just
-vm-ci-install`), the other `tools/builder-vm` scripts or any `.md` under
-`tools/builder-vm/` queues nothing: the next run takes it. A dispatch
+`tools/builder-vm/`. A change to them reaches the VM at its next run, as does one to
+`tools/runner/**`, `ci-build.sh` (it takes effect at `just vm-ci-install`) or the other
+`tools/builder-vm` scripts; `.github/scripts/vm-paths.txt` holds that list. A dispatch
 with a `sha` input builds that commit of `main` instead of the head, and needs the
 `vm-dispatch` approval first. A dispatch's `plan` input is `auto` (build-image.sh
 chooses: the full gate run, or a qualify-only run when its conditions hold), `gate` (the
@@ -402,16 +403,16 @@ thresholds are a starting point, to tune after the first real runs:
 | desktop | the first "session opened for user" of the test user to its own shell's "GNOME Shell started at" | (shown only) |
 
 The builder VM keeps the rows in `~/apex-store/metrics.tsv`, so the trend survives each
-run; the job summary shows the last 10. The rechunk adds a few minutes to the daily run
-only, so push builds stay fast.
+run; the job summary shows the last 10. The rechunk adds a few minutes to the `daily` run
+only, so the nightly sign stays fast.
 
 The absorption report also joins the summary, with a warning for each family whose
 updates-testing build does not take its series with `git apply`. The selftest runs
 vm.yml's Commit, build and gates steps, taken from the workflow itself, against a fake
 `ssh` and canned results: a green build, a red one, run 16's layout, qualify-only runs,
 a busy VM (75), a refused commit (2), an empty tar and a daily run with warnings. It
-also matches files against the push paths: a `tools/runner`-only push queues nothing,
-a qualify.sh-only push queues a run.
+also checks that vm.yml has no push trigger, and that `vm-paths.txt` names what a run
+reads: qualify.sh is listed, a `tools/runner` script is not.
 
 The CI build uses the VM's one checkout, `~/apex-image`, its `_build/` and the VM's
 image storage. After a CI run, that checkout holds the commit of `main` and

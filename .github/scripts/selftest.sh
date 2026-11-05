@@ -4412,15 +4412,16 @@ check "g4 fixtures: what the cut keeps passes" 0 "$(g4c "printf '%s\n' \
     'cipher aes256-gcm@openssh.com for user root, user root(uid=0), user@1000.service' \
     'oo7_daemon::service started, AccountsService.User::password-mode, serial-getty@ttyS0' >>run11-login.journal")"
 
-# --- vm-paths-check.sh: vm.yml's push paths cover what a run reads ---------------------------
+# --- vm-paths-check.sh: vm-paths.txt covers what a vm.yml run reads; vm.yml has no push ---
 check "vm paths: this checkout's vm.yml covers every read" 0 "$(rc_of "$APEX_ROOT/.github/scripts/vm-paths-check.sh" "$APEX_ROOT")"
 VP=$TMP/vm-paths
 vp() { # EDIT: the check's exit on a fresh fixture checkout after EDIT ran in it, its errors in $VP.err
     local rc=0
     rm -rf "$VP" && mkdir -p "$VP/.github/workflows" "$VP/.github/scripts" "$VP/tools/runner" "$VP/tools/conf"
-    printf '%s\n' 'on:' '  push:' '    paths:' '      - components.lock' '      - .github/scripts/gate.sh' \
-        '      - .github/scripts/lib.sh' '      - .github/scripts/helper.sh' '      - tools/data.txt' '      - image/**' \
-        'jobs:' '  build:' '    steps:' '      - run: |' '          .github/scripts/gate.sh' >"$VP/.github/workflows/vm.yml"
+    printf '%s\n' 'on:' '  workflow_dispatch:' 'jobs:' '  build:' '    steps:' '      - run: |' \
+        '          .github/scripts/gate.sh' >"$VP/.github/workflows/vm.yml"
+    printf '%s\n' '# what a run reads' components.lock .github/scripts/gate.sh .github/scripts/lib.sh \
+        .github/scripts/helper.sh tools/data.txt 'image/**' >"$VP/.github/scripts/vm-paths.txt"
     cat >"$VP/.github/scripts/gate.sh" <<'VP_EOF'
 #!/usr/bin/env bash
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -4446,28 +4447,28 @@ VP_EOF
     cat >"$VP/tools/runner/README.md" <<'VP_EOF'
 ## What a run does
 
-on a push to `main` that touches `components.lock`, `image/**`, gate.sh,
-`lib.sh`, `helper.sh` and `tools/data.txt`. Each such push queues a run.
+What a run reads: `components.lock`, `image/**`, gate.sh,
+`lib.sh`, `helper.sh` and `tools/data.txt`. A change to them waits for the next run.
 VP_EOF
     (cd "$VP" && eval "$1" && git init -q && git add -A)
     "$APEX_ROOT/.github/scripts/vm-paths-check.sh" "$VP" >"$VP.out" 2>"$VP.err" || rc=$?
     printf '%s' "$rc"
 }
 check "vm paths: a fixture whose paths cover every read" 0 "$(vp :)"
-check_true "and lists what it reached, and from where" grep -qF "reached tools/data.txt (from .github/workflows/vm.yml paths)" "$VP.out"
-check "vm paths: an executed script no path covers" 1 "$(vp "sed -i '/helper.sh$/d' .github/workflows/vm.yml")"
+check_true "and lists what it reached, and from where" grep -qF "reached tools/data.txt (from .github/scripts/vm-paths.txt)" "$VP.out"
+check "vm paths: an executed script no path covers" 1 "$(vp "sed -i '/helper.sh$/d' .github/scripts/vm-paths.txt")"
 check_true "names the reader's line" grep -qF \
-    "error: .github/scripts/gate.sh:4: reads .github/scripts/helper.sh, which no .github/workflows/vm.yml path covers" "$VP.err"
-check "vm paths: a sourced file no path covers" 1 "$(vp "sed -i '/lib.sh$/d' .github/workflows/vm.yml")"
+    "error: .github/scripts/gate.sh:4: reads .github/scripts/helper.sh, which no .github/scripts/vm-paths.txt path covers" "$VP.err"
+check "vm paths: a sourced file no path covers" 1 "$(vp "sed -i '/lib.sh$/d' .github/scripts/vm-paths.txt")"
 check_true "names it" grep -qF "error: .github/scripts/gate.sh:2: reads .github/scripts/lib.sh" "$VP.err"
-check "vm paths: a data file no path covers" 1 "$(vp "sed -i '/data.txt$/d' .github/workflows/vm.yml")"
+check "vm paths: a data file no path covers" 1 "$(vp "sed -i '/data.txt$/d' .github/scripts/vm-paths.txt")"
 check_true "names it" grep -qF "error: .github/scripts/gate.sh:3: reads tools/data.txt" "$VP.err"
 check "vm paths: a read two scripts down" 1 \
     "$(vp "printf 'cat tools/conf/a.env\n' >>.github/scripts/helper.sh")"
 check_true "names the second script" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env" "$VP.err"
 check "vm paths: a script vm.yml runs that no path covers" 1 \
     "$(vp "printf '          .github/scripts/daily.sh\n' >>.github/workflows/vm.yml; : >.github/scripts/daily.sh")"
-check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:15: reads .github/scripts/daily.sh" "$VP.err"
+check_true "names vm.yml's line" grep -qF "error: .github/workflows/vm.yml:8: reads .github/scripts/daily.sh" "$VP.err"
 check "vm paths: a dynamic path outside every path" 1 \
     "$(vp "printf 'cat \"\$APEX_ROOT/tools/conf/\$NAME.env\"\n' >>.github/scripts/helper.sh")"
 check_true "names each file it can be" grep -qF "error: .github/scripts/helper.sh:3: reads tools/conf/a.env, which no" "$VP.err"
@@ -4489,9 +4490,12 @@ check "vm paths: an allow line without a reason" 1 \
 check_true "names it" grep -qF "vm-paths-allowed.txt:2: want READER PATH REASON" "$VP.err"
 check "vm paths: a README that leaves a path out" 1 "$(vp "sed -i 's/ and \`tools\/data.txt\`//' tools/runner/README.md")"
 check_true "names the path" grep -qF "error: tools/runner/README.md: \"What a run does\" does not name tools/data.txt" "$VP.err"
-check "vm paths: a README naming what vm.yml does not list" 1 "$(vp "sed -i 's/gate.sh,/gate.sh, \`tools\/extra.sh\`,/' tools/runner/README.md")"
+check "vm paths: a README naming what vm-paths.txt does not list" 1 "$(vp "sed -i 's/gate.sh,/gate.sh, \`tools\/extra.sh\`,/' tools/runner/README.md")"
 check_true "names it" grep -qF "error: tools/runner/README.md: \"What a run does\" names tools/extra.sh, which no" "$VP.err"
-check "vm paths: a vm.yml without push paths" 1 "$(vp "sed -i '/paths:/,/image/d' .github/workflows/vm.yml")"
+check "vm paths: a vm-paths.txt that lists nothing" 1 "$(vp "sed -i '/^[^#]/d' .github/scripts/vm-paths.txt")"
+check "vm paths: a vm.yml that runs on a push again" 1 "$(vp "sed -i 's/^  workflow_dispatch:$/  push:\n    branches: [main]\n&/' .github/workflows/vm.yml")"
+check_true "names its line, and why" grep -qF \
+    "error: .github/workflows/vm.yml:2: a push trigger; gates.yml gives the verdict before a merge, and vm.yml signs" "$VP.err"
 
 # --- g4-harness-check.sh: G4's key changes with every file G4 runs on ------------------------
 check "g4 harness: this checkout's digest covers what G4 reads" 0 "$(rc_of "$APEX_ROOT/.github/scripts/g4-harness-check.sh" "$APEX_ROOT")"
@@ -7032,7 +7036,7 @@ VK_NOW=1793376000
 VK_HEAD=$(printf 'c%.0s' {1..40})
 VK_OLD=$(printf 'd%.0s' {1..40})
 vk_run() { # ID SHA STATUS CONCLUSION BUILD_CONCLUSION AGE_MIN [EVENT ACTOR [ANNOTATION...]]: one run as gather() makes it
-    local id=$1 sha=$2 status=$3 conclusion=$4 build=$5 age=$6 event=${7:-push} actor=${8:-owner}
+    local id=$1 sha=$2 status=$3 conclusion=$4 build=$5 age=$6 event=${7:-schedule} actor=${8:-owner}
     shift $(($# < 8 ? $# : 8))
     jq -nc --argjson id "$id" --arg sha "$sha" --arg status "$status" --arg conclusion "$conclusion" --arg build "$build" \
         --arg created "$(date -u -d "@$((VK_NOW - age * 60))" +%FT%TZ)" --arg event "$event" --arg actor "$actor" \
@@ -7041,50 +7045,48 @@ vk_run() { # ID SHA STATUS CONCLUSION BUILD_CONCLUSION AGE_MIN [EVENT ACTOR [ANN
             build: (if $build == "none" then null else {status: (if $build == "queued" then "queued" else "completed" end),
                 conclusion: (if $build == "" or $build == "queued" then null else $build end)} end)}' "$@"
 }
-vk_decide() { # CHANGED RUN_JSON...: the keeper's decision, newest run first
-    local changed=$1
-    shift
-    jq -n --argjson now "$VK_NOW" --arg head "$VK_HEAD" --argjson changed "$changed" \
-        '{now: $now, main_head: $head, changed_since_verdict: $changed, runs: [$ARGS.positional[] | fromjson]}' --args "$@" \
+vk_decide() { # RUN_JSON...: the keeper's decision, newest run first
+    jq -n --argjson now "$VK_NOW" --arg head "$VK_HEAD" \
+        '{now: $now, main_head: $head, runs: [$ARGS.positional[] | fromjson]}' --args "$@" \
         >"$VK/ctx.json"
     "$APEX_ROOT/.github/scripts/vm-keeper.sh" decide "$VK/ctx.json"
 }
 NO_RESULTS='Gates file: the builder VM returned no results'
-check "keeper: no run yet" "none no vm.yml run yet" "$(vk_decide true)"
+check "keeper: no signer run yet" "none no signer run yet" "$(vk_decide)"
 check "keeper: a run queued for a runner waits" "wait run 9 is queued for a runner" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" queued '' queued 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" queued '' queued 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
 check "keeper: a run pending behind the vm concurrency group waits, apart from a queued job" "wait run 9 is pending" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" pending '' none 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" pending '' none 30)" "$(vk_run 8 "$VK_OLD" completed cancelled cancelled 300)")"
 check "keeper: the last run's verdict, a failure that returned its results, is never replayed" "none run 9 is a verdict" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed failure failure 30 push owner 'Components, RPMs: the build in the builder VM failed (exit 1)')")"
-check "keeper: nor is a green one" "none run 9 is a verdict" "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed success success 30)")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed failure failure 30 schedule owner 'Components, RPMs: the build in the builder VM failed (exit 1)')")"
+check "keeper: nor is a green one" "none run 9 is a verdict" "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed success success 30)")"
 check "keeper: a qualify-only run is advisory, not a gate verdict, and is not replayed" "none run 9 is advisory" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed failure failure 30 push owner 'qualify-only: advisory: records nothing, promotes nothing by design')")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed failure failure 30 schedule owner 'qualify-only: advisory: records nothing, promotes nothing by design')")"
 for case in "cancelled|cancelled|" "failure|failure|$NO_RESULTS" "cancelled|cancelled|Build: The job was not acquired by Runner of type self-hosted even after multiple attempts" \
     "failure|timed_out|"; do
     IFS='|' read -r vk_conclusion vk_build vk_note <<<"$case"
     check "keeper: no verdict ($vk_build${vk_note:+, $vk_note}) dispatches main's head" "dispatch $VK_HEAD" \
-        "$(vk_decide true "$(vk_run 9 "$VK_OLD" completed "$vk_conclusion" "$vk_build" 30 schedule owner ${vk_note:+"$vk_note"})")"
+        "$(vk_decide "$(vk_run 9 "$VK_OLD" completed "$vk_conclusion" "$vk_build" 30 schedule owner ${vk_note:+"$vk_note"})")"
 done
 check "keeper: ssh 255 before the tar is no verdict either" "dispatch $VK_HEAD" \
-    "$(vk_decide true "$(vk_run 9 "$VK_OLD" completed failure failure 30 push owner \
+    "$(vk_decide "$(vk_run 9 "$VK_OLD" completed failure failure 30 schedule owner \
         'Components, RPMs: ssh lost or never reached the builder VM (exit 255)' "$NO_RESULTS")")"
 check "keeper: never replays a commit whose verdict is known" "none main head ${VK_HEAD:0:12} has a verdict" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_HEAD" completed failure failure 300)")"
-check "keeper: nor when no vm.yml push path changed since the last verdict" "none no vm.yml push path changed since the last verdict" \
-    "$(vk_decide false "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_OLD" completed failure failure 300)")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 30)" "$(vk_run 8 "$VK_HEAD" completed failure failure 300)")"
+check "keeper: a gate run's verdict on main's head is no signer verdict: the missed sign is replayed" "dispatch $VK_HEAD" \
+    "$(vk_decide "$(vk_run 10 "$VK_HEAD" completed success success 10 workflow_dispatch owner)" "$(vk_run 9 "$VK_OLD" completed cancelled cancelled 30)")"
 check "keeper: a rejected dispatch approval (build skipped) is no run" "dispatch $VK_HEAD" \
-    "$(vk_decide true "$(vk_run 10 "$VK_HEAD" completed failure skipped 10 workflow_dispatch owner)" "$(vk_run 9 "$VK_OLD" completed cancelled cancelled 30)")"
+    "$(vk_decide "$(vk_run 10 "$VK_HEAD" completed failure skipped 10 workflow_dispatch owner)" "$(vk_run 9 "$VK_OLD" completed cancelled cancelled 30)")"
 check "keeper: once per 3 hours per commit" "wait already dispatched ${VK_HEAD:0:12} in the last 3 hours" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 120 workflow_dispatch 'github-actions[bot]')")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 120 workflow_dispatch 'github-actions[bot]')")"
 check "keeper: after 3 hours, again" "dispatch $VK_HEAD" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 190 workflow_dispatch 'github-actions[bot]')")"
-check "keeper: an owner's own dispatch is not the keeper's" "dispatch $VK_HEAD" \
-    "$(vk_decide true "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 60 workflow_dispatch owner)")"
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 190 workflow_dispatch 'github-actions[bot]')")"
+check "keeper: an owner's own dispatch that gave no verdict is theirs, never replayed" "none no signer run yet" \
+    "$(vk_decide "$(vk_run 9 "$VK_HEAD" completed cancelled cancelled 60 workflow_dispatch owner)")"
 vk_day=()
 for n in 1 2 3 4; do vk_day+=("$(vk_run "$((20 - n))" "$VK_OLD" completed cancelled cancelled $((n * 200)) workflow_dispatch 'github-actions[bot]')"); done
-check "keeper: and at most 4 a day" "wait 4 dispatches in the last 24 hours" "$(vk_decide true "${vk_day[@]}")"
-check "keeper: the fifth is past the day" "dispatch $VK_HEAD" "$(vk_decide true "${vk_day[@]:0:3}" \
+check "keeper: and at most 4 a day" "wait 4 dispatches in the last 24 hours" "$(vk_decide "${vk_day[@]}")"
+check "keeper: the fifth is past the day" "dispatch $VK_HEAD" "$(vk_decide "${vk_day[@]:0:3}" \
     "$(vk_run 16 "$VK_OLD" completed cancelled cancelled 1500 workflow_dispatch 'github-actions[bot]')")"
 cat >"$VK/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -7095,10 +7097,9 @@ vk_off() { env -u APEX_VM_KEEPER PATH="$VK/bin:$PATH" FAKE_VK="$VK" "$APEX_ROOT/
 check "keeper: the kill switch is checked first: off, it exits 0" \
     "vm-keeper: off (repository variable APEX_VM_KEEPER is not on)|0" "$(vk_off)|$(rc_of vk_off)"
 check "keeper: and asks nothing of GitHub" "no call" "$([[ -e $VK/gh.log ]] && echo call || echo 'no call')"
-# shellcheck disable=SC2016 # expanded by the inner bash
-VK_RE=$(cd "$APEX_ROOT" && bash -c '. "$1"; paths_regex' _ .github/scripts/vm-keeper.sh)
-check_true "keeper: vm.yml's push paths match image/" grep -qE "$VK_RE" <<<"image/Containerfile"
-check_false "keeper: and not a workflow" grep -qE "$VK_RE" <<<".github/workflows/ci.yml"
+# shellcheck disable=SC2016 # the script's own text
+check_true "keeper: it dispatches the release signer, plan sign, on main" grep -qF \
+    'gh workflow run vm.yml --repo "$REPO" --ref main -f plan=sign' "$APEX_ROOT/.github/scripts/vm-keeper.sh"
 check_true "keeper: the cron's minute is the one it measures its lag from" grep -qF \
     "cron: \"$(sed -n 's/.*KEEPER_MINUTE=\([0-9]*\).*/\1/p' "$APEX_ROOT/.github/scripts/vm-keeper.sh") * * * *\"" "$APEX_ROOT/.github/workflows/vm-keeper.yml"
 check_true "keeper: off in the workflow too, before the job starts" grep -qF "vars.APEX_VM_KEEPER == 'on'" "$APEX_ROOT/.github/workflows/vm-keeper.yml"
@@ -7159,13 +7160,13 @@ GATES='Gates file'
 check "vm.yml has the three steps the selftest runs" "yes yes yes" \
     "$(for s in "$COMMIT" "$BUILD" "$GATES"; do [[ -n $(vm_step "$s") ]] && printf 'yes ' || printf 'no '; done | sed 's/ $//')"
 
-# vm_push_queues FILE...: would a push to main touching FILEs queue vm.yml, by its paths filter
-vm_push_queues() {
+# vm_reads FILE...: does vm-paths.txt list one of FILEs as what a vm.yml run reads
+vm_reads() {
     local glob re file
     while read -r glob; do
         re=$(sed -e 's/[.+]/\\&/g' -e 's/\*\*/\x01/g' -e 's/\*/[^\/]*/g' -e 's/\x01/.*/g' <<<"$glob")
         for file in "$@"; do [[ $file =~ ^$re$ ]] && { echo yes; return; }; done
-    done < <(awk '/^    paths:$/ { p = 1; next } p && /^      - / { print $2; next } p { exit }' "$APEX_ROOT/.github/workflows/vm.yml")
+    done < <(grep -v '^#' "$APEX_ROOT/.github/scripts/vm-paths.txt")
     echo no
 }
 for queued in components.lock Cargo.lock Cargo.toml image/Containerfile image/system_files/usr/share/apex/README.md \
@@ -7173,7 +7174,7 @@ for queued in components.lock Cargo.lock Cargo.toml image/Containerfile image/sy
     .github/scripts/qualify-allowed-failures.txt .github/scripts/image.sh .github/scripts/lib.sh \
     tools/builder-vm/build-image.sh tools/builder-vm/lane.sh tools/builder-vm/snapshot.sh \
     tools/builder-vm/metrics.sh tools/builder-vm/lane-absorb-report.sh; do
-    check "push paths: $queued queues a run" yes "$(vm_push_queues "$queued")"
+    check "vm reads: $queued is listed" yes "$(vm_reads "$queued")"
 done
 for skipped in tools/runner/runner.sh tools/runner/README.md tools/builder-vm/ci-build.sh tools/builder-vm/builder-vm.sh \
     tools/builder-vm/desktop-vm.sh tools/builder-vm/desktop-disk.sh tools/builder-vm/shell-dev.sh \
@@ -7181,11 +7182,13 @@ for skipped in tools/runner/runner.sh tools/runner/README.md tools/builder-vm/ci
     tools/builder-vm/install-cosign.sh tools/builder-vm/firmware.sh tools/builder-vm/lane-rehearsal.sh \
     tools/builder-vm/rehearsal/x.sh tools/builder-vm/README.md .github/scripts/selftest.sh .github/scripts/contracts.sh \
     .github/workflows/vm.yml .github/workflows/ci.yml crates/apex-lanex/x.rs tools/components.shx; do
-    check "push paths: $skipped alone queues nothing" no "$(vm_push_queues "$skipped")"
+    check "vm reads: $skipped is not listed" no "$(vm_reads "$skipped")"
 done
-check "push paths: every file of tools/builder-vm that builds or gates is named, and only those" \
+check "vm reads: every file of tools/builder-vm that builds or gates is listed, and only those" \
     "build-image.sh lane-absorb-report.sh lane.sh metrics.sh snapshot.sh" \
-    "$(for f in "$APEX_ROOT"/tools/builder-vm/*; do [[ $(vm_push_queues "tools/builder-vm/${f##*/}") == no ]] || printf '%s\n' "${f##*/}"; done | sort | paste -sd' ')"
+    "$(for f in "$APEX_ROOT"/tools/builder-vm/*; do [[ $(vm_reads "tools/builder-vm/${f##*/}") == no ]] || printf '%s\n' "${f##*/}"; done | sort | paste -sd' ')"
+check_false "vm.yml runs on no push: gates.yml gives the verdict before a merge" \
+    grep -qE '^  (push|pull_request):' "$APEX_ROOT/.github/workflows/vm.yml"
 
 vm_reset
 check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
