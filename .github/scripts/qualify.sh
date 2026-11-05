@@ -649,6 +649,25 @@ save_journal() { # NAME [JOURNALCTL MATCH]: this boot's, unless told which entri
         >"$QUALIFY_OUT/logs/$VM_NAME-$1.units.txt" 2>&1 || true
 }
 
+# NAME UNITS: each failed unit's status and its critical chain, and TuneD's own log when it failed.
+save_failed_units() {
+    local name=$1 unit q out="$QUALIFY_OUT/logs/$VM_NAME-$1.failed-units.txt"
+    vm_alive || return 0
+    : >"$out"
+    while read -r unit; do
+        [[ -n $unit ]] || continue
+        q=$(printf '%q' "$unit")
+        {
+            echo "## systemctl status $unit"
+            vm_ssh "systemctl status --no-pager --full --lines=200 $q"
+            echo "## systemd-analyze critical-chain $unit"
+            vm_ssh "systemd-analyze critical-chain --no-pager $q"
+        } >>"$out" 2>&1 || true
+        [[ $unit != tuned.service ]] ||
+            vm_ssh 'cat /var/log/tuned/tuned.log' >"$QUALIFY_OUT/logs/$VM_NAME-$name.tuned.log" 2>&1 || true
+    done <<<"$2"
+}
+
 save_bootc_status_fixture() {
     local name=$1 version dir
     version=$(vm_ssh 'rpm -q --queryformat "%{version}-%{release}" bootc' 2>/dev/null || echo unknown)
@@ -673,6 +692,7 @@ assert_running() {
                 unexpected_failures)
             if [[ -n $unexpected ]]; then
                 save_journal "$test"
+                save_failed_units "$test" "$unexpected"
                 fail "$test" "system degraded; failed units: $(tr '\n' ' ' <<<"$unexpected")"
             fi
             ;;
