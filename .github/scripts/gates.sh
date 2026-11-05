@@ -230,7 +230,11 @@ cmd_record() {
         echo "G2: $stable/stable.txt does not show the second run agreeing with the first" >&2
         status=1
     fi
-    "$ROOT/.github/scripts/qualify.sh" g4-merge "$out" "${g4[@]}" || status=1
+    if ! "$ROOT/.github/scripts/qualify.sh" g4-merge "$out" "${g4[@]}"; then
+        echo "G4: the merged rows that did not pass:" >&2
+        grep -v '^| [^|]* | PASS |' "$out/results.md" >&2 2>/dev/null || echo "G4: no merged results.md" >&2
+        status=1
+    fi
     summary "### Gates for \`${sha:0:12}\` (image $id)" "" "| Test | Result | Detail | Layer feature |" \
         "|---|---|---|---|" "$(cat "$out/results.md" 2>/dev/null)"
     ((status == 0)) || { echo "gates: not passed; no record" >&2; return 1; }
