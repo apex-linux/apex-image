@@ -353,6 +353,12 @@ cmd_build() {
     [[ -z ${APEX_COMPOSE:-} ]] || args+=(--build-arg "COMPOSE=$APEX_COMPOSE")
     ! is_next || args+=(--build-arg "FEDORA=$APEX_FEDORA")
     [[ -z ${APEX_TARGET:-} ]] || args+=(--target "$APEX_TARGET")
+    # A hosted gates build (gates.sh) signs with an ephemeral key: the image says so, and never publishes.
+    if [[ -n ${APEX_TEST_KEY:-} ]]; then
+        [[ $APEX_TEST_KEY =~ ^[0-9A-F]{40}$ ]] || die "APEX_TEST_KEY '$APEX_TEST_KEY' is not a 40-hex fingerprint"
+        [[ ${APEX_RELEASE_BUILD:-0} == 0 ]] || die "a test-key image is never a release build"
+        args+=(--build-arg "APEX_TEST_KEY=$APEX_TEST_KEY" --label "$APEX_LABEL_PREFIX.rpm-key=test:$APEX_TEST_KEY")
+    fi
 
     group "podman build ($version)"
     # The privileges build-rootfs needs inside the build.
@@ -400,14 +406,20 @@ cmd_inspect() {
 
     podman_ run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/rpms.lock \
         >"$APEX_WORK/image-rpms.lock" || die "$IMAGE has no /usr/share/apex/rpms.lock"
-    local degraded held key pair
+    local degraded held key pair rpm_key=apex test_key
     pair=$(lock_pair_key <"$APEX_WORK/image-rpms.lock")
+    # The image's own marker, not the build's environment, says which key signed it.
+    if test_key=$(podman_ run --rm --net=none --entrypoint /usr/bin/cat "$IMAGE" /usr/share/apex/test-key 2>/dev/null); then
+        [[ $test_key =~ ^[0-9A-F]{40}$ ]] || die "$IMAGE's /usr/share/apex/test-key is not one fingerprint"
+        rpm_key=test:$test_key
+    fi
     degraded=$(jq -r '.degraded | sort | join(",")' "$APEX_WORK/manifest.json")
     held=$(jq -r '.held | sort | join(",")' "$APEX_WORK/manifest.json")
     manifest_lock_list <"$APEX_WORK/manifest.json" >"$APEX_WORK/lock.txt"
     key=$(content_key "$degraded" "$held")
 
-    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\nKERNEL_PAIR=%q\n' "$degraded" "$held" "$key" "$pair" >"$APEX_WORK/image.env"
+    printf 'DEGRADED=%q\nHELD=%q\nCONTENT_KEY=%q\nKERNEL_PAIR=%q\nRPM_KEY=%q\n' "$degraded" "$held" "$key" "$pair" "$rpm_key" \
+        >"$APEX_WORK/image.env"
     summary "Manifest: $(jq '.packages | length' "$APEX_WORK/manifest.json") packages;" \
         "degraded: \`${degraded:-none}\`; held: \`${held:-none}\`; content key \`$key\`"
     set_output version "$APEX_VERSION"
@@ -463,6 +475,7 @@ rechunk_once() {
         --label "$APEX_LABEL_PREFIX.content-key=$CONTENT_KEY" \
         --label "$APEX_LABEL_PREFIX.fedora=$APEX_FEDORA" \
         --label "$APEX_LABEL_PREFIX.kernel-pair=${KERNEL_PAIR:?image.env has no KERNEL_PAIR: run image.sh inspect again}" \
+        --label "$APEX_LABEL_PREFIX.rpm-key=${RPM_KEY:?image.env has no RPM_KEY: run image.sh inspect again}" \
         "${NEXT_LABEL[@]}" --output "oci:/out/$OCI_REF:latest"
 }
 
@@ -497,7 +510,8 @@ cmd_rechunk() {
 cmd_push() {
     ! is_next || die "APEX_FEDORA=$APEX_FEDORA is the next lane: it never pushes"
     require skopeo git
-    load_env build.env
+    load_env build.env image.env
+    [[ ${RPM_KEY:-} == apex ]] || die "the image's RPMs are signed by '${RPM_KEY:-an unknown key}', not the Apex RPM key: it never pushes"
     local out="$APEX_SCRATCH/oci" run tag digestfile digest
     run=${APEX_RUN_NUMBER:-${GITHUB_RUN_NUMBER:-0}}
     tag="sha-${APEX_REVISION:0:12}-$run"

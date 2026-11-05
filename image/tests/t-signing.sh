@@ -163,4 +163,44 @@ signing unsignedshell
 expect_rc "an unsigned .apexN package that apex.txt does not name fails" 1
 expect_out "and names it" '^FAIL signing: gnome-shell-common 1\.fc45\.apex4 is not signed by the Apex RPM key'
 
+# A hosted gates image: its RPMs signed by an ephemeral key, named in /usr/share/apex/test-key.
+mkdir -m 0700 "$T/gnupg"
+gpg --homedir "$T/gnupg" --batch --quiet --passphrase '' --quick-gen-key 'Apex gates test key' ed25519 sign never 2>/dev/null
+TEST_FPR=$(gpg --homedir "$T/gnupg" --batch --with-colons --list-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+TEST_SIG="EdDSA/SHA512, Tue 29 Sep 2026 07:00:00 AM UTC, Key ID $(printf '%s' "$TEST_FPR" | cut -c25-40 | tr 'A-F' 'a-f')"
+testkey() { # NAME: a root whose shipped key, marker and Apex packages are the test key's
+    r=$(mkroot "$1")
+    gpg --homedir "$T/gnupg" --batch --armor --export "$TEST_FPR" >"$r/usr/share/apex/keys/RPM-GPG-KEY-apex"
+    printf '%s\n' "$TEST_FPR" >"$r/usr/share/apex/test-key"
+    APEX=$TEST_SIG FEDORA=$FEDORA rpmdb "$T/$1.db"
+}
+testkey testkey
+signing testkey
+expect_rc "a test-key image signed by its named key passes" 0
+expect_out "and says it never publishes" "^PASS signing: test-key image: /usr/share/apex/test-key names the ephemeral key $TEST_FPR, and publish\\.sh refuses it\$"
+expect_out "its shipped key is the named one" "^PASS signing: /usr/share/apex/keys/RPM-GPG-KEY-apex is the Apex RPM key $TEST_FPR\$"
+testkey testrelease
+run env PATH="$(fake_path)" FAKE_RPMDB="$T/testrelease.db" ROOT="$T/testrelease" RELEASE_BUILD=1 "$SH" "$CHECKS/signing.sh"
+expect_rc "a release build that carries the marker fails" 1
+expect_out "and says so" '^FAIL signing: a release build carries /usr/share/apex/test-key'
+testkey testbadmarker
+printf 'not-a-fingerprint\n' >"$T/testbadmarker/usr/share/apex/test-key"
+signing testbadmarker
+expect_rc "a marker that is no fingerprint fails" 1
+expect_out "and says so" '^FAIL signing: /usr/share/apex/test-key is not one 40-hex fingerprint'
+r=$(mkroot testrealkey)
+printf '%s\n' "$TEST_FPR" >"$r/usr/share/apex/test-key"
+signing testrealkey
+expect_rc "the marker with the Apex key and Apex signatures fails" 1
+expect_out "the shipped key is not the named one" "^FAIL signing: .* holds \\[B9A8301A20A14E732212A4C58DA3252BD6EF25FA\\], not the Apex RPM key $TEST_FPR alone"
+expect_out "and the Apex packages are not signed by it" '^FAIL signing: apex 0\.20260929\.gitaae8564aaaaa\.fc45 is not signed by the Apex RPM key'
+testkey testapexsigned
+APEX=$APEX FEDORA=$FEDORA rpmdb "$T/testapexsigned.db"
+signing testapexsigned
+expect_rc "a test-key image whose packages carry the Apex signature fails" 1
+expect_out "and names them" '^FAIL signing: apex-desktop 0\.20260929\.gitaae8564aaaaa\.fc45 is not signed by the Apex RPM key'
+r=$(mkroot clean2)
+signing clean2
+expect_out "an Apex-signed image says it has no marker" '^PASS signing: no /usr/share/apex/test-key: the Apex RPM key signs this image$'
+
 done_testing

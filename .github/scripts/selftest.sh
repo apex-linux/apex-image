@@ -477,6 +477,7 @@ build_gates() {
         set -euo pipefail
         . "$1"
         image_id() { echo cafe; }
+        image_test_key() { cat "$FAKE/test-key"; }
         eval "$3"
         gates "$2"' \
         _ "$APEX_ROOT/tools/builder-vm/build-image.sh" "$image_only" "${2:-}") >"$BUILD_DIR/out" 2>&1 || rc=$?
@@ -503,8 +504,13 @@ check "G2 is apex-gnome's run.sh, given this image/, its REPOS_BASE and this _bu
     "$BUILD_DIR/work/image|$(containerfile_arg REPOS_BASE)|$BUILD_DIR/work/_build/g2" "$(cat "$BUILD_DIR/g2-env")"
 check "G4 ran" local "$(cat "$BUILD_DIR/g4-ran")"
 check "the record names the lane lock the image carries, the image and G4's pass" \
-    "lock-sha256 $LANE_LOCK_SHA|image-id cafe|g2 passed|g4 passed for image cafe|components pinned" \
+    "lock-sha256 $LANE_LOCK_SHA|image-id cafe|g2 passed|g4 passed for image cafe|components pinned|rpm-key apex" \
     "$(paste -sd'|' "$BUILD_DIR/work/_build/gates-passed.txt")"
+printf '%s\n' 0123456789ABCDEF0123456789ABCDEF01234567 >"$BUILD_DIR/test-key"
+check "a test-key image's record names its ephemeral key, which lane.sh promote refuses" \
+    "0|rpm-key test:0123456789ABCDEF0123456789ABCDEF01234567" \
+    "$(build_gates)|$(grep '^rpm-key ' "$BUILD_DIR/work/_build/gates-passed.txt")"
+rm "$BUILD_DIR/test-key"
 check "a build from a dev-override component says so in its record" "components dev-override" \
     "$(APEX_COMPONENTS=dev-override build_gates >/dev/null; grep '^components ' "$BUILD_DIR/work/_build/gates-passed.txt")"
 printf 'old record\n' >"$BUILD_DIR/work/_build/g4-passed.txt"
@@ -5781,7 +5787,8 @@ layout() { # VERSION REVISION DEGRADED DIGEST_CHAR [KERNEL_PAIR]
     jq -n --arg v "$1" --arg r "$2" --arg g "$3" --arg d "sha256:$(printf "$4%.0s" {1..64})" --arg l "$APEX_LABEL_PREFIX" \
         --arg p "${5:-none}" \
         '{Digest: $d, Labels: {"org.opencontainers.image.version": $v, "org.opencontainers.image.revision": $r,
-          ($l + ".fedora"): "45", ($l + ".degraded"): $g, ($l + ".kernel-pair"): $p}}' >"$R/state/layout.json"
+          ($l + ".fedora"): "45", ($l + ".degraded"): $g, ($l + ".kernel-pair"): $p, ($l + ".rpm-key"): "apex"}}' \
+        >"$R/state/layout.json"
 }
 reset_registry() {
     rm -rf "$R/state" "$R/keys"
@@ -5818,6 +5825,15 @@ mv "$R/state/next.json" "$R/state/layout.json"
 : >"$R/state/log"
 check "a next-lane layout (label lane=next) is refused" 1 "$(publish_rc)"
 check "before anything is pushed, signed or moved" "|none" "$(cat "$R/state/log")|$(published 45.20260925.152)"
+for rk in test:0123456789ABCDEF0123456789ABCDEF01234567 ''; do
+    layout 45.20260925.152 "$C_A" '' 3
+    jq --arg l "$APEX_LABEL_PREFIX.rpm-key" --arg v "$rk" 'if $v == "" then del(.Labels[$l]) else .Labels[$l] = $v end' \
+        "$R/state/layout.json" >"$R/state/rk.json"
+    mv "$R/state/rk.json" "$R/state/layout.json"
+    : >"$R/state/log"
+    check "a layout whose rpm-key label is '${rk:-missing}' is refused: only the Apex RPM key's publishes" 1 "$(publish_rc)"
+    check "before anything is pushed, signed or moved (${rk:-missing})" "|none" "$(cat "$R/state/log")|$(published 45.20260925.152)"
+done
 check "publish.sh refuses every command for APEX_FEDORA=46" "1|1" \
     "$(rc_of env PATH="$R/bin:$PATH" APEX_FEDORA=46 "$APEX_ROOT/.github/scripts/publish.sh" publish /layout)|$(
         env PATH="$R/bin:$PATH" APEX_FEDORA=46 "$APEX_ROOT/.github/scripts/publish.sh" publish /layout 2>&1 |

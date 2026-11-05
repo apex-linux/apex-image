@@ -206,11 +206,18 @@ allow_degraded_arg() {
     if [[ ${1:-} == --allow-degraded ]]; then printf '1\n'; else printf '0\n'; fi
 }
 
+# An image without the label, or with any value but apex, is refused: a gates build's is test:FPR.
+rpm_key_of() { jq -r --arg l "$APEX_LABEL_PREFIX.rpm-key" '.Labels[$l] // "none"' <<<"$1"; }
+rpm_key_is_apex() { [[ $(rpm_key_of "$1") == apex ]]; }
+
 cmd_sign() {
     (($# == 2)) || die "usage: publish.sh sign REPO DIGEST"
-    local repo=$1 digest=$2
+    local repo=$1 digest=$2 json
     is_digest "$digest" || die "invalid digest '$digest'"
     [[ $repo == "$APEX_REPO_TESTING" || $repo == "$APEX_REPO_STABLE" ]] || die "unexpected repository $repo"
+    require skopeo jq
+    json=$(skopeo inspect "docker://$repo@$digest") || die "cannot inspect $repo@$digest"
+    rpm_key_is_apex "$json" || die "$repo@$digest's RPMs are signed by '$(rpm_key_of "$json")', not the Apex RPM key: cosign never signs it"
     [[ -n ${COSIGN_PRIVATE_KEY:-} ]] || die "COSIGN_PRIVATE_KEY is not set (environment secret)"
     [[ -n ${GH_TOKEN:-} ]] || die "GH_TOKEN is not set"
     require cosign
@@ -362,6 +369,8 @@ publish_layout() {
     json=$(skopeo inspect "oci:$oci") || die "cannot inspect the layout $oci (image.sh rechunk writes it)"
     [[ $(jq -r --arg l "$APEX_LABEL_PREFIX.lane" '.Labels[$l] // ""' <<<"$json") != next ]] ||
         die "the layout is a next-lane build (label $APEX_LABEL_PREFIX.lane=next): the next lane never publishes"
+    rpm_key_is_apex "$json" || die "the layout's RPMs are signed by '$(rpm_key_of "$json")', not the Apex RPM key" \
+        "(label $APEX_LABEL_PREFIX.rpm-key): a test-key image never publishes"
     digest=$(jq -r '.Digest // ""' <<<"$json")
     version=$(jq -r '.Labels["org.opencontainers.image.version"] // ""' <<<"$json")
     revision=$(jq -r '.Labels["org.opencontainers.image.revision"] // ""' <<<"$json")

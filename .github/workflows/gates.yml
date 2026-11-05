@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: gates
+
+# G1, G2 and G4 on GitHub-hosted runners, before a merge (.github/scripts/gates.sh). The
+# image is signed by a key made in the job and never publishes; vm.yml signs releases.
+on:
+  pull_request:
+    branches: [main, "train/**"]
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (components, RPMs, lane, image, G1)
+    # A fork's pull request runs nothing here: the gates build trusted code only.
+    if: >-
+      github.repository == 'apex-linux/apex-image'
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Disk, and the work directory on the second disk
+        run: |
+          .github/scripts/ci-host.sh free-disk
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /mnt/gates
+          echo "GATES_WORK=/mnt/gates" >>"$GITHUB_ENV"
+          APEX_SCRATCH=/mnt/gates .github/scripts/ci-host.sh preflight 0 60
+
+      - name: Build in fedora:45
+        env:
+          GATES_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: .github/scripts/gates.sh build "$RUNNER_TEMP/gates-build"
+
+      - name: Disk after the build
+        if: ${{ !cancelled() }}
+        run: .github/scripts/ci-host.sh usage build
+
+      - name: The image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gates-image
+          path: ${{ runner.temp }}/gates-build
+          retention-days: 3
+          if-no-files-found: error
