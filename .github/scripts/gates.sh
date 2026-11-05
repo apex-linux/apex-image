@@ -64,7 +64,7 @@ in_fedora() {
     [[ $1 != g4 || -c /dev/kvm ]] || die "no /dev/kvm on this runner: G4 cannot run (ci-host.sh kvm)"
     [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || summary=$(inside "$GITHUB_STEP_SUMMARY")
     mkdir -p "$work"
-    sudo podman run --rm --privileged --security-opt label=disable --network host \
+    sudo podman run --rm --privileged --cgroupns=private --security-opt label=disable --network host \
         -v "$ROOT:/src:z" -v "$work:/work:z" -v "$TEMP:/runner:z" -w /src \
         -e GITHUB_ACTIONS -e GITHUB_RUN_NUMBER -e GATES_SHA="${GATES_SHA:-$(git -C "$ROOT" rev-parse HEAD)}" \
         -e GITHUB_STEP_SUMMARY="$summary" \
@@ -84,6 +84,7 @@ cmd_in() {
         *) usage ;;
     esac
     retry 3 10 dnf5 -y -q --setopt=install_weak_deps=False --repo=fedora --repo=updates install "${tools[@]}"
+    nested_podman
     mkdir -p "/work/containers-$sub" /work/home
     printf '[storage]\ndriver = "overlay"\ngraphroot = "/work/containers-%s"\nrunroot = "/run/containers/storage"\n' \
         "$sub" >/etc/containers/storage.conf
@@ -95,6 +96,20 @@ cmd_in() {
         g2-stable) load "$1"; components; inner_g2_stable "$2" "$3" ;;
         g4) load "$1"; components; inner_g4 "$2" ;;
     esac
+}
+
+# Nested containers share the job's network (the runner's resolver is 127.0.0.53) and need
+# the cgroup controllers, so this container's processes move to a leaf cgroup first.
+nested_podman() {
+    local cg=/sys/fs/cgroup
+    [[ -f $cg/cgroup.controllers ]] || die "no cgroup v2 in gates.sh's container"
+    mkdir -p "$cg/init"
+    xargs -rn1 <"$cg/cgroup.procs" >"$cg/init/cgroup.procs" || :
+    sed -e 's/ / +/g' -e 's/^/+/' "$cg/cgroup.controllers" >"$cg/cgroup.subtree_control" ||
+        die "the cgroup controllers cannot be delegated to nested containers"
+    grep -qw pids "$cg/cgroup.subtree_control" || die "nested containers get no pids controller"
+    mkdir -p /etc/containers/containers.conf.d
+    printf '[containers]\nnetns = "host"\n' >/etc/containers/containers.conf.d/50-gates.conf
 }
 
 # The secret half never leaves GNUPGHOME; the checkout's public key is the job's own.
