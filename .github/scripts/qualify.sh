@@ -414,11 +414,16 @@ luks_unlock() {
 
 # LOOP: udev knows each new filesystem's UUID, which bootc install reads; mkfs's events land later.
 partition_uuids() {
-    local p tries=0
+    local p tries=0 probed
     as_root udevadm settle 2>/dev/null || true
     for p in "$1"p1 "$1"p2 "$1"p3; do
         until [[ -n $(as_root lsblk -dno UUID "$p" 2>/dev/null) ]]; do
-            ((++tries <= 60)) || die "$p has no UUID that udev knows 30 s after mkfs, so bootc install cannot name it"
+            if ((++tries > 60)); then
+                probed=$(as_root blkid -p -o value -s UUID "$p" 2>/dev/null) || true
+                die "$p has no UUID that udev knows 30 s after mkfs (blkid -p reads '${probed:-none}'), so bootc install cannot name it"
+            fi
+            # A lost change event leaves udev's record stale for good: udev probes the partition again.
+            as_root udevadm trigger --action=change "$p" 2>/dev/null || true
             sleep 0.5
             as_root udevadm settle 2>/dev/null || true
         done

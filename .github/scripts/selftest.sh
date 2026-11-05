@@ -380,7 +380,8 @@ pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after
         : >"$PU"
         as_root() {
             case $1 in
-                udevadm) echo settle >>"$PU" ;;
+                udevadm) if [[ $2 == settle ]]; then echo settle; else echo "$2 $3 ${*: -1}"; fi >>"$PU" ;;
+                blkid) echo probed-uuid ;;
                 lsblk)
                     echo "lsblk ${*: -1}" >>"$PU"
                     [[ ${*: -1} != *p2 || $(grep -c "^lsblk .*p2$" "$PU") -gt $PU_AFTER ]] && echo "uuid-${*: -1}" ;;
@@ -391,10 +392,11 @@ pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after
 }
 check "install: bootc waits until udev knows each new filesystem's UUID, settling first" \
     "|settle|lsblk /dev/loop9p1|lsblk /dev/loop9p2|lsblk /dev/loop9p3" "$(pu 0)|$(grep -m4 . "$Q/pu" | paste -sd'|')"
-check "a UUID that lands late is waited for, settling again" "|3|3" \
-    "$(pu 2)|$(grep -c '^lsblk /dev/loop9p2$' "$Q/pu")|$(grep -c '^settle$' "$Q/pu")"
+check "a UUID that lands late is waited for, udev asked to probe that partition again, then settled" "|3|3|2|2" \
+    "$(pu 2)|$(grep -c '^lsblk /dev/loop9p2$' "$Q/pu")|$(grep -c '^settle$' "$Q/pu")|$(
+        grep -c '^trigger --action=change /dev/loop9p2$' "$Q/pu")|$(grep -c '^trigger ' "$Q/pu")"
 check "one that never lands stops the install, naming the partition" \
-    "/dev/loop9p2 has no UUID that udev knows 30 s after mkfs, so bootc install cannot name it" "$(pu 1000)"
+    "/dev/loop9p2 has no UUID that udev knows 30 s after mkfs (blkid -p reads 'probed-uuid'), so bootc install cannot name it" "$(pu 1000)"
 
 # --- qualify.sh: G4 is due when its key changes or its last pass is a week old ------------
 G4_DIR="$TMP/g4"
