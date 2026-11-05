@@ -1,0 +1,4 @@
+# Answer 10 opens Python in Text Editor; gnome-session's list gives it to Builder (Apex Code).
+# GLib reads /etc/xdg before /usr/share/applications, so this line wins for this type only.
+[Default Applications]
+text/x-python=org.gnome.TextEditor.desktop

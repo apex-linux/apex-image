@@ -12,7 +12,9 @@ org.gnome.TextEditor gnome-text-editor text/plain;
 org.gnome.Nautilus nautilus inode/directory;
 org.gnome.Epiphany epiphany text/html;x-scheme-handler/https;'
 
-# mkroot NAME: the apps with their binaries, gnome-session's defaults and a subclass of text/plain.
+# The Apex list image/system_files installs, which wins over gnome-session's for its types.
+APEX_LIST=$(dirname -- "$0")/../system_files/etc/xdg/gnome-mimeapps.list
+# mkroot NAME: the apps with their binaries, gnome-session's and Apex's defaults and a subclass of text/plain.
 mkroot() {
     r=$T/$1
     mkdir -p "$r/usr/bin" "$r/usr/share/applications" "$r/usr/share/mime" "$r/etc/xdg"
@@ -37,6 +39,7 @@ video/webm=org.gnome.Showtime.desktop
 x-scheme-handler/https=org.gnome.Epiphany.desktop
 LIST
     printf 'text/x-python text/plain\n' >"$r/usr/share/mime/subclasses"
+    cp "$APEX_LIST" "$r/etc/xdg/gnome-mimeapps.list"
     mimeinfo "$r"
     printf '%s\n' "$r"
 }
@@ -93,7 +96,11 @@ printf '[Desktop Entry]\nType=Application\nName=Builder\nExec=gnome-builder\nMim
     >"$r/usr/share/applications/org.gnome.Builder.desktop"
 mimeinfo "$r"
 check "$r"
-expect_rc "an installed Builder takes Python files back" 1
+expect_rc "with Apex Code installed, Python still opens in Text Editor" 0
+expect_out "through the Apex list" '^PASS mime: text/x-python opens org\.gnome\.TextEditor\.desktop$'
+rm "$r/etc/xdg/gnome-mimeapps.list"
+check "$r"
+expect_rc "without the Apex list, Builder takes Python files" 1
 expect_out "and is named" '^FAIL mime: text/x-python opens org\.gnome\.Builder\.desktop, not org\.gnome\.TextEditor\.desktop'
 
 done_testing
