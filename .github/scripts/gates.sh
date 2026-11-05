@@ -73,8 +73,9 @@ in_fedora() {
     fedora=$(containerfile_arg REPOS_BASE)
     is_fedora_pin "$fedora" || die "image/Containerfile REPOS_BASE '$fedora' is not a digest pin"
     [[ $1 != g4 || -c /dev/kvm ]] || die "no /dev/kvm on this runner: G4 cannot run (ci-host.sh kvm)"
-    # Loop partitions appear in the host's /dev; bootc checks /run/udev against PID 1's root.
-    [[ $1 != g4 ]] || dev=(-v /dev:/dev -v /run/udev:/run/udev)
+    # Loop partitions appear in the host's /dev. The host's udev keeps a pre-mkfs record of each, so
+    # /run/udev is empty here, and bootc, lsblk and findmnt probe them with blkid instead.
+    [[ $1 != g4 ]] || dev=(-v /dev:/dev --tmpfs /run/udev)
     [[ -z ${GITHUB_STEP_SUMMARY:-} ]] || summary=$(inside "$GITHUB_STEP_SUMMARY")
     # Buildah overlays the build context from /var/tmp, which cannot sit on this container's overlay.
     mkdir -p "$work/var-tmp-$1" "$work/containers-$1"
