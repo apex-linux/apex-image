@@ -26,6 +26,7 @@ oo7-portal
 nautilus
 sushi
 ptyxis
+gnome-builder
 gnome-text-editor
 loupe
 papers

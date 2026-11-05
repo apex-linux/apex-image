@@ -4650,7 +4650,7 @@ mkdir -p "$CT/system/hardware/m7400qc" "$CT/desktop/desktop/schemas" "$CT/deskto
 ct_degraded() {
     printf 'pub const DEGRADED_COMPONENTS: &[&str] = &[%s];\n' "$1" >"$CT/system/crates/apexctl/src/manifest.rs"
 }
-ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
+ct_degraded '"adwaita", "audio", "code", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 ct_choices() { # NAMES: apex-desktop's schema with disabled-features offering NAMES
     local c=''
     for n in "$@"; do c+="<choice value=\"$n\"/>"; done
@@ -4814,9 +4814,9 @@ rm "$CT/gnome/tests/layer/fixtures/apex-booted-deployment.sh"
 check "contracts: apex-gnome's booted-deployment recorder copy is missing" 1 "$(ct_run)"
 cp "$CT/desktop/desktop/systemd/apex-booted-deployment.sh" "$CT/gnome/tests/layer/fixtures/"
 check "contracts: the booted-deployment recorder copies equal" 0 "$(ct_run)"
-ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell"'
+ct_degraded '"adwaita", "audio", "code", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
-ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
+ct_degraded '"adwaita", "audio", "code", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 check "contracts: an apexctl that accepts every degraded name" 0 "$(ct_run)"
 rm "$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1"
 check "contracts: apex-gnome without Settings' Update1 copy" 1 "$(ct_run)"
