@@ -6,4 +6,6 @@
 
 .github/scripts/qualify.sh .github/scripts  g4_harness hashes qualify.sh, lib.sh and qualify-allowed-failures.txt there, each a listed path
 .github/workflows/vm.yml .github/scripts/daily-due.sh  it decides when the scheduled run starts, and reads nothing the build or gates read
+.github/workflows/vm.yml .github/scripts/sign-source.sh  on GitHub's runner it picks the gates run the signer trusts, and reads nothing the build or gates read
+.github/scripts/sign-source.sh .github/workflows/gates.yml  the workflow path a run must name, compared, never read
 tools/builder-vm/build-image.sh tools/builder-vm/t2-enabled  the qualify-only switch: harness_path() counts it a harness change, so toggling it queues no full run

@@ -63,7 +63,9 @@ the digest that will be published.
   qualify.sh local-shard SHARD IMAGE  one shard of G4 for the hosted gates, from a fresh install:
                                      update (install to acknowledge, then the login),
                                      boot-metrics, login, lock, polkit or crash-guard (each
-                                     after the install and the login); records nothing
+                                     after the install and the login); records nothing.
+                                     smoke, the release signer's, is the install and the
+                                     login alone, and no G4 shard
   qualify.sh g4-merge OUT DIR...     the shards' results.md (each DIR named for its shard) as
                                      one OUT/results.md in local's row order; exit 0 when
                                      every row passed and every shard closed
@@ -410,6 +412,24 @@ luks_unlock() {
     [[ -z $wrong ]] || result "$test" PASS "Plymouth's prompt (logs/$test-prompt.png) took the passphrase over QMP; systemd-cryptsetup opened the LUKS2 root"
 }
 
+# LOOP: udev knows each new filesystem's UUID, which bootc install reads; mkfs's events land later.
+partition_uuids() {
+    local p tries=0 probed
+    as_root udevadm settle 2>/dev/null || true
+    for p in "$1"p1 "$1"p2 "$1"p3; do
+        until [[ -n $(as_root lsblk -dno UUID "$p" 2>/dev/null) ]]; do
+            if ((++tries > 60)); then
+                probed=$(as_root blkid -p -o value -s UUID "$p" 2>/dev/null) || true
+                die "$p has no UUID that udev knows 30 s after mkfs (blkid -p reads '${probed:-none}'), so bootc install cannot name it"
+            fi
+            # A lost change event leaves udev's record stale for good: udev probes the partition again.
+            as_root udevadm trigger --action=change "$p" 2>/dev/null || true
+            sleep 0.5
+            as_root udevadm settle 2>/dev/null || true
+        done
+    done
+}
+
 install_disk() {
     local name=$1 image=$2 target=$3 disk="$QUALIFY_OUT/$1.raw"
     group "Install $image ($QUALIFY_LAYOUT) into $disk"
@@ -450,6 +470,7 @@ EOF
             as_root mkfs.vfat -F 32 -n EFI-SYSTEM "${loop}p1" >/dev/null
             as_root mkfs.ext4 -q -F -L boot "${loop}p2"
             as_root mkfs.btrfs -q -f -L root "${loop}p3"
+            partition_uuids "$loop"
             mkdir -p "$mnt"
             as_root mount "${loop}p3" "$mnt"
             MOUNTS+=("$mnt")
@@ -2564,10 +2585,10 @@ cmd_local() {
 readonly G4_SHARDS=(update boot-metrics login lock polkit crash-guard)
 
 cmd_local_shard() {
-    (($# == 2)) || die "usage: qualify.sh local-shard SHARD localhost/NAME:TAG (SHARD: ${G4_SHARDS[*]})"
+    (($# == 2)) || die "usage: qualify.sh local-shard SHARD localhost/NAME:TAG (SHARD: ${G4_SHARDS[*]} smoke)"
     local shard=$1 image=$2 digest image_id since s known=0
-    for s in "${G4_SHARDS[@]}"; do [[ $s != "$shard" ]] || known=1; done
-    ((known)) || die "no G4 shard '$shard' (${G4_SHARDS[*]})"
+    for s in "${G4_SHARDS[@]}" smoke; do [[ $s != "$shard" ]] || known=1; done
+    ((known)) || die "no G4 shard '$shard' (${G4_SHARDS[*]} smoke)"
     [[ $QUALIFY_LAYOUT == separate-boot ]] || die "the G4 shards run QUALIFY_LAYOUT=separate-boot only, not $QUALIFY_LAYOUT"
     [[ $image =~ ^localhost/[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?$ ]] ||
         die "expected a local image reference localhost/NAME[:TAG], got '$image'"
@@ -2598,7 +2619,7 @@ cmd_local_shard() {
     since=$(vm_ssh 'date +%s') || fail local-login "cannot read the guest's clock"
     greeter_login local
     case $shard in
-        update) ;;
+        update | smoke) ;;
         boot-metrics) boot_metrics local ;;
         login) login_lock_unlock local ;;
         lock) lock_matrix local "$since" ;;

@@ -374,6 +374,29 @@ check "each of the four boots is unlocked from its own console's start, with no 
 rc=0
 PATH="$Q/bin:$PATH" bash -c '. "$1"' _ "$APEX_ROOT/.github/scripts/qualify.sh" >"$Q/stderr.log" 2>&1 || rc=$?
 check "sourcing qualify.sh runs nothing" "0:" "$rc:$(cat "$Q/stderr.log")"
+pu() { # UUID_AFTER: partition_uuids on /dev/loop9, whose p2 gets its UUID after UUID_AFTER lsblk calls
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    PU=$Q/pu PU_AFTER=$1 bash -c '. "$1"
+        : >"$PU"
+        as_root() {
+            case $1 in
+                udevadm) if [[ $2 == settle ]]; then echo settle; else echo "$2 $3 ${*: -1}"; fi >>"$PU" ;;
+                blkid) echo probed-uuid ;;
+                lsblk)
+                    echo "lsblk ${*: -1}" >>"$PU"
+                    [[ ${*: -1} != *p2 || $(grep -c "^lsblk .*p2$" "$PU") -gt $PU_AFTER ]] && echo "uuid-${*: -1}" ;;
+            esac
+        }
+        sleep() { :; }
+        partition_uuids /dev/loop9' _ "$APEX_ROOT/.github/scripts/qualify.sh" 2>&1 | sed -n 's/^\(error: \|::error::\)//p'
+}
+check "install: bootc waits until udev knows each new filesystem's UUID, settling first" \
+    "|settle|lsblk /dev/loop9p1|lsblk /dev/loop9p2|lsblk /dev/loop9p3" "$(pu 0)|$(grep -m4 . "$Q/pu" | paste -sd'|')"
+check "a UUID that lands late is waited for, udev asked to probe that partition again, then settled" "|3|3|2|2" \
+    "$(pu 2)|$(grep -c '^lsblk /dev/loop9p2$' "$Q/pu")|$(grep -c '^settle$' "$Q/pu")|$(
+        grep -c '^trigger --action=change /dev/loop9p2$' "$Q/pu")|$(grep -c '^trigger ' "$Q/pu")"
+check "one that never lands stops the install, naming the partition" \
+    "/dev/loop9p2 has no UUID that udev knows 30 s after mkfs (blkid -p reads 'probed-uuid'), so bootc install cannot name it" "$(pu 1000)"
 
 # --- qualify.sh: G4 is due when its key changes or its last pass is a week old ------------
 G4_DIR="$TMP/g4"
@@ -815,7 +838,7 @@ check "APEX_CI_MODE=g4 whose conditions fail: refused, exit 2, nothing runs" \
     "$(APEX_CI_MODE=g4 t2_main)|$(cat "$T2/out")|$(t2_steps)"
 check "APEX_CI_MODE=g4 with --image-only: refused" "2|ci-build g4: qualify-only refused: --image-only" \
     "$(APEX_CI_MODE=g4 t2_main '' --image-only)|$(cat "$T2/out")"
-check "APEX_CI_MODE of another word: exit 2" "2|APEX_CI_MODE=G4: not daily, gate or g4" "$(APEX_CI_MODE=G4 t2_main)|$(cat "$T2/out")"
+check "APEX_CI_MODE of another word: exit 2" "2|APEX_CI_MODE=G4: not daily, gate, g4 or sign" "$(APEX_CI_MODE=G4 t2_main)|$(cat "$T2/out")"
 check "--image-only is never qualify-only" "1|== plan: gate (G4 first)" "$(t2_main '' --image-only)|$(head -n 1 "$T2/out")"
 
 # --- firmware.sh: the VM scripts find Ubuntu's or Fedora's OVMF ------------------------------
@@ -877,8 +900,12 @@ cat >"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh" <<'EOF'
 : >"$FAKE/build-ran"
 echo "== plan: gate (G4 first)" >&2
 echo "${APEX_CI_MODE-unset}" >"$FAKE/ci-mode"
+echo "${APEX_SIGN_RUN-unset} ${APEX_SIGN_CONTENT_KEY-unset}" >"$FAKE/sign-env"
 mkdir -p _build
-if [[ ${APEX_CI_MODE:-} == g4 && ! -e $FAKE/ignore-mode ]]; then echo qualify-only; else echo gate; fi >_build/plan.txt
+if [[ -e $FAKE/ignore-mode ]]; then echo gate
+elif [[ ${APEX_CI_MODE:-} == g4 ]]; then echo qualify-only
+elif [[ ${APEX_CI_MODE:-} == sign ]]; then echo sign
+else echo gate; fi >_build/plan.txt
 [[ ! -e $FAKE/no-plan ]] || rm _build/plan.txt
 echo "lock-sha256 x" >_build/gates-passed.txt
 echo "== G4, when qualify.sh g4-due says it is due"
@@ -902,6 +929,7 @@ if [[ -e $FAKE/with-logs ]]; then
 fi
 echo "== G2, the headless shell, 2 runs" >&2
 exit "$(cat "$FAKE/build-rc")"
+sign_gates() { :; }
 EOF
 cat >"$CI_DIR/home/apex-image/tools/builder-vm/lane.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -1073,7 +1101,45 @@ for request in "ci-build $CI_SHA next " "ci-build $CI_SHA NEXT" "ci-build $CI_SH
     check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
         "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 done
-check "ci-build modes names daily, next, gate and g4, before any git or lock" "0|daily next gate g4|no git" \
+# ci-build <sha> sign <run> <content key>: the release signer, once per content key.
+CI_KEY=$(printf 'c%.0s' {1..64})
+for request in "ci-build $CI_SHA sign" "ci-build $CI_SHA sign 12" "ci-build $CI_SHA sign 12 ${CI_KEY:1}" \
+    "ci-build $CI_SHA sign 0 $CI_KEY" "ci-build $CI_SHA sign 012 $CI_KEY" "ci-build $CI_SHA sign 12 ${CI_KEY^^}" \
+    "ci-build $CI_SHA sign 12 $CI_KEY daily" "ci-build $CI_SHA sign $CI_KEY 12" "ci-build $CI_SHA SIGN 12 $CI_KEY" \
+    "ci-build $CI_SHA sign x12 $CI_KEY" "ci-build $CI_SHA sign 12 $CI_KEY " "ci-build sign 12 $CI_KEY"; do
+    check "ci-build refuses $(printf '%q' "$request"), before any git" "2:no git" \
+        "$(ci_request "$request"):$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
+done
+rm -f "$CI_DIR/store/signed.txt"
+check "sign: build-image.sh gets the sign plan, its gates run and content key, and the lane lock is promoted" \
+    "0|sign|12 $CI_KEY|promote" \
+    "$(ci_request "ci-build $CI_SHA sign 12 $CI_KEY")|$(cat "$CI_DIR/ci-mode")|$(cat "$CI_DIR/sign-env")|$(cat "$CI_DIR/lane.log")"
+check "and signed.txt names the content key, the commit and the run" "content-key $CI_KEY|sha $CI_SHA|run 12|signed" \
+    "$(sed 's/^signed .*/signed/' "$CI_DIR/store/signed.txt" | paste -sd'|')"
+check_true "ci-build.txt says so" bash -c "tar -xOf '$CI_DIR/out.tar' ./ci-build.txt | grep -qx 'signed $CI_KEY'"
+rm -f "$CI_DIR/build-ran"
+check "sign: a content key signed already builds nothing, fetches nothing and exits 0" "0|no git|no build" \
+    "$(ci_request "ci-build $CI_SHA sign 13 $CI_KEY")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')|$(
+        [[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')"
+check_true "and says nothing new" bash -c "tar -xOf '$CI_DIR/out.tar' ./ci-build.txt | grep -q '^sign nothing new: content key $CI_KEY'"
+check "and signed.txt still names the first run" "run 12" "$(grep '^run ' "$CI_DIR/store/signed.txt")"
+echo 1 >"$CI_DIR/build-rc"
+check "sign: a failed build promotes nothing and keeps signed.txt" "1|no promotion|content-key $CI_KEY" \
+    "$(ci_request "ci-build $CI_SHA sign 14 $(printf 'd%.0s' {1..64})")|$([[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')|$(grep '^content-key ' "$CI_DIR/store/signed.txt")"
+echo 0 >"$CI_DIR/build-rc"
+: >"$CI_DIR/ignore-mode"
+check "sign: a build-image.sh that ran another plan is refused, its gates record removed, nothing promoted" \
+    "2|plan refused: build-image.sh ran gate, not sign; no gates record|no promotion" \
+    "$(ci_request "ci-build $CI_SHA sign 15 $(printf 'e%.0s' {1..64})")|$(tar -xOf "$CI_DIR/out.tar" ./ci-build.txt | grep '^plan refused')|$(
+        [[ -e $CI_DIR/lane.log ]] && echo promotion || echo 'no promotion')"
+rm -f "$CI_DIR/ignore-mode"
+sed -i '/^sign_gates() {/d' "$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/build-ran"
+check "sign: a commit whose build-image.sh has no sign plan is refused before it builds" "2|no build" \
+    "$(ci_request "ci-build $CI_SHA sign 16 $(printf 'f%.0s' {1..64})")|$([[ -e $CI_DIR/build-ran ]] && echo build || echo 'no build')"
+echo 'sign_gates() { :; }' >>"$CI_DIR/home/apex-image/tools/builder-vm/build-image.sh"
+rm -f "$CI_DIR/store/signed.txt"
+check "ci-build modes names daily, next, gate, g4 and sign, before any git or lock" "0|daily next gate g4 sign|no git" \
     "$(ci_request "ci-build modes")|$(cat "$CI_DIR/out.tar")|$([[ -e $CI_DIR/git.log ]] && echo git || echo 'no git')"
 mv "$CIW/tools/builder-vm/build-image.sh" "$CI_DIR/build-image-45.sh"
 cat >"$CIW/tools/builder-vm/build-image.sh" <<'EOF'
@@ -1992,6 +2058,161 @@ check_false "the next day's updates name another cache" test "$GSK1" = "$(gs_run
 rm -f "$GS/ts-updates-released-f45"
 check "a revision that cannot be read: no key, so the build runs uncached, with a warning" "key=|repos=|yes" \
     "$(gs_run cmd_cache_key | paste -sd'|')|$(grep -q '::warning::gates: no repomd revision' "$GS/err" && echo yes)"
+
+# --- build-image.sh sign: the hosted verdict's content key, the Apex key, then the G4 smoke ------
+SG=$TMP/sign-gates
+mkdir -p "$SG/w/_build/image" "$SG/store"
+SG_KEY=$(printf 'c%.0s' {1..64})
+printf 'lane lock\n' >"$SG/store/rpms.lock.next"
+sg_sign() { # RUN KEY: sign_gates in SG's checkout, its image.env as SG left it; prints exit|refusal|smoke
+    local rc=0
+    rm -f "$SG/log" "$SG/w/_build/gates-passed.txt"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$SG/w" && env SG="$SG" APEX_STORE="$SG/store" APEX_COMPONENTS=pinned APEX_SIGN_RUN="$1" APEX_SIGN_CONTENT_KEY="$2" bash -c '
+        . "$1"
+        image_test_key() { [[ -e $SG/marker ]] && echo TESTFPR; }
+        qualify() { echo "qualify $* layout=$QUALIFY_LAYOUT" >>"$SG/log"; [[ ! -e $SG/smoke-fails ]]; }
+        sudo() { printf "%s  /usr/share/apex/rpms.lock\n" "$(cat "$SG/image-lock")"; }
+        image_id() { echo img1; }
+        sign_gates' _ "$APEX_ROOT/tools/builder-vm/build-image.sh") >"$SG/out" 2>&1 || rc=$?
+    printf '%s|%s|%s\n' "$rc" "$(sed -n 's/^sign refused: \([^:]*\):.*/\1/p' "$SG/out" | head -n 1)" "$(cat "$SG/log" 2>/dev/null)"
+}
+sha256sum <"$SG/store/rpms.lock.next" | cut -d' ' -f1 >"$SG/image-lock"
+printf 'CONTENT_KEY=%s\nRPM_KEY=apex\n' "$SG_KEY" >"$SG/w/_build/image/image.env"
+check "sign: the Apex key's image of the hosted content key gets the G4 smoke, then its gates record" \
+    "0||qualify local-shard smoke localhost/apex:build layout=separate-boot" "$(sg_sign 12 "$SG_KEY")"
+check "and the record names the hosted run, the smoke, the Apex key and the content key" \
+    "lock-sha256 $(cat "$SG/image-lock")|image-id img1|g2 hosted 12|g4 hosted 12, smoke passed|components pinned|rpm-key apex|content-key $SG_KEY" \
+    "$(paste -sd'|' "$SG/w/_build/gates-passed.txt")"
+check "sign: another content key is refused before the smoke, naming content-key" "2|content-key|" \
+    "$(sg_sign 12 "$(printf 'd%.0s' {1..64})")"
+check_false "and nothing is recorded" test -e "$SG/w/_build/gates-passed.txt"
+check "sign: a gates run or content key that is not one is refused" "2||" "$(sg_sign 0 "$SG_KEY")"
+check "sign: an empty content key is refused" "2||" "$(sg_sign 12 '')"
+printf 'CONTENT_KEY=%s\nRPM_KEY=test:TESTFPR\n' "$SG_KEY" >"$SG/w/_build/image/image.env"
+check "sign: an image whose rpm-key is not apex is refused, naming rpm-key" "2|rpm-key|" "$(sg_sign 12 "$SG_KEY")"
+printf 'CONTENT_KEY=%s\nRPM_KEY=apex\n' "$SG_KEY" >"$SG/w/_build/image/image.env"
+: >"$SG/marker"
+check "sign: an image that carries the test-key marker is refused, however image.env reads" "2|rpm-key|" "$(sg_sign 12 "$SG_KEY")"
+rm -f "$SG/marker"
+: >"$SG/smoke-fails"
+check "sign: a failed G4 smoke records nothing" "1||qualify local-shard smoke localhost/apex:build layout=separate-boot|no record" \
+    "$(sg_sign 12 "$SG_KEY")|$([[ -e $SG/w/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+rm -f "$SG/smoke-fails"
+echo other >"$SG/image-lock"
+check "sign: an image whose rpms.lock is not the lane's records nothing" "1||qualify local-shard smoke localhost/apex:build layout=separate-boot|no record" \
+    "$(sg_sign 12 "$SG_KEY")|$([[ -e $SG/w/_build/gates-passed.txt ]] && echo record || echo 'no record')"
+sg_shard() { # SHARD: how far qualify.sh local-shard gets on a to-disk layout, sourced so no tool is needed
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    QUALIFY_LAYOUT=to-disk bash -c '. "$1"; cmd_local_shard "$2" localhost/apex:build' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1" 2>&1 |
+        sed -n 's/^\(error: \|::error::\)//p' | head -n 1
+}
+check "qualify.sh local-shard takes smoke, the signer's shard, as far as the layout check" \
+    "the G4 shards run QUALIFY_LAYOUT=separate-boot only, not to-disk" "$(sg_shard smoke)"
+check "and names it among the shards it takes" "no G4 shard 'bogus' (update boot-metrics login lock polkit crash-guard smoke)" \
+    "$(sg_shard bogus)"
+check_false "while the hosted gates' G4 shards stay the six" grep -q '^readonly G4_SHARDS=(.*smoke' "$APEX_ROOT/.github/scripts/qualify.sh"
+
+# --- sign-source.sh: the gates run the release signer trusts, each field checked (fake gh) ---
+SS=$TMP/sign-source
+mkdir -p "$SS/bin"
+SS_MAIN=$(printf '1%.0s' {1..40})
+SS_TRAIN=$(printf '2%.0s' {1..40})
+SS_KEY=$(printf 'c%.0s' {1..64})
+SS_FPR=$(printf 'A%.0s' {1..40})
+cat >"$SS/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# gh api ENDPOINT: the fixture each endpoint names; the record's archive is SS/record.zip.
+[[ $1 == api ]] || exit 2
+case $2 in
+    */commits/*) cat "$SS_DIR/commit.json" ;;
+    */actions/workflows/gates.yml/runs\?*) cat "$SS_DIR/runs.json" ;;
+    */actions/runs/*/artifacts\?*) cat "$SS_DIR/artifacts.json" ;;
+    https://download/*) cat "$SS_DIR/record.zip" ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$SS/bin/gh"
+ss_commit() { # MESSAGE PARENTS...
+    local msg=$1
+    shift
+    jq -n --arg m "$msg" --args '{commit: {message: $m}, parents: [$ARGS.positional[] | {sha: .}]}' "$@" >"$SS/commit.json"
+}
+ss_run() { # ID PATH EVENT REPO HEAD STATUS CONCLUSION: one run, appended
+    jq --argjson id "$1" --arg path "$2" --arg event "$3" --arg repo "$4" --arg head "$5" --arg st "$6" --arg c "$7" \
+        '.workflow_runs += [{id: $id, path: $path, event: $event, head_repository: {full_name: $repo}, head_sha: $head,
+            status: $st, conclusion: $c}]' "$SS/runs.json" >"$SS/runs.tmp" && mv "$SS/runs.tmp" "$SS/runs.json"
+}
+ss_record() { # gates.txt lines: the run's gates-record
+    rm -rf "$SS/rec" && mkdir -p "$SS/rec" && printf '%s\n' "$@" >"$SS/rec/gates.txt"
+    (cd "$SS/rec" && python3 -I -c 'import zipfile; z = zipfile.ZipFile("../record.zip", "w"); z.write("gates.txt"); z.close()')
+}
+ss_good() {
+    ss_commit "Merge pull request #180 from apex-linux/train/r23" "$(printf '0%.0s' {1..40})" "$SS_TRAIN"
+    echo '{"workflow_runs": []}' >"$SS/runs.json"
+    ss_run 41979648886 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed success
+    echo '{"artifacts": [{"name": "gates-record", "expired": false, "archive_download_url": "https://download/rec"}]}' >"$SS/artifacts.json"
+    ss_record "sha $SS_TRAIN" "image-id x" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 passed"
+}
+ss() { # prints stdout, then the exit and the refusal
+    local rc=0
+    PATH="$SS/bin:$PATH" SS_DIR=$SS "$APEX_ROOT/.github/scripts/sign-source.sh" "${1:-apex-linux/apex-image}" "${2:-$SS_MAIN}" \
+        >"$SS/out" 2>"$SS/err" || rc=$?
+    printf '%s|%s|%s\n' "$(paste -sd' ' "$SS/out")" "$rc" "$(sed -n 's/^sign refused: \([^:]*\):.*/\1/p' "$SS/err" | head -n 1)"
+}
+ss_good
+check "sign-source: the train's green gates run, its content key and the train head" \
+    "run=41979648886 content-key=$SS_KEY train=$SS_TRAIN|0|" "$(ss)"
+check "sign-source: a sha that is not one" "|1|sha" "$(ss apex-linux/apex-image HEAD)"
+ss_commit "Merge pull request #180 from apex-linux/train/r23" "$SS_TRAIN"
+check "sign-source: a commit that is no merge" "|1|merge" "$(ss)"
+ss_commit "Merge pull request #183 from apex-linux/claude/x" "$(printf '0%.0s' {1..40})" "$SS_TRAIN"
+check "sign-source: a merge of no train" "|1|merge" "$(ss)"
+ss_commit "Merge pull request #183 from someone/train/r23" "$(printf '0%.0s' {1..40})" "$SS_TRAIN"
+check "sign-source: a train of another owner" "|1|merge" "$(ss)"
+ss_good
+echo '{"workflow_runs": []}' >"$SS/runs.json"
+check "sign-source: no gates.yml run of the train head" "|1|run" "$(ss)"
+for bad in "path .github/workflows/ci.yml" "event push" "head-repo fork/apex-image" "conclusion completed/failure" \
+    "conclusion in_progress/"; do
+    ss_good
+    echo '{"workflow_runs": []}' >"$SS/runs.json"
+    case $bad in
+        path*) ss_run 9 .github/workflows/ci.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed success ;;
+        event*) ss_run 9 .github/workflows/gates.yml push apex-linux/apex-image "$SS_TRAIN" completed success ;;
+        head-repo*) ss_run 9 .github/workflows/gates.yml pull_request fork/apex-image "$SS_TRAIN" completed success ;;
+        *failure) ss_run 9 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed failure ;;
+        *) ss_run 9 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" in_progress "" ;;
+    esac
+    check "sign-source: refuses a run whose $bad, naming the field" "|1|$bad" "$(ss)"
+done
+ss_good
+ss_run 41979650000 .github/workflows/gates.yml pull_request apex-linux/apex-image "$SS_TRAIN" completed failure
+check "sign-source: a newer red run does not hide the green one, which is taken" \
+    "run=41979648886 content-key=$SS_KEY train=$SS_TRAIN|0|" "$(ss)"
+ss_good
+ss_run 7 .github/workflows/gates.yml pull_request apex-linux/apex-image "$(printf '3%.0s' {1..40})" completed success
+echo '{"workflow_runs": []}' >"$SS/runs.json"
+ss_run 7 .github/workflows/gates.yml pull_request apex-linux/apex-image "$(printf '3%.0s' {1..40})" completed success
+check "sign-source: a green run of another head never counts" "|1|run" "$(ss)"
+ss_good
+echo '{"artifacts": []}' >"$SS/artifacts.json"
+check "sign-source: a run with no gates-record" "|1|record" "$(ss)"
+ss_good
+echo '{"artifacts": [{"name": "gates-record", "expired": true, "archive_download_url": "https://download/rec"}]}' >"$SS/artifacts.json"
+check "sign-source: an expired gates-record" "|1|record" "$(ss)"
+for bad in sha g1 g2 g4 content-key rpm-key; do
+    ss_good
+    case $bad in
+        sha) ss_record "sha $SS_MAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 passed" ;;
+        g1) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g2 passed" "g4 passed" ;;
+        g2) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 failed" "g4 passed" ;;
+        g4) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 failed" ;;
+        content-key) ss_record "sha $SS_TRAIN" "content-key unknown" "rpm-key test:$SS_FPR" "g1 passed" "g2 passed" "g4 passed" ;;
+        rpm-key) ss_record "sha $SS_TRAIN" "content-key $SS_KEY" "rpm-key apex" "g1 passed" "g2 passed" "g4 passed" ;;
+    esac
+    check "sign-source: refuses a record whose $bad does not hold, naming it" "|1|$bad" "$(ss)"
+done
 
 # --- image.sh: the content key (schema 2) hashes what was built, never who signed it ----------
 CK=$TMP/content-key
@@ -4738,7 +4959,7 @@ mkdir -p "$CT/system/hardware/m7400qc" "$CT/desktop/desktop/schemas" "$CT/deskto
 ct_degraded() {
     printf 'pub const DEGRADED_COMPONENTS: &[&str] = &[%s];\n' "$1" >"$CT/system/crates/apexctl/src/manifest.rs"
 }
-ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
+ct_degraded '"adwaita", "audio", "code", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 ct_choices() { # NAMES: apex-desktop's schema with disabled-features offering NAMES
     local c=''
     for n in "$@"; do c+="<choice value=\"$n\"/>"; done
@@ -4902,9 +5123,9 @@ rm "$CT/gnome/tests/layer/fixtures/apex-booted-deployment.sh"
 check "contracts: apex-gnome's booted-deployment recorder copy is missing" 1 "$(ct_run)"
 cp "$CT/desktop/desktop/systemd/apex-booted-deployment.sh" "$CT/gnome/tests/layer/fixtures/"
 check "contracts: the booted-deployment recorder copies equal" 0 "$(ct_run)"
-ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell"'
+ct_degraded '"adwaita", "audio", "code", "files", "fingerprint", "nvidia", "settings", "shell"'
 check "contracts: an apexctl that refuses a degraded name the Containerfile writes" 1 "$(ct_run)"
-ct_degraded '"adwaita", "audio", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
+ct_degraded '"adwaita", "audio", "code", "files", "fingerprint", "nvidia", "settings", "shell", "terminal"'
 check "contracts: an apexctl that accepts every degraded name" 0 "$(ct_run)"
 rm "$CT/gnome/desktop/control-center/panels/apex/$CT_UPDATE1"
 check "contracts: apex-gnome without Settings' Update1 copy" 1 "$(ct_run)"
@@ -6442,7 +6663,11 @@ case $1 in
     ssh)
         if [[ $2 == *"ci-build modes"* ]]; then
             [[ ${FAKE_MODES:-new} != old ]] || { echo "ci-build: refused" >&2; exit 2; }
-            if [[ ${FAKE_MODES:-new} == next ]]; then echo "daily next"; else echo "daily next gate g4"; fi
+            case ${FAKE_MODES:-new} in
+                next) echo "daily next" ;;
+                gate) echo "daily next gate g4" ;;
+                *) echo "daily next gate g4 sign" ;;
+            esac
             exit 0
         fi
         if [[ $2 == *cosign* ]]; then
@@ -6514,11 +6739,12 @@ check "before runner.sh key the key rows skip, and the host still passes" "rc=0 
     "$(pf) $(pf_row runner-key) $(pf_row ci-build) $(pf_row vm-host-key)"
 pf_root
 check "a stopped builder VM skips the binding and cosign" "rc=0 SKIP SKIP" "$(pf FAKE_VM=down) $(pf_row ci-build) $(pf_row vm-cosign)"
-check "a forced command on the current grammar passes, naming its modes" "PASS|next gate g4" \
+check "a forced command on the current grammar passes, naming its modes" "PASS|gate g4 sign" \
     "$(pf >/dev/null; pf_row ci-build-modes)|$(awk '$2 == "ci-build-modes" { print $(NF - 2), $(NF - 1), $NF }' "$PF/out")"
-check_true "an old one's row says how to upgrade" grep -q 'an old grammar (no next, gate or g4): just vm-ci-install' \
+check_true "an old one's row says how to upgrade" grep -q 'an old grammar (no next, gate, g4 or sign): just vm-ci-install' \
     <<<"$(pf FAKE_MODES=old >/dev/null; cat "$PF/out")"
 check "one that takes next but not gate and g4 fails the row too" FAIL "$(pf FAKE_MODES=next >/dev/null; pf_row ci-build-modes)"
+check "one that takes gate and g4 but not sign fails the row too" FAIL "$(pf FAKE_MODES=gate >/dev/null; pf_row ci-build-modes)"
 check "an argument is a usage error" 2 "$(rc_of "$APEX_ROOT/tools/runner/preflight.sh" extra)"
 # --- install-cosign.sh: the pinned release only, checked before it is installed ----------
 IC="$TMP/install-cosign"
@@ -6997,7 +7223,9 @@ if [[ $* == "apex-builder ci-build modes" ]]; then
     [[ ! -e $FAKE_VM/old-host ]] || { echo "ci-build: refused" >&2; exit 2; }
     [[ ! -e $FAKE_VM/modes-lost ]] || exit 255
     # The ci-build installed before r18: it takes modes, and answers without gate and g4.
-    if [[ -e $FAKE_VM/next-host ]]; then echo "daily next"; else echo "daily next gate g4"; fi
+    if [[ -e $FAKE_VM/next-host ]]; then echo "daily next"
+    elif [[ -e $FAKE_VM/gate-host ]]; then echo "daily next gate g4"
+    else echo "daily next gate g4 sign"; fi
     exit 0
 fi
 printf '%s\n' "$*" >"$FAKE_VM/ssh.args"
@@ -7064,7 +7292,7 @@ check "push paths: every file of tools/builder-vm that builds or gates is named,
 vm_reset
 check "Commit: a push builds GITHUB_SHA" "0|sha=$CI_SHA" "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=push INPUT_SHA=)|$(cat "$V/output")"
 vm_reset
-check "Commit: the schedule asks for the daily extras" "0|sha=$CI_SHA extra=daily" \
+check "Commit: the schedule is the release signer" "0|sha=$CI_SHA extra=sign" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=schedule INPUT_SHA=)|$(paste -sd' ' "$V/output")"
 vm_reset
 check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
@@ -7072,7 +7300,7 @@ check "Commit: a dispatch builds its input" "0|sha=$CI_OTHER" \
 vm_reset
 check "Commit: a short sha is an error" "1|::error::not a full commit sha: abc123" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA=abc123)|$(cat "$V/log")"
-for plan in gate g4; do
+for plan in gate g4 sign daily; do
     vm_reset
     check "Commit: a dispatch with plan $plan sends it" "0|sha=$CI_SHA extra=$plan" \
         "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=$plan)|$(paste -sd' ' "$V/output")"
@@ -7081,8 +7309,8 @@ vm_reset
 check "Commit: plan auto sends nothing" "0|sha=$CI_SHA" \
     "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=auto)|$(cat "$V/output")"
 vm_reset
-check "Commit: another plan is an error" "1|::error::not a plan: daily (auto, gate or g4)" \
-    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=daily)|$(cat "$V/log")"
+check "Commit: another plan is an error" "1|::error::not a plan: nightly (auto, gate, g4, sign or daily)" \
+    "$(vm_run "$COMMIT" GITHUB_EVENT_NAME=workflow_dispatch INPUT_SHA= INPUT_PLAN=nightly)|$(cat "$V/log")"
 
 for case in "0:" "1:::error::the build in the builder VM failed (exit 1)" "2:::error::ci-build refused $CI_SHA" \
     "75:::error::another build holds the builder VM" \
@@ -7139,6 +7367,22 @@ check "build: ssh lost while asking modes is exit 255, and nothing builds" \
     "255|::error::ssh lost or never reached the builder VM (exit 255): is it running? (just vm-status; tools/runner/README.md, Troubleshooting)|no build" \
     "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=daily)|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
 rm "$V/modes-lost"
+VM_KEY=$(printf 'c%.0s' {1..64})
+vm_reset
+check "build: the signer sends its gates run and content key" "0|apex-builder ci-build $CI_SHA sign 41979648886 $VM_KEY" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=sign SIGN_RUN=41979648886 SIGN_KEY="$VM_KEY")|$(cat "$V/ssh.args")"
+vm_reset
+check "build: a sign without sign-source's run and key fails at once, building nothing" \
+    "2|::error::sign-source gave no gates run and content key to sign|no build" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=sign SIGN_RUN= SIGN_KEY="$VM_KEY")|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+: >"$V/gate-host"
+vm_reset
+check "build: an installed ci-build before sign fails the signer at once, building nothing" \
+    "2|::error::the builder VM's ci-build predates sign, so it cannot sign as asked: run just vm-ci-install (tools/runner/README.md, Upgrades)|no build" \
+    "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=sign SIGN_RUN=12 SIGN_KEY="$VM_KEY")|$(cat "$V/log")|$([[ -e $V/ssh.args ]] && echo build || echo 'no build')"
+vm_reset
+check "build: and still runs gate" "0|apex-builder ci-build $CI_SHA gate" "$(vm_run "$BUILD" SHA="$CI_SHA" EXTRA=gate)|$(cat "$V/ssh.args")"
+rm "$V/gate-host"
 
 vm_gates() { cp "$V/results.tar" "$V/temp/results.tar" 2>/dev/null || : >"$V/temp/results.tar"; vm_run "$GATES"; }
 GREEN_CI="ci-build.txt=$(printf 'sha %s\nbuild-image 0\npromote passed\nexit 0' "$CI_SHA")"
@@ -7147,6 +7391,15 @@ vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g
     "g4-results.md=| local | PASS |" "qualify-logs/local.png=png" "g2-logs/run-1/motion.log=log" \
     "diag-logs/local-lock/journal.txt=diag" "stages.tsv=$(printf '1793370000\tfetch and check out\n1793370090\t1/4 rpms\n1793374200\tG4, due\n1793378000\tend')"
 check "gates: a green build passes" 0 "$(vm_gates)"
+vm_reset
+vm_results "ci-build.txt=$(printf 'sha %s\nsign nothing new: content key %s is signed already (x)\nexit 0' "$CI_SHA" "$VM_KEY")"
+check "gates: a sign with nothing new passes, and says so" "0|yes" \
+    "$(vm_gates)|$(grep -q '::notice title=sign::nothing new: sign nothing new: content key' "$V/log" && echo yes)"
+vm_reset
+vm_results "$GREEN_CI" "gates-passed.txt=lock-sha256 x" "lock.diff=+family a" "g2-result.txt=PASS" \
+    "g4-results.md=| local | PASS |" "qualify-logs/local.png=png" "g2-logs/run-1/motion.log=log" \
+    "diag-logs/local-lock/journal.txt=diag" "stages.tsv=$(printf '1793370000\tfetch and check out\n1793370090\t1/4 rpms\n1793374200\tG4, due\n1793378000\tend')"
+vm_gates >/dev/null
 check "gates: with each result in the summary" "## Builder VM|### ci-build|### Stages|### Gates (gates-passed.txt)|### Lane lock (rpms.lock to rpms.lock.next, before the promotion)|### G2 (result.txt)|### G4 (results.md)" \
     "$(grep -E '^##' "$V/summary" | paste -sd'|')"
 check "gates: each stage with its UTC start and its minutes" \
@@ -7416,7 +7669,7 @@ dd_job=$(awk '/^  daily-due:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APE
 build_job=$(awk '/^  build:$/ { f = 1; next } f && /^  [a-z]/ { exit } f' "$APEX_ROOT/.github/workflows/vm.yml")
 check_true "daily-due runs only on the schedule" grep -q "&& github.event_name == 'schedule'$" <<<"$dd_job"
 check "daily-due may only read Actions" "actions: read" "$(awk '/^    permissions:$/ { p = 1; next } p && /^      / { print $1, $2; next } p { exit }' <<<"$dd_job")"
-check_true "build waits for daily-due" grep -qx '    needs: \[dispatch-approval, daily-due\]' <<<"$build_job"
+check_true "build waits for daily-due and the signer's source" grep -qx '    needs: \[dispatch-approval, daily-due, sign-source\]' <<<"$build_job"
 check_true "and only a daily-due that ran and said due=false skips it" \
     grep -qF "&& (needs.daily-due.result != 'success' || needs.daily-due.outputs.due != 'false')" <<<"$build_job"
 

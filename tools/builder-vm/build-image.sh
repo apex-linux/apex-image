@@ -40,7 +40,11 @@ the plan. After a failure it runs qualify.sh local-diag too.
 
 APEX_CI_MODE (ci-build's mode) overrides the choice: daily and gate run the full gate,
 gate with G4 due whatever its last pass (g4-due reads an empty record, /dev/null); g4
-runs qualify-only and exits 2 when its conditions fail. Empty is the choice above.
+runs qualify-only and exits 2 when its conditions fail. Empty is the choice above. sign
+(the release signer) builds with the Apex RPM key and G1, never G2 or G4: those passed on
+GitHub's runners for APEX_SIGN_CONTENT_KEY (gates run APEX_SIGN_RUN). It exits 2 when this
+image's content key is another or its rpm-key is not apex, runs the G4 smoke (qualify.sh
+local-shard smoke) on the signed image, and records the gates ("g2 hosted RUN") only then.
 
 tools/components.sh fetch and env run before the first build step: each RPM is built
 from its pinned component (the apex RPM from apex-system, apex-desktop from
@@ -722,6 +726,36 @@ record_gates() {
     echo "just pkg-promote makes the lane lock it carries rpms.lock"
 }
 
+# ci-build sign: G2 and G4 passed on GitHub's runners for APEX_SIGN_CONTENT_KEY. Here the Apex
+# key's image must carry that key, and the G4 smoke must pass on it, before anything is recorded.
+sign_gates() {
+    local want=${APEX_SIGN_CONTENT_KEY:-} run=${APEX_SIGN_RUN:-} key rpm_key lock id
+    [[ $want =~ ^[0-9a-f]{64}$ && $run =~ ^[1-9][0-9]*$ ]] ||
+        { echo "sign refused: gates run '$run' or content key '$want' is not one" >&2; exit 2; }
+    key=$(sed -n 's/^CONTENT_KEY=//p' "$BUILD/image/image.env" 2>/dev/null | tail -n 1)
+    [[ $key == "$want" ]] ||
+        { echo "sign refused: content-key: this build's is ${key:-none}, gates run $run passed $want" >&2; exit 2; }
+    rpm_key=$(sed -n 's/^RPM_KEY=//p' "$BUILD/image/image.env" 2>/dev/null | tail -n 1)
+    if [[ $rpm_key != apex ]] || image_test_key >/dev/null 2>&1; then
+        echo "sign refused: rpm-key: this image's is '${rpm_key:-none}', not apex" >&2
+        exit 2
+    fi
+    echo "== G4 smoke: qualify.sh local-shard smoke on the signed image"
+    if ! QUALIFY_MEM=3G QUALIFY_SMP=4 QUALIFY_LAYOUT=separate-boot qualify local-shard smoke "$IMAGE"; then
+        echo "sign: the G4 smoke failed on $IMAGE; nothing is recorded" >&2
+        return 1
+    fi
+    lock=$(sudo podman run --rm --net=none --entrypoint sha256sum "$IMAGE" /usr/share/apex/rpms.lock | cut -d' ' -f1)
+    if [[ -z $lock || $lock != "$(sha256_of "$LANE_LOCK")" ]]; then
+        echo "sign: $IMAGE carries rpms.lock ${lock:-none}, not $LANE_LOCK; nothing is recorded" >&2
+        return 1
+    fi
+    id=$(image_id) || return
+    printf 'lock-sha256 %s\nimage-id %s\ng2 hosted %s\ng4 hosted %s, smoke passed\ncomponents %s\nrpm-key apex\ncontent-key %s\n' \
+        "$lock" "$id" "$run" "$run" "${APEX_COMPONENTS:-unknown}" "$key" >"$GATES_PASSED"
+    echo "sign: $IMAGE (image $id), signed by the Apex RPM key, carries content key $key, which gates run $run passed; the G4 smoke passed"
+}
+
 # Each unit of G4 on its own after a G4 failure, so one run shows every failing row. It
 # records nothing, and never changes the gates' verdict.
 diagnose_g4() {
@@ -870,7 +904,8 @@ main() {
         case ${APEX_CI_MODE:-} in
             '' | g4) ;;
             daily | gate) why="ci-build $APEX_CI_MODE: the full gate run" ;;
-            *) echo "APEX_CI_MODE=$APEX_CI_MODE: not daily, gate or g4" >&2; exit 2 ;;
+            sign) why="ci-build sign: G2 and G4 passed on GitHub's runners (gates run ${APEX_SIGN_RUN:-?})" ;;
+            *) echo "APEX_CI_MODE=$APEX_CI_MODE: not daily, gate, g4 or sign" >&2; exit 2 ;;
         esac
         if [[ -z $why ]] && ((!image_only)) && why=$(t2_plan 2>&1); then
             echo "== plan: qualify-only (advisory)"
@@ -882,9 +917,16 @@ main() {
             echo "ci-build g4: qualify-only refused: ${why:---image-only}" >&2
             exit 2
         fi
-        echo "== plan: gate (G4 first)"
-        echo "plan: ${why:-a full run}"
-        echo gate >"$PLAN_FILE"
+        if [[ ${APEX_CI_MODE:-} == sign ]]; then
+            ((!image_only)) || { echo "ci-build sign: never --image-only" >&2; exit 2; }
+            echo "== plan: sign (the Apex RPM key, G1, the G4 smoke)"
+            echo "plan: $why"
+            echo sign >"$PLAN_FILE"
+        else
+            echo "== plan: gate (G4 first)"
+            echo "plan: ${why:-a full run}"
+            echo gate >"$PLAN_FILE"
+        fi
     fi
     # Every full run starts from empty outputs: the containers write them as root, and a
     # stale RPM next to a new one would let dnf pick either.
@@ -920,7 +962,11 @@ main() {
         echo "build-image: the next lane gates on G1 only and records nothing; state in ~/apex-image/_build/next"
         return 0
     fi
-    gates "$image_only"
+    if [[ ${APEX_CI_MODE:-} == sign ]]; then
+        sign_gates
+    else
+        gates "$image_only"
+    fi
     echo "build-image: done; state in ~/apex-image/_build/image"
 }
 
