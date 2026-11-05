@@ -6,6 +6,10 @@ name: gates
 on:
   pull_request:
     branches: [main, "train/**"]
+  # A push to main or a train builds only, and alone saves the build cache: merged code writes it,
+  # and every pull request restores it.
+  push:
+    branches: [main, "train/**"]
   workflow_dispatch:
 
 permissions: {}
@@ -61,7 +65,9 @@ jobs:
           GATES_REPOS: ${{ steps.cache-key.outputs.repos }}
         run: .github/scripts/gates.sh build "$RUNNER_TEMP/gates-build"
       - name: Keep the build cache
-        if: steps.build.outcome == 'success' && steps.cache-key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
+        if: >-
+          github.event_name == 'push' && steps.build.outcome == 'success'
+          && steps.cache-key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ env.GATES_WORK }}/cache
@@ -70,6 +76,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: .github/scripts/ci-host.sh usage build
       - name: The image
+        if: github.event_name != 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gates-image
@@ -78,6 +85,7 @@ jobs:
           compression-level: 0
           if-no-files-found: error
       - name: The build's record
+        if: github.event_name != 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gates-build
@@ -88,6 +96,7 @@ jobs:
   g2:
     name: G2 run ${{ matrix.run }}
     needs: build
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
@@ -123,6 +132,7 @@ jobs:
   g2-stable:
     name: G2 stability (run 2 against run 1)
     needs: g2
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -155,6 +165,7 @@ jobs:
   g4:
     name: G4 ${{ matrix.shard }}
     needs: build
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -194,7 +205,7 @@ jobs:
     name: gates (G1, G2, G4)
     needs: [build, g2, g2-stable, g4]
     # It runs, and fails, whatever an earlier job did: a skipped job is no pass.
-    if: ${{ !cancelled() && github.repository == 'apex-linux/apex-image' }}
+    if: ${{ !cancelled() && github.repository == 'apex-linux/apex-image' && github.event_name != 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

@@ -129,13 +129,19 @@ nested_podman() {
 }
 
 # The secret half never leaves GNUPGHOME; the checkout's public key is the job's own.
+new_key() { # HOME: a signing key made in HOME, its fingerprint
+    local fpr
+    install -d -m 0700 "$1"
+    gpg --homedir "$1" --batch --quiet --passphrase '' \
+        --quick-gen-key "Apex gates test key (ephemeral, $(date -u +%FT%TZ))" ed25519 sign 1d
+    fpr=$(gpg --homedir "$1" --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+    [[ $fpr =~ ^[0-9A-F]{40}$ ]] || die "the ephemeral key has no fingerprint"
+    printf '%s\n' "$fpr"
+}
+
 ephemeral_key() {
     local home=$1 fpr
-    install -d -m 0700 "$home"
-    gpg --homedir "$home" --batch --quiet --passphrase '' \
-        --quick-gen-key "Apex gates test key (ephemeral, $(date -u +%FT%TZ))" ed25519 sign 1d
-    fpr=$(gpg --homedir "$home" --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
-    [[ $fpr =~ ^[0-9A-F]{40}$ ]] || die "the ephemeral key has no fingerprint"
+    fpr=$(new_key "$home")
     gpg --homedir "$home" --batch --armor --export "$fpr" >"$ROOT/$KEY_FILE"
     printf 'APEX_RPM_KEY_FPR=%s\nAPEX_RPM_GNUPGHOME=%s\n' "$fpr" "$home" >"$home.env"
     printf '%s\n' "$fpr"
@@ -150,25 +156,48 @@ store_signed_rpms() {
     done
 }
 
-# A restored store's RPMs carry no signature; this run's key signs them and apex-lane checks each.
+# Every signature goes first, as rpm 6 may keep several; then this run's key signs and apex-lane checks each.
 resign_store() {
     local -a rpms
     mapfile -t rpms < <(store_signed_rpms)
     ((${#rpms[@]})) || return 0
-    log "gates: the restored store's ${#rpms[@]} RPM(s), signed with this run's key"
+    log "gates: the restored store's ${#rpms[@]} RPM(s), stripped and signed with this run's key"
+    rpmsign --delsign -- "${rpms[@]}" >/dev/null
     tools/builder-vm/lane.sh sign "${rpms[@]}"
 }
 
-# What the cache keeps holds no signature of this run's key, and the runner's user can read it.
+# DIR: what the cache keeps holds no signature of this run's key, and the runner's user can read it.
 unsign_cache() {
     local -a rpms
     mapfile -t rpms < <(store_signed_rpms)
     ((${#rpms[@]} == 0)) || rpmsign --delsign -- "${rpms[@]}" >/dev/null
-    chmod -R a+rX -- /work/cache
+    chmod -R a+rX -- "$1"
+}
+
+# A built RPM signed by a second key A, then restored as resign_store does: rpmkeys, with both keys,
+# must find this run's key B alone, every signature OK.
+resign_proof() {
+    local rpm=$1 b=$2 work a out
+    work=$(mktemp -d /work/resign-proof.XXXXXX)
+    a=$(new_key "$work/a")
+    cp -- "$rpm" "$work/x.rpm"
+    rpmsign --define "_gpg_path $work/a" --define "_openpgp_sign_id $a" --addsign "$work/x.rpm" >/dev/null
+    rpmsign --delsign -- "$work/x.rpm" >/dev/null
+    tools/builder-vm/lane.sh sign "$work/x.rpm"
+    gpg --homedir "$work/a" --batch --armor --export "$a" >"$work/a.asc"
+    rpm --dbpath "$work/db" --initdb
+    rpmkeys --dbpath "$work/db" --import "$work/a.asc" "$ROOT/$KEY_FILE"
+    out=$(rpmkeys --dbpath "$work/db" -Kv "$work/x.rpm" 2>&1) || die "re-signed by $b, ${rpm##*/} does not verify: $out"
+    if grep -qi -e "${a: -16}" <<<"$out" || ! grep -qi -e "${b: -16}" <<<"$out" ||
+        grep -i signature <<<"$out" | grep -qv ': OK$'; then
+        die "signed by $a, stripped and signed by $b, ${rpm##*/} is not $b's alone: $out"
+    fi
+    log "gates: a store RPM signed by $a, then stripped and signed by $b, carries $b's signature alone"
+    rm -rf -- "$work"
 }
 
 inner_build() {
-    local out=$1 t0=$SECONDS fpr id key lock
+    local out=$1 t0=$SECONDS fpr id key lock first
     mkdir -p "$out"
     export APEX_STORE=/work/cache/apex-store APEX_RPM_CACHE=/work/cache/rpm-cache XDG_CACHE_HOME=/work/cache/xdg
     mkdir -p "$APEX_STORE" "$APEX_RPM_CACHE" "$XDG_CACHE_HOME"
@@ -193,7 +222,9 @@ inner_build() {
     printf 'sha %s\nimage-id %s\ncontent-key %s\nrpm-key test:%s\nlock-sha256 %s\nseconds %s\n' \
         "$GATES_SHA" "$id" "${key:-unknown}" "$fpr" "$lock" "$((SECONDS - t0))" >"$out/build.txt"
     cat "$out/build.txt"
-    unsign_cache
+    first=$(store_signed_rpms | head -n 1)
+    [[ -z $first ]] || resign_proof "$first" "$fpr"
+    unsign_cache /work/cache
 }
 
 load() {

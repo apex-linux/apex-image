@@ -1927,6 +1927,67 @@ check_false "next: nothing lands in 45's _build/rpms" test -e "$BIW/_build/rpms"
 check "next: libfprint gets 46.env's Fedora key, which apex-kernel's build needs past 45" 1 \
     "$(grep -c -- "-e FEDORA_KEY_FPR=$(sed -n 's/^FEDORA_KEY_FPR=//p' "$APEX_ROOT/image/fedora/46.env") " "$BI/steps.log")"
 
+# --- gates.sh: the build cache, stripped before it is kept and signed again after a restore ---
+GS=$TMP/gates-cache
+mkdir -p "$GS/bin" "$GS/root/tools/builder-vm" "$GS/store/pkgs/gnome-shell/k1" "$GS/store/pkgs/nautilus/k2"
+printf '# apex-lane manifest\n# sig=OLD\nbuilt gnome-shell-0:1-1.x86_64 aa gs.rpm\napex-srpm gnome-shell-0:1-1.src bb gs.src.rpm\nmirror glib2-0:2-1.x86_64 cc glib2.rpm\n' \
+    >"$GS/store/pkgs/gnome-shell/k1/manifest.txt"
+printf '# apex-lane manifest\nbuilt nautilus-0:1-1.x86_64 dd n.rpm\n' >"$GS/store/pkgs/nautilus/k2/manifest.txt"
+for f in gnome-shell/k1/gs.rpm gnome-shell/k1/gs.src.rpm gnome-shell/k1/glib2.rpm nautilus/k2/n.rpm; do : >"$GS/store/pkgs/$f"; done
+cat >"$GS/bin/rpmsign" <<'EOF'
+#!/usr/bin/env bash
+echo "rpmsign $*" >>"$GS_LOG"
+EOF
+cat >"$GS/root/tools/builder-vm/lane.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "lane.sh $*" >>"$GS_LOG"
+EOF
+cat >"$GS/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+# The metalink of fedora-45 or updates-released-f45, from GS's files; none fails as a timeout does.
+repo=${*: -1}
+repo=${repo#*repo=}
+repo=${repo%%&*}
+[[ -f $GS_DIR/ts-$repo ]] || exit 28
+printf '<metalink>\n <files>\n  <file name="repomd.xml">\n   <mm0:timestamp>%s</mm0:timestamp>\n' "$(cat "$GS_DIR/ts-$repo")"
+EOF
+chmod +x "$GS/bin/"* "$GS/root/tools/builder-vm/lane.sh"
+gs_run() { # FUNCTION ARGS...: a gates.sh function in GS's checkout, store and fakes
+    rm -f "$GS/log"
+    # shellcheck disable=SC2016 # expanded by the inner bash
+    (cd "$GS/root" && PATH="$GS/bin:$PATH" GS_LOG="$GS/log" GS_DIR="$GS" APEX_STORE="$GS/store" \
+        bash -c '. "$1"; "${@:2}"' _ "$APEX_ROOT/.github/scripts/gates.sh" "$@") 2>"$GS/err"
+}
+GSR=$GS/store/pkgs
+gs_run resign_store
+check "gates: a restored store's Apex-signed RPMs lose every signature first, then this run's key signs them" \
+    "rpmsign --delsign -- $GSR/gnome-shell/k1/gs.rpm $GSR/gnome-shell/k1/gs.src.rpm $GSR/nautilus/k2/n.rpm|lane.sh sign $GSR/gnome-shell/k1/gs.rpm $GSR/gnome-shell/k1/gs.src.rpm $GSR/nautilus/k2/n.rpm" \
+    "$(paste -sd'|' "$GS/log")"
+check_false "and Fedora's mirrored RPM keeps Fedora's signature" grep -q glib2.rpm "$GS/log"
+: >"$GS/secret"
+chmod 0600 "$GS/secret"
+gs_run unsign_cache "$GS"
+check "gates: the kept cache holds the store's Apex-signed RPMs without a signature, readable by the runner" \
+    "rpmsign --delsign -- $GSR/gnome-shell/k1/gs.rpm $GSR/gnome-shell/k1/gs.src.rpm $GSR/nautilus/k2/n.rpm|644" \
+    "$(paste -sd'|' "$GS/log")|$(stat -c %a "$GS/secret")"
+mv "$GS/store" "$GS/store.full"
+mkdir -p "$GS/store"
+gs_run resign_store
+check_false "gates: an empty store signs nothing" test -e "$GS/log"
+rm -rf "$GS/store"
+mv "$GS/store.full" "$GS/store"
+echo 1793348934 >"$GS/ts-fedora-45"
+echo 1793839916 >"$GS/ts-updates-released-f45"
+GSK1=$(gs_run cmd_cache_key)
+check "gates: the build cache's name, and the day's repositories build-image.sh names its entries by" \
+    "key=gates-build-HEX|repos=fedora=1793348934 updates=1793839916" \
+    "$(printf '%s\n' "$GSK1" | sed 's/^key=gates-build-[0-9a-f]\{32\}$/key=gates-build-HEX/' | paste -sd'|')"
+echo 1793926316 >"$GS/ts-updates-released-f45"
+check_false "the next day's updates name another cache" test "$GSK1" = "$(gs_run cmd_cache_key)"
+rm -f "$GS/ts-updates-released-f45"
+check "a revision that cannot be read: no key, so the build runs uncached, with a warning" "key=|repos=|yes" \
+    "$(gs_run cmd_cache_key | paste -sd'|')|$(grep -q '::warning::gates: no repomd revision' "$GS/err" && echo yes)"
+
 # --- image.sh: the content key (schema 2) hashes what was built, never who signed it ----------
 CK=$TMP/content-key
 mkdir -p "$CK/repo/image/system_files/usr/share/apex/keys" "$CK/work"
