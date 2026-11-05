@@ -1973,7 +1973,7 @@ check "sign: an image whose rpms.lock is not the lane's records nothing" "1||qua
 sg_shard() { # SHARD: how far qualify.sh local-shard gets on a to-disk layout, sourced so no tool is needed
     # shellcheck disable=SC2016 # expanded by the inner bash
     QUALIFY_LAYOUT=to-disk bash -c '. "$1"; cmd_local_shard "$2" localhost/apex:build' _ "$APEX_ROOT/.github/scripts/qualify.sh" "$1" 2>&1 |
-        sed -n 's/^error: //p' | head -n 1
+        sed -n 's/^\(error: \|::error::\)//p' | head -n 1
 }
 check "qualify.sh local-shard takes smoke, the signer's shard, as far as the layout check" \
     "the G4 shards run QUALIFY_LAYOUT=separate-boot only, not to-disk" "$(sg_shard smoke)"
