@@ -107,6 +107,11 @@ because there is no EFI system partition.
 
 ## Install on a computer
 
+**Do not install beside another Linux system yet.** With another system's
+`grub.cfg` on the EFI system partition, the install fails at the end; the
+fix and a tested dual-boot procedure are in progress. Installing onto an
+empty disk works.
+
 The installer is Fedora's netinst ISO with a kickstart that installs
 `ghcr.io/apex-linux/apex:main` over the network, so the computer needs an
 internet connection during the install. It asks for the target disk and
