@@ -13,6 +13,8 @@ permissions:
 env:
   APEX_BUILD_CPUS: 4
   APEX_BUILD_JOBS: 3
+  # The runner is thrown away, so there is no cache to keep.
+  APEX_KEEP_CACHE: 0
 
 jobs:
   conventions:

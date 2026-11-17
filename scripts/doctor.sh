@@ -15,8 +15,12 @@ free_gb() {
 }
 
 report_cleanable() {
-  echo "Apex can free (just clean):"
-  podman images --filter "label=${APEX_LABEL}" \
+  echo "Apex can free (just clean); images share layers, so sizes overlap:"
+  local untagged
+  untagged="$(podman images --filter "label=${APEX_LABEL}" \
+    --filter dangling=true --quiet | wc -l)"
+  echo "  ${untagged} untagged Apex image(s), left by earlier builds"
+  podman images --filter "label=${APEX_LABEL}" --filter dangling=false \
     --format '  image {{.Repository}}:{{.Tag}} {{.Size}}'
   local dir
   for dir in "${APEX_BUILD_DIR}" "${APEX_CACHE}"; do

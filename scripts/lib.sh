@@ -5,6 +5,8 @@
 readonly APEX_CACHE="${HOME}/.cache/apex"
 readonly APEX_BUILD_DIR="build"
 readonly APEX_IMAGE="${APEX_IMAGE:-localhost/apex:main}"
+# Builder stages kept as the build cache, one tag per stage.
+readonly APEX_CACHE_IMAGE="localhost/apex-cache"
 # Every image this repository builds carries this label, intermediate layers
 # included, so `just clean` can find them without touching other projects.
 readonly APEX_LABEL="org.opencontainers.image.source=https://github.com/apex-linux/apex-image"
@@ -68,4 +70,17 @@ apex::qemu() {
     -serial "file:${vm_dir}/serial.log" \
     -qmp "unix:${vm_dir}/qmp.sock,server=on,wait=off" \
     "$@"
+}
+
+# Removes the untagged images that carry the Apex label: earlier builds and
+# their stages, which no tagged image uses. Never touches a tagged image or
+# another project's image. Removing an image can leave its parent untagged
+# and unused, so repeat until nothing is left.
+apex::prune_untagged() {
+  local pass removed
+  for ((pass = 0; pass < 10; pass++)); do
+    removed="$(podman image prune --force --filter "label=${APEX_LABEL}")"
+    [[ -n "${removed}" ]] || break
+    echo "Removed $(wc -l <<<"${removed}") untagged Apex image(s)"
+  done
 }

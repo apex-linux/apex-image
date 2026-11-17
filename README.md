@@ -74,7 +74,11 @@ machines. None of the recipes needs root.
 Heavy recipes run `just doctor` first, which refuses to continue with less
 than 25 GiB of free disk or 4 GiB of available memory, and take the lock
 `~/.cache/apex/heavy.lock` so that only one runs at a time. Large files go
-under `~/.cache/apex/` or `build/`, never `/tmp`.
+under `~/.cache/apex/` or `build/`, never `/tmp`. After a successful build,
+`just build` keeps that build's builder stages as `localhost/apex-cache:<stage>`
+and removes the untagged Apex images it superseded; it never removes a
+tagged image or another project's image. `just doctor` reports what Apex
+can free, and `just clean` frees it.
 
 ## Published image
 
