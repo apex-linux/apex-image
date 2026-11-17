@@ -40,7 +40,15 @@ On top come the Apex components listed in
 [components.txt](image/components/components.txt). The build fetches each
 repository at the tip of its `main` branch and runs its
 `just install <destdir>` recipe, which installs under `<destdir>/usr` only.
-A component without an `install` recipe is skipped. A release pins the
+A component without an `install` recipe is skipped. A component may list
+the Fedora packages it needs in `/usr/share/<component>/requires.txt`, one
+`<rpm> <path-or-glob>` per line: the build installs them and fails if a
+listed path is missing afterwards. After the components are copied in, the
+build compiles the GSettings schemas and refreshes the icon caches.
+
+Fingerprint authentication is on in PAM (authselect's `with-fingerprint`),
+so an enrolled finger unlocks the session and authorizes administrator
+actions; the password still works when the reader fails or is absent. A release pins the
 commits instead, in `release/sync`, one `component=commit` line each:
 `just build release/sync` builds from those pins.
 
