@@ -53,20 +53,29 @@ main() {
       | sha256sum | cut -c 1-16)"
   fi
 
+  local -a args=(
+    --memory=4g
+    --jobs="${JOBS}"
+    --build-arg "CPUS=${CPUS}"
+    --build-arg "COMPONENTS=${components//$'\n'/ }"
+    --build-arg "LIBFPRINT_PATCHES=${patches}"
+    --build-arg "NVIDIA_REPO=${nvidia_repo}"
+  )
   # Most of the build is single-threaded dnf, so a low priority and a
   # memory cap bound its load; compiling stages get CPUS.
-  nice -n 10 ionice -c 3 podman build \
-    --pull=newer \
-    --memory=4g \
-    --jobs="${JOBS}" \
-    --target "${target}" \
-    --build-arg "CPUS=${CPUS}" \
-    --build-arg "COMPONENTS=${components//$'\n'/ }" \
-    --build-arg "LIBFPRINT_PATCHES=${patches}" \
-    --build-arg "NVIDIA_REPO=${nvidia_repo}" \
-    --tag "${image}" \
-    .
+  nice -n 10 ionice -c 3 podman build --pull=newer "${args[@]}" \
+    --target "${target}" --tag "${image}" .
   podman images "${image}"
+
+  # Keep this build's builder stages as the cache for the next one, by
+  # tagging them (every step is cached, so this takes seconds), then remove
+  # the untagged Apex images: what this build superseded.
+  local stage
+  for stage in components libfprint ${flavor:+nvidia-kmod}; do
+    podman build --pull=never --quiet "${args[@]}" --target "${stage}" \
+      --tag "${APEX_CACHE_IMAGE}:${stage}" . >/dev/null
+  done
+  apex::prune_untagged
 }
 
 main "$@"

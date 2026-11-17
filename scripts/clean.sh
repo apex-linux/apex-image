@@ -9,6 +9,7 @@ source "$(dirname "$0")/lib.sh"
 main() {
   apex::lock_heavy
 
+  apex::prune_untagged
   local -a images
   mapfile -t images < <(podman images --quiet --filter "label=${APEX_LABEL}" \
     | sort -u)
