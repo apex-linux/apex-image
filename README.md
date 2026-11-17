@@ -34,13 +34,34 @@ recipe in the [justfile](justfile); CI runs the same recipes.
 just doctor  # Checks free disk and memory, and shows what Apex can clean.
 just lint    # Runs shellcheck, shfmt, hadolint and markdownlint.
 just build   # Builds the image as localhost/apex:main.
+just vm      # Boots it to the GNOME greeter in a virtual machine.
 just clean   # Removes Apex's own images, disks and caches.
 ```
+
+You also need QEMU with KVM access and `virtiofsd` for `just vm`.
 
 Heavy recipes run `just doctor` first, which refuses to continue with less
 than 25 GiB of free disk or 4 GiB of available memory, and take the lock
 `~/.cache/apex/heavy.lock` so that only one runs at a time. Large files go
 under `~/.cache/apex/` or `build/`, never `/tmp`.
+
+## Boot in a virtual machine
+
+`just vm` needs no root. QEMU boots the kernel and initramfs of the built
+image directly, and the guest reads its root file system from container
+storage over virtiofs, the way `bcvk ephemeral` does. Writes go to a
+memory-backed overlay and vanish at power-off. The guest gets 4 GiB of
+memory and half the host's CPUs, and opens in a window;
+`APEX_VM_DISPLAY=none just vm` runs without one, with the serial console in
+`build/vm/serial.log` and a QMP socket in `build/vm/qmp.sock` for
+screenshots.
+
+Because the root starts empty each boot, the kernel command line skips
+GNOME Initial Setup (`gnome.initial-setup=0`) to reach the greeter, and
+turns SELinux off, since container storage carries no SELinux labels. It
+boots the image's userspace, not an installed disk: the bootloader and
+`bootc` updates are not exercised, and `bootloader-update.service` fails
+because there is no EFI system partition.
 
 ## License
 

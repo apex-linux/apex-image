@@ -18,3 +18,8 @@ clean:
 # main, or from the pins in a sync file: just build release/sync
 build sync="":
     scripts/build.sh "{{sync}}"
+
+# Boots the built image to the GNOME greeter in a virtual machine with 4 GiB
+# of memory. APEX_VM_DISPLAY=none runs it without a window.
+vm:
+    scripts/vm.sh
