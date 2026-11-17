@@ -27,7 +27,7 @@ main() {
     run "${HADOLINT}" hadolint Containerfile
   fi
   echo "markdownlint"
-  npx --yes "${MARKDOWNLINT}" "**/*.md"
+  npx --yes "${MARKDOWNLINT}" "**/*.md" "#build" "#node_modules"
 }
 
 main "$@"

@@ -1,0 +1,2 @@
+# Tools that the components' `just install` recipes need inside the build.
+just
