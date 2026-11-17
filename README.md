@@ -107,23 +107,35 @@ because there is no EFI system partition.
 
 ## Install on a computer
 
-**Do not install beside another Linux system yet.** With another system's
-`grub.cfg` on the EFI system partition, the install fails at the end; the
-fix and a tested dual-boot procedure are in progress. Installing onto an
-empty disk works.
-
 The installer is Fedora's netinst ISO with a kickstart that installs
 `ghcr.io/apex-linux/apex:main` over the network, so the computer needs an
 internet connection during the install. It asks for the target disk and
-never erases a disk on its own.
+never erases a disk on its own. These steps install Apex beside another
+system (Ubuntu here) into unallocated space on the same disk; `just
+vm-dualboot` tests exactly this in a virtual machine.
 
-1.  Build the ISO: `just iso`. It downloads Fedora's netinst ISO once,
-    checks its signature and writes `build/iso/apex-installer.iso`
-    (about 1.3 GB).
-2.  Write it to a USB stick of 2 GB or more. Everything on the stick is
-    lost. Either open GNOME Disks, select the stick, and choose
-    "Restore Disk Image" with the ISO, or find the stick's device name with
-    `lsblk` and run:
+1.  **Back up first.** Copy everything you cannot lose to another drive.
+    Then, from Ubuntu, save the EFI system partition and the firmware boot
+    entries next to that backup, so Ubuntu's boot files and entry can be
+    restored by hand. With the backup drive mounted, for example at
+    `/media/$USER/BACKUP`:
+
+    ```sh
+    B="/media/$USER/BACKUP/before-apex"
+    mkdir -p "$B"
+    sudo tar -C /boot/efi -cf "$B/esp.tar" .
+    sudo efibootmgr -v > "$B/efibootmgr-v.txt"
+    sudo sfdisk --dump /dev/nvme0n1 > "$B/nvme0n1.sfdisk"
+    lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,PARTUUID,MOUNTPOINTS > "$B/lsblk.txt"
+    ```
+
+2.  Check the free space: in GNOME Disks, the internal disk must show
+    "Free Space" of at least 40 GB. The install uses only that space.
+3.  Build the ISO with `just iso` (it downloads Fedora's netinst ISO once,
+    checks its signature and writes `build/iso/apex-installer.iso`, about
+    1.3 GB) and write it to a USB stick of 2 GB or more. Everything on the
+    stick is lost. In GNOME Disks select the stick and use
+    "Restore Disk Image", or find the stick with `lsblk` and run:
 
     ```sh
     sudo dd if=build/iso/apex-installer.iso of=/dev/sdX bs=4M \
@@ -131,20 +143,38 @@ never erases a disk on its own.
     ```
 
     where `/dev/sdX` is the stick, not a disk you want to keep.
-3.  On the computer, turn Secure Boot off in the firmware settings (on the
-    ASUS M7400QC, F2 at power-on). Apex does not sign its NVIDIA module
-    yet.
-4.  Boot from the stick (Esc at power-on opens the ASUS boot menu; choose
-    the UEFI entry for the stick) and pick "Install Apex Linux".
-5.  In the installer, connect to Wi-Fi under "Network & Host Name" if there
-    is no cable, then open "Installation Destination" and choose the disk.
-    For an external SSD, select only that disk. To keep Ubuntu next to Apex,
-    select the internal disk, choose custom partitioning and give Apex free
-    space or a partition you made for it. To replace Ubuntu, select the
-    internal disk and reclaim its space. Nothing is written until you press
-    "Begin Installation".
-6.  After the restart, GNOME Initial Setup creates your user account.
-7.  On a computer with an NVIDIA GPU, switch to the NVIDIA flavor and
+4.  Secure Boot must be off (on the ASUS M7400QC, F2 at power-on opens the
+    firmware settings): Apex does not sign its NVIDIA module yet.
+5.  Boot from the stick (Esc at power-on opens the ASUS boot menu; choose
+    the UEFI entry for the stick) and pick "Install Apex Linux". Choose a
+    language and press Continue.
+6.  On "Installation Summary":
+    *   "Network & Host Name": connect to Wi-Fi if there is no cable.
+    *   "Installation Destination" is the screen that decides where Apex
+        goes. Select only the internal disk; it shows its free space under
+        its name. Leave "Storage Configuration" on "Automatic" and leave
+        "Free up space by removing or shrinking existing partitions"
+        unticked, then press Done. Automatic uses only the free space: it
+        adds a `/boot` partition and a Btrfs partition for Apex, and
+        mounts the existing EFI system partition without formatting it.
+        If the installer asks to reclaim space, press Cancel: it found too
+        little free space, and nothing has been written yet.
+    *   Set "Keyboard" and "Time & Date", then press "Begin Installation".
+        Nothing is written to the disk before this button.
+7.  When it finishes, press "Reboot System" and remove the stick. The
+    installer adds a firmware boot entry named "Fedora" (Apex's boot
+    loader is Fedora's shim and GRUB) and puts it first. It writes
+    `EFI/fedora` on the EFI system partition, about 7 MB, and replaces
+    the removable-media fallback loader in `EFI/Boot` with Fedora's shim;
+    Ubuntu's own `EFI/ubuntu` and its boot entry stay as they were. The
+    fallback only runs when the firmware has no usable boot entry, for
+    example after its settings are reset: then Fedora's shim starts and its
+    fallback program recreates boot entries from the `BOOTX64.CSV` file in
+    each `EFI/<name>` directory, which Ubuntu's shim package also ships. If
+    Ubuntu's entry is ever missing, recreate it from Apex or Ubuntu with
+    `sudo efibootmgr -c -d /dev/nvme0n1 -p 1 -L ubuntu -l '\EFI\ubuntu\shimx64.efi'`.
+8.  GNOME Initial Setup creates your user account.
+9.  On a computer with an NVIDIA GPU, switch to the NVIDIA flavor and
     restart:
 
     ```sh
@@ -154,7 +184,61 @@ never erases a disk on its own.
 Updates come with `sudo bootc upgrade` and a restart; `sudo bootc rollback`
 returns to the previous image.
 
+### Choose a system at power-on
+
+Apex's GRUB menu lists only Apex. To start Ubuntu, press Esc at power-on
+and choose "ubuntu" in the ASUS boot menu; without a choice the computer
+starts the first entry, "Fedora" (Apex). To make Ubuntu the default
+instead, run `sudo efibootmgr` in either system to see the entries and
+`sudo efibootmgr -o XXXX,YYYY` with Ubuntu's number first.
+
+### Remove Apex
+
+From Ubuntu:
+
+1.  Delete the two partitions Apex created in the former free space (its
+    `/boot`, about 2 GB, ext4, and its Btrfs partition) with GNOME Disks.
+    Do not touch the EFI system partition or Ubuntu's partition.
+2.  Remove Apex's boot files and boot entry:
+    `sudo rm -r /boot/efi/EFI/fedora`, then find the "Fedora" entry with
+    `sudo efibootmgr` and delete it with `sudo efibootmgr -b XXXX -B`.
+3.  Put back Ubuntu's fallback loader from the backup of step 1:
+
+    ```sh
+    B="/media/$USER/BACKUP/before-apex"
+    sudo rm -r /boot/efi/EFI/Boot
+    sudo tar -C /boot/efi -xf "$B/esp.tar" ./EFI/Boot
+    ```
+
+    Compare `sudo efibootmgr -v` with `$B/efibootmgr-v.txt`: Ubuntu's
+    entry should be unchanged.
+
 ## Test the installer in a virtual machine
+
+`just vm-dualboot` checks the dual-boot install before anyone tries it on
+a real disk. It lays out a virtual disk like the reference machine's: a
+700 MiB EFI system partition named "EFI System Partition" with a 196 MiB
+file system holding another system's loader under `EFI/ubuntu`, 30 GiB of
+free space and an ext4 partition with known contents at the end, plus a
+UEFI boot entry for the other system that comes first in the boot order.
+The stand-in loader is a small GRUB that prints a marker and powers off.
+A test variant of the ISO installs Apex with automatic storage
+configuration, as in step 6 above. The test then fails unless:
+
+*   the table entries of both existing partitions, the ext4 partition's
+    contents, the EFI partition's file system serial and every file under
+    `EFI/ubuntu` are byte for byte unchanged, after the install and again
+    after the steps below;
+*   the other system's boot entry is still there and Apex added its own;
+*   the installed system boots from the disk through its boot loader;
+*   one `bootc upgrade` boots a newer image, when one is published (the
+    log says "UPGRADE NOT EXERCISED" otherwise);
+*   the other system's loader starts through its boot entry, chosen with
+    `efibootmgr --bootnext`.
+
+It also reports the free space left on the EFI partition, whether
+`EFI/Boot` changed, the boot order and whether Apex's GRUB lists the other
+system. `just vm-disk` then boots the result.
 
 `just vm-install` builds a test variant of the ISO that installs, without
 asking, onto an empty 40 GB virtual disk under `build/vm-disk/`, and adds an

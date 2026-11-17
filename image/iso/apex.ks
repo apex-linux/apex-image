@@ -15,3 +15,17 @@ xconfig --startxonboot
 
 # Signature verification comes with signed images (M3).
 ostreecontainer --url=ghcr.io/apex-linux/apex:main --transport=registry --no-signature-verification
+
+# Anaconda deploys the image with ostree, which picks its boot loader
+# backend by looking for any EFI/*/grub.cfg on the EFI system partition.
+# Beside another Linux it finds that system's grub.cfg, runs grub2-mkconfig
+# inside the installer and fails. bootupd owns the boot loader of a bootc
+# system, so ostree only writes boot entries, as `bootc install` sets it up.
+# The setting stays in the repository, so later upgrades behave the same.
+%pre-install --erroronfail
+set -eu
+repo=/mnt/sysimage/ostree/repo
+mkdir -p "${repo}"
+ostree --repo="${repo}" init --mode=bare
+ostree config --repo="${repo}" set sysroot.bootloader none
+%end

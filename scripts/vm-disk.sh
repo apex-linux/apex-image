@@ -12,17 +12,23 @@ main() {
 
   local vm_dir
   vm_dir="$(realpath -m "${APEX_BUILD_DIR}/vm-disk")"
-  if [[ ! -f "${vm_dir}/disk.qcow2" ]]; then
+  # vm-install makes a qcow2 disk, vm-dualboot a raw one.
+  local disk format
+  for format in qcow2 raw; do
+    disk="${vm_dir}/disk.${format}"
+    [[ -f "${disk}" ]] && break
+  done
+  if [[ ! -f "${disk}" ]]; then
     apex::err "vm-disk: no installed disk; run 'just vm-install' first."
     exit 1
   fi
 
-  echo "Booting ${vm_dir}/disk.qcow2."
+  echo "Booting ${disk}."
   apex::qemu "${vm_dir}" \
     -drive "if=pflash,format=raw,readonly=on,file=$(apex::ovmf \
       OVMF_CODE_4M.fd OVMF_CODE.fd)" \
     -drive "if=pflash,format=raw,file=${vm_dir}/OVMF_VARS.fd" \
-    -drive "if=virtio,format=qcow2,file=${vm_dir}/disk.qcow2" \
+    -drive "if=virtio,format=${format},file=${disk}" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22"
 }
 

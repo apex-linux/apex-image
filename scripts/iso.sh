@@ -2,7 +2,7 @@
 # Builds the Apex Linux installer: Fedora's netinst ISO with the Apex
 # kickstart embedded. The installer pulls the image from the registry, so the
 # ISO stays the size of Fedora's netinst.
-# Usage: iso.sh [vm-test <ssh-public-key>]
+# Usage: iso.sh [vm-test|vm-dualboot <ssh-public-key>]
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -49,14 +49,14 @@ main() {
   # Name Apex in the boot menu entries, which end in "Fedora 45'".
   local -a args=(--replace "Fedora 45'" "Apex Linux'")
   cp image/iso/apex.ks "${ks}"
-  if [[ "${variant}" == "vm-test" ]]; then
-    cat image/iso/vm-test.ks >>"${ks}"
+  if [[ "${variant}" == vm-test || "${variant}" == vm-dualboot ]]; then
+    cat "image/iso/${variant}.ks" >>"${ks}"
     echo "sshkey --username=root \"$(cat "${key}")\"" >>"${ks}"
-    out="apex-installer-vm-test.iso"
+    out="apex-installer-${variant}.iso"
     # Skip the media check and log to the serial console of the test VM.
     args+=(--rm-args "rd.live.check quiet" --cmdline "inst.text console=ttyS0")
   elif [[ -n "${variant}" ]]; then
-    apex::err "usage: iso.sh [vm-test <ssh-public-key>]"
+    apex::err "usage: iso.sh [vm-test|vm-dualboot <ssh-public-key>]"
     exit 2
   fi
 
