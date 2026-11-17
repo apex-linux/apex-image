@@ -69,12 +69,15 @@ main() {
 
   # Keep this build's builder stages as the cache for the next one, by
   # tagging them (every step is cached, so this takes seconds), then remove
-  # the untagged Apex images: what this build superseded.
+  # the untagged Apex images: what this build superseded. CI, whose runner
+  # is thrown away, sets APEX_KEEP_CACHE=0.
   local stage
-  for stage in components libfprint ${flavor:+nvidia-kmod}; do
-    podman build --pull=never --quiet "${args[@]}" --target "${stage}" \
-      --tag "${APEX_CACHE_IMAGE}:${stage}" . >/dev/null
-  done
+  if [[ "${APEX_KEEP_CACHE:-1}" == 1 ]]; then
+    for stage in components libfprint ${flavor:+nvidia-kmod}; do
+      podman build --pull=never --quiet "${args[@]}" --target "${stage}" \
+        --tag "${APEX_CACHE_IMAGE}:${stage}" . >/dev/null
+    done
+  fi
   apex::prune_untagged
 }
 
