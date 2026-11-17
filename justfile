@@ -13,3 +13,7 @@ lint:
 # Removes Apex's own images, disks and caches.
 clean:
     scripts/clean.sh
+
+# Builds the OS image as localhost/apex:main.
+build:
+    scripts/build.sh
