@@ -14,20 +14,21 @@ lint:
 clean:
     scripts/clean.sh
 
-# Builds the OS image as localhost/apex:main. Components come from the tip of
-# main, or from the pins in a sync file: just build release/sync
-build sync="":
-    scripts/build.sh "{{sync}}"
+# Builds the OS image as localhost/apex:main, or a flavor of it:
+# just build nvidia. Components come from the tip of main, or from the pins in
+# a sync file: APEX_SYNC=release/sync just build
+build flavor="":
+    scripts/build.sh "{{flavor}}"
 
 # Boots the built image to the GNOME greeter in a virtual machine with 4 GiB
 # of memory. APEX_VM_DISPLAY=none runs it without a window.
 vm:
     scripts/vm.sh
 
-# Pushes the built image to ghcr.io/apex-linux/apex:main. Needs a registry
-# login; CI does this on pushes to main.
-publish:
-    scripts/publish.sh
+# Pushes the built image to ghcr.io/apex-linux/apex:main, or a flavor to
+# :main-<flavor>. Needs a registry login; CI does this on pushes to main.
+publish flavor="":
+    scripts/publish.sh "{{flavor}}"
 
 # Builds the installer ISO, build/iso/apex-installer.iso: Fedora's netinst
 # with a kickstart that installs ghcr.io/apex-linux/apex:main.

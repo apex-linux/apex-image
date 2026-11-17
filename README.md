@@ -22,6 +22,16 @@ carries in `patches/libfprint/` for the ELAN `04f3:0c6e` fingerprint reader.
 If a patch stops applying, the build log says so and the image keeps
 Fedora's package.
 
+The `nvidia` flavor, `just build nvidia`, adds the NVIDIA driver for
+machines with an NVIDIA GPU, as `apex-hardware`'s ADR 0001 decides: a
+builder stage compiles negativo17's open kernel module for the image's
+kernel with `akmods`, and the flavor installs it with negativo17's userspace
+of the same version and `apex-hardware`'s flavor files
+(`just install <destdir> nvidia`). The build fails unless the module's
+`vermagic` names the image's kernel and the module and userspace versions
+match. The module is not signed, so Secure Boot must be off; signing comes
+with M3.
+
 The image names itself Apex Linux in `os-release`, with `ID=apex` and
 `ID_LIKE=fedora`, as a Fedora derivative should. `VERSION_ID` stays the
 Fedora release it is built from until Apex has a version scheme of its own.
@@ -61,7 +71,8 @@ under `~/.cache/apex/` or `build/`, never `/tmp`.
 ## Published image
 
 CI builds every pull request without publishing. On each push to `main` it
-publishes the rolling image to `ghcr.io/apex-linux/apex:main`. An installed
+publishes the rolling image to `ghcr.io/apex-linux/apex:main` and the NVIDIA
+flavor to `ghcr.io/apex-linux/apex:main-nvidia`. An installed
 system follows it with stock `bootc`:
 
 ```sh
@@ -120,6 +131,12 @@ never erases a disk on its own.
     internal disk and reclaim its space. Nothing is written until you press
     "Begin Installation".
 6.  After the restart, GNOME Initial Setup creates your user account.
+7.  On a computer with an NVIDIA GPU, switch to the NVIDIA flavor and
+    restart:
+
+    ```sh
+    sudo bootc switch ghcr.io/apex-linux/apex:main-nvidia
+    ```
 
 Updates come with `sudo bootc upgrade` and a restart; `sudo bootc rollback`
 returns to the previous image.
