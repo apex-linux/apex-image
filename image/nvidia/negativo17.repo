@@ -1,0 +1,12 @@
+# negativo17's NVIDIA repository (https://negativo17.org/nvidia-driver/), as
+# its fedora-nvidia.repo ships it, with the signing key pinned in this
+# directory: 0C5D 0F47 0484 AE2F C40A 9B65 97F3 0089 93E8 909B.
+[fedora-nvidia]
+name=negativo17 - Nvidia
+baseurl=https://negativo17.org/repos/nvidia/fedora-$releasever/$basearch/
+enabled=1
+skip_if_unavailable=0
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-negativo17
+repo_gpgcheck=0
+type=rpm-md

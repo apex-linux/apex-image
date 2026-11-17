@@ -4,8 +4,9 @@ ARG BASE=quay.io/fedora/fedora-bootc:45
 # How many CPUs the compiling stages use; scripts/build.sh sets it.
 ARG CPUS=2
 
-# Runs each component repository's `just install <destdir>` contract. The
-# repositories are fetched by scripts/components.sh into build/components.
+# Runs each component repository's `just install <destdir>` contract, into
+# /out, and with the flavor argument into /out-<flavor>. The repositories are
+# fetched by scripts/components.sh into build/components.
 FROM ${BASE} AS components
 LABEL org.opencontainers.image.source="https://github.com/apex-linux/apex-image"
 RUN --mount=type=bind,source=image/common,target=/run/common \
@@ -33,6 +34,18 @@ RUN --mount=type=bind,source=image/common,target=/run/common \
     && echo "Patches: ${LIBFPRINT_PATCHES}" \
     && /run/libfprint/build.sh
 
+# The NVIDIA open kernel module for the base image's kernel.
+FROM ${BASE} AS nvidia-kmod
+LABEL org.opencontainers.image.source="https://github.com/apex-linux/apex-image"
+ARG CPUS
+# negativo17's repository metadata: a new driver rebuilds the layer below.
+ARG NVIDIA_REPO=""
+RUN --mount=type=bind,source=image/common,target=/run/common \
+    --mount=type=bind,source=image/nvidia,target=/run/nvidia \
+    echo "%_smp_ncpus_max ${CPUS}" >/etc/rpm/macros.apex-cpus \
+    && echo "negativo17: ${NVIDIA_REPO}" \
+    && /run/nvidia/kmod.sh
+
 FROM ${BASE} AS apex
 
 # Set first so that every layer carries it: `just clean` finds Apex's
@@ -59,4 +72,17 @@ COPY --from=components /out/ /
 RUN --mount=type=bind,source=image/identity,target=/run/identity \
     /run/identity/os-release.sh
 
+RUN bootc container lint
+
+# The nvidia flavor: the base image plus the NVIDIA driver and the hardware
+# files for it, for machines with an NVIDIA GPU.
+FROM apex AS apex-nvidia
+LABEL org.opencontainers.image.title="Apex Linux (NVIDIA)"
+ARG NVIDIA_REPO=""
+RUN --mount=type=bind,source=image/common,target=/run/common \
+    --mount=type=bind,source=image/nvidia,target=/run/nvidia \
+    --mount=type=bind,from=nvidia-kmod,source=/rpms,target=/run/kmod \
+    echo "negativo17: ${NVIDIA_REPO}" \
+    && /run/nvidia/install.sh
+COPY --from=components /out-nvidia/ /
 RUN bootc container lint

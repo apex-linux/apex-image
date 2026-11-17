@@ -2,7 +2,9 @@
 # Runs each component's `just install <destdir>` contract into /out, in the
 # order of components.txt. Runs inside the image build, with this directory
 # mounted at /run/apex-components, image/common at /run/common and the
-# repositories that scripts/components.sh fetched at /run/components.
+# repositories that scripts/components.sh fetched at /run/components. For
+# each image flavor it also runs `just install /out-<flavor> <flavor>` for
+# the components whose install recipe takes a flavor.
 # Usage: install.sh tools|install
 set -euo pipefail
 
@@ -11,6 +13,7 @@ source /run/common/dnf.sh
 
 readonly HERE=/run/apex-components
 readonly OUT=/out
+readonly FLAVORS=(nvidia)
 
 # Prints a list file without comments and blank lines.
 list() {
@@ -26,7 +29,7 @@ tools() {
 }
 
 install() {
-  mkdir -p "${OUT}"
+  mkdir -p "${OUT}" "${FLAVORS[@]/#/${OUT}-}"
   local name dir
   while read -r name; do
     dir="/run/components/${name}"
@@ -38,13 +41,25 @@ install() {
     echo "Installing ${name}"
     # The repository is mounted read-only; build in a scratch copy.
     cp -a "${dir}" "/var/tmp/${name}"
-    just --justfile "/var/tmp/${name}/justfile" \
-      --working-directory "/var/tmp/${name}" install "${OUT}"
+    local -a just=(just --justfile "/var/tmp/${name}/justfile"
+      --working-directory "/var/tmp/${name}")
+    "${just[@]}" install "${OUT}"
+    local flavor
+    for flavor in "${FLAVORS[@]}"; do
+      # --show prints the recipe's comment first, then its signature.
+      if "${just[@]}" --show install \
+        | grep -Eq '^install +[^ :]+ +[^ :]+'; then
+        "${just[@]}" install "${OUT}-${flavor}" "${flavor}"
+      else
+        "${just[@]}" install "${OUT}-${flavor}"
+      fi
+    done
     rm -rf "/var/tmp/${name}"
   done < <(list "${HERE}/components.txt")
 
   local stray
-  stray="$(find "${OUT}" -mindepth 1 -maxdepth 1 ! -name usr)"
+  stray="$(find "${OUT}" "${FLAVORS[@]/#/${OUT}-}" -mindepth 1 -maxdepth 1 \
+    ! -name usr)"
   if [[ -n "${stray}" ]]; then
     echo "A component installed outside <destdir>/usr: ${stray}" >&2
     exit 1
