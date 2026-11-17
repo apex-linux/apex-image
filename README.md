@@ -39,10 +39,14 @@ just doctor  # Checks free disk and memory, and shows what Apex can clean.
 just lint    # Runs shellcheck, shfmt, hadolint and markdownlint.
 just build   # Builds the image as localhost/apex:main.
 just vm      # Boots it to the GNOME greeter in a virtual machine.
+just iso     # Builds the installer, build/iso/apex-installer.iso.
+just vm-install  # Installs from the installer onto a virtual disk.
+just vm-disk     # Boots that disk; just vm-ssh runs commands in it.
 just clean   # Removes Apex's own images, disks and caches.
 ```
 
-You also need QEMU with KVM access and `virtiofsd` for `just vm`.
+You also need QEMU with KVM access, `virtiofsd` and OVMF for the virtual
+machines. None of the recipes needs root.
 
 Heavy recipes run `just doctor` first, which refuses to continue with less
 than 25 GiB of free disk or 4 GiB of available memory, and take the lock
@@ -76,6 +80,53 @@ turns SELinux off, since container storage carries no SELinux labels. It
 boots the image's userspace, not an installed disk: the bootloader and
 `bootc` updates are not exercised, and `bootloader-update.service` fails
 because there is no EFI system partition.
+
+## Install on a computer
+
+The installer is Fedora's netinst ISO with a kickstart that installs
+`ghcr.io/apex-linux/apex:main` over the network, so the computer needs an
+internet connection during the install. It asks for the target disk and
+never erases a disk on its own.
+
+1.  Build the ISO: `just iso`. It downloads Fedora's netinst ISO once,
+    checks its signature and writes `build/iso/apex-installer.iso`
+    (about 1.3 GB).
+2.  Write it to a USB stick of 2 GB or more. Everything on the stick is
+    lost. Either open GNOME Disks, select the stick, and choose
+    "Restore Disk Image" with the ISO, or find the stick's device name with
+    `lsblk` and run:
+
+    ```sh
+    sudo dd if=build/iso/apex-installer.iso of=/dev/sdX bs=4M \
+        oflag=direct status=progress
+    ```
+
+    where `/dev/sdX` is the stick, not a disk you want to keep.
+3.  On the computer, turn Secure Boot off in the firmware settings (on the
+    ASUS M7400QC, F2 at power-on). Apex does not sign its NVIDIA module
+    yet.
+4.  Boot from the stick (Esc at power-on opens the ASUS boot menu; choose
+    the UEFI entry for the stick) and pick "Install Apex Linux".
+5.  In the installer, connect to Wi-Fi under "Network & Host Name" if there
+    is no cable, then open "Installation Destination" and choose the disk.
+    For an external SSD, select only that disk. To keep Ubuntu next to Apex,
+    select the internal disk, choose custom partitioning and give Apex free
+    space or a partition you made for it. To replace Ubuntu, select the
+    internal disk and reclaim its space. Nothing is written until you press
+    "Begin Installation".
+6.  After the restart, GNOME Initial Setup creates your user account.
+
+Updates come with `sudo bootc upgrade` and a restart; `sudo bootc rollback`
+returns to the previous image.
+
+## Test the installer in a virtual machine
+
+`just vm-install` builds a test variant of the ISO that installs, without
+asking, onto an empty 40 GB virtual disk under `build/vm-disk/`, and adds an
+SSH key for root. `just vm-disk` then boots that disk through its bootloader
+like a real computer, with SSH on `localhost:2222`, and
+`just vm-ssh bootc status` runs commands in it. Both use the published
+image, not a local build, because the installer pulls it from the registry.
 
 ## License
 

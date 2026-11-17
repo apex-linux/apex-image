@@ -22,10 +22,11 @@ main() {
   run "${SHELLCHECK}" "${scripts[@]}"
   echo "shfmt"
   run "${SHFMT}" --diff -i 2 -ci -bn "${scripts[@]}"
-  if [[ -f Containerfile ]]; then
-    echo "hadolint"
-    run "${HADOLINT}" hadolint Containerfile
-  fi
+  local -a containerfiles
+  mapfile -t containerfiles < <(git ls-files --cached --others \
+    --exclude-standard 'Containerfile' '*/Containerfile')
+  echo "hadolint: ${#containerfiles[@]} Containerfile(s)"
+  run "${HADOLINT}" hadolint "${containerfiles[@]}"
   echo "markdownlint"
   npx --yes "${MARKDOWNLINT}" "**/*.md" "#build" "#node_modules"
 }
