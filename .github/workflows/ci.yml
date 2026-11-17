@@ -21,7 +21,18 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
       - run: sudo apt-get install --yes just
       - run: just build
+      - if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          echo "${TOKEN}" | podman login ghcr.io --password-stdin
+          --username "${{ github.actor }}"
+      - if: github.event_name == 'push'
+        run: just publish

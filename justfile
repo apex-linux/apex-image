@@ -23,3 +23,8 @@ build sync="":
 # of memory. APEX_VM_DISPLAY=none runs it without a window.
 vm:
     scripts/vm.sh
+
+# Pushes the built image to ghcr.io/apex-linux/apex:main. Needs a registry
+# login; CI does this on pushes to main.
+publish:
+    scripts/publish.sh

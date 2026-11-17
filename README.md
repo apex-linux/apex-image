@@ -45,6 +45,16 @@ than 25 GiB of free disk or 4 GiB of available memory, and take the lock
 `~/.cache/apex/heavy.lock` so that only one runs at a time. Large files go
 under `~/.cache/apex/` or `build/`, never `/tmp`.
 
+## Published image
+
+CI builds every pull request without publishing. On each push to `main` it
+publishes the rolling image to `ghcr.io/apex-linux/apex:main`. An installed
+system follows it with stock `bootc`:
+
+```sh
+sudo bootc switch ghcr.io/apex-linux/apex:main
+```
+
 ## Boot in a virtual machine
 
 `just vm` needs no root. QEMU boots the kernel and initramfs of the built
