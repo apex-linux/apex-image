@@ -32,4 +32,8 @@ RUN --mount=type=bind,source=image/desktop,target=/run/desktop \
 # desktop.
 COPY --from=components /out/ /
 
+# Apex Linux, a Fedora derivative, in os-release.
+RUN --mount=type=bind,source=image/identity,target=/run/identity \
+    /run/identity/os-release.sh
+
 RUN bootc container lint

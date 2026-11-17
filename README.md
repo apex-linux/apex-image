@@ -17,6 +17,10 @@ the comps groups in
 Workstation environment without LibreOffice. Packages to leave out go in
 [exclude.txt](image/desktop/packages/exclude.txt).
 
+The image names itself Apex Linux in `os-release`, with `ID=apex` and
+`ID_LIKE=fedora`, as a Fedora derivative should. `VERSION_ID` stays the
+Fedora release it is built from until Apex has a version scheme of its own.
+
 On top come the Apex components listed in
 [components.txt](image/components/components.txt). The build fetches each
 repository at the tip of its `main` branch and runs its
