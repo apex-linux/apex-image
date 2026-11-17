@@ -28,3 +28,23 @@ vm:
 # login; CI does this on pushes to main.
 publish:
     scripts/publish.sh
+
+# Builds the installer ISO, build/iso/apex-installer.iso: Fedora's netinst
+# with a kickstart that installs ghcr.io/apex-linux/apex:main.
+iso:
+    scripts/iso.sh
+
+# Installs Apex from a test variant of the installer ISO onto an empty
+# virtual disk, unattended. The installer pulls ghcr.io/apex-linux/apex:main.
+vm-install:
+    scripts/vm-install.sh
+
+# Boots the disk that vm-install installed, through its bootloader.
+vm-disk:
+    scripts/vm-disk.sh
+
+# Runs a command as root in the VM that vm-disk booted, or opens a shell.
+# Every argument goes to the VM, none to the host shell.
+[positional-arguments]
+vm-ssh *command:
+    scripts/vm-ssh.sh "$@"

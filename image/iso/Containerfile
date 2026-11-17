@@ -1,0 +1,5 @@
+# Tools for scripts/iso.sh: mkksiso from lorax, xorriso and mtools, which
+# edit Fedora's netinst ISO without loop devices, in rootless Podman.
+FROM quay.io/fedora/fedora-bootc:45
+LABEL org.opencontainers.image.source="https://github.com/apex-linux/apex-image"
+RUN dnf5 -y install lorax xorriso gnupg2 mtools isomd5sum && dnf5 clean all

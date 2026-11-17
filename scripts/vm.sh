@@ -7,10 +7,6 @@ set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
-readonly MEMORY="4G"
-readonly CPUS="$(($(nproc) / 2))"
-# gtk opens a window; none runs headless (take screenshots over QMP).
-readonly VM_DISPLAY="${APEX_VM_DISPLAY:-gtk}"
 # The volatile root starts with no users, so skip GNOME Initial Setup and go
 # straight to the greeter. SELinux is off because virtiofs from rootless
 # container storage carries no SELinux labels.
@@ -61,28 +57,16 @@ main() {
   trap stop_rootfs EXIT
   wait_for "${vm_dir}/rootfs.sock" "${rootfs_pid}"
 
-  echo "Booting ${APEX_IMAGE}: ${MEMORY} memory, ${CPUS} CPUs."
-  echo "Serial console: ${vm_dir}/serial.log. QMP: ${vm_dir}/qmp.sock."
-  qemu-system-x86_64 \
-    -name apex \
-    -machine q35,accel=kvm \
-    -cpu host \
-    -smp "${CPUS}" \
-    -m "${MEMORY}" \
-    -object "memory-backend-memfd,id=mem,size=${MEMORY},share=on" \
+  echo "Booting ${APEX_IMAGE}."
+  apex::qemu "${vm_dir}" \
+    -object "memory-backend-memfd,id=mem,size=${APEX_VM_MEMORY},share=on" \
     -numa node,memdev=mem \
     -chardev "socket,id=rootfs,path=${vm_dir}/rootfs.sock" \
     -device vhost-user-fs-pci,chardev=rootfs,tag=rootfs \
     -kernel "${vm_dir}/vmlinuz" \
     -initrd "${vm_dir}/initramfs.img" \
     -append "${KARGS//$'\n'/ }" \
-    -device virtio-vga \
-    -device qemu-xhci \
-    -device usb-tablet \
-    -nic user,model=virtio-net-pci \
-    -display "${VM_DISPLAY}" \
-    -serial "file:${vm_dir}/serial.log" \
-    -qmp "unix:${vm_dir}/qmp.sock,server=on,wait=off"
+    -nic user,model=virtio-net-pci
 }
 
 main "$@"
