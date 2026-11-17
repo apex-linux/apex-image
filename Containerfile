@@ -67,6 +67,8 @@ RUN --mount=type=bind,from=libfprint,source=/rpms,target=/run/libfprint-rpms \
 # Components come after the desktop, so that a component change does not
 # reinstall it.
 COPY --from=components /out/ /
+RUN --mount=type=bind,source=image/components,target=/run/apex-components \
+    /run/apex-components/post-install.sh
 
 # Apex Linux, a Fedora derivative, in os-release.
 RUN --mount=type=bind,source=image/identity,target=/run/identity \
@@ -85,4 +87,6 @@ RUN --mount=type=bind,source=image/common,target=/run/common \
     echo "negativo17: ${NVIDIA_REPO}" \
     && /run/nvidia/install.sh
 COPY --from=components /out-nvidia/ /
+RUN --mount=type=bind,source=image/components,target=/run/apex-components \
+    /run/apex-components/post-install.sh
 RUN bootc container lint
