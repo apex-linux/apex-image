@@ -1,10 +1,13 @@
 #!/bin/bash
 # Runs each component's `just install <destdir>` contract into /out, in the
 # order of components.txt. Runs inside the image build, with this directory
-# mounted at /run/apex-components and the repositories that
-# scripts/components.sh fetched at /run/components.
+# mounted at /run/apex-components, image/common at /run/common and the
+# repositories that scripts/components.sh fetched at /run/components.
 # Usage: install.sh tools|install
 set -euo pipefail
+
+# shellcheck source=../common/dnf.sh
+source /run/common/dnf.sh
 
 readonly HERE=/run/apex-components
 readonly OUT=/out
@@ -12,20 +15,6 @@ readonly OUT=/out
 # Prints a list file without comments and blank lines.
 list() {
   sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$1"
-}
-
-# Mirrors sometimes serve metadata in the middle of a sync, which fails its
-# checksum. Retry with fresh metadata before giving up.
-dnf_install() {
-  local attempt
-  for attempt in 1 2 3; do
-    if dnf5 -y install "$@"; then
-      return 0
-    fi
-    echo "dnf5 install failed (attempt ${attempt} of 3)" >&2
-    dnf5 clean metadata
-  done
-  return 1
 }
 
 # Installs what the components' install recipes need, in its own layer.
