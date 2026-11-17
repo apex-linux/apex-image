@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A runner has the machine to itself: build independent stages at once and
+# compile with all four CPUs.
+env:
+  APEX_BUILD_CPUS: 4
+  APEX_BUILD_JOBS: 3
+
 jobs:
   conventions:
     uses: apex-linux/.github/.github/workflows/conventions.yml@main

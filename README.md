@@ -17,6 +17,11 @@ the comps groups in
 Workstation environment without LibreOffice. Packages to leave out go in
 [exclude.txt](image/desktop/packages/exclude.txt).
 
+Fedora's `libfprint` is rebuilt with the patches that `apex-hardware`
+carries in `patches/libfprint/` for the ELAN `04f3:0c6e` fingerprint reader.
+If a patch stops applying, the build log says so and the image keeps
+Fedora's package.
+
 The image names itself Apex Linux in `os-release`, with `ID=apex` and
 `ID_LIKE=fedora`, as a Fedora derivative should. `VERSION_ID` stays the
 Fedora release it is built from until Apex has a version scheme of its own.
