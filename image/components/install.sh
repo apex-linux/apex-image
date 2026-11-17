@@ -14,11 +14,25 @@ list() {
   sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$1"
 }
 
+# Mirrors sometimes serve metadata in the middle of a sync, which fails its
+# checksum. Retry with fresh metadata before giving up.
+dnf_install() {
+  local attempt
+  for attempt in 1 2 3; do
+    if dnf5 -y install "$@"; then
+      return 0
+    fi
+    echo "dnf5 install failed (attempt ${attempt} of 3)" >&2
+    dnf5 clean metadata
+  done
+  return 1
+}
+
 # Installs what the components' install recipes need, in its own layer.
 tools() {
   local -a packages
   mapfile -t packages < <(list "${HERE}/build-tools.txt")
-  dnf5 -y install "${packages[@]}"
+  dnf_install "${packages[@]}"
   dnf5 clean all
 }
 
