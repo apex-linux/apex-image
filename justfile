@@ -49,3 +49,8 @@ vm-disk:
 [positional-arguments]
 vm-ssh *command:
     scripts/vm-ssh.sh "$@"
+
+# Tests a dual-boot install in a VM: a disk laid out like the reference
+# machine's, Apex installed into its free space, the other system unchanged.
+vm-dualboot:
+    scripts/vm-dualboot.sh
