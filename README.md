@@ -13,9 +13,17 @@ and the
 The [Containerfile](Containerfile) starts from Fedora's `bootc` base image,
 `quay.io/fedora/fedora-bootc:45`, and adds the stock Fedora GNOME desktop:
 the comps groups in
-[image/packages/groups.txt](image/packages/groups.txt), which are the
-Fedora Workstation environment without LibreOffice. Packages to leave out
-go in [image/packages/exclude.txt](image/packages/exclude.txt).
+[groups.txt](image/desktop/packages/groups.txt), which are the Fedora
+Workstation environment without LibreOffice. Packages to leave out go in
+[exclude.txt](image/desktop/packages/exclude.txt).
+
+On top come the Apex components listed in
+[components.txt](image/components/components.txt). The build fetches each
+repository at the tip of its `main` branch and runs its
+`just install <destdir>` recipe, which installs under `<destdir>/usr` only.
+A component without an `install` recipe is skipped. A release pins the
+commits instead, in `release/sync`, one `component=commit` line each:
+`just build release/sync` builds from those pins.
 
 ## Build and test
 

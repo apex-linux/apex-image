@@ -14,6 +14,7 @@ lint:
 clean:
     scripts/clean.sh
 
-# Builds the OS image as localhost/apex:main.
-build:
-    scripts/build.sh
+# Builds the OS image as localhost/apex:main. Components come from the tip of
+# main, or from the pins in a sync file: just build release/sync
+build sync="":
+    scripts/build.sh "{{sync}}"

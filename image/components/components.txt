@@ -1,0 +1,4 @@
+# Component repositories under https://github.com/apex-linux, built into the
+# image in this order. Each exposes `just install <destdir>`.
+apex-hardware
+apex-desktop

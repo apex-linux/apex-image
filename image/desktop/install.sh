@@ -1,9 +1,9 @@
 #!/bin/bash
 # Installs the Fedora GNOME desktop into the image. Runs inside the image
-# build, with this directory mounted at /run/image.
+# build, with this directory mounted at /run/desktop.
 set -euo pipefail
 
-readonly PACKAGES=/run/image/packages
+readonly PACKAGES=/run/desktop/packages
 
 # Prints a package list without comments and blank lines.
 list() {
