@@ -10,6 +10,20 @@ list() {
   sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$1"
 }
 
+# Mirrors sometimes serve metadata in the middle of a sync, which fails its
+# checksum. Retry with fresh metadata before giving up.
+dnf_install() {
+  local attempt
+  for attempt in 1 2 3; do
+    if dnf5 -y install "$@"; then
+      return 0
+    fi
+    echo "dnf5 install failed (attempt ${attempt} of 3)" >&2
+    dnf5 clean metadata
+  done
+  return 1
+}
+
 main() {
   local -a args
   mapfile -t args < <(list "${PACKAGES}/groups.txt" | sed 's/^/@/')
@@ -18,7 +32,7 @@ main() {
   if [[ -n "${exclude}" ]]; then
     args+=("--exclude=${exclude}")
   fi
-  dnf5 -y install "${args[@]}"
+  dnf_install "${args[@]}"
 
   systemctl enable gdm.service
   systemctl set-default graphical.target
