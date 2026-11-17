@@ -1,0 +1,2 @@
+# Packages that the groups would install but the image must not carry, one
+# name per line, with the reason.

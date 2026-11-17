@@ -8,6 +8,15 @@ Part of [Apex Linux](https://github.com/apex-linux/apex). See the
 and the
 [engineering standards](https://github.com/apex-linux/apex/blob/main/docs/engineering.md).
 
+## What is in the image
+
+The [Containerfile](Containerfile) starts from Fedora's `bootc` base image,
+`quay.io/fedora/fedora-bootc:45`, and adds the stock Fedora GNOME desktop:
+the comps groups in
+[image/packages/groups.txt](image/packages/groups.txt), which are the
+Fedora Workstation environment without LibreOffice. Packages to leave out
+go in [image/packages/exclude.txt](image/packages/exclude.txt).
+
 ## Build and test
 
 You need `just`, `podman`, `flock` and Node.js (for `npx`). Every task is a
@@ -16,6 +25,7 @@ recipe in the [justfile](justfile); CI runs the same recipes.
 ```sh
 just doctor  # Checks free disk and memory, and shows what Apex can clean.
 just lint    # Runs shellcheck, shfmt, hadolint and markdownlint.
+just build   # Builds the image as localhost/apex:main.
 just clean   # Removes Apex's own images, disks and caches.
 ```
 

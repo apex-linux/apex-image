@@ -1,0 +1,17 @@
+# Fedora comps groups, installed with their default packages. This is the
+# Fedora Workstation environment (workstation-product-environment) without
+# libreoffice, which belongs in Flatpak on an image-based system, as on
+# Fedora Silverblue.
+base-graphical
+container-management
+core
+desktop-accessibility
+firefox
+fonts
+gnome-desktop
+guest-desktop-agents
+hardware-support
+multimedia
+networkmanager-submodules
+printing
+workstation-product
