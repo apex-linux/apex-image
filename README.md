@@ -147,6 +147,14 @@ vm-dualboot` tests exactly this in a virtual machine.
     ```
 
     where `/dev/sdX` is the stick, not a disk you want to keep.
+
+    A Ventoy stick works too: copy `apex-installer.iso` to its data
+    partition, pick it in Ventoy's menu and then "Boot in normal mode".
+    Ventoy releases before 1.1.18 cannot start Fedora 45 installers,
+    Fedora's own included: they put their start-up hook where Fedora 45's
+    dracut no longer looks, and the installer then waits for its media
+    forever. The Apex ISO carries a small extra initrd that makes those
+    releases work; `just vm-ventoy` tests it with Ventoy 1.0.95.
 4.  Secure Boot must be off (on the ASUS M7400QC, F2 at power-on opens the
     firmware settings): Apex does not sign its NVIDIA module yet.
 5.  Boot from the stick (Esc at power-on opens the ASUS boot menu; choose
@@ -156,7 +164,8 @@ vm-dualboot` tests exactly this in a virtual machine.
     *   "Network & Host Name": connect to Wi-Fi if there is no cable.
     *   "Installation Destination" is the screen that decides where Apex
         goes. Select only the internal disk; it shows its free space under
-        its name. Leave "Storage Configuration" on "Automatic" and leave
+        its name. The USB stick is listed as a disk too: leave it
+        unselected. Leave "Storage Configuration" on "Automatic" and leave
         "Free up space by removing or shrinking existing partitions"
         unticked, then press Done. Automatic uses only the free space: it
         adds a `/boot` partition and a Btrfs partition for Apex, and
@@ -218,6 +227,14 @@ From Ubuntu:
     entry should be unchanged.
 
 ## Test the installer in a virtual machine
+
+`just vm-ventoy` lays out a virtual USB stick the way Ventoy installs
+itself (its MBR signature, the ISO on partition 1, Ventoy's boot files on
+the VTOYEFI partition), boots the test variant of the ISO through Ventoy's
+menus and fails unless the unattended install onto an empty virtual disk
+completes. It needs the files of a real Ventoy stick's VTOYEFI partition in
+`~/.cache/apex/ventoy-1.0.95-vtoyefi` (or `APEX_VENTOY_DIR`); Ventoy itself
+is not downloaded.
 
 `just vm-dualboot` checks the dual-boot install before anyone tries it on
 a real disk. It lays out a virtual disk like the reference machine's: a

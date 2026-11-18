@@ -4,7 +4,7 @@ FROM quay.io/fedora/fedora-bootc:45
 LABEL org.opencontainers.image.source="https://github.com/apex-linux/apex-image"
 # The dual-boot test also lays out and inspects disk images and UEFI
 # variable stores, and builds a stand-in for the other system's loader.
-RUN dnf5 -y install lorax xorriso gnupg2 mtools isomd5sum \
+RUN dnf5 -y install lorax xorriso gnupg2 mtools isomd5sum cpio \
     util-linux dosfstools e2fsprogs python3-virt-firmware \
     grub2-efi-x64-modules grub2-tools-extra \
     && dnf5 clean all
