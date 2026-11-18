@@ -49,7 +49,21 @@ hwclock --systohc --utc || echo "Could not write the hardware clock"
 # reconfigure"); bootc's own installs leave / out of fstab.
 sed -i -E '/^[^#[:space:]]+[[:space:]]+\/[[:space:]]/d' /etc/fstab
 # The installer names the Btrfs volume after itself (fedora_fedora).
+# Btrfs takes its mount options from the first mount, which is the root
+# file system from the kernel command line, so compression goes there too;
+# the installer puts it only on the /home line of fstab, which no longer
+# applies. The other root flags, such as the subvolume, are read from the
+# entry ostree just wrote, never from another system's entry beside it.
 if [ "$(stat -f -c %T /)" = btrfs ]; then
   btrfs filesystem label / apex || echo "Could not relabel the Btrfs volume"
+  flags="$(sed -n 's/^options .*rootflags=\([^ ]*\).*/\1/p' \
+    /boot/loader/entries/ostree-*.conf | head -n 1)"
+  if [ -n "${flags}" ]; then
+    ostree admin instutil set-kargs --merge \
+      --replace="rootflags=${flags},compress=zstd:1" \
+      || echo "Could not turn on Btrfs compression"
+  else
+    echo "Could not turn on Btrfs compression: no rootflags in the boot entry"
+  fi
 fi
 %end

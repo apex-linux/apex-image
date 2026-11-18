@@ -3,8 +3,8 @@
 # Checks an installed Apex virtual machine after it has booted, over SSH
 # (scripts/vm-ssh.sh), and fails with what is wrong: units that failed, a
 # hardware clock in local time, the host name, a / line in fstab, the root
-# file system's label, anything under /var with the wrong SELinux label, and
-# any text a new terminal's login shell prints.
+# file system's label and compression, anything under /var with the wrong
+# SELinux label, and any text a new terminal's login shell prints.
 set -euo pipefail
 
 main() {
@@ -33,6 +33,9 @@ main() {
     label="$(btrfs filesystem label /sysroot 2>/dev/null || true)"
     echo "Root file system label: ${label}"
     [ "${label}" = apex ] || fail=1
+    options="$(findmnt -no OPTIONS /sysroot)"
+    echo "Root file system options: ${options}"
+    case ",${options}," in *,compress=zstd:1,*) ;; *) fail=1 ;; esac
     wrong="$(restorecon -R -n -v /var 2>&1 | head -n 20)"
     if [ -n "${wrong}" ]; then
       echo "Wrong SELinux labels under /var:"; echo "${wrong}"
