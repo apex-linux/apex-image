@@ -80,6 +80,11 @@ RUN --mount=type=bind,source=image/system,target=/run/system \
 RUN --mount=type=bind,source=image/identity,target=/run/identity \
     /run/identity/os-release.sh
 
+# The installer copies /var without SELinux labels; leave /var empty and
+# let systemd-tmpfiles create it, labelled, on first boot.
+RUN --mount=type=bind,source=image/system,target=/run/system \
+    /run/system/var_tmpfiles.py apex-var
+
 RUN bootc container lint
 
 # The nvidia flavor: the base image plus the NVIDIA driver and the hardware
@@ -97,4 +102,9 @@ RUN --mount=type=bind,source=image/common,target=/run/common \
     --mount=type=bind,source=image/components,target=/run/apex-components \
     /run/apex-components/requires.sh \
     && /run/apex-components/post-install.sh
+# The installer copies /var without SELinux labels; leave /var empty and
+# let systemd-tmpfiles create it, labelled, on first boot.
+RUN --mount=type=bind,source=image/system,target=/run/system \
+    /run/system/var_tmpfiles.py apex-var-nvidia
+
 RUN bootc container lint
