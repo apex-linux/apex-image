@@ -49,7 +49,16 @@ hwclock --systohc --utc || echo "Could not write the hardware clock"
 # reconfigure"); bootc's own installs leave / out of fstab.
 sed -i -E '/^[^#[:space:]]+[[:space:]]+\/[[:space:]]/d' /etc/fstab
 # The installer names the Btrfs volume after itself (fedora_fedora).
+# Btrfs takes its mount options from the first mount, which is the root
+# file system from the kernel command line, so compression goes there too;
+# the installer puts it only on the /home line of fstab, which no longer
+# applies. The boot entry keeps the other root flags, such as the subvolume.
 if [ "$(stat -f -c %T /)" = btrfs ]; then
   btrfs filesystem label / apex || echo "Could not relabel the Btrfs volume"
+  flags="$(sed -n 's/^options .*rootflags=\([^ ]*\).*/\1/p' \
+    /boot/loader/entries/*.conf | head -n 1)"
+  ostree admin instutil set-kargs --merge \
+    --replace="rootflags=${flags:+${flags},}compress=zstd:1" \
+    || echo "Could not turn on Btrfs compression"
 fi
 %end
