@@ -29,3 +29,27 @@ mkdir -p "${repo}"
 ostree --repo="${repo}" init --mode=bare
 ostree config --repo="${repo}" set sysroot.bootloader none
 %end
+
+# The computer's name, until the user changes it on Network & Host Name.
+network --hostname=apex
+
+%post --erroronfail
+set -eu
+# Keep the hardware clock in UTC, as Linux systems on the same computer
+# expect. Without a zone in the kickstart the installer keeps it in local
+# time, and a dual-booted system then reads a clock off by the zone's
+# offset; "timezone --utc" without a zone makes Anaconda 45 fail, and a zone
+# here would skip the Time & Date screen. The system clock is right at this
+# point, so write it back as UTC.
+printf '0.0 0 0.0\n0\nUTC\n' >/etc/adjtime
+hwclock --systohc --utc || echo "Could not write the hardware clock"
+# bootc mounts the root file system, a composefs overlay, from the kernel
+# command line. A / line in fstab, which the installer writes, makes
+# systemd-remount-fs fail on every boot ("No changes allowed in
+# reconfigure"); bootc's own installs leave / out of fstab.
+sed -i -E '/^[^#[:space:]]+[[:space:]]+\/[[:space:]]/d' /etc/fstab
+# The installer names the Btrfs volume after itself (fedora_fedora).
+if [ "$(stat -f -c %T /)" = btrfs ]; then
+  btrfs filesystem label / apex || echo "Could not relabel the Btrfs volume"
+fi
+%end

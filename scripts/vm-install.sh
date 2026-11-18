@@ -2,7 +2,8 @@
 # Installs Apex Linux from the installer ISO onto an empty virtual disk, the
 # way the USB stick installs it, but unattended: a test variant of the ISO
 # picks the virtual disk and adds an SSH key for root. The installer pulls
-# ghcr.io/apex-linux/apex:main, so this tests the published image.
+# ghcr.io/apex-linux/apex:main, so this tests the published image. Then it
+# boots the disk once and runs the checks of scripts/vm-checks.sh.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -34,7 +35,9 @@ main() {
     -drive "media=cdrom,readonly=on,file=${APEX_BUILD_DIR}/iso/apex-installer-vm-test.iso" \
     -nic user,model=virtio-net-pci \
     -no-reboot
-  echo "Installed. Boot it with 'just vm-disk'."
+  echo "Installed; checking its first boot."
+  "$(dirname "$0")/vm-firstboot.sh"
+  echo "Installed and checked. Boot it with 'just vm-disk'."
 }
 
 main "$@"

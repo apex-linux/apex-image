@@ -273,6 +273,14 @@ like a real computer, with SSH on `localhost:2222`, and
 `just vm-ssh bootc status` runs commands in it. Both use the published
 image, not a local build, because the installer pulls it from the registry.
 
+After the install, `just vm-install` boots the disk once and runs
+[vm-checks.sh](scripts/vm-checks.sh), which `just vm-dualboot` runs too: it
+fails on any failed unit, a hardware clock kept in local time, a host name
+other than `apex`, a `/` line in `/etc/fstab`, a root Btrfs volume not
+labelled `apex`, and anything under `/var` whose SELinux label differs from
+the policy's. The test kickstart names a time zone without `--utc`, as the
+owner's install does, so the clock check covers that case.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

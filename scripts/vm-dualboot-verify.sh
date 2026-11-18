@@ -52,6 +52,9 @@ main() {
   local vm_pid=$!
   wait_ssh up
 
+  echo "== First boot"
+  "$(dirname "$0")/vm-checks.sh"
+
   echo "== Installed system"
   ssh_vm 'bootc status --format=humanreadable | head -3
     echo "ostree sysroot.bootloader: $(ostree config get sysroot.bootloader)"
