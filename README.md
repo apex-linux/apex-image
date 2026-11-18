@@ -15,7 +15,8 @@ The [Containerfile](Containerfile) starts from Fedora's `bootc` base image,
 the comps groups in
 [groups.txt](image/desktop/packages/groups.txt), which are the Fedora
 Workstation environment without LibreOffice. Packages to leave out go in
-[exclude.txt](image/desktop/packages/exclude.txt).
+[exclude.txt](image/desktop/packages/exclude.txt), and packages of the base
+image to remove in [remove.txt](image/desktop/packages/remove.txt).
 
 Fedora's `libfprint` is rebuilt with the patches that `apex-hardware`
 carries in `patches/libfprint/` for the ELAN `04f3:0c6e` fingerprint reader.

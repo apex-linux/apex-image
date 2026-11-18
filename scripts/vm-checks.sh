@@ -3,7 +3,8 @@
 # Checks an installed Apex virtual machine after it has booted, over SSH
 # (scripts/vm-ssh.sh), and fails with what is wrong: units that failed, a
 # hardware clock in local time, the host name, a / line in fstab, the root
-# file system's label, and anything under /var with the wrong SELinux label.
+# file system's label, anything under /var with the wrong SELinux label, and
+# any text a new terminal's login shell prints.
 set -euo pipefail
 
 main() {
@@ -38,6 +39,38 @@ main() {
       fail=1
     else
       echo "SELinux labels under /var: as the policy says"
+    fi
+    # What a new terminal shows before its prompt: an interactive login
+    # shell on a pty, without the invisible escape sequences.
+    greeting="$(python3 - <<"PY"
+import os
+import pty
+import re
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-l", "-i", "-c", "true"])
+out = b""
+while True:
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    out += data
+os.waitpid(pid, 0)
+text = out.decode(errors="replace")
+text = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", text)
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+print(text.strip())
+PY
+)"
+    if [ -n "${greeting}" ]; then
+      echo "A login shell prints:"; echo "${greeting}"
+      fail=1
+    else
+      echo "A login shell prints: nothing"
     fi
     exit "${fail}"'
 }
