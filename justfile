@@ -55,8 +55,9 @@ vm-ssh *command:
 vm-dualboot:
     scripts/vm-dualboot.sh
 
-# Installs from a test variant of the installer ISO through a Ventoy USB
-# stick, unattended. Needs the files of a Ventoy stick's VTOYEFI partition in
-# ~/.cache/apex/ventoy-1.0.95-vtoyefi or APEX_VENTOY_DIR.
+# Boots a test variant of the installer ISO through a Ventoy USB stick and
+# installs, unattended, until the deployment starts. Needs the files of a
+# Ventoy stick's VTOYEFI partition in ~/.cache/apex/ventoy-1.0.95-vtoyefi or
+# APEX_VENTOY_DIR.
 vm-ventoy:
     scripts/vm-ventoy.sh

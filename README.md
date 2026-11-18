@@ -232,7 +232,9 @@ From Ubuntu:
 itself (its MBR signature, the ISO on partition 1, Ventoy's boot files on
 the VTOYEFI partition), boots the test variant of the ISO through Ventoy's
 menus and fails unless the unattended install onto an empty virtual disk
-completes. It needs the files of a real Ventoy stick's VTOYEFI partition in
+reaches the deployment, which proves the installer found its media and
+kickstart through Ventoy; the deployment itself is what `just vm-install`
+tests. It needs the files of a real Ventoy stick's VTOYEFI partition in
 `~/.cache/apex/ventoy-1.0.95-vtoyefi` (or `APEX_VENTOY_DIR`); Ventoy itself
 is not downloaded.
 

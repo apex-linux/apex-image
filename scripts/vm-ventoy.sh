@@ -2,8 +2,11 @@
 # Tests the installer on a Ventoy USB stick: lays out a virtual stick with the
 # Ventoy files in APEX_VENTOY_DIR (the contents of a real stick's VTOYEFI
 # partition) and the test variant of the ISO, boots it through Ventoy's menus
-# and fails unless the unattended install onto an empty virtual disk
-# completes. Usage: vm-ventoy.sh
+# and fails unless the unattended install, onto an empty virtual disk,
+# reaches the deployment: by then the installer has found its media and its
+# kickstart through Ventoy and partitioned the disk. The deployment itself
+# is the same as in `just vm-install`, so the VM stops there.
+# Usage: vm-ventoy.sh
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -46,7 +49,7 @@ main() {
   # Ventoy lists the ISO, then offers "Boot in normal mode"; Enter picks
   # both, and the ISO's own menu starts its default entry by itself.
   (key ret 20 && key ret 5) &
-  echo "Installing through Ventoy; the VM powers off when it is done."
+  echo "Installing through Ventoy until the deployment starts."
   apex::qemu "${vm_dir}" \
     -drive "if=pflash,format=raw,readonly=on,file=$(apex::ovmf \
       OVMF_CODE_4M.fd OVMF_CODE.fd)" \
@@ -55,16 +58,27 @@ main() {
     -device usb-storage,drive=stick,bootindex=0 \
     -drive "if=virtio,format=qcow2,file=${vm_dir}/disk.qcow2" \
     -nic user,model=virtio-net-pci \
-    -no-reboot
+    -no-reboot &
+  local vm_pid=$! i passed=0
+  for ((i = 0; i < 120; i++)); do
+    sleep 5
+    if grep -q 'Deployment starting' "${vm_dir}/serial.log" 2>/dev/null; then
+      passed=1
+      break
+    fi
+    kill -0 "${vm_pid}" 2>/dev/null || break
+  done
+  printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"quit"}' \
+    | socat - "UNIX-CONNECT:${vm_dir}/qmp.sock" >/dev/null 2>&1 || true
   wait
 
-  if ! grep -q 'Deployment complete' "${vm_dir}/serial.log"; then
-    apex::err "vm-ventoy: the install through Ventoy did not complete;" \
-      "see ${vm_dir}/serial.log"
+  if ((passed == 0)); then
+    apex::err "vm-ventoy: the installer did not reach the deployment" \
+      "through Ventoy; see ${vm_dir}/serial.log"
     exit 1
   fi
-  echo "Installed through Ventoy: the installer found its media and its" \
-    "kickstart, and the deployment completed."
+  echo "Through Ventoy, the installer found its media and kickstart and" \
+    "reached the deployment."
 }
 
 main "$@"
