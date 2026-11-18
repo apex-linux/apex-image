@@ -154,7 +154,10 @@ vm-dualboot` tests exactly this in a virtual machine.
     Fedora's own included: they put their start-up hook where Fedora 45's
     dracut no longer looks, and the installer then waits for its media
     forever. The Apex ISO carries a small extra initrd that makes those
-    releases work; `just vm-ventoy` tests it with Ventoy 1.0.95.
+    releases work; `just vm-ventoy` tests it with Ventoy 1.0.95. If the
+    installer still cannot find its media, from any kind of stick, it says
+    so on screen, names what it looked for and points here, instead of
+    only repeating dracut's timeout messages.
 4.  Secure Boot must be off (on the ASUS M7400QC, F2 at power-on opens the
     firmware settings): Apex does not sign its NVIDIA module yet.
 5.  Boot from the stick (Esc at power-on opens the ASUS boot menu; choose

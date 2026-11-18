@@ -20,12 +20,15 @@ main() {
   # Ventoy before 1.1.18 installs its initramfs hooks into
   # /lib/dracut/hooks, but Fedora 45's dracut (dracut-ng) runs them from
   # /var/lib/dracut/hooks, so Ventoy's hook never maps the ISO and the
-  # installer waits for its media forever. A second initrd holding only
-  # the old path, as a link to the new one, lets those Ventoy versions
-  # work; dracut itself does not use the old path.
+  # installer waits for its media forever. A second initrd holds the old
+  # path, as a link to the new one, which lets those Ventoy versions work;
+  # dracut itself does not use the old path. It also carries the hooks in
+  # /tools/initrd that explain in plain words when the installer cannot
+  # find its media, instead of leaving a looping prompt.
   mkdir -p "${work}/compat/usr/lib/dracut"
+  cp -a /tools/initrd/. "${work}/compat/"
   ln -s /var/lib/dracut/hooks "${work}/compat/usr/lib/dracut/hooks"
-  (cd "${work}/compat" && find usr | cpio --quiet -o -H newc -R 0:0) \
+  (cd "${work}/compat" && find usr var | cpio --quiet -o -H newc -R 0:0) \
     >"${work}/apex-compat.img"
 
   # mkksiso edits the boot menus on the ISO file system. Its mkefiboot step,
