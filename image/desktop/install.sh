@@ -24,6 +24,12 @@ main() {
   fi
   dnf_install "${args[@]}"
 
+  local -a remove
+  mapfile -t remove < <(list "${PACKAGES}/remove.txt")
+  if ((${#remove[@]} > 0)); then
+    dnf5 -y remove "${remove[@]}"
+  fi
+
   systemctl enable gdm.service
   systemctl set-default graphical.target
 

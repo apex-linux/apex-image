@@ -1,0 +1,8 @@
+# Packages of the bootc base image that a desktop does not want, one name per
+# line, with the reason.
+
+# Lists failed systemd units at the top of every interactive shell, so a new
+# GNOME Terminal greets its user with them. It suits a server's SSH login;
+# Fedora Workstation does not ship it. Failed units are caught by the VM
+# tests instead (scripts/vm-checks.sh).
+console-login-helper-messages-profile
