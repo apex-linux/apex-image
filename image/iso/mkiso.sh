@@ -27,6 +27,8 @@ main() {
   # find its media, instead of leaving a looping prompt.
   mkdir -p "${work}/compat/usr/lib/dracut"
   cp -a /tools/initrd/. "${work}/compat/"
+  # Fixed modes, so that the ISO does not depend on the build host's umask.
+  chmod -R u=rwX,go=rX "${work}/compat"
   ln -s /var/lib/dracut/hooks "${work}/compat/usr/lib/dracut/hooks"
   (cd "${work}/compat" && find usr var | cpio --quiet -o -H newc -R 0:0) \
     >"${work}/apex-compat.img"
