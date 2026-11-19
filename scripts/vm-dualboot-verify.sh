@@ -2,9 +2,10 @@
 # shellcheck disable=SC2016 # The single-quoted scripts run in the VM.
 # The second half of the dual-boot test (scripts/vm-dualboot.sh): boots the
 # installed disk, reports the boot setup, runs one `bootc upgrade` when a
-# newer image is published, starts the other system's loader through its
-# firmware boot entry with efibootmgr's BootNext, and checks the other
-# system's partitions and files once more.
+# newer image is published, starts the other system from Apex's boot menu
+# (scripts/vm-grub-other.sh) and then through its firmware boot entry with
+# efibootmgr's BootNext, and checks the other system's partitions and files
+# once more.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -61,9 +62,7 @@ main() {
     echo "EFI partition: $(df -B1 --output=avail /boot/efi | tail -1) bytes free"
     efibootmgr | grep -E "^Boot(Order|Current)"
     efibootmgr -v | grep -iE "fedora|ubuntu"
-    echo "GRUB entries: $(grep -h ^title /boot/loader/entries/*.conf)"
-    grep -qil ubuntu /boot/grub2/grub.cfg /boot/efi/EFI/fedora/grub.cfg \
-      && echo "GRUB lists Ubuntu: yes" || echo "GRUB lists Ubuntu: no"'
+    echo "GRUB entries: $(grep -h ^title /boot/loader/entries/*.conf)"'
 
   echo "== bootc upgrade"
   local before after published
@@ -82,6 +81,13 @@ main() {
   else
     echo "UPGRADE NOT EXERCISED: no newer image than ${before} is published"
   fi
+
+  echo "== The other system, from Apex's boot menu"
+  "$(dirname "$0")/vm-grub-other.sh"
+  wait "${vm_pid}" || true
+  "$(dirname "$0")/vm-disk.sh" >"${vm_dir}/vm-disk.log" 2>&1 &
+  vm_pid=$!
+  wait_ssh up
 
   echo "== The other system's loader, through its firmware boot entry"
   ssh_vm 'n="$(efibootmgr -v | grep -i "EFI.ubuntu.shimx64" \

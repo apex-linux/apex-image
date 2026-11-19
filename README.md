@@ -203,11 +203,28 @@ returns to the previous image.
 
 ### Choose a system at power-on
 
-Apex's GRUB menu lists only Apex. To start Ubuntu, press Esc at power-on
-and choose "ubuntu" in the ASUS boot menu; without a choice the computer
-starts the first entry, "Fedora" (Apex). To make Ubuntu the default
-instead, run `sudo efibootmgr` in either system to see the entries and
-`sudo efibootmgr -o XXXX,YYYY` with Ubuntu's number first.
+Apex's GRUB menu lists Apex, its previous version, "UEFI Firmware
+Settings" and then every other system whose boot loader is on the EFI
+system partition, such as "Ubuntu" or "Windows". When it lists another
+system it waits 5 seconds before starting Apex; on a computer with only
+Apex it shows for 1 second. The other systems are found on every boot by
+`/boot/grub2/custom.cfg`, which the installer copies from the image's
+`/usr/share/apex/grub2/custom.cfg`; upgrades leave it alone. The ASUS boot
+menu (Esc at power-on) still offers both systems too. To make Ubuntu the
+default instead, run `sudo efibootmgr` in either system to see the entries
+and `sudo efibootmgr -o XXXX,YYYY` with Ubuntu's number first.
+
+Apex installed before the menu listed other systems gets the same menu
+once its image has the file (after `sudo bootc upgrade` and a restart):
+
+```sh
+sudo mount -o remount,rw /boot
+sudo cp -n /usr/share/apex/grub2/custom.cfg /boot/grub2/custom.cfg
+sudo mount -o remount,ro /boot
+```
+
+To go back to a menu with Apex only, run the same commands with
+`sudo rm /boot/grub2/custom.cfg` in the middle.
 
 ### Remove Apex
 
@@ -260,12 +277,15 @@ configuration, as in step 6 above. The test then fails unless:
 *   the installed system boots from the disk through its boot loader;
 *   one `bootc upgrade` boots a newer image, when one is published (the
     log says "UPGRADE NOT EXERCISED" otherwise);
+*   Apex's boot menu stays up for 5 seconds, and its last entry is
+    "Ubuntu" and starts the other system's loader
+    (`scripts/vm-grub-other.sh`, which presses the keys);
 *   the other system's loader starts through its boot entry, chosen with
     `efibootmgr --bootnext`.
 
 It also reports the free space left on the EFI partition, whether
-`EFI/Boot` changed, the boot order and whether Apex's GRUB lists the other
-system. `just vm-disk` then boots the result.
+`EFI/Boot` changed and the boot order. `just vm-disk` then boots the
+result.
 
 `just vm-install` builds a test variant of the ISO that installs, without
 asking, onto an empty 40 GB virtual disk under `build/vm-disk/`, and adds an
@@ -278,9 +298,13 @@ After the install, `just vm-install` boots the disk once and runs
 [vm-checks.sh](scripts/vm-checks.sh), which `just vm-dualboot` runs too: it
 fails on any failed unit, a hardware clock kept in local time, a host name
 other than `apex`, a `/` line in `/etc/fstab`, a root Btrfs volume not
-labelled `apex`, and anything under `/var` whose SELinux label differs from
-the policy's. The test kickstart names a time zone without `--utc`, as the
-owner's install does, so the clock check covers that case.
+labelled `apex` or mounted without `compress=zstd:1`, a
+`/boot/grub2/custom.cfg` that is missing or differs from the image's, and
+anything under `/var` whose SELinux label differs from the policy's. The
+test kickstart names a time zone without `--utc`, as the owner's install
+does, so the clock check covers that case. With only Apex on the disk,
+`just vm-install` also checks that the boot menu adds no entry and keeps
+bootupd's 1 second countdown.
 
 ## License
 

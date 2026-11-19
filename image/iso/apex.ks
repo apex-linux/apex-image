@@ -66,4 +66,14 @@ if [ "$(stat -f -c %T /)" = btrfs ]; then
     echo "Could not turn on Btrfs compression: no rootflags in the boot entry"
   fi
 fi
+# bootupd's GRUB menu lists only Apex. The image's custom.cfg adds the other
+# systems whose loaders are on the EFI system partition, such as Ubuntu,
+# looking for them on every boot; bootupd's grub.cfg sources it, and
+# upgrades leave it alone.
+if [ -f /usr/share/apex/grub2/custom.cfg ]; then
+  install -D -m 0644 /usr/share/apex/grub2/custom.cfg /boot/grub2/custom.cfg \
+    || echo "Could not add the other systems to the boot menu"
+else
+  echo "Could not add the other systems to the boot menu: not in the image"
+fi
 %end
