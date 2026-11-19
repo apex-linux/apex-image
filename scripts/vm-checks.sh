@@ -3,8 +3,9 @@
 # Checks an installed Apex virtual machine after it has booted, over SSH
 # (scripts/vm-ssh.sh), and fails with what is wrong: units that failed, a
 # hardware clock in local time, the host name, a / line in fstab, the root
-# file system's label and compression, anything under /var with the wrong
-# SELinux label, and any text a new terminal's login shell prints.
+# file system's label and compression, a boot menu without the other
+# systems, anything under /var with the wrong SELinux label, and any text a
+# new terminal's login shell prints.
 set -euo pipefail
 
 main() {
@@ -36,6 +37,12 @@ main() {
     options="$(findmnt -no OPTIONS /sysroot)"
     echo "Root file system options: ${options}"
     case ",${options}," in *,compress=zstd:1,*) ;; *) fail=1 ;; esac
+    if cmp -s /boot/grub2/custom.cfg /usr/share/apex/grub2/custom.cfg; then
+      echo "Boot menu: lists the other systems on the EFI partition"
+    else
+      echo "Boot menu: /boot/grub2/custom.cfg is missing or not the image one"
+      fail=1
+    fi
     wrong="$(restorecon -R -n -v /var 2>&1 | head -n 20)"
     if [ -n "${wrong}" ]; then
       echo "Wrong SELinux labels under /var:"; echo "${wrong}"
