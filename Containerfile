@@ -80,6 +80,10 @@ RUN --mount=type=bind,source=image/system,target=/run/system \
 RUN --mount=type=bind,source=image/identity,target=/run/identity \
     /run/identity/os-release.sh
 
+# Boot menu entries for the other systems on the EFI system partition,
+# which the installer copies to /boot/grub2/custom.cfg.
+COPY --chmod=0644 image/grub/custom.cfg /usr/share/apex/grub2/custom.cfg
+
 # The installer copies /var without SELinux labels; leave /var empty and
 # let systemd-tmpfiles create it, labelled, on first boot.
 RUN --mount=type=bind,source=image/system,target=/run/system \
